@@ -1,0 +1,318 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Field, Icon, IconBtn, InlineConfirm, KindChip, MenuRow, PopupPanel, Spinner } from "kit.slint";
+
+// Entry kinds: 0 section header, 1 filter, 2 folder (manageable), 3 organization, 4 collection.
+// Icons: 0 all, 1 favorites, 2 login, 3 card, 4 identity, 5 note, 6 SSH, 7 folder, 8 org,
+// 9 collection, 10 trash.
+export struct SidebarEntry {
+    kind: int,
+    label: string,
+    count: string,
+    icon: int,
+    busy: bool,
+}
+
+component EntryIcon inherits Rectangle {
+    in property <int> code;
+    in property <bool> selected;
+    width: 16px;
+    height: 16px;
+    // Type entries use the kind palette; the item kind order differs from the icon codes.
+    if root.code >= 2 && root.code <= 6: KindChip {
+        size: 14px;
+        kind: root.code == 2 ? 0 : root.code == 3 ? 2 : root.code == 4 ? 3 : root.code == 5 ? 1 : 4;
+    }
+    if root.code < 2 || root.code > 6: Icon {
+        width: 14px;
+        height: 14px;
+        tint: root.selected ? Theme.accent : Theme.text-muted;
+        source: root.code == 0 ? @image-url("icons/grid.svg")
+            : root.code == 1 ? @image-url("icons/star.svg")
+            : root.code == 7 ? @image-url("icons/folder.svg")
+            : root.code == 8 ? @image-url("icons/building.svg")
+            : root.code == 9 ? @image-url("icons/layers.svg")
+            : @image-url("icons/trash.svg");
+    }
+}
+
+component CountBadge inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    height: 18px;
+    width: label.preferred-width + 12px;
+    border-radius: 9px;
+    background: selected ? Theme.accent.with-alpha(0.18) : Theme.surface-raised;
+    label := Text {
+        text: root.text;
+        color: root.selected ? Theme.accent : Theme.text-muted;
+        font-size: Theme.font-meta;
+        font-weight: 500;
+    }
+}
+
+component FolderMenu inherits PopupWindow {
+    callback rename();
+    callback delete();
+    width: 160px;
+    PopupPanel {
+        VerticalLayout {
+            padding: Theme.s1;
+            MenuRow {
+                text: "Rename";
+                clicked => { root.rename(); }
+            }
+            MenuRow {
+                text: "Delete";
+                danger: true;
+                clicked => { root.delete(); }
+            }
+        }
+    }
+}
+
+component SidebarRow inherits Rectangle {
+    in property <SidebarEntry> entry;
+    in property <bool> selected;
+    in property <bool> renaming;
+    in property <bool> confirming;
+    in property <bool> online;
+    callback clicked();
+    callback add();
+    callback start-rename();
+    callback rename(string);
+    callback ask-delete();
+    callback delete-confirmed();
+    callback cancel-delete();
+
+    min-height: entry.kind == 0 ? (entry.label == "" ? 12px : 28px) : confirming ? 64px : 28px * Theme.scale;
+    background: entry.kind != 0 && root.selected ? (ta.has-hover ? Theme.selection-hover : Theme.selection) : ta.has-hover && entry.kind != 0 ? Theme.hover : transparent;
+    animate background { duration: 100ms; easing: ease-out; }
+    border-radius: Theme.radius-control;
+    accessible-role: list-item;
+    accessible-label: root.entry.label;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { if root.entry.kind != 0 { root.clicked(); } }
+
+    ta := TouchArea {
+        enabled: root.entry.kind != 0 && !root.renaming;
+        clicked => { root.clicked(); }
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down && root.entry.kind == 2 && root.online {
+                menu.show();
+            }
+        }
+    }
+
+    menu := FolderMenu {
+        x: root.width - 160px;
+        y: root.height;
+        rename => { root.start-rename(); }
+        delete => { root.ask-delete(); }
+    }
+
+    if root.entry.kind == 0 && root.entry.label != "": HorizontalLayout {
+        padding-left: Theme.s2;
+        padding-right: Theme.s1;
+        padding-top: Theme.s2;
+        Text {
+            text: root.entry.label.to-uppercase();
+            color: Theme.text-muted;
+            font-size: Theme.font-meta;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.entry.label == "Folders": IconBtn {
+            width: 22px;
+            height: 22px;
+            icon: @image-url("icons/plus.svg");
+            label: "New folder";
+            enabled: root.online;
+            clicked => { root.add(); }
+        }
+    }
+
+    if root.entry.kind != 0 && root.renaming: HorizontalLayout {
+        padding-left: Theme.s1;
+        padding-right: Theme.s1;
+        Field {
+            min-height: 26px;
+            label: "Folder name";
+            text: root.entry.label;
+            accepted(text) => { root.rename(text); }
+            init => {
+                self.focus-input();
+                self.select-everything();
+            }
+        }
+    }
+
+    if root.entry.kind != 0 && !root.renaming && !root.confirming: HorizontalLayout {
+        padding-left: root.entry.kind == 4 ? 28px : Theme.s2;
+        padding-right: Theme.s2;
+        spacing: Theme.s2;
+        EntryIcon {
+            y: (parent.height - self.height) / 2;
+            code: root.entry.icon;
+            selected: root.selected;
+        }
+        Text {
+            text: root.entry.label;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            font-weight: root.selected ? 500 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.entry.busy: Spinner {
+            y: (parent.height - self.height) / 2;
+        }
+        if root.entry.kind == 2 && ta.has-hover && root.online && !root.entry.busy: IconBtn {
+            y: (parent.height - self.height) / 2;
+            width: 22px;
+            height: 22px;
+            icon: @image-url("icons/chevron-down.svg");
+            label: "Folder actions for " + root.entry.label;
+            clicked => { menu.show(); }
+        }
+        if root.entry.count != "": CountBadge {
+            y: (parent.height - self.height) / 2;
+            text: root.entry.count;
+            selected: root.selected;
+        }
+    }
+
+    if root.confirming: InlineConfirm {
+        question: "Delete folder? Items move to No folder";
+        subject: "delete folder";
+        confirmed => { root.delete-confirmed(); }
+        cancelled => { root.cancel-delete(); }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    in property <[SidebarEntry]> entries;
+    in-out property <int> selected: 0;
+    in-out property <int> renaming: -1;
+    in-out property <int> confirm-delete: -1;
+    in-out property <bool> adding: false;
+    in property <bool> creating: false;
+    in property <bool> online: true;
+    in property <bool> collapsed: false;
+    out property <bool> editing: renaming >= 0 || adding || confirm-delete >= 0;
+    callback select(int);
+    callback create-folder(string);
+    callback rename-folder(int, string);
+    callback delete-folder(int);
+    callback toggle();
+
+    public function cancel-editing() {
+        renaming = -1;
+        adding = false;
+        confirm-delete = -1;
+    }
+
+    // The layout may squeeze the sidebar down to the rail when the window is too narrow for
+    // sidebar + list + detail; its content then fades out instead of overlapping.
+    min-width: Theme.rail-width;
+    preferred-width: collapsed ? Theme.rail-width : Theme.sidebar-width;
+    max-width: self.preferred-width;
+    horizontal-stretch: 0;
+    animate preferred-width { duration: 220ms; easing: ease-in-out-quart; }
+    background: Theme.bg;
+    clip: true;
+
+    IconBtn {
+        x: (Theme.rail-width - self.width) / 2;
+        y: Theme.s1;
+        icon: @image-url("icons/sidebar.svg");
+        label: root.collapsed ? "Show sidebar" : "Hide sidebar";
+        hint: "⌘\\";
+        clicked => { root.toggle(); }
+    }
+
+    content := ScrollView {
+        x: 0;
+        y: Theme.control-height + Theme.s2;
+        width: Theme.sidebar-width;
+        height: root.height - self.y;
+        opacity: root.collapsed || root.width < 150px ? 0 : 1;
+        visible: self.opacity > 0;
+        animate opacity { duration: 120ms; }
+        VerticalLayout {
+            padding-left: Theme.s2;
+            padding-right: Theme.s2;
+            padding-bottom: Theme.s2;
+            spacing: 1px;
+            alignment: start;
+            for entry[i] in root.entries: VerticalLayout {
+                spacing: 1px;
+                SidebarRow {
+                    entry: entry;
+                    selected: i == root.selected;
+                    renaming: i == root.renaming;
+                    confirming: i == root.confirm-delete;
+                    online: root.online;
+                    clicked => {
+                        root.cancel-editing();
+                        root.selected = i;
+                        root.select(i);
+                    }
+                    add => {
+                        root.cancel-editing();
+                        root.adding = true;
+                    }
+                    start-rename => {
+                        root.cancel-editing();
+                        root.renaming = i;
+                    }
+                    rename(text) => {
+                        root.renaming = -1;
+                        root.rename-folder(i, text);
+                    }
+                    ask-delete => {
+                        root.cancel-editing();
+                        root.confirm-delete = i;
+                    }
+                    delete-confirmed => {
+                        root.confirm-delete = -1;
+                        root.delete-folder(i);
+                    }
+                    cancel-delete => { root.confirm-delete = -1; }
+                }
+                // The inline new-folder field sits right under the Folders header.
+                if root.adding && entry.kind == 0 && entry.label == "Folders": HorizontalLayout {
+                    padding-left: Theme.s1;
+                    padding-right: Theme.s1;
+                    Field {
+                        min-height: 26px;
+                        placeholder: "New folder";
+                        label: "New folder name";
+                        accepted(text) => {
+                            if text != "" {
+                                root.adding = false;
+                                root.create-folder(text);
+                            }
+                        }
+                        init => { self.focus-input(); }
+                    }
+                }
+                if root.creating && entry.kind == 0 && entry.label == "Folders": HorizontalLayout {
+                    padding-left: Theme.s2;
+                    spacing: Theme.s2;
+                    height: 24px;
+                    Spinner { y: (parent.height - self.height) / 2; }
+                    Text {
+                        text: "Creating folder…";
+                        color: Theme.text-muted;
+                        font-size: Theme.font-hint;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

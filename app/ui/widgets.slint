@@ -1,0 +1,267 @@
+import { Theme } from "theme.slint";
+
+export enum BtnKind { normal, primary, danger, danger-filled, ghost }
+
+export component Icon inherits Image {
+    in property <color> tint: Theme.text;
+    colorize: tint;
+    width: 16px;
+    height: 16px;
+    image-fit: contain;
+}
+
+// Kind glyph on a tinted square: 22 px in rows, 14 px in the sidebar, 28 px in the detail header.
+export component KindChip inherits Rectangle {
+    in property <int> kind;
+    in property <length> size: 22px;
+    width: size;
+    height: size;
+    border-radius: size <= 14px ? 4px : 6px;
+    background: Theme.kind-bg(kind);
+    Icon {
+        width: root.size * 0.68;
+        height: root.size * 0.68;
+        tint: Theme.kind-fg(root.kind);
+        source: root.kind == 0 ? @image-url("icons/kind-login.svg")
+            : root.kind == 1 ? @image-url("icons/kind-note.svg")
+            : root.kind == 2 ? @image-url("icons/kind-card.svg")
+            : root.kind == 3 ? @image-url("icons/kind-identity.svg")
+            : root.kind == 4 ? @image-url("icons/kind-ssh.svg")
+            : @image-url("icons/kind-other.svg");
+    }
+}
+
+// Key cap for shortcut hints. `enter` draws the Return key as an icon: the system UI font has
+// no ↵/↩ glyph with the software renderer.
+export component KeyCap inherits Rectangle {
+    in property <string> text;
+    in property <bool> enter: false;
+    height: 18px * Theme.scale;
+    width: max(18px * Theme.scale, caps.preferred-width + 10px);
+    border-radius: 4px;
+    background: Theme.surface-raised;
+    caps := HorizontalLayout {
+        alignment: center;
+        spacing: 1px;
+        // System font, not mono: Menlo's O reads as 0 at 11 px.
+        if root.text != "": Text {
+            text: root.text;
+            font-size: Theme.font-meta;
+            font-weight: 500;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+        if root.enter: Icon {
+            y: (parent.height - self.height) / 2;
+            width: 11px * Theme.scale;
+            height: 11px * Theme.scale;
+            source: @image-url("icons/return.svg");
+            tint: Theme.text-muted;
+        }
+    }
+}
+
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <BtnKind> kind: BtnKind.normal;
+    in property <bool> enabled: true;
+    in property <string> label: text;
+    callback clicked();
+
+    property <color> fg: kind == BtnKind.primary ? Theme.accent-fg
+        : kind == BtnKind.danger-filled ? #FFFFFF
+        : kind == BtnKind.danger ? Theme.danger
+        : Theme.text;
+    height: Theme.control-height;
+    min-width: self.has-icon && self.text == "" ? Theme.control-height : 0px;
+    border-radius: Theme.radius-control;
+    background: kind == BtnKind.primary ? Theme.accent
+        : kind == BtnKind.danger-filled ? Theme.danger
+        : kind == BtnKind.danger ? (ta.has-hover ? Theme.danger.with-alpha(0.08) : transparent)
+        : kind == BtnKind.ghost ? (ta.has-hover ? Theme.hover : transparent)
+        : Theme.surface-raised;
+    border-width: kind == BtnKind.normal || kind == BtnKind.danger ? 1px : 0px;
+    border-color: kind == BtnKind.danger ? Theme.danger.with-alpha(0.4) : Theme.border;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    animate background { duration: 100ms; easing: ease-out; }
+
+    // Hover overlay for filled and secondary buttons, instead of darker() colour chains.
+    if (root.kind == BtnKind.primary || root.kind == BtnKind.danger-filled || root.kind == BtnKind.normal) && ta.has-hover && root.enabled: Rectangle {
+        border-radius: root.border-radius;
+        background: Theme.text.with-alpha(0.06);
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: root.text == "" ? 6px : 10px;
+        padding-right: root.text == "" ? 6px : 10px;
+        spacing: Theme.s2;
+        alignment: center;
+        if root.has-icon: Icon {
+            y: (parent.height - self.height) / 2;
+            source: root.icon;
+            tint: root.fg;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: root.fg;
+            font-size: Theme.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: root.kind == BtnKind.primary ? root.fg.with-alpha(0.7) : Theme.text-muted;
+            font-size: Theme.font-meta;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component IconBtn inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> hint;
+    in property <color> tint: Theme.text-muted;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: Theme.control-height;
+    height: Theme.control-height;
+    border-radius: Theme.radius-control;
+    background: ta.has-hover && enabled ? Theme.hover : transparent;
+    opacity: enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    animate background { duration: 100ms; easing: ease-out; }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Icon {
+        source: root.icon;
+        tint: ta.has-hover ? Theme.text : root.tint;
+    }
+}
+
+// One-click copy. `copy()` returns whether the value reached the clipboard; on success the
+// glyph crossfades to a check that slides up, shown for 1.2 s.
+export component CopyBtn inherits Rectangle {
+    in property <int> code: -1;
+    in property <string> label;
+    in property <bool> emphasized: false;
+    in property <bool> enabled: true;
+    callback copy() -> bool;
+
+    property <bool> copied: false;
+    property <bool> text-glyph: code == 4 || code == 5 || code == 6 || code == 7 || code == 9;
+
+    width: text-glyph && code == 6 ? 36px : Theme.control-height;
+    height: 24px * Theme.scale;
+    border-radius: Theme.radius-control;
+    background: copied ? Theme.success.with-alpha(0.14) : ta.has-hover ? Theme.hover : transparent;
+    animate background { duration: 400ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.trigger(); }
+
+    function trigger() {
+        if root.enabled && root.copy() {
+            root.copied = true;
+        }
+    }
+
+    Timer {
+        interval: 1.2s;
+        running: root.copied;
+        triggered => { root.copied = false; }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.trigger(); }
+    }
+
+    Rectangle {
+        opacity: root.copied ? 0 : ta.has-hover || root.emphasized ? 1 : 0.55;
+        animate opacity { duration: root.copied ? 120ms : 200ms; easing: ease-out; }
+        if root.text-glyph: Text {
+            text: root.code == 4 ? "…" : root.code == 5 ? "#" : root.code == 6 ? "CVV" : root.code == 7 ? "@" : "pub";
+            font-size: root.code == 6 || root.code == 9 ? Theme.font-meta : Theme.font-body;
+            font-weight: 600;
+            color: Theme.text;
+        }
+        if !root.text-glyph: Icon {
+            source: root.code == 0 ? @image-url("icons/user.svg")
+                : root.code == 1 || root.code == 10 ? @image-url("icons/key.svg")
+                : root.code == 8 ? @image-url("icons/phone.svg")
+                : @image-url("icons/copy.svg");
+            tint: Theme.text;
+        }
+    }
+    Icon {
+        source: @image-url("icons/check.svg");
+        tint: Theme.success-text;
+        opacity: root.copied ? 1 : 0;
+        y: (parent.height - self.height) / 2 + (root.copied ? 0px : 3px);
+        animate opacity { duration: root.copied ? 120ms : 200ms; easing: ease-out; }
+        animate y { duration: 120ms; easing: ease-out; }
+    }
+}
+
+// Arc that drains clockwise from 12 o'clock in one step per second (never interpolated).
+export component TotpRing inherits Rectangle {
+    in property <int> remaining;
+    in property <int> period: 30;
+    property <float> fraction: period <= 0 ? 0 : Math.clamp(remaining / period, 0, 0.999);
+    property <angle> start: (1 - fraction) * 360deg;
+    property <color> tint: remaining < 5 ? Theme.warn : Theme.accent;
+    animate tint { duration: 300ms; }
+    width: 14px * Theme.scale;
+    height: 14px * Theme.scale;
+
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: Theme.border-subtle;
+    }
+    if root.fraction > 0: Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 14;
+        viewbox-height: 14;
+        stroke: root.tint;
+        stroke-width: 2px;
+        MoveTo {
+            x: 7 + 6 * Math.sin(root.start);
+            y: 7 - 6 * Math.cos(root.start);
+        }
+        ArcTo {
+            x: 7;
+            y: 1;
+            radius-x: 6;
+            radius-y: 6;
+            large-arc: root.fraction > 0.5;
+            sweep: true;
+        }
+    }
+}

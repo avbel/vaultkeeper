@@ -32,6 +32,12 @@ pub(crate) fn create_listeners() -> Result<Vec<impl Listener>> {
     Ok(vec![unix::UnixListener::new()?])
 }
 
+/// bwl patch: creates the Unix listener on an explicit socket path.
+#[cfg(unix)]
+pub(crate) fn create_listeners_at(socket_path: std::path::PathBuf) -> Result<Vec<impl Listener>> {
+    Ok(vec![unix::UnixListener::bind(socket_path)?])
+}
+
 /// Creates the listeners for the Windows platform.
 #[cfg(windows)]
 pub(crate) fn create_listeners() -> Result<Vec<impl Listener>> {

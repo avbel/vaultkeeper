@@ -1,0 +1,58 @@
+{
+  "archivedDate": null,
+  "attachments": null,
+  "bankAccount": null,
+  "card": null,
+  "collectionIds": [],
+  "creationDate": "2026-11-08T17:00:59.311257Z",
+  "deletedDate": null,
+  "driversLicense": null,
+  "edit": true,
+  "favorite": false,
+  "fields": [
+    {
+      "linkedId": null,
+      "name": "2.lhE4B+DdNg/Csr7Z5DyPRw==|AA0cPduaatex6lSnLlvKsDt5/gs2sW4p|jzqAFjvdGD2aP5BLbp109ceoEqPifg5fEhg4XLbm2x4=",
+      "type": 0,
+      "value": "2.oBMNaII0o9mHVlrDktNrOg==|IUeSLFknr5h2LhZirQ+Az/WRf7W9yQSk|ViHwMUW7HWjiUXxIG1FzD6qXHTQEyQ9yn+7UsKaYVew="
+    }
+  ],
+  "folderId": "96d9424a-9a7c-4cdb-93ff-7d58769db177",
+  "id": "1b2151b1-7bbd-4057-bb11-f5ae84ef21cd",
+  "identity": null,
+  "key": "2.ZaHLSjiOvQKqNAFI+g0hQg==|u2k20gEXiDKpgJhNrEvxuFeriVmFBq3BzXEQhaG+ZY+pvH2H/O3eKbNxzF2PSVfv4jXUZ+lmWl5lWZRrN0/c8w==|2n/S4ddNpw04Wac3ytxLxIH0ItGL3VaWVG6bJzZ1El4=",
+  "login": {
+    "password": "2.NtdLL+hJRBLTKj4YpwLJKg==|Cw6LqqOMwuAe+AKThlUobgP9jjRYaAXO|tTmKdbrrvNjFJUr210i4Fb3a781BAkiS1ZfX4nxmdjk=",
+    "passwordRevisionDate": null,
+    "totp": "2.bnqklTQ+f53LvoaL9UzymQ==|bexYFJ5a/BH9l9T/cGxXiJjTcQo4tf9i|djErDSTGH9YnSmWjh/y/X0QMk/PD2HSvg4fsAiq6swk=",
+    "uri": "2.vCtdOY4cmjMWVLGy3/IlVw==|b0c0XNTNrRb+Zy+GD51HQWU/RTTo6kg4|JFEcwK6RoRR8APGBNL9xwG6fo+3Wa9bogp0+g7hH39A=",
+    "uris": [
+      {
+        "match": null,
+        "uri": "2.vCtdOY4cmjMWVLGy3/IlVw==|b0c0XNTNrRb+Zy+GD51HQWU/RTTo6kg4|JFEcwK6RoRR8APGBNL9xwG6fo+3Wa9bogp0+g7hH39A="
+      },
+      {
+        "match": 3,
+        "uri": "2.JrcWRivoAIqnsH9hF1j79g==|nPlUvgBFIPyhnetwMiSYl7URM8uJpSzs|uGirTisRHqBVLnKJ2TJOpxc7PJVLgPEKBaWGUrtdzyo="
+      }
+    ],
+    "username": "2.G0ioJWnedzohHzHCLPrStA==|O5LEMhbcb2nn8/6FNeNyNeurzWwtJZOz|ByO9t+aNs27dHsTzhBE9pXiIoCK5mwzkgAtgNeOvRl0="
+  },
+  "name": "2.+dwEaKFPDJ9PvMc00p8FSg==|WUf4ZRbYhAbX8bcYw6QhoekBzqIsmWQv|CPLN4J8ywa3ujUzT49MMgrZ1tSF6xhTnp/dSK1kjl/g=",
+  "notes": "2./PdZ/mJYDDtBigIcL9quxQ==|4A/e0+e8jAqEeK6g+qiRnPFbuodTlLdg|x9h3LUcogcie7uoQLpgghuZmVId74c0G3uLqSY1lMPg=",
+  "object": "cipherDetails",
+  "organizationId": null,
+  "organizationUseTotp": true,
+  "passport": null,
+  "passwordHistory": [],
+  "permissions": {
+    "delete": true,
+    "restore": true
+  },
+  "reprompt": 0,
+  "revisionDate": "2026-11-08T17:00:59.323234Z",
+  "secureNote": null,
+  "sshKey": null,
+  "type": 1,
+  "viewPassword": true
+}

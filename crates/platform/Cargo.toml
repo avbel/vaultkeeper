@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-aes-gcm.workspace = true
+aes-gcm = { workspace = true, features = ["zeroize"] }
 arboard.workspace = true
 auto-launch.workspace = true
 directories.workspace = true
@@ -21,13 +21,18 @@ thiserror.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-local-authentication.workspace = true
 security-framework.workspace = true
-swift-rs.workspace = true
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 swift-rs = { workspace = true, features = ["build"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

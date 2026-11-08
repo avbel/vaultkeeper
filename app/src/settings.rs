@@ -1,0 +1,295 @@
+//! User preferences and their mapping to the Settings window's option lists.
+
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeChoice {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockTimeout {
+    Minutes(u16),
+    OnSleep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardClear {
+    Seconds(u16),
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SshApproval {
+    #[default]
+    Always,
+    RememberUntilLock,
+}
+
+/// Large-text setting: multiplies every font size and row height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextScale {
+    #[default]
+    Default,
+    Large,
+    Larger,
+}
+
+impl TextScale {
+    #[must_use]
+    pub const fn factor(self) -> f32 {
+        match self {
+            Self::Default => 1.0,
+            Self::Large => 1.15,
+            Self::Larger => 1.3,
+        }
+    }
+
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::Default => 0,
+            Self::Large => 1,
+            Self::Larger => 2,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Default),
+            1 => Some(Self::Large),
+            2 => Some(Self::Larger),
+            _ => None,
+        }
+    }
+}
+
+/// Manager window placement in logical pixels, restored when it opens again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub sidebar_collapsed: bool,
+}
+
+pub const MANAGER_MIN_SIZE: (u32, u32) = (760, 480);
+
+impl WindowGeometry {
+    /// Keeps the window at least its minimum size and its origin on the screen's positive
+    /// quadrant; clamping to the actual screen bounds needs the platform's screen list.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            x: self.x.max(0),
+            y: self.y.max(0),
+            width: self.width.max(MANAGER_MIN_SIZE.0),
+            height: self.height.max(MANAGER_MIN_SIZE.1),
+            ..self
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub theme: ThemeChoice,
+    pub text_scale: TextScale,
+    pub manager_geometry: Option<WindowGeometry>,
+    pub lock_timeout: LockTimeout,
+    pub clipboard_clear: ClipboardClear,
+    pub start_at_login: bool,
+    pub ask_unlock_on_start: bool,
+    pub require_master_password_on_start: bool,
+    pub ssh_agent: bool,
+    pub ssh_approval: SshApproval,
+    pub ssh_touch_id: bool,
+    pub hotkey: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: ThemeChoice::System,
+            text_scale: TextScale::Default,
+            manager_geometry: None,
+            lock_timeout: LockTimeout::Minutes(15),
+            clipboard_clear: ClipboardClear::Seconds(30),
+            start_at_login: false,
+            ask_unlock_on_start: false,
+            require_master_password_on_start: false,
+            ssh_agent: true,
+            ssh_approval: SshApproval::Always,
+            ssh_touch_id: false,
+            hotkey: "Cmd+Shift+Space".to_owned(),
+        }
+    }
+}
+
+pub const LOCK_OPTIONS: [LockTimeout; 6] = [
+    LockTimeout::Minutes(1),
+    LockTimeout::Minutes(5),
+    LockTimeout::Minutes(15),
+    LockTimeout::Minutes(30),
+    LockTimeout::Minutes(60),
+    LockTimeout::OnSleep,
+];
+
+pub const CLIPBOARD_OPTIONS: [ClipboardClear; 4] = [
+    ClipboardClear::Seconds(10),
+    ClipboardClear::Seconds(30),
+    ClipboardClear::Seconds(60),
+    ClipboardClear::Never,
+];
+
+impl LockTimeout {
+    #[must_use]
+    pub fn label(self) -> String {
+        match self {
+            Self::Minutes(1) => "1 minute".to_owned(),
+            Self::Minutes(minutes) => format!("{minutes} minutes"),
+            Self::OnSleep => "On sleep / screen lock".to_owned(),
+        }
+    }
+}
+
+impl ClipboardClear {
+    #[must_use]
+    pub fn label(self) -> String {
+        match self {
+            Self::Seconds(seconds) => format!("After {seconds} s"),
+            Self::Never => "Never".to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn duration(self) -> Option<Duration> {
+        match self {
+            Self::Seconds(seconds) => Some(Duration::from_secs(u64::from(seconds))),
+            Self::Never => None,
+        }
+    }
+}
+
+#[must_use]
+pub fn option_index<T: PartialEq>(options: &[T], value: &T) -> i32 {
+    options
+        .iter()
+        .position(|option| option == value)
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
+}
+
+#[must_use]
+pub fn option_at<T: Copy>(options: &[T], index: i32) -> Option<T> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| options.get(index))
+        .copied()
+}
+
+impl ThemeChoice {
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::System => 0,
+            Self::Light => 1,
+            Self::Dark => 2,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::System),
+            1 => Some(Self::Light),
+            2 => Some(Self::Dark),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_the_spec() {
+        let settings = Settings::default();
+        assert_eq!(settings.theme, ThemeChoice::System);
+        assert_eq!(
+            settings.clipboard_clear.duration(),
+            Some(Duration::from_secs(30))
+        );
+        assert!(!settings.require_master_password_on_start);
+    }
+
+    #[test]
+    fn option_lists_round_trip() {
+        for (index, option) in LOCK_OPTIONS.iter().enumerate() {
+            let index = i32::try_from(index).expect("small");
+            assert_eq!(option_index(&LOCK_OPTIONS, option), index);
+            assert_eq!(option_at(&LOCK_OPTIONS, index), Some(*option));
+        }
+        assert_eq!(option_at(&LOCK_OPTIONS, -1), None);
+        assert_eq!(option_at(&LOCK_OPTIONS, 6), None);
+        assert_eq!(
+            option_index(&CLIPBOARD_OPTIONS, &ClipboardClear::Seconds(45)),
+            -1
+        );
+    }
+
+    #[test]
+    fn labels() {
+        assert_eq!(LockTimeout::Minutes(1).label(), "1 minute");
+        assert_eq!(LockTimeout::Minutes(15).label(), "15 minutes");
+        assert_eq!(LockTimeout::OnSleep.label(), "On sleep / screen lock");
+        assert_eq!(ClipboardClear::Seconds(10).label(), "After 10 s");
+        assert_eq!(ClipboardClear::Never.label(), "Never");
+        assert_eq!(ClipboardClear::Never.duration(), None);
+    }
+
+    #[test]
+    fn text_scale_follows_the_refinement_steps() {
+        assert!((TextScale::Default.factor() - 1.0).abs() < f32::EPSILON);
+        assert!((TextScale::Large.factor() - 1.15).abs() < f32::EPSILON);
+        assert!((TextScale::Larger.factor() - 1.3).abs() < f32::EPSILON);
+        for scale in [TextScale::Default, TextScale::Large, TextScale::Larger] {
+            assert_eq!(TextScale::from_index(scale.index()), Some(scale));
+        }
+        assert_eq!(TextScale::from_index(3), None);
+    }
+
+    #[test]
+    fn geometry_is_clamped_to_the_minimum_size() {
+        let geometry = WindowGeometry {
+            x: -40,
+            y: 10,
+            width: 300,
+            height: 900,
+            sidebar_collapsed: true,
+        };
+        assert_eq!(
+            geometry.clamped(),
+            WindowGeometry {
+                x: 0,
+                y: 10,
+                width: 760,
+                height: 900,
+                sidebar_collapsed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn theme_index_round_trips() {
+        for choice in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+            assert_eq!(ThemeChoice::from_index(choice.index()), Some(choice));
+        }
+        assert_eq!(ThemeChoice::from_index(3), None);
+    }
+}

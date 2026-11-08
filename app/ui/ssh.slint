@@ -1,0 +1,135 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Check, Icon, SectionLabel } from "kit.slint";
+
+export component SshPrompt inherits Window {
+    title: "SSH sign request";
+    icon: @image-url("icons/tray-dark.svg");
+    no-frame: true;
+    always-on-top: true;
+    width: 420px;
+    height: 300px;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+
+    in property <string> process;
+    in property <string> key-name;
+    in property <string> fingerprint;
+    in property <string> purpose;
+    in property <bool> touch-id-required;
+    in property <bool> busy;
+    in-out property <bool> remember;
+    in-out property <int> seconds-left: 30;
+    in property <int> timeout: 30;
+
+    callback approve(bool);
+    callback deny();
+
+    // Visual countdown only; the auto-deny itself is a Rust timer so it fires even if this
+    // window is never rendered.
+    Timer {
+        interval: 1s;
+        running: root.seconds-left > 0;
+        triggered => { root.seconds-left -= 1; }
+    }
+
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-popup;
+        clip: true;
+
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.deny();
+                    return accept;
+                }
+                if event.text == Key.Return && !root.busy {
+                    root.approve(root.remember);
+                    return accept;
+                }
+                return reject;
+            }
+            init => { self.focus(); }
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Icon {
+                        y: 2px;
+                        width: 20px;
+                        height: 20px;
+                        source: @image-url("icons/terminal.svg");
+                        tint: Theme.accent;
+                    }
+                    Text {
+                        text: "SSH sign request";
+                        color: Theme.text;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: root.process + " wants to use " + root.key-name + (root.purpose != "" ? " (" + root.purpose + ")" : "");
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Request";
+                    accessible-value: self.text;
+                }
+                SectionLabel { text: "FINGERPRINT"; }
+                Text {
+                    text: root.fingerprint;
+                    font-family: Theme.mono;
+                    font-size: Theme.font-meta;
+                    color: Theme.text-muted;
+                    wrap: char-wrap;
+                }
+                Check { text: "Remember for this key until lock"; checked <=> root.remember; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    alignment: end;
+                    Btn {
+                        text: "Deny";
+                        hint: "Esc";
+                        label: "Deny";
+                        enabled: !root.busy;
+                        clicked => { root.deny(); }
+                    }
+                    Btn {
+                        text: root.touch-id-required ? "Approve with Touch ID" : "Approve";
+                        hint: "Return";
+                        label: "Approve";
+                        kind: BtnKind.primary;
+                        enabled: !root.busy;
+                        clicked => { root.approve(root.remember); }
+                    }
+                }
+                Rectangle {
+                    height: 3px;
+                    border-radius: 1.5px;
+                    background: Theme.surface-raised;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * max(0, root.seconds-left) / max(1, root.timeout);
+                        height: 100%;
+                        border-radius: 1.5px;
+                        background: root.seconds-left < 6 ? Theme.warn : Theme.accent;
+                        animate width { duration: 1s; easing: linear; }
+                    }
+                }
+                Text {
+                    text: "Denies automatically in " + root.seconds-left + "s";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-meta;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+    }
+}

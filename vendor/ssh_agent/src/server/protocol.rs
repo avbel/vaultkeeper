@@ -260,7 +260,8 @@ pub(super) fn build_sign_response(sig: &Signature) -> Vec<u8> {
 /// Returns `Some(namespace)` if the data is an SSHSIG blob, or `None` for
 /// regular SSH authentication data.
 pub(super) fn detect_namespace(data: &[u8]) -> Option<SIGNamespace> {
-    // SSHSIG format: [6-byte magic "SSHSIG"][u32 version][string namespace]...
+    // Signed data of an SSHSIG: [6-byte magic "SSHSIG"][string namespace][string reserved]...
+    // The version field belongs to the armored signature, not to the data the agent signs.
     // https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig
     const SSHSIG_MAGIC: &[u8] = b"SSHSIG";
 
@@ -268,8 +269,9 @@ pub(super) fn detect_namespace(data: &[u8]) -> Option<SIGNamespace> {
         return None;
     }
 
-    // Skip magic (6 bytes) + version uint32 (4 bytes) = 10 bytes
-    let offset = 10;
+    // bwl patch: skip only the magic (upstream also skipped a version uint32 that is not there,
+    // so real ssh-keygen -Y sign data was always classified as Unsupported).
+    let offset = SSHSIG_MAGIC.len();
     if data.len() < offset + 4 {
         return Some(SIGNamespace::Unsupported);
     }
@@ -300,7 +302,6 @@ mod tests {
     fn make_sshsig_blob(namespace: &str) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(b"SSHSIG");
-        v.extend_from_slice(&1u32.to_be_bytes()); // version
         v.extend_from_slice(&(namespace.len() as u32).to_be_bytes());
         v.extend_from_slice(namespace.as_bytes());
         v
@@ -561,11 +562,21 @@ mod tests {
     }
 
     #[test]
-    fn detect_namespace_truncated_after_version_returns_unsupported() {
-        let mut data = Vec::new();
-        data.extend_from_slice(b"SSHSIG");
-        data.extend_from_slice(&1u32.to_be_bytes()); // version only, no namespace length
-        assert_eq!(detect_namespace(&data), Some(SIGNamespace::Unsupported));
+    fn detect_namespace_truncated_after_magic_returns_unsupported() {
+        // magic only, no namespace length
+        assert_eq!(detect_namespace(b"SSHSIG"), Some(SIGNamespace::Unsupported));
+    }
+
+    #[test]
+    fn detect_namespace_reads_the_layout_openssh_signs() {
+        // sshsig.c sshsig_wrap_sign: magic, namespace, reserved, hash algorithm, H(message).
+        let mut data = make_sshsig_blob("git");
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&6u32.to_be_bytes());
+        data.extend_from_slice(b"sha512");
+        data.extend_from_slice(&64u32.to_be_bytes());
+        data.extend_from_slice(&[0xAB; 64]);
+        assert_eq!(detect_namespace(&data), Some(SIGNamespace::Git));
     }
 
     #[test]

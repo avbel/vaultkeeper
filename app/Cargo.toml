@@ -7,17 +7,41 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "bw_lite"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bw-lite"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
+bwl-api.workspace = true
 bwl-gen.workspace = true
-bwl-platform.workspace = true
-bwl-ssh.workspace = true
 bwl-vault.workspace = true
-global-hotkey.workspace = true
-slint.workspace = true
+# Software renderer only: the window process measured +28 MB resident after a window is dropped
+# with it, against +45 MB with femtovg (docs/solutions/bw-lite-architecture.md, step 0).
+slint = { workspace = true, default-features = false, features = [
+    "std",
+    "accessibility",
+    "backend-winit",
+    "renderer-software",
+    "software-renderer-path",
+    "compat-1-2",
+    "system-tray",
+    "unstable-winit-030",
+] }
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# Internal Slint crate without semver guarantees; must match the slint version exactly.
+i-slint-backend-testing = "=1.18.1"
 
 [build-dependencies]
 slint-build = "1.18.1"

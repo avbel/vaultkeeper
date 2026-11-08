@@ -1,0 +1,18 @@
+{
+  "message": "Invalid TOTP code! Server time: 2026-11-08 17:01:00 UTC IP: 172.17.0.1",
+  "validationErrors": {
+    "": [
+      "Invalid TOTP code! Server time: 2026-11-08 17:01:00 UTC IP: 172.17.0.1"
+    ]
+  },
+  "errorModel": {
+    "message": "Invalid TOTP code! Server time: 2026-11-08 17:01:00 UTC IP: 172.17.0.1",
+    "object": "error"
+  },
+  "error": "",
+  "error_description": "",
+  "exceptionMessage": null,
+  "exceptionStackTrace": null,
+  "innerExceptionMessage": null,
+  "object": "error"
+}

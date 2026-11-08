@@ -280,3 +280,91 @@ Linux/Windows (Linux: desktop_native `biometric` with polkit; Windows: Windows H
   "Offline mode" toast, and the next sync that succeeds clears it.
 - **Checks before every commit.** `scripts/check.sh` runs `cargo fmt --check` and `cargo clippy -D warnings`. It is wired
   in as `.githooks/pre-commit` (`git config core.hooksPath .githooks`).
+- **Recovering from offline mode.**
+  - While offline, a background probe calls `GET {base}/alive` with backoff: 5 s, then 10, 20, 40, capped at 60 s.
+  - These skip the remaining wait and probe at once: a network-path change, the Mac waking from sleep, and the websocket
+    reconnecting successfully.
+  - The first success triggers an **immediate full sync**, which clears `is_offline` and makes the UI dismiss the toast.
+    The notifications websocket is then reconnected.
+  - Tests: a wiremock server that is first down then up, checking that the sync runs without waiting for the 30-minute
+    timer; a debounce test so that a burst of triggers produces a single sync.
+- **Websocket health.**
+  - Every 15 s the client sends a SignalR ping plus a WebSocket ping.
+  - If no inbound frame arrives for 35 s, the connection is stale: close it and reconnect.
+  - Closes, protocol errors and a 10 s handshake timeout are handled the same way.
+  - Reconnects back off at 1, 2, 4 … 60 s. The backoff resets after a connection has stayed healthy for 60 s.
+  - Every successful reconnect triggers an immediate full sync, because events may have been missed.
+  - Waking from sleep forces a reconnect.
+- **Sleep.** When the system goes to sleep, the vault cancels the websocket task and the offline probes, and runs no
+  syncs. On wake it reconnects the websocket and runs an immediate full sync. The platform layer supplies the
+  sleep/wake events.
+- **Attachments, same as the official app.**
+  - The model: `cipher.attachments[] {id, url, fileName (EncString), key (EncString of a 64-byte attachment key under
+    the cipher key), size}`.
+  - The file body is an EncArrayBuffer: byte 0 = type 2, then 16 bytes of IV, 32 bytes of MAC, then the AES-CBC
+    ciphertext. The MAC is HMAC-SHA256 over iv‖ct.
+  - Upload: `POST /api/ciphers/{id}/attachment/v2 {key, fileName, fileSize}` returns `{attachmentId, url}`. Then
+    POST the multipart `data` to `/api/ciphers/{id}/attachment/{attachmentId}`.
+  - Download: `GET /api/ciphers/{id}/attachment/{aid}` returns `{url, key, fileName}`. Then GET the url.
+  - Delete: `DELETE /api/ciphers/{id}/attachment/{aid}`.
+  - RAM: neither direction holds the file in memory. Download streams to a temp file while computing the MAC, verifies
+    it, then decrypts to the destination in a second streaming pass. Upload encrypts while streaming.
+- **Multiple accounts, log out and switching.**
+  - Accounts are saved under `data_dir/accounts/<user_id>/`. Each has its own server, email, cache, tokens (keychain
+    account `<user_id>`) and Touch ID file.
+  - Only one account is unlocked at a time. Switching locks the current account and shows the lock screen for the
+    target.
+  - Log out removes the account's local data, then activates the most recently used remaining account.
+  - The SSH agent serves only the active unlocked account's keys.
+- **Log out wipes everything from that account.** It runs every step below even if an earlier one fails, collects the
+  errors, and reports them at the end.
+  - Cancel the websocket, sync timer and offline probes.
+  - Clear the SSH agent's keys.
+  - Clear the clipboard if it still holds our value.
+  - Zeroize the user and org keys, decrypted rows, drafts and the MRU list.
+  - Delete every keychain item for that user id.
+  - Delete `accounts/<user_id>/`: cache, settings, Touch ID blob and temp attachment files.
+  - Reset all UI models, including detail, search results, the edit form and generator history.
+  - Scenario test: log in as A, sync, copy a password, enable Touch ID and SSH, then log out. After that:
+    - A's directory no longer exists;
+    - `keychain::get` for A returns `None`;
+    - `ssh-add -l` lists no keys;
+    - the clipboard is empty;
+    - `search` returns `LoggedOut`;
+    - no string from A's vault is reachable from the UI models;
+    - logging in as B shows only B's data.
+- **E2E tests** run against `vaultwarden/server:latest` plus Mailpit (`tests/e2e/compose.yaml`, `scripts/e2e.sh`).
+  - The user doesn't use authenticator 2FA, so the main login paths under test are no-2FA and email 2FA / new-device
+    verification, with codes read from Mailpit.
+  - The authenticator provider stays supported, with a single smoke test.
+- **Verified on 2026-11-08.** The user ran `touchid_check` and `touchid_check --auth` on their Mac (M-series, Command Line
+  Tools only, no Apple Developer account). The Secure Enclave wrap/unwrap behind Touch ID and the plain Touch ID prompt
+  both work. Changing the enrolled fingerprints invalidates the key as designed: `--keep`, then a fingerprint change, then `--reuse` prints "invalidated: enroll again".
+
+## Step 0 result: process model = background daemon + on-demand UI process
+Measured by the `experiments/slint-ram` spike with Slint 1.18.1, release builds, physical footprint (in MB):
+
+| renderer | A tray only | B window shown | D window dropped +10 s |
+|---|---|---|---|
+| software | 13.9 | 47.3 | 41.8 |
+| femtovg | 13.5 | 65.6 | 58.0 |
+| skia (metal) | 14.3 | 246.7 | 218.6 |
+
+The decision rule was D ≤ A + 15 MB. Every renderer fails it (the best, software, leaves +28 MB), so the app is
+**split into two processes**. The window memory plateaus, so it is not a leak.
+
+- **`bw-lite --daemon`** starts at login.
+  - It owns the tray (Slint `SystemTrayIcon`, no windows, no renderer), the Vault, sync and websocket, the SSH agent,
+    the clipboard timer, power events and the global hotkey.
+  - Activation policy is Accessory, so it has no Dock icon.
+- **`bw-lite --ui`** is the same binary, spawned by the daemon when needed.
+  - It shows the Manager, the Quick Panel, the lock/login screens, the SSH approval prompt and settings.
+  - It uses the software renderer only (`renderer-software`, without skia or femtovg).
+  - It lingers 120 s after its last window closes, so the Quick Panel opens instantly on repeated use, then exits.
+- **IPC**
+  - Transport: a unix socket at `data_dir/ui.sock`, mode 0600.
+  - The daemon checks the peer's uid (`getpeereid`) and that the peer's executable path is its own.
+  - Messages are length-prefixed serde frames.
+  - In the UI process, `VaultService` is implemented by an IPC client that proxies to the daemon's real `Vault`.
+  - Daemon → UI commands: show Manager, show Quick Panel, show SSH approval, show unlock, state changes.
+  - Decrypted fields cross the socket only when the UI asks for them (reveal, draft, totp).

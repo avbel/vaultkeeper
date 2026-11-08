@@ -1,0 +1,232 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, CopyBtn, Divider, Field, Segmented, SectionLabel, Select, Toggle } from "kit.slint";
+import { GeneratorView } from "generator.slint";
+
+component SettingRow inherits HorizontalLayout {
+    in property <string> text;
+    spacing: Theme.gap;
+    min-height: 32px;
+    Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: Theme.font-body;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+export component SettingsWindow inherits Window {
+    title: "bw-lite — settings";
+    icon: @image-url("icons/tray-dark.svg");
+    preferred-width: 520px;
+    preferred-height: 640px;
+    min-width: 440px;
+    min-height: 420px;
+    background: Theme.bg;
+    default-font-size: Theme.font-body;
+
+    in property <string> server;
+    in-out property <int> theme-index;
+    in-out property <int> scale-index;
+    in property <[string]> lock-options;
+    in-out property <int> lock-index;
+    in property <[string]> clipboard-options;
+    in-out property <int> clipboard-index;
+    in-out property <bool> start-at-login;
+    in-out property <bool> ask-unlock-on-start;
+    in-out property <bool> require-master-password;
+    in property <bool> touch-id-available;
+    in property <bool> touch-id-enrolled;
+    in property <bool> unlocked;
+    in-out property <bool> ssh-agent;
+    in property <string> ssh-socket;
+    in-out property <int> ssh-approval-index;
+    in-out property <bool> ssh-touch-id;
+    in-out property <string> hotkey;
+    in property <string> error-text;
+
+    callback theme-selected(int);
+    callback scale-selected(int);
+    callback lock-selected(int);
+    callback clipboard-selected(int);
+    callback start-at-login-toggled(bool);
+    callback ask-unlock-toggled(bool);
+    callback require-master-password-toggled(bool);
+    callback touch-id-enroll();
+    callback touch-id-remove();
+    callback ssh-agent-toggled(bool);
+    callback copy-socket() -> bool;
+    callback ssh-approval-selected(int);
+    callback ssh-touch-id-toggled(bool);
+    callback hotkey-accepted(string);
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.s5;
+            padding-top: 40px;
+            spacing: Theme.s2;
+            Text {
+                text: "Settings";
+                color: Theme.text;
+                font-size: Theme.font-lock;
+                font-weight: 600;
+                letter-spacing: -0.3px;
+            }
+            SectionLabel { text: "ACCOUNT"; }
+            SettingRow {
+                text: "Server";
+                Text {
+                    text: root.server;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Server";
+                    accessible-value: self.text;
+                }
+            }
+            Divider { }
+            SectionLabel { text: "APPEARANCE"; }
+            SettingRow {
+                text: "Theme";
+                Segmented {
+                    width: 220px;
+                    label: "Theme";
+                    options: ["System", "Light", "Dark"];
+                    index <=> root.theme-index;
+                    selected(i) => { root.theme-selected(i); }
+                }
+            }
+            SettingRow {
+                text: "Text size";
+                Segmented {
+                    width: 220px;
+                    label: "Text size";
+                    options: ["Default", "Large", "Larger"];
+                    index <=> root.scale-index;
+                    selected(i) => { root.scale-selected(i); }
+                }
+            }
+            Divider { }
+            SectionLabel { text: "SECURITY"; }
+            SettingRow {
+                text: "Lock after";
+                Select {
+                    width: 200px;
+                    label: "Lock after";
+                    options: root.lock-options;
+                    index <=> root.lock-index;
+                    selected(i) => { root.lock-selected(i); }
+                }
+            }
+            SettingRow {
+                text: "Clear clipboard";
+                Select {
+                    width: 200px;
+                    label: "Clear clipboard";
+                    options: root.clipboard-options;
+                    index <=> root.clipboard-index;
+                    selected(i) => { root.clipboard-selected(i); }
+                }
+            }
+            Toggle { text: "Start at login"; checked <=> root.start-at-login; toggled(v) => { root.start-at-login-toggled(v); } }
+            Toggle { text: "Ask to unlock on start"; checked <=> root.ask-unlock-on-start; toggled(v) => { root.ask-unlock-toggled(v); } }
+            Toggle {
+                text: "Require master password on app start";
+                description: "Off: Touch ID alone unlocks after a restart";
+                checked <=> root.require-master-password;
+                toggled(v) => { root.require-master-password-toggled(v); }
+            }
+            SettingRow {
+                text: root.touch-id-enrolled ? "Touch ID is enrolled" : root.touch-id-available ? "Touch ID" : "Touch ID is not available";
+                if root.touch-id-available && !root.touch-id-enrolled: Btn {
+                    text: "Enrol";
+                    label: "Enrol Touch ID";
+                    enabled: root.unlocked;
+                    clicked => { root.touch-id-enroll(); }
+                }
+                if root.touch-id-enrolled: Btn {
+                    text: "Remove";
+                    label: "Remove Touch ID";
+                    kind: BtnKind.danger;
+                    clicked => { root.touch-id-remove(); }
+                }
+            }
+            Divider { }
+            SectionLabel { text: "SSH AGENT"; }
+            Toggle { text: "SSH agent"; checked <=> root.ssh-agent; toggled(v) => { root.ssh-agent-toggled(v); } }
+            SettingRow {
+                text: "Socket";
+                Text {
+                    text: root.ssh-socket;
+                    font-family: Theme.mono;
+                    font-size: Theme.font-meta;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 260px;
+                }
+                CopyBtn {
+                    y: 4px;
+                    code: 3;
+                    label: "Copy socket path";
+                    emphasized: true;
+                    copy => { return root.copy-socket(); }
+                }
+            }
+            SettingRow {
+                text: "SSH requires approval";
+                Select {
+                    width: 200px;
+                    label: "SSH requires approval";
+                    options: ["Always", "Remember until lock"];
+                    index <=> root.ssh-approval-index;
+                    selected(i) => { root.ssh-approval-selected(i); }
+                }
+            }
+            Toggle { text: "SSH requires Touch ID"; checked <=> root.ssh-touch-id; toggled(v) => { root.ssh-touch-id-toggled(v); } }
+            Divider { }
+            SectionLabel { text: "SHORTCUTS"; }
+            SettingRow {
+                text: "Quick Panel hotkey";
+                Field {
+                    width: 200px;
+                    label: "Quick Panel hotkey";
+                    mono: true;
+                    text <=> root.hotkey;
+                    accepted(text) => { root.hotkey-accepted(text); }
+                }
+            }
+            if root.error-text != "": Text {
+                text: root.error-text;
+                color: Theme.danger;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Settings error";
+                accessible-value: self.text;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+export component GeneratorWindow inherits Window {
+    title: "bw-lite — generator";
+    icon: @image-url("icons/tray-dark.svg");
+    preferred-width: 420px;
+    preferred-height: 560px;
+    min-width: 360px;
+    min-height: 420px;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+    VerticalLayout {
+        // Leaves the transparent title bar to the traffic lights.
+        padding-top: 28px;
+        GeneratorView { }
+    }
+}

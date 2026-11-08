@@ -1,0 +1,49 @@
+{
+  "archivedDate": null,
+  "attachments": null,
+  "bankAccount": null,
+  "card": {
+    "brand": "2.2/i/eXnIPKo9jtObT6fQDQ==|vYkmL8DfkpdPmDt3HiF1jav/U+rfTseM|JcxjNdEOpekZ+2WGsoeFxW9qAmHBgbrArg5fJDqV7X8=",
+    "cardholderName": "2.S7tuLVCDuJQGt5luj9gVXQ==|/fv4+VXs3vuDVQYlMzksO42Ol0B5B8lU|ezpPaNEcw/iDZy5aOaX9eSUQzjcme7DG3BbACdKfooM=",
+    "code": "2.Ls+EuwIf8U1XRKWaavTtHQ==|0I3CWOS1K1MPSAZ1vDvnkEdl3Xb8aGwN|wFJVW1ZCznEKHUalG4Fuw3pjcIBxzA4fqRFqEHSWebo=",
+    "expMonth": "2.KWQKr2WVlPihgkcroX0f/A==|/41Kki7OdGBPoxen2orpLWvgC3l1h2Za|Izg/tJRLUCLuvHLBs3pLEgPMqFFvJMeWHAUtvPxnkXw=",
+    "expYear": "2.y/F/mPHamq9UcL6EZF68RQ==|38DmNIi0/D9Pc1AcjJNCB0bm8ngDtMJE|Scf04tllI3vb9K+5+7weoh31Ov91haGqPvNWUPdO2J0=",
+    "number": "2.bvpXQwCJyZh6YdYNbXPubA==|/G9Cgh1Oc6BxjVy4gWen72tmxkYONOrG|kowR5IuYiUFV+uE1/RCglar2rqpSfJvF5BS9GzACeD0="
+  },
+  "collectionIds": [],
+  "creationDate": "2026-11-08T17:00:59.316749Z",
+  "deletedDate": null,
+  "driversLicense": null,
+  "edit": true,
+  "favorite": false,
+  "fields": [
+    {
+      "linkedId": null,
+      "name": "2.mC2DU4L4V/B00Apu3UaI2Q==|nBIQnC92ZqZYwp3ltFzGG68ZGr/eyXH2|X/DE+iyyWtBKTxIIqkhBqvAlJ9gc5nnw5DaC7jbZ+Pk=",
+      "type": 0,
+      "value": "2.y2zd4MjdxrlXo7kA8zS8PA==|a1mK7adzN42IjJg6gVhGpIbXmJEEo8es|AG+beEsu4CmgaodcX5oFtkmlMeHOaB+Z9Sa9/PnPphM="
+    }
+  ],
+  "folderId": "96d9424a-9a7c-4cdb-93ff-7d58769db177",
+  "id": "1306df26-e961-41ca-ab5b-0186cb787a62",
+  "identity": null,
+  "key": "2.BU/Ff4Pk5arB6e/FBJTlOQ==|YZQ4q3cPN2TIByy9R+tnRnhkEDo68x//A3ukncHXDN3bGxxOlJSwKJE4rvaCjvUjbOQUPa9IFekP6pNIxB6nCA==|ci8kldPIurumM+2n0FH7MPgLAkdEKQ6cFKC7M+y+Uug=",
+  "login": null,
+  "name": "2.mfkv/KAGDdy/UBkx30tVew==|Llxz4N5pBDKsIWfc5b+8WqbE4YOOFG6E|0/taAMn4POZDakD4Esohn+s1WJXXcttZiYMmq6GAknE=",
+  "notes": "2.quNHP/IFZRhmBdUPdR31rg==|EPHRaVky/h/sgZNOWrKtQNtw8wMJqUGC|i39HbbGmAgssjSpFL9M1/Dre+nS+lkXrsEcXusVuAJk=",
+  "object": "cipherDetails",
+  "organizationId": null,
+  "organizationUseTotp": true,
+  "passport": null,
+  "passwordHistory": [],
+  "permissions": {
+    "delete": true,
+    "restore": true
+  },
+  "reprompt": 0,
+  "revisionDate": "2026-11-08T17:00:59.316834Z",
+  "secureNote": null,
+  "sshKey": null,
+  "type": 3,
+  "viewPassword": true
+}

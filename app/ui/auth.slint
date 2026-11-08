@@ -1,0 +1,408 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Check, Field, Icon, IconBtn, InlineConfirm, MenuRow, PopupPanel, Segmented, Spinner } from "kit.slint";
+import { AccountRow, AccountSwitcher } from "accounts.slint";
+
+component LinkText inherits Text {
+    callback clicked();
+    in property <bool> enabled: true;
+    color: ta.has-hover ? Theme.accent : Theme.text-muted;
+    font-size: Theme.font-hint;
+    accessible-role: button;
+    accessible-label: self.text;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component LockWindow inherits Window {
+    title: "bw-lite — locked";
+    icon: @image-url("icons/tray-dark.svg");
+    width: 420px;
+    height: 500px;
+    background: Theme.bg;
+    default-font-size: Theme.font-body;
+    forward-focus: password-field;
+
+    in property <string> server;
+    in property <string> email;
+    in property <string> initial;
+    in property <color> avatar-color: Theme.accent;
+    in property <[AccountRow]> accounts;
+    in-out property <bool> confirm-logout;
+    in-out property <string> password;
+    in property <string> error-text;
+    in property <int> failed-attempts;
+    in property <bool> busy;
+    in property <bool> touch-id-available;
+
+    callback unlock(string);
+    callback unlock-touch-id();
+    callback logout-confirmed();
+    callback open-settings();
+    callback switch-account(int);
+    callback add-account();
+
+    // Decaying shake (+8, -8, +5, -5, +2, 0), 45 ms per step, and a danger border for 1.2 s.
+    property <int> shake-step: 6;
+    property <bool> flash: false;
+    changed failed-attempts => {
+        root.shake-step = 0;
+        root.flash = true;
+    }
+    init => { password-field.focus-input(); }
+
+    Timer {
+        interval: 45ms;
+        running: root.shake-step < 6;
+        triggered => { root.shake-step += 1; }
+    }
+    Timer {
+        interval: 1.2s;
+        running: root.flash;
+        triggered => { root.flash = false; }
+    }
+
+    VerticalLayout {
+        padding: Theme.s6;
+        padding-top: 44px;
+        spacing: Theme.s3;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            AccountSwitcher {
+                width: 260px;
+                accounts: root.accounts;
+                email: root.email;
+                host: root.server;
+                initial: root.initial;
+                avatar-color: root.avatar-color;
+                show-lock: false;
+                confirm-logout <=> root.confirm-logout;
+                switch-account(i) => { root.switch-account(i); }
+                add-account => { root.add-account(); }
+                logout-confirmed => { root.logout-confirmed(); }
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            padding-top: Theme.s2;
+            Icon {
+                width: 32px;
+                height: 32px;
+                source: @image-url("icons/lock.svg");
+                tint: Theme.accent;
+            }
+        }
+        Text {
+            text: "Vault locked";
+            color: Theme.text;
+            font-size: Theme.font-lock;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+            horizontal-alignment: center;
+        }
+        // Touch ID is the default action when enrolled: ↵ on an empty password field triggers it,
+        // and typing a password falls back to the master password.
+        if root.touch-id-available: Btn {
+            height: 36px * Theme.scale;
+            text: root.busy ? "Waiting for Touch ID…" : "Unlock with Touch ID";
+            label: "Unlock with Touch ID";
+            hint: "Return";
+            has-icon: true;
+            icon: @image-url("icons/fingerprint.svg");
+            kind: BtnKind.primary;
+            enabled: !root.busy;
+            clicked => { root.unlock-touch-id(); }
+        }
+        if root.touch-id-available: Text {
+            text: "or enter your master password";
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+            horizontal-alignment: center;
+        }
+        Rectangle {
+            height: Theme.field-height;
+            password-field := Field {
+                x: root.shake-step >= 6 ? 0px : [8px, -8px, 5px, -5px, 2px, 0px][root.shake-step];
+                animate x { duration: 45ms; }
+                width: parent.width;
+                placeholder: "Master password";
+                label: "Master password";
+                password: true;
+                invalid: root.flash;
+                text <=> root.password;
+                accepted(text) => {
+                    if root.busy {
+                        return;
+                    }
+                    if text == "" && root.touch-id-available {
+                        root.unlock-touch-id();
+                    } else {
+                        root.unlock(text);
+                    }
+                }
+            }
+        }
+        if root.error-text != "": Text {
+            text: root.error-text;
+            color: Theme.danger;
+            font-size: Theme.font-hint;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Unlock error";
+            accessible-value: self.text;
+        }
+        Btn {
+            text: root.busy && !root.touch-id-available ? "Unlocking…" : "Unlock";
+            kind: root.touch-id-available ? BtnKind.normal : BtnKind.primary;
+            enabled: !root.busy;
+            clicked => { root.unlock(root.password); }
+        }
+        if !root.confirm-logout: HorizontalLayout {
+            alignment: space-between;
+            padding-top: Theme.s2;
+            LinkText {
+                text: "Log out";
+                enabled: !root.busy;
+                clicked => { root.confirm-logout = true; }
+            }
+            LinkText {
+                text: "Settings  ⌘,";
+                clicked => { root.open-settings(); }
+            }
+        }
+        if root.confirm-logout: InlineConfirm {
+            question: "Log out of " + root.email + "? Local data for this account is removed.";
+            subject: "log out";
+            yes: "Log out";
+            no: "Cancel";
+            confirmed => {
+                root.confirm-logout = false;
+                root.logout-confirmed();
+            }
+            cancelled => { root.confirm-logout = false; }
+        }
+    }
+}
+
+// Steps: 0 credentials, 1 two-factor, 2 new-device OTP.
+export component LoginWindow inherits Window {
+    title: "bw-lite — log in";
+    icon: @image-url("icons/tray-dark.svg");
+    width: 440px;
+    height: 580px;
+    background: Theme.bg;
+    default-font-size: Theme.font-body;
+
+    in-out property <int> step: 0;
+    in-out property <string> server;
+    in-out property <string> email;
+    in-out property <string> password;
+    in property <[string]> server-suggestions;
+    in property <string> server-error;
+    in property <string> server-warning;
+    in property <[string]> providers;
+    in-out property <int> provider-index: 0;
+    in property <bool> email-provider-selected;
+    in-out property <string> code;
+    in-out property <bool> remember: false;
+    in property <string> error-text;
+    in property <bool> busy;
+    in property <bool> can-cancel;
+
+    callback server-edited(string);
+    callback submit-credentials();
+    callback submit-two-factor();
+    callback submit-new-device();
+    callback send-email-code();
+    callback provider-selected(int);
+    callback back();
+    callback cancel();
+
+    VerticalLayout {
+        padding: 40px;
+        padding-top: 48px;
+        spacing: Theme.s2;
+        alignment: start;
+        Text {
+            text: root.step == 0 ? "Log in" : root.step == 1 ? "Two-step login" : "Verify this device";
+            color: Theme.text;
+            font-size: Theme.font-lock;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+        }
+        Rectangle { height: Theme.s2; }
+        if root.step == 0: VerticalLayout {
+            spacing: Theme.s1;
+            Text { text: "Server URL"; color: Theme.text-muted; font-size: Theme.font-hint; font-weight: 500; }
+            HorizontalLayout {
+                spacing: Theme.s1;
+                Field {
+                    placeholder: "https://vault.example.com";
+                    label: "Server URL";
+                    invalid: root.server-error != "";
+                    enabled: !root.busy;
+                    text <=> root.server;
+                    edited(text) => { root.server-edited(text); }
+                    init => {
+                        if root.server == "" {
+                            self.focus-input();
+                        }
+                    }
+                }
+                if root.server-suggestions.length > 0: IconBtn {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/chevron-down.svg");
+                    label: "Saved servers";
+                    clicked => { suggestions.show(); }
+                }
+            }
+            suggestions := PopupWindow {
+                x: 0;
+                y: 44px;
+                width: 360px;
+                PopupPanel {
+                    VerticalLayout {
+                        padding: Theme.s1;
+                        for suggestion in root.server-suggestions: MenuRow {
+                            text: suggestion;
+                            clicked => {
+                                root.server = suggestion;
+                                root.server-edited(suggestion);
+                                suggestions.close();
+                            }
+                        }
+                    }
+                }
+            }
+            if root.server-error != "": Text {
+                text: root.server-error;
+                color: Theme.danger;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Server error";
+                accessible-value: self.text;
+            }
+            if root.server-error == "" && root.server-warning != "": Text {
+                text: root.server-warning;
+                color: Theme.warn-text;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Server warning";
+                accessible-value: self.text;
+            }
+            Rectangle { height: Theme.s1; }
+            Text { text: "Email"; color: Theme.text-muted; font-size: Theme.font-hint; font-weight: 500; }
+            Field {
+                placeholder: "you@example.com";
+                label: "Email";
+                enabled: !root.busy;
+                text <=> root.email;
+                init => {
+                    if root.server != "" {
+                        self.focus-input();
+                    }
+                }
+            }
+            Rectangle { height: Theme.s1; }
+            Text { text: "Master password"; color: Theme.text-muted; font-size: Theme.font-hint; font-weight: 500; }
+            Field {
+                placeholder: "Master password";
+                label: "Master password";
+                password: true;
+                enabled: !root.busy;
+                text <=> root.password;
+                accepted => { root.submit-credentials(); }
+            }
+        }
+        if root.step == 1: VerticalLayout {
+            spacing: Theme.s2;
+            Segmented {
+                label: "Two-step provider";
+                options: root.providers;
+                index <=> root.provider-index;
+                selected(i) => { root.provider-selected(i); }
+            }
+            Field {
+                placeholder: "Code";
+                label: "Verification code";
+                mono: true;
+                enabled: !root.busy;
+                text <=> root.code;
+                accepted => { root.submit-two-factor(); }
+            }
+            if root.email-provider-selected: LinkText {
+                text: "Send code by email";
+                clicked => { root.send-email-code(); }
+            }
+            Check { text: "Remember this device"; checked <=> root.remember; }
+        }
+        if root.step == 2: VerticalLayout {
+            spacing: Theme.s2;
+            Text {
+                text: "We emailed a verification code to confirm this new device.";
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+            }
+            Field {
+                placeholder: "Code";
+                label: "Device verification code";
+                mono: true;
+                enabled: !root.busy;
+                text <=> root.code;
+                accepted => { root.submit-new-device(); }
+            }
+        }
+        if root.error-text != "": Text {
+            text: root.error-text;
+            color: Theme.danger;
+            font-size: Theme.font-hint;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Login error";
+            accessible-value: self.text;
+        }
+        Rectangle { height: Theme.s2; }
+        HorizontalLayout {
+            spacing: Theme.s2;
+            Btn {
+                horizontal-stretch: 1;
+                text: root.busy ? "Working…" : root.step == 0 ? "Log in" : "Continue";
+                kind: BtnKind.primary;
+                enabled: !root.busy;
+                clicked => {
+                    if root.step == 0 {
+                        root.submit-credentials();
+                    } else if root.step == 1 {
+                        root.submit-two-factor();
+                    } else {
+                        root.submit-new-device();
+                    }
+                }
+            }
+            if root.busy: Spinner { y: (parent.height - self.height) / 2; }
+        }
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: start;
+            if root.step > 0: Btn {
+                text: "Back";
+                kind: BtnKind.ghost;
+                enabled: !root.busy;
+                clicked => { root.back(); }
+            }
+            if root.can-cancel: Btn {
+                text: "Cancel";
+                kind: BtnKind.ghost;
+                enabled: !root.busy;
+                clicked => { root.cancel(); }
+            }
+        }
+    }
+}

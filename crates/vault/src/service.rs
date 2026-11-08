@@ -6,8 +6,9 @@ use zeroize::Zeroizing;
 use crate::{
     Result, TotpCode,
     model::{
-        CollectionView, CopyField, Filter, FolderView, ItemDraft, ItemId, ItemSummary,
-        LoginRequest, LoginStep, OrganizationView, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SessionState,
+        SshKeyMaterial, TwoFactorAnswer,
     },
 };
 
@@ -53,8 +54,17 @@ pub trait VaultService: Send + Sync + 'static {
     /// Zeroizes keys and decrypted views; the encrypted cache stays on disk.
     fn lock(&self);
 
-    /// Deletes the cache and tokens.
+    /// Logs out the active account (deletes its cache, tokens and Touch ID enrolment), then
+    /// activates the most recently used remaining account, if any.
     fn logout(&self) -> impl Future<Output = Result<()>> + Send;
+
+    fn accounts(&self) -> Vec<AccountView>;
+
+    /// Locks the active account and makes `account_id` active (state becomes `Locked`).
+    fn switch_account(&self, account_id: &str) -> Result<()>;
+
+    /// Locks the active account and enters `LoggedOut` so the next `login` adds a new account.
+    fn begin_add_account(&self);
 
     /// Runs on unlock, every 30 minutes, on demand and after every write. A network failure leaves
     /// the cached vault usable and flips [`VaultService::is_offline`]; the next success clears it.
@@ -85,6 +95,29 @@ pub trait VaultService: Send + Sync + 'static {
         id: Option<ItemId>,
         draft: ItemDraft,
     ) -> impl Future<Output = Result<ItemId>> + Send;
+
+    fn attachments(&self, id: &ItemId) -> Result<Vec<AttachmentView>>;
+
+    /// Streams the download to a temp file while verifying the MAC, then decrypts to `dest`.
+    fn download_attachment(
+        &self,
+        id: &ItemId,
+        attachment_id: &str,
+        dest: std::path::PathBuf,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Encrypts `source` with a fresh attachment key and uploads it (attachment v2 flow).
+    fn upload_attachment(
+        &self,
+        id: &ItemId,
+        source: std::path::PathBuf,
+    ) -> impl Future<Output = Result<AttachmentView>> + Send;
+
+    fn delete_attachment(
+        &self,
+        id: &ItemId,
+        attachment_id: &str,
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn trash(&self, id: &ItemId) -> impl Future<Output = Result<()>> + Send;
     fn restore(&self, id: &ItemId) -> impl Future<Output = Result<()>> + Send;

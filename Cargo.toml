@@ -5,6 +5,7 @@ members = [
     "crates/api",
     "crates/crypto",
     "crates/gen",
+    "crates/ipc",
     "crates/platform",
     "crates/ssh",
     "crates/vault",
@@ -23,6 +24,7 @@ publish = false
 bwl-api = { path = "crates/api" }
 bwl-crypto = { path = "crates/crypto" }
 bwl-gen = { path = "crates/gen" }
+bwl-ipc = { path = "crates/ipc" }
 bwl-platform = { path = "crates/platform" }
 bwl-ssh = { path = "crates/ssh" }
 bwl-vault = { path = "crates/vault" }

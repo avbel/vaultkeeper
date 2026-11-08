@@ -1,0 +1,459 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Clock } from "theme.slint";
+import { Btn, BtnKind, Divider, EmptyState, Field, Icon, IconBtn, MenuRow, PopupPanel, SkeletonRows, Toast } from "kit.slint";
+import { ItemRow, RowData } from "row.slint";
+import { AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
+import { GeneratorView, GeneratorState } from "generator.slint";
+import { Sidebar, SidebarEntry } from "sidebar.slint";
+import { AccountRow, AccountSwitcher } from "accounts.slint";
+
+component NewMenu inherits Rectangle {
+    callback new-item(int);
+    width: 112px;
+    height: Theme.control-height;
+    Btn {
+        width: 100%;
+        text: "+ New";
+        hint: "⌘N";
+        label: "New item";
+        kind: BtnKind.primary;
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        x: root.width - 180px;
+        y: root.height + Theme.s1;
+        width: 180px;
+        PopupPanel {
+            VerticalLayout {
+                padding: Theme.s1;
+                for kind[i] in ["Login", "Secure note", "Card", "Identity", "SSH key"]: MenuRow {
+                    text: kind;
+                    clicked => {
+                        popup.close();
+                        root.new-item(i);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component Footer inherits Rectangle {
+    in property <string> status;
+    in property <bool> offline;
+    in property <string> clip-label;
+    in-out property <int> clip-seconds;
+    in property <int> clip-total;
+    callback tick();
+
+    height: 28px * Theme.scale;
+    background: Theme.bg;
+
+    Timer {
+        interval: 1s;
+        running: root.clip-seconds > 0;
+        triggered => { root.clip-seconds -= 1; }
+    }
+    // Keeps "Synced N min ago" current; one wake-up a minute while the Manager is open.
+    Timer {
+        interval: 60s;
+        running: true;
+        triggered => { root.tick(); }
+    }
+
+    if root.clip-total > 0 && root.clip-seconds > 0: Rectangle {
+        x: 0;
+        y: 0;
+        height: 2px;
+        width: root.width * root.clip-seconds / root.clip-total;
+        background: Theme.accent;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.s3;
+        padding-right: Theme.s3;
+        spacing: Theme.s2;
+        if root.offline: Text {
+            text: "⚠";
+            color: Theme.warn-text;
+            font-size: Theme.font-hint;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.status;
+            color: root.offline ? Theme.warn-text : Theme.text-muted;
+            font-size: Theme.font-hint;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Status";
+            accessible-value: self.text;
+        }
+        Text {
+            text: root.clip-label == "" ? "" : root.clip-total == 0 ? root.clip-label : root.clip-seconds > 0 ? root.clip-label + " · clears in " + root.clip-seconds + "s" : "";
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+            vertical-alignment: center;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Clipboard";
+            accessible-value: self.text;
+        }
+    }
+}
+
+export component ManagerWindow inherits Window {
+    title: "bw-lite";
+    icon: @image-url("icons/tray-dark.svg");
+    preferred-width: 1120px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 480px;
+    background: Theme.bg;
+    default-font-size: Theme.font-body;
+    forward-focus: search;
+
+    // The title bar is transparent with full-size content (set by the winit attributes hook),
+    // so the header leaves room for the traffic lights.
+    in property <bool> inset-title-bar: true;
+
+    in property <[AccountRow]> accounts;
+    in property <string> account-email;
+    in property <string> account-host;
+    in property <string> account-initial;
+    in property <color> account-color: Theme.accent;
+    in-out property <bool> confirm-logout;
+    in-out property <string> query;
+
+    in property <[SidebarEntry]> sidebar-entries;
+    in-out property <int> sidebar-selected: 0;
+    in-out property <int> sidebar-renaming: -1;
+    in-out property <int> sidebar-confirm-delete: -1;
+    in-out property <bool> sidebar-adding: false;
+    in property <bool> sidebar-creating: false;
+    in-out property <bool> sidebar-collapsed: false;
+
+    in property <[RowData]> rows;
+    in-out property <int> selected: -1;
+    in-out property <bool> keyboard-nav: false;
+    // 0 no items yet, 1 no search results, 2 empty filter.
+    in property <int> empty-kind: 0;
+    in property <string> empty-text: "No items";
+    in property <bool> loading: false;
+    out property <int> first-visible: max(0, floor(-list.content-y / Theme.row-height));
+    out property <int> visible-count: ceil(list.visible-height / Theme.row-height) + 1;
+
+    // Detail pane: 0 empty, 1 view, 2 edit, 3 generator.
+    in-out property <int> detail-mode: 0;
+    in property <DetailHeader> detail-header;
+    in property <[DetailField]> detail-fields;
+    in property <string> detail-totp-code;
+    in property <int> detail-totp-expires;
+    in property <int> detail-totp-period: 30;
+    in-out property <bool> confirm-delete;
+    in property <[AttachmentRow]> attachments;
+    in property <bool> attach-busy;
+    in property <string> attach-status;
+    in-out property <int> attachment-confirm: -1;
+    in property <[string]> folder-options;
+    in-out property <int> detail-folder-index;
+    in property <bool> online: true;
+    in-out property <bool> reprompt-visible;
+    in property <string> reprompt-error;
+
+    in property <string> edit-title;
+    in property <[EditField]> edit-fields;
+    in property <string> edit-error;
+    in-out property <bool> edit-favorite;
+    in-out property <bool> edit-reprompt;
+    in-out property <int> edit-folder-index;
+    in property <bool> saving;
+    in property <bool> can-add-uri;
+
+    in property <string> status-text;
+    in property <string> clip-label;
+    in-out property <int> clip-seconds;
+    in property <int> clip-total;
+    in property <string> toast-text;
+    in property <bool> toast-error;
+    in property <bool> toast-shown;
+
+    callback key-command(string, bool, bool, bool) -> bool;
+    callback search-edited(string);
+    callback sidebar-select(int);
+    callback create-folder(string);
+    callback rename-folder(int, string);
+    callback delete-folder(int);
+    callback row-clicked(int);
+    callback row-double-clicked(int);
+    callback copy-row(int, int) -> bool;
+    callback visible-range-changed();
+    callback new-item(int);
+    callback clear-filters();
+    callback open-settings();
+    callback lock();
+    callback switch-account(int);
+    callback add-account();
+    callback logout-confirmed();
+    callback reprompt-submit(string);
+    callback reprompt-cancel();
+    callback copy-field(int) -> bool;
+    callback reveal-field(int);
+    callback open-uri(int);
+    callback toggle-favorite();
+    callback edit();
+    callback delete-confirmed();
+    callback restore();
+    callback move-to-folder(int);
+    callback attachment-save(int);
+    callback attachment-delete(int);
+    callback attach-file();
+    callback edit-generate(int);
+    callback edit-add-uri();
+    callback edit-save();
+    callback edit-cancel();
+    callback close-generator();
+    callback toast-dismissed();
+    callback status-tick();
+
+    public function scroll-to(index: int) {
+        if index * Theme.row-height < -list.content-y {
+            list.content-y = -index * Theme.row-height;
+        } else if (index + 1) * Theme.row-height > -list.content-y + list.visible-height {
+            list.content-y = -((index + 1) * Theme.row-height - list.visible-height);
+        }
+    }
+
+    public function scroll-top() {
+        list.content-y = 0;
+    }
+
+    public function focus-search() {
+        search.focus-input();
+    }
+
+    changed first-visible => { root.visible-range-changed(); }
+    changed visible-count => { root.visible-range-changed(); }
+
+    FocusScope {
+        capture-key-pressed(event) => {
+            // While a folder name is being typed, keys belong to that field; Esc cancels it.
+            if sidebar.editing {
+                if event.text == Key.Escape {
+                    sidebar.cancel-editing();
+                    return accept;
+                }
+                return reject;
+            }
+            if root.key-command(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) {
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            Rectangle {
+                height: 52px;
+                background: Theme.bg;
+                WindowMoveArea { }
+                HorizontalLayout {
+                    padding-left: root.inset-title-bar ? Theme.traffic-light-inset : Theme.s3;
+                    padding-right: Theme.s3;
+                    padding-top: Theme.s2;
+                    padding-bottom: Theme.s2;
+                    spacing: Theme.s2;
+                    AccountSwitcher {
+                        width: 200px;
+                        accounts: root.accounts;
+                        email: root.account-email;
+                        host: root.account-host;
+                        initial: root.account-initial;
+                        avatar-color: root.account-color;
+                        confirm-logout <=> root.confirm-logout;
+                        switch-account(i) => { root.switch-account(i); }
+                        add-account => { root.add-account(); }
+                        lock => { root.lock(); }
+                        logout-confirmed => { root.logout-confirmed(); }
+                    }
+                    search := Field {
+                        has-icon: true;
+                        icon: @image-url("icons/search.svg");
+                        cap: "⌘F";
+                        placeholder: "Search vault";
+                        label: "Search vault";
+                        text <=> root.query;
+                        horizontal-stretch: 1;
+                        edited(text) => { root.search-edited(text); }
+                    }
+                    NewMenu {
+                        y: (parent.height - self.height) / 2;
+                        new-item(kind) => { root.new-item(kind); }
+                    }
+                    IconBtn {
+                        y: (parent.height - self.height) / 2;
+                        icon: @image-url("icons/gear.svg");
+                        label: "Settings";
+                        hint: "⌘,";
+                        clicked => { root.open-settings(); }
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Lock";
+                        hint: "⌘⇧L";
+                        has-icon: true;
+                        icon: @image-url("icons/lock.svg");
+                        clicked => { root.lock(); }
+                    }
+                }
+            }
+            Divider { }
+            HorizontalLayout {
+                vertical-stretch: 1;
+                sidebar := Sidebar {
+                    entries: root.sidebar-entries;
+                    selected <=> root.sidebar-selected;
+                    renaming <=> root.sidebar-renaming;
+                    confirm-delete <=> root.sidebar-confirm-delete;
+                    adding <=> root.sidebar-adding;
+                    creating: root.sidebar-creating;
+                    online: root.online;
+                    collapsed: root.sidebar-collapsed;
+                    toggle => { root.sidebar-collapsed = !root.sidebar-collapsed; }
+                    select(i) => { root.sidebar-select(i); }
+                    create-folder(name) => { root.create-folder(name); }
+                    rename-folder(i, name) => { root.rename-folder(i, name); }
+                    delete-folder(i) => { root.delete-folder(i); }
+                }
+                Rectangle {
+                    width: 1px;
+                    background: Theme.border-subtle;
+                }
+                Rectangle {
+                    horizontal-stretch: 3;
+                    min-width: 320px;
+                    background: Theme.surface;
+                    list := ListView {
+                        for row[i] in root.rows: ItemRow {
+                            data: row;
+                            selected: i == root.selected;
+                            keyboard-focus: root.keyboard-nav;
+                            clicked => {
+                                root.keyboard-nav = false;
+                                root.row-clicked(i);
+                            }
+                            double-clicked => { root.row-double-clicked(i); }
+                            copy(code) => { return root.copy-row(i, code); }
+                        }
+                    }
+                    if root.rows.length == 0 && root.loading: SkeletonRows {
+                        y: 0;
+                        height: 3 * Theme.row-height;
+                    }
+                    if root.rows.length == 0 && !root.loading && root.empty-kind == 0: EmptyState {
+                        icon: @image-url("icons/kind-login.svg");
+                        title: "No items yet";
+                        body: "Add your first login";
+                        action: "+ New";
+                        action-hint: "⌘N";
+                        action-clicked => { root.new-item(0); }
+                    }
+                    if root.rows.length == 0 && !root.loading && root.empty-kind == 1: EmptyState {
+                        icon: @image-url("icons/search.svg");
+                        title: "No results for “" + root.query + "”";
+                        body: "Check the spelling or search all items";
+                        action: "Clear filters";
+                        action-clicked => { root.clear-filters(); }
+                    }
+                    if root.rows.length == 0 && !root.loading && root.empty-kind == 2: EmptyState {
+                        icon: @image-url("icons/grid.svg");
+                        title: root.empty-text;
+                        action: "Show all items";
+                        action-clicked => { root.clear-filters(); }
+                    }
+                }
+                Rectangle {
+                    width: 1px;
+                    background: Theme.border-subtle;
+                }
+                Rectangle {
+                    horizontal-stretch: 2;
+                    min-width: 380px;
+                    background: Theme.surface;
+                    if root.detail-mode == 0: EmptyState {
+                        icon: @image-url("icons/kind-note.svg");
+                        title: "Select an item";
+                        body: "↑↓ move · Return copies the password · ⌘E edit";
+                    }
+                    if root.detail-mode == 1: DetailView {
+                        header: root.detail-header;
+                        fields: root.detail-fields;
+                        totp-code: root.detail-totp-code;
+                        totp-expires: root.detail-totp-expires;
+                        totp-period: root.detail-totp-period;
+                        confirm-delete <=> root.confirm-delete;
+                        attachments: root.attachments;
+                        attach-busy: root.attach-busy;
+                        attach-status: root.attach-status;
+                        attachment-confirm <=> root.attachment-confirm;
+                        online: root.online;
+                        folder-options: root.folder-options;
+                        folder-index <=> root.detail-folder-index;
+                        reprompt-visible: root.reprompt-visible;
+                        reprompt-error: root.reprompt-error;
+                        reprompt-submit(password) => { root.reprompt-submit(password); }
+                        reprompt-cancel => { root.reprompt-cancel(); }
+                        copy-field(i) => { return root.copy-field(i); }
+                        reveal-field(i) => { root.reveal-field(i); }
+                        open-uri(i) => { root.open-uri(i); }
+                        toggle-favorite => { root.toggle-favorite(); }
+                        edit => { root.edit(); }
+                        delete-confirmed => { root.delete-confirmed(); }
+                        restore => { root.restore(); }
+                        move-to-folder(i) => { root.move-to-folder(i); }
+                        attachment-save(i) => { root.attachment-save(i); }
+                        attachment-delete(i) => { root.attachment-delete(i); }
+                        attach-file => { root.attach-file(); }
+                    }
+                    if root.detail-mode == 2: EditForm {
+                        title: root.edit-title;
+                        fields: root.edit-fields;
+                        error: root.edit-error;
+                        favorite <=> root.edit-favorite;
+                        reprompt <=> root.edit-reprompt;
+                        folder-options: root.folder-options;
+                        folder-index <=> root.edit-folder-index;
+                        saving: root.saving;
+                        can-add-uri: root.can-add-uri;
+                        generate(i) => { root.edit-generate(i); }
+                        add-uri => { root.edit-add-uri(); }
+                        save => { root.edit-save(); }
+                        cancel => { root.edit-cancel(); }
+                    }
+                    if root.detail-mode == 3: GeneratorView {
+                        closable: true;
+                        close => { root.close-generator(); }
+                    }
+                }
+            }
+            Divider { }
+            Footer {
+                status: root.status-text;
+                offline: !root.online;
+                clip-label: root.clip-label;
+                clip-seconds <=> root.clip-seconds;
+                clip-total: root.clip-total;
+                tick => { root.status-tick(); }
+            }
+        }
+    }
+
+    Toast {
+        limit-width: root.width - 24px;
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - 40px;
+        text: root.toast-text;
+        error: root.toast-error;
+        shown: root.toast-shown;
+        dismissed => { root.toast-dismissed(); }
+    }
+}

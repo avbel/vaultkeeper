@@ -12,19 +12,26 @@ publish.workspace = true
 vw-it = []
 
 [dependencies]
+# `uriChecksum` (base64 of SHA-256); both already in the build through bwl-crypto.
+base64.workspace = true
 bwl-api.workspace = true
 bwl-crypto.workspace = true
 bwl-gen.workspace = true
+# `Body` for streaming attachment uploads and the offline probe's `GET /alive`; same version and
+# TLS backend as bwl-api, so no new crates enter the build.
+reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
 wiremock.workspace = true
 
 [lints]

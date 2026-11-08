@@ -1,0 +1,18 @@
+{
+  "message": "Email 2FA is disabled",
+  "validationErrors": {
+    "": [
+      "Email 2FA is disabled"
+    ]
+  },
+  "errorModel": {
+    "message": "Email 2FA is disabled",
+    "object": "error"
+  },
+  "error": "",
+  "error_description": "",
+  "exceptionMessage": null,
+  "exceptionStackTrace": null,
+  "innerExceptionMessage": null,
+  "object": "error"
+}

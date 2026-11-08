@@ -45,6 +45,14 @@ where
         self.server.start_with_default_listeners()
     }
 
+    /// bwl patch: starts the ssh agent server on an explicit Unix socket path instead of
+    /// `BITWARDEN_SSH_AUTH_SOCK` / `~/.bitwarden-ssh-agent.sock`.
+    #[cfg(unix)]
+    pub fn start_at(&mut self, socket_path: std::path::PathBuf) -> Result<()> {
+        debug!("Starting the server at an explicit socket path.");
+        self.server.start_at_socket_path(socket_path)
+    }
+
     /// Stops the server and clears the keystore.
     pub fn stop(&mut self) {
         debug!("Stopping server and clearing keys.");

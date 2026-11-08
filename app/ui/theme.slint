@@ -1,0 +1,94 @@
+import { Palette } from "std-widgets.slint";
+
+export enum ThemeMode { system, light, dark }
+
+// Every window instance gets its own copy of this global; Rust sets `mode` and `scale` on each.
+// `Palette.color-scheme` is never assigned, so `system-dark` keeps following the OS live (the
+// winit backend updates it on ThemeChanged).
+export global Theme {
+    in-out property <ThemeMode> mode: ThemeMode.system;
+    in-out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
+    // 1.0, 1.15 or 1.3: multiplies fonts and row heights.
+    in-out property <float> scale: 1.0;
+    out property <bool> dark: mode == ThemeMode.dark || (mode == ThemeMode.system && system-dark);
+
+    out property <color> bg: dark ? #141518 : #F6F7F9;
+    out property <color> surface: dark ? #1C1E23 : #FFFFFF;
+    out property <color> surface-raised: dark ? #262930 : #EEF0F3;
+    out property <color> surface-popup: dark ? #2A2D35 : #FFFFFF;
+    out property <color> border: dark ? #30343C : #D9DCE2;
+    out property <color> border-subtle: text.with-alpha(0.08);
+    out property <color> text: dark ? #E6E8EC : #1A1D23;
+    out property <color> text-muted: dark ? #969CA7 : #5F6675;
+    out property <color> accent: dark ? #6FA3FF : #2563EB;
+    out property <color> accent-fg: dark ? #0B1220 : #FFFFFF;
+    out property <color> success: dark ? #4ADE80 : #16A34A;
+    out property <color> success-text: dark ? #4ADE80 : #15803D;
+    out property <color> warn: dark ? #FBBF24 : #D97706;
+    out property <color> warn-text: dark ? #FBBF24 : #B45309;
+    out property <color> danger: dark ? #F87171 : #DC2626;
+    // 11 px danger text needs more contrast than 12 px and up.
+    out property <color> danger-small: dark ? #F87171 : #B91C1C;
+    out property <color> hover: text.with-alpha(dark ? 0.07 : 0.05);
+    out property <color> selection: accent.with-alpha(dark ? 0.20 : 0.12);
+    out property <color> selection-hover: accent.with-alpha(dark ? 0.26 : 0.16);
+    out property <color> skeleton: text.with-alpha(0.08);
+    out property <color> shadow: dark ? #00000073 : #00000024;
+    out property <length> shadow-blur: dark ? 20px : 16px;
+    out property <length> shadow-y: dark ? 6px : 4px;
+
+    out property <color> kind-login: dark ? #6FA3FF : #2563EB;
+    out property <color> kind-note: dark ? #FBBF24 : #B45309;
+    out property <color> kind-card: dark ? #B795FF : #7C3AED;
+    out property <color> kind-identity: dark ? #2DD4BF : #0F766E;
+    out property <color> kind-ssh: dark ? #4ADE80 : #15803D;
+
+    // Kinds: 0 login, 1 note, 2 card, 3 identity, 4 SSH key, 5 other.
+    public pure function kind-fg(kind: int) -> color {
+        if kind == 0 { return kind-login; }
+        if kind == 1 { return kind-note; }
+        if kind == 2 { return kind-card; }
+        if kind == 3 { return kind-identity; }
+        if kind == 4 { return kind-ssh; }
+        return text-muted;
+    }
+
+    public pure function kind-bg(kind: int) -> color {
+        return kind-fg(kind).with-alpha(dark ? 0.22 : 0.14);
+    }
+
+    out property <length> s1: 4px;
+    out property <length> s2: 8px;
+    out property <length> s3: 12px;
+    out property <length> s4: 16px;
+    out property <length> s5: 24px;
+    out property <length> s6: 32px;
+
+    out property <length> font-meta: 11px * scale;
+    out property <length> font-hint: 12px * scale;
+    out property <length> font-body: 13px * scale;
+    out property <length> font-title: 17px * scale;
+    out property <length> font-lock: 22px * scale;
+    out property <length> font-totp: 15px * scale;
+    out property <string> mono: "Menlo";
+
+    out property <length> row-height: 40px * scale;
+    out property <length> row-height-compact: 36px * scale;
+    out property <length> control-height: 28px * scale;
+    out property <length> field-height: 32px * scale;
+    out property <length> sidebar-width: 216px;
+    out property <length> rail-width: 36px;
+    // Room for the traffic lights in the transparent, full-size-content title bar.
+    out property <length> traffic-light-inset: 78px;
+    out property <length> padding: 12px;
+    out property <length> gap: 8px;
+    out property <length> radius-control: 6px;
+    out property <length> radius-popup: 10px;
+    out property <length> radius-panel: 12px;
+    out property <length> focus-ring: 2px;
+}
+
+// Seconds since app start; the TOTP ticker sets it once per second on windows showing codes.
+export global Clock {
+    in-out property <int> now;
+}

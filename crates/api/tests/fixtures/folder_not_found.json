@@ -1,0 +1,18 @@
+{
+  "message": "Invalid folder",
+  "validationErrors": {
+    "": [
+      "Invalid folder"
+    ]
+  },
+  "errorModel": {
+    "message": "Invalid folder",
+    "object": "error"
+  },
+  "error": "",
+  "error_description": "",
+  "exceptionMessage": null,
+  "exceptionStackTrace": null,
+  "innerExceptionMessage": null,
+  "object": "error"
+}

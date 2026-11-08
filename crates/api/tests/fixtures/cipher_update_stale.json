@@ -1,0 +1,18 @@
+{
+  "message": "The client copy of this cipher is out of date. Resync the client and try again.",
+  "validationErrors": {
+    "": [
+      "The client copy of this cipher is out of date. Resync the client and try again."
+    ]
+  },
+  "errorModel": {
+    "message": "The client copy of this cipher is out of date. Resync the client and try again.",
+    "object": "error"
+  },
+  "error": "",
+  "error_description": "",
+  "exceptionMessage": null,
+  "exceptionStackTrace": null,
+  "innerExceptionMessage": null,
+  "object": "error"
+}

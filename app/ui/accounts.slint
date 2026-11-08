@@ -1,0 +1,205 @@
+import { Theme } from "theme.slint";
+import { Avatar, Btn, BtnKind, Divider, Icon, MenuRow, PopupPanel } from "kit.slint";
+
+export struct AccountRow {
+    email: string,
+    host: string,
+    initial: string,
+    // Avatar colour, derived from a hash of the email.
+    color: color,
+    active: bool,
+    // "locked", "logged out" or empty for the unlocked active account.
+    badge: string,
+}
+
+// Avatar + email button that opens the account list with add / lock / log out entries.
+export component AccountSwitcher inherits Rectangle {
+    in property <[AccountRow]> accounts;
+    in property <string> email;
+    in property <string> host;
+    in property <string> initial: "?";
+    in property <color> avatar-color: Theme.accent;
+    in property <bool> compact: false;
+    in property <bool> show-lock: true;
+    in-out property <bool> confirm-logout: false;
+    callback switch-account(int);
+    callback add-account();
+    callback lock();
+    callback logout-confirmed();
+
+    public function open() {
+        popup.show();
+    }
+
+    height: 32px * Theme.scale;
+    border-radius: Theme.radius-control;
+    background: ta.has-hover ? Theme.hover : transparent;
+    animate background { duration: 100ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: "Accounts";
+    accessible-value: root.email;
+    accessible-action-default => { popup.show(); }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.s1;
+        padding-right: Theme.s2;
+        spacing: Theme.s2;
+        Avatar {
+            y: (parent.height - self.height) / 2;
+            initial: root.initial;
+            tint: root.avatar-color;
+        }
+        if !root.compact: VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.email;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.host;
+                color: Theme.text-muted;
+                font-size: Theme.font-meta;
+                overflow: elide;
+            }
+        }
+        if !root.compact: Icon {
+            y: (parent.height - self.height) / 2;
+            width: 12px;
+            height: 12px;
+            source: @image-url("icons/chevron-down.svg");
+            tint: Theme.text-muted;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + Theme.s1;
+        width: 260px;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        PopupPanel {
+            VerticalLayout {
+                padding: Theme.s1;
+                spacing: 2px;
+                for account[i] in root.accounts: Rectangle {
+                    height: 32px * Theme.scale;
+                    border-radius: Theme.radius-control;
+                    background: ata.has-hover ? Theme.hover : transparent;
+                    animate background { duration: 100ms; easing: ease-out; }
+                    accessible-role: button;
+                    accessible-label: account.email + " @ " + account.host;
+                    accessible-description: account.badge;
+                    accessible-checked: account.active;
+                    accessible-action-default => {
+                        popup.close();
+                        root.switch-account(i);
+                    }
+                    ata := TouchArea {
+                        clicked => {
+                            popup.close();
+                            root.switch-account(i);
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: Theme.s2;
+                        padding-right: Theme.s2;
+                        spacing: Theme.s2;
+                        Rectangle {
+                            width: 14px;
+                            if account.active: Icon {
+                                width: 14px;
+                                height: 14px;
+                                source: @image-url("icons/check.svg");
+                                tint: Theme.accent;
+                            }
+                        }
+                        Avatar {
+                            y: (parent.height - self.height) / 2;
+                            size: 20px;
+                            initial: account.initial;
+                            tint: account.color;
+                        }
+                        Text {
+                            text: account.email + " @ " + account.host;
+                            color: Theme.text;
+                            font-size: Theme.font-hint;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if account.badge != "": Rectangle {
+                            y: (parent.height - 18px) / 2;
+                            height: 18px;
+                            width: badge.preferred-width + 12px;
+                            border-radius: 9px;
+                            background: Theme.surface-raised;
+                            badge := Text {
+                                text: account.badge;
+                                color: Theme.text-muted;
+                                font-size: Theme.font-meta;
+                            }
+                        }
+                    }
+                }
+                Divider { }
+                MenuRow {
+                    text: "Add account";
+                    clicked => {
+                        popup.close();
+                        root.add-account();
+                    }
+                }
+                if root.show-lock: MenuRow {
+                    text: "Lock";
+                    hint: "⌘⇧L";
+                    clicked => {
+                        popup.close();
+                        root.lock();
+                    }
+                }
+                if !root.confirm-logout: MenuRow {
+                    text: "Log out";
+                    danger: true;
+                    clicked => { root.confirm-logout = true; }
+                }
+                if root.confirm-logout: VerticalLayout {
+                    padding: Theme.s2;
+                    spacing: Theme.s2;
+                    Text {
+                        text: "Log out of " + root.email + "? Local data for this account is removed.";
+                        color: Theme.text;
+                        font-size: Theme.font-hint;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.s2;
+                        alignment: start;
+                        Btn {
+                            text: "Log out";
+                            label: "Confirm log out";
+                            kind: BtnKind.danger-filled;
+                            clicked => {
+                                root.confirm-logout = false;
+                                popup.close();
+                                root.logout-confirmed();
+                            }
+                        }
+                        Btn {
+                            text: "Cancel";
+                            label: "Cancel log out";
+                            clicked => { root.confirm-logout = false; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

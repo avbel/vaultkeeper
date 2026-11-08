@@ -9,13 +9,22 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait = "0.1.89"
+# The crypto crates below are pinned to the versions ssh-key 0.6.7 and the vendored agent use,
+# so parsed key types convert into ssh-key types without a second copy of the stack.
+p256 = "0.13.2"
+p384 = "0.13.1"
+pkcs8 = { version = "0.10.2", features = ["pem"] }
+rsa = "=0.9.6"
 ssh_agent.workspace = true
-# Same version as the vendored agent so parsed keys are interchangeable.
-ssh-key = { version = "=0.6.7", features = ["rand_core", "ed25519", "p256", "p384", "rsa", "encryption"] }
+ssh-key = { version = "=0.6.7", features = ["getrandom", "rand_core", "ed25519", "p256", "p384", "p521", "rsa", "encryption"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

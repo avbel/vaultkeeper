@@ -1,0 +1,249 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Icon } from "widgets.slint";
+
+// Non-modal toast: fades and slides in, hovering pauses its 4 s dismiss timer.
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <bool> error: false;
+    in property <bool> shown: false;
+    in property <string> action;
+    in property <length> limit-width: 400px;
+    callback dismissed();
+    callback action-clicked();
+
+    property <length> offset: shown ? 0px : 8px;
+    visible: self.opacity > 0;
+    opacity: shown ? 1 : 0;
+    animate opacity { duration: root.shown ? 180ms : 220ms; easing: ease-out; }
+    animate offset { duration: root.shown ? 180ms : 220ms; easing: ease-out; }
+    height: 36px * Theme.scale;
+    width: min(root.limit-width, label.preferred-width + (root.action != "" ? 120px : 48px));
+    border-radius: Theme.radius-popup;
+    background: Theme.surface-popup;
+    border-width: 1px;
+    border-color: error ? Theme.danger.with-alpha(0.5) : Theme.border;
+    drop-shadow-blur: Theme.shadow-blur;
+    drop-shadow-offset-y: Theme.shadow-y;
+    drop-shadow-color: Theme.shadow;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    Timer {
+        interval: 4s;
+        running: root.shown && !hover.has-hover;
+        triggered => { root.dismissed(); }
+    }
+
+    hover := TouchArea {
+        clicked => { root.dismissed(); }
+    }
+
+    HorizontalLayout {
+        y: root.offset;
+        padding-left: 14px;
+        padding-right: root.action != "" ? Theme.s1 : 14px;
+        spacing: Theme.s2;
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            background: root.error ? Theme.danger : Theme.warn;
+        }
+        label := Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+        }
+        if root.action != "": Btn {
+            y: (parent.height - self.height) / 2;
+            text: root.action;
+            kind: BtnKind.ghost;
+            clicked => { root.action-clicked(); }
+        }
+    }
+}
+
+// Indeterminate spinner; uses animation-tick(), so callers keep it behind `if busy:`.
+export component Spinner inherits Rectangle {
+    width: 12px;
+    height: 12px;
+    property <angle> turn: (animation-tick() / 900ms) * 360deg;
+
+    Path {
+        width: 12px;
+        height: 12px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        stroke: Theme.accent;
+        stroke-width: 1.6px;
+        MoveTo {
+            x: 6 + 5 * Math.sin(root.turn);
+            y: 6 - 5 * Math.cos(root.turn);
+        }
+        ArcTo {
+            x: 6 + 5 * Math.sin(root.turn + 250deg);
+            y: 6 - 5 * Math.cos(root.turn + 250deg);
+            radius-x: 5;
+            radius-y: 5;
+            large-arc: true;
+            sweep: true;
+        }
+    }
+}
+
+export component SectionLabel inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-meta;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+}
+
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.border-subtle;
+}
+
+export component EmptyState inherits VerticalLayout {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> body;
+    in property <string> action;
+    in property <string> action-hint;
+    callback action-clicked();
+
+    alignment: center;
+    spacing: Theme.s2;
+    padding: Theme.s5;
+    HorizontalLayout {
+        alignment: center;
+        Icon {
+            width: 24px;
+            height: 24px;
+            source: root.icon;
+            tint: Theme.text-muted;
+        }
+    }
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.font-body;
+        font-weight: 500;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
+        accessible-label: "Empty state";
+        accessible-value: self.text;
+    }
+    if root.body != "": Text {
+        text: root.body;
+        color: Theme.text-muted;
+        font-size: Theme.font-hint;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+    if root.action != "": HorizontalLayout {
+        alignment: center;
+        padding-top: Theme.s1;
+        Btn {
+            text: root.action;
+            hint: root.action-hint;
+            kind: BtnKind.normal;
+            clicked => { root.action-clicked(); }
+        }
+    }
+}
+
+// Static placeholder rows (no shimmer) for loads that take longer than 300 ms.
+export component SkeletonRows inherits VerticalLayout {
+    in property <length> row-height: Theme.row-height;
+    alignment: start;
+    for fraction in [0.55, 0.4, 0.62]: Rectangle {
+        height: root.row-height;
+        HorizontalLayout {
+            padding-left: Theme.s3;
+            padding-right: Theme.s3;
+            spacing: Theme.s3;
+            alignment: start;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 6px;
+                background: Theme.skeleton;
+            }
+            Rectangle {
+                width: (parent.width - 60px) * fraction;
+                height: 10px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 5px;
+                background: Theme.skeleton;
+            }
+        }
+    }
+}
+
+export component Avatar inherits Rectangle {
+    in property <string> initial;
+    in property <color> tint: Theme.accent;
+    in property <length> size: 24px;
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: tint.with-alpha(Theme.dark ? 0.30 : 0.18);
+    Text {
+        text: root.initial;
+        color: root.tint;
+        font-size: root.size * 0.5;
+        font-weight: 600;
+    }
+}
+
+// Inline confirmation: `Delete? [Yes][No]`, auto-cancels after 6 s.
+export component InlineConfirm inherits Rectangle {
+    in property <string> question: "Delete?";
+    in property <string> subject;
+    in property <string> yes: "Yes";
+    in property <string> no: "No";
+    callback confirmed();
+    callback cancelled();
+
+    min-height: Theme.control-height + 8px;
+    border-radius: Theme.radius-control;
+    background: Theme.danger.with-alpha(0.06);
+
+    Timer {
+        interval: 6s;
+        running: true;
+        triggered => { root.cancelled(); }
+    }
+
+    HorizontalLayout {
+        padding: Theme.s1;
+        padding-left: Theme.s2;
+        spacing: Theme.s2;
+        Text {
+            text: root.question;
+            color: Theme.danger;
+            font-size: Theme.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        Btn {
+            y: (parent.height - self.height) / 2;
+            text: root.yes;
+            label: "Confirm " + root.subject;
+            kind: BtnKind.danger-filled;
+            clicked => { root.confirmed(); }
+        }
+        Btn {
+            y: (parent.height - self.height) / 2;
+            text: root.no;
+            label: "Cancel " + root.subject;
+            clicked => { root.cancelled(); }
+        }
+    }
+}

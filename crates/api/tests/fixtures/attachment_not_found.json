@@ -1,0 +1,18 @@
+{
+  "message": "Attachment doesn't exist",
+  "validationErrors": {
+    "": [
+      "Attachment doesn't exist"
+    ]
+  },
+  "errorModel": {
+    "message": "Attachment doesn't exist",
+    "object": "error"
+  },
+  "error": "",
+  "error_description": "",
+  "exceptionMessage": null,
+  "exceptionStackTrace": null,
+  "innerExceptionMessage": null,
+  "object": "error"
+}

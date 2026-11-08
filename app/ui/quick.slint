@@ -1,0 +1,231 @@
+import { Theme, Clock } from "theme.slint";
+import { Btn, BtnKind, Divider, EmptyState, Field, Icon, KeyCap, Toast } from "kit.slint";
+import { ItemRow, RowData } from "row.slint";
+
+component Hint inherits HorizontalLayout {
+    in property <string> key;
+    in property <bool> enter: false;
+    in property <string> text;
+    spacing: Theme.s1;
+    KeyCap {
+        y: (parent.height - self.height) / 2;
+        text: root.key;
+        enter: root.enter;
+    }
+    Text {
+        text: root.text;
+        color: Theme.text-muted;
+        font-size: Theme.font-meta;
+        vertical-alignment: center;
+    }
+}
+
+export component QuickPanel inherits Window {
+    title: "bw-lite quick search";
+    no-frame: true;
+    always-on-top: true;
+    width: 560px;
+    height: 44px + 1px + 8 * Theme.row-height-compact + 1px + 28px;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+    forward-focus: search;
+
+    in-out property <string> query;
+    in property <[RowData]> rows;
+    in-out property <int> selected: 0;
+    in-out property <bool> keyboard-nav: true;
+    in property <string> empty-text: "No matches";
+    // Locked: an inline master password field replaces the results.
+    in property <bool> locked: false;
+    in-out property <string> password;
+    in property <string> unlock-error;
+    in property <bool> unlock-busy;
+    in property <bool> touch-id-available;
+    in property <string> toast-text;
+    in property <bool> toast-error;
+    in property <bool> toast-shown;
+    out property <bool> search-focused: search.has-focus || password-field.has-focus;
+
+    callback key-command(string, bool, bool, bool) -> bool;
+    callback search-edited(string);
+    callback row-clicked(int);
+    callback row-double-clicked(int);
+    callback copy-row(int, int) -> bool;
+    callback unlock(string);
+    callback unlock-touch-id();
+    callback focus-lost();
+    callback toast-dismissed();
+
+    public function pause-focus-tracking() {
+        root.had-focus = false;
+    }
+
+    public function focus-search() {
+        if root.locked {
+            password-field.focus-input();
+        } else {
+            search.focus-input();
+        }
+        root.had-focus = true;
+    }
+
+    // The window shows at once; its content fades in and slides down 6 px.
+    property <bool> appeared: false;
+    Timer {
+        interval: 1ms;
+        running: !root.appeared;
+        triggered => { root.appeared = true; }
+    }
+
+    // The search (or password) field keeps focus for the panel's whole life (rows are not
+    // focusable), so losing it means the window was deactivated. Showing the panel can move focus
+    // between the two fields before either settles, so only a loss after `focus-search()` counts.
+    property <bool> had-focus: false;
+    changed search-focused => {
+        if !root.search-focused && root.had-focus {
+            root.focus-lost();
+        }
+    }
+
+    content := Rectangle {
+        y: root.appeared ? 0px : -6px;
+        opacity: root.appeared ? 1 : 0;
+        animate y, opacity { duration: 160ms; easing: cubic-bezier(0.2, 0, 0, 1); }
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-panel;
+        clip: true;
+
+        FocusScope {
+            capture-key-pressed(event) => {
+                if root.key-command(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) {
+                    return accept;
+                }
+                return reject;
+            }
+
+            VerticalLayout {
+                HorizontalLayout {
+                    height: 44px;
+                    padding-left: Theme.s3;
+                    padding-right: Theme.s3;
+                    spacing: Theme.s2;
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        source: root.locked ? @image-url("icons/lock.svg") : @image-url("icons/search.svg");
+                        tint: Theme.text-muted;
+                    }
+                    // Both fields stay instantiated (forward-focus needs a fixed target); the hidden
+                    // one sits in a zero-width clip.
+                    Rectangle {
+                        min-width: 0px;
+                        max-width: root.locked ? 0px : 10000px;
+                        horizontal-stretch: root.locked ? 0 : 1;
+                        clip: true;
+                        search := Field {
+                            width: parent.width;
+                            y: (parent.height - self.height) / 2;
+                            visible: !root.locked;
+                            ring: false;
+                            border-width: 0px;
+                            background: transparent;
+                            placeholder: "Search vault";
+                            label: "Quick search";
+                            cap: "Esc";
+                            text <=> root.query;
+                            font-size: 15px * Theme.scale;
+                            edited(text) => { root.search-edited(text); }
+                        }
+                    }
+                    Rectangle {
+                        min-width: 0px;
+                        max-width: root.locked ? 10000px : 0px;
+                        horizontal-stretch: root.locked ? 1 : 0;
+                        clip: true;
+                        password-field := Field {
+                            width: parent.width;
+                            y: (parent.height - self.height) / 2;
+                            visible: root.locked;
+                            ring: false;
+                            border-width: 0px;
+                            background: transparent;
+                            placeholder: "Master password";
+                            label: "Master password";
+                            password: true;
+                            invalid: root.unlock-error != "";
+                            font-size: 15px * Theme.scale;
+                            // Not disabled while busy: a disabled input drops focus, which reads as
+                            // the panel losing focus and would close it.
+                            text <=> root.password;
+                            accepted(text) => {
+                                if !root.unlock-busy {
+                                    root.unlock(text);
+                                }
+                            }
+                        }
+                    }
+                    if root.locked && root.touch-id-available: Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Touch ID";
+                        has-icon: true;
+                        icon: @image-url("icons/fingerprint.svg");
+                        enabled: !root.unlock-busy;
+                        clicked => { root.unlock-touch-id(); }
+                    }
+                }
+                Divider { }
+                Rectangle {
+                    height: 8 * Theme.row-height-compact;
+                    if !root.locked: VerticalLayout {
+                        alignment: start;
+                        for row[i] in root.rows: ItemRow {
+                            data: row;
+                            compact: true;
+                            selected: i == root.selected;
+                            keyboard-focus: root.keyboard-nav;
+                            clicked => {
+                                root.keyboard-nav = false;
+                                root.row-clicked(i);
+                            }
+                            double-clicked => { root.row-double-clicked(i); }
+                            copy(code) => { return root.copy-row(i, code); }
+                        }
+                    }
+                    if !root.locked && root.rows.length == 0: EmptyState {
+                        icon: @image-url("icons/search.svg");
+                        title: root.empty-text;
+                    }
+                    if root.locked: EmptyState {
+                        icon: @image-url("icons/lock.svg");
+                        title: "Vault locked";
+                        body: root.unlock-error != "" ? root.unlock-error : "Enter your master password to search";
+                    }
+                }
+                Divider { }
+                Rectangle {
+                    height: 28px;
+                    background: Theme.bg;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.s3;
+                        Hint { enter: true; text: "password"; }
+                        Hint { key: "⌘"; enter: true; text: "TOTP"; }
+                        Hint { key: "⇧"; enter: true; text: "username"; }
+                        Hint { key: "⌘O"; text: "open"; }
+                        Hint { key: "⌘L"; text: "lock"; }
+                    }
+                }
+            }
+        }
+    }
+
+    Toast {
+        limit-width: root.width - 24px;
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - 36px;
+        text: root.toast-text;
+        error: root.toast-error;
+        shown: root.toast-shown;
+        dismissed => { root.toast-dismissed(); }
+    }
+}

@@ -1,0 +1,198 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Check, CopyBtn, Field, IconBtn, Segmented, SectionLabel, SliderBar, Stepper } from "kit.slint";
+
+export global GeneratorState {
+    in-out property <int> mode: 0;
+    in-out property <int> length: 14;
+    in-out property <bool> uppercase: true;
+    in-out property <bool> lowercase: true;
+    in-out property <bool> numbers: true;
+    in-out property <bool> special: false;
+    in-out property <int> min-numbers: 1;
+    in-out property <int> min-special: 0;
+    in-out property <bool> avoid-ambiguous: false;
+    in-out property <int> words: 6;
+    in-out property <string> separator: "-";
+    in-out property <bool> capitalize: false;
+    in-out property <bool> include-number: false;
+    in property <string> result;
+    in property <string> error;
+    in property <[string]> history;
+    // True when the generator was opened from an edit form, so "Use" can fill the password field.
+    in property <bool> can-use: false;
+    callback options-changed();
+    callback regenerate();
+    callback copy-result() -> bool;
+    callback copy-history(int) -> bool;
+    callback use-result();
+}
+
+export component GeneratorView inherits Rectangle {
+    callback close();
+    in property <bool> closable: false;
+    background: Theme.surface;
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.padding;
+            spacing: Theme.gap;
+            HorizontalLayout {
+                spacing: Theme.gap;
+                Text {
+                    text: "Generator";
+                    color: Theme.text;
+                    font-size: Theme.font-title;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                if root.closable: IconBtn {
+                    icon: @image-url("icons/close.svg");
+                    label: "Close generator";
+                    clicked => { root.close(); }
+                }
+            }
+            Segmented {
+                label: "Generator type";
+                options: ["Password", "Passphrase"];
+                index <=> GeneratorState.mode;
+                selected => { GeneratorState.options-changed(); }
+            }
+            Rectangle {
+                min-height: 56px;
+                border-radius: Theme.radius-control;
+                background: Theme.surface-raised;
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 4px;
+                    Text {
+                        text: GeneratorState.result;
+                        font-family: Theme.mono;
+                        font-size: Theme.font-body;
+                        color: Theme.text;
+                        wrap: char-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Generated value";
+                    }
+                    CopyBtn {
+                        y: (parent.height - self.height) / 2;
+                        code: 1;
+                        label: "Copy generated value";
+                        emphasized: true;
+                        copy => { return GeneratorState.copy-result(); }
+                    }
+                    IconBtn {
+                        y: (parent.height - self.height) / 2;
+                        icon: @image-url("icons/refresh.svg");
+                        label: "Regenerate";
+                        clicked => { GeneratorState.regenerate(); }
+                    }
+                }
+            }
+            if GeneratorState.error != "": Text {
+                text: GeneratorState.error;
+                color: Theme.danger;
+                font-size: Theme.font-meta;
+            }
+            if GeneratorState.can-use: Btn {
+                text: "Use this password";
+                kind: BtnKind.primary;
+                clicked => { GeneratorState.use-result(); }
+            }
+            if GeneratorState.mode == 0: VerticalLayout {
+                spacing: Theme.gap;
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    SectionLabel { text: "Length"; vertical-alignment: center; }
+                    SliderBar {
+                        label: "Length";
+                        minimum: 5;
+                        maximum: 128;
+                        value <=> GeneratorState.length;
+                        horizontal-stretch: 1;
+                        changed-value => { GeneratorState.options-changed(); }
+                    }
+                    Text {
+                        text: GeneratorState.length;
+                        color: Theme.text;
+                        font-size: Theme.font-body;
+                        width: 28px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+                Check { text: "A-Z"; checked <=> GeneratorState.uppercase; toggled => { GeneratorState.options-changed(); } }
+                Check { text: "a-z"; checked <=> GeneratorState.lowercase; toggled => { GeneratorState.options-changed(); } }
+                Check { text: "0-9"; checked <=> GeneratorState.numbers; toggled => { GeneratorState.options-changed(); } }
+                Check { text: "!@#$%^&*"; checked <=> GeneratorState.special; toggled => { GeneratorState.options-changed(); } }
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    SectionLabel { text: "Minimum numbers"; vertical-alignment: center; horizontal-stretch: 1; }
+                    Stepper {
+                        label: "Minimum numbers";
+                        value <=> GeneratorState.min-numbers;
+                        changed-value => { GeneratorState.options-changed(); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    SectionLabel { text: "Minimum special"; vertical-alignment: center; horizontal-stretch: 1; }
+                    Stepper {
+                        label: "Minimum special";
+                        value <=> GeneratorState.min-special;
+                        changed-value => { GeneratorState.options-changed(); }
+                    }
+                }
+            }
+            if GeneratorState.mode == 1: VerticalLayout {
+                spacing: Theme.gap;
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    SectionLabel { text: "Number of words"; vertical-alignment: center; horizontal-stretch: 1; }
+                    Stepper {
+                        label: "Number of words";
+                        minimum: 3;
+                        maximum: 20;
+                        value <=> GeneratorState.words;
+                        changed-value => { GeneratorState.options-changed(); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    SectionLabel { text: "Separator"; vertical-alignment: center; horizontal-stretch: 1; }
+                    Field {
+                        width: 96px;
+                        label: "Separator";
+                        text <=> GeneratorState.separator;
+                        edited => { GeneratorState.options-changed(); }
+                    }
+                }
+                Check { text: "Capitalize"; checked <=> GeneratorState.capitalize; toggled => { GeneratorState.options-changed(); } }
+                Check { text: "Include number"; checked <=> GeneratorState.include-number; toggled => { GeneratorState.options-changed(); } }
+            }
+            Check { text: "Avoid ambiguous characters"; checked <=> GeneratorState.avoid-ambiguous; toggled => { GeneratorState.options-changed(); } }
+            if GeneratorState.history.length > 0: SectionLabel { text: "History"; }
+            for entry[i] in GeneratorState.history: HorizontalLayout {
+                spacing: 4px;
+                Text {
+                    text: entry;
+                    font-family: Theme.mono;
+                    font-size: Theme.font-meta;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                CopyBtn {
+                    code: 1;
+                    label: "Copy history entry";
+                    copy => { return GeneratorState.copy-history(i); }
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}

@@ -1,0 +1,49 @@
+# Disposable Vaultwarden + Mailpit for the bwl-vault end-to-end scenarios. Started by scripts/e2e.sh.
+#
+# DOMAIN has to be the exact origin the tests use: attachment download URLs are built from it, and
+# the client refuses to fetch from any other origin.
+name: bwl-e2e
+
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    environment:
+      DOMAIN: "http://localhost:${VW_PORT:-8098}"
+      SIGNUPS_ALLOWED: "true"
+      ADMIN_TOKEN: "${VW_ADMIN_TOKEN:-e2e-admin-token}"
+      I_REALLY_WANT_VOLATILE_STORAGE: "true"
+      WEBSOCKET_ENABLED: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURITY: "off"
+      SMTP_FROM: "vaultwarden@example.com"
+      SMTP_FROM_NAME: "Vaultwarden e2e"
+      # Every scenario registers and logs in several times from 127.0.0.1; the default bursts
+      # (10 logins, and a few unauthenticated calls such as registration) trip 429s.
+      LOGIN_RATELIMIT_SECONDS: "1"
+      LOGIN_RATELIMIT_MAX_BURST: "1000"
+      UNAUTHENTICATED_RATELIMIT_SECONDS: "1"
+      UNAUTHENTICATED_RATELIMIT_MAX_BURST: "1000"
+      ADMIN_RATELIMIT_SECONDS: "1"
+      ADMIN_RATELIMIT_MAX_BURST: "1000"
+      LOG_LEVEL: "warn"
+    ports:
+      - "127.0.0.1:${VW_PORT:-8098}:80"
+    tmpfs:
+      - /data
+    depends_on:
+      - mailpit
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:80/alive"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:latest
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+      MP_MAX_MESSAGES: "5000"
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"

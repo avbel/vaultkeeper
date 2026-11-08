@@ -1,0 +1,72 @@
+import { Palette } from "std-widgets.slint";
+
+// Self-contained: the daemon hosts this component in a window-less process, so it shares no
+// state with the window components. Slint 1.18's SystemTrayIcon has no template-image flag, so
+// monochrome variants are switched by the menu bar appearance. Without a window the scheme can be
+// unknown; the neutral grey variant reads on both bars, and the daemon may set the scheme itself.
+export component TrayIcon inherits SystemTrayIcon {
+    in property <bool> locked: true;
+    in property <bool> logged-in: true;
+    in property <[string]> accounts;
+    // 0 system, 1 light, 2 dark.
+    in property <int> theme-index: 0;
+    in property <ColorScheme> menu-bar-scheme: Palette.color-scheme;
+    icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
+        : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
+        : @image-url("icons/tray-neutral.svg");
+    tooltip: "bw-lite";
+
+    callback quick-search();
+    callback open-vault();
+    callback generator();
+    callback lock-toggle();
+    callback sync-now();
+    callback switch-account(int);
+    callback theme-selected(int);
+    callback quit();
+
+    Menu {
+        MenuItem {
+            title: "Quick search";
+            activated => { root.quick-search(); }
+        }
+        MenuItem {
+            title: "Open vault";
+            activated => { root.open-vault(); }
+        }
+        MenuItem {
+            title: "Generator";
+            activated => { root.generator(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: root.locked ? "Unlock" : "Lock";
+            enabled: root.logged-in;
+            activated => { root.lock-toggle(); }
+        }
+        MenuItem {
+            title: "Sync now";
+            enabled: !root.locked;
+            activated => { root.sync-now(); }
+        }
+        Menu {
+            title: "Accounts";
+            for account[i] in root.accounts: MenuItem {
+                title: account;
+                activated => { root.switch-account(i); }
+            }
+        }
+        Menu {
+            title: "Theme";
+            for choice[i] in ["System", "Light", "Dark"]: MenuItem {
+                title: (i == root.theme-index ? "✓ " : "    ") + choice;
+                activated => { root.theme-selected(i); }
+            }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+}

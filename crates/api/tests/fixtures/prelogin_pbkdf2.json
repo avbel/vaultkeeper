@@ -1,0 +1,13 @@
+{
+  "kdf": 0,
+  "kdfIterations": 5000,
+  "kdfMemory": null,
+  "kdfParallelism": null,
+  "kdfSettings": {
+    "iterations": 5000,
+    "kdfType": 0,
+    "memory": null,
+    "parallelism": null
+  },
+  "salt": null
+}

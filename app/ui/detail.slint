@@ -1,0 +1,553 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Clock } from "theme.slint";
+import { Btn, BtnKind, Check, CopyBtn, Divider, Field, Icon, IconBtn, InlineConfirm, KindChip, MultiField, SectionLabel, Select, Spinner, TotpRing } from "kit.slint";
+
+export struct DetailHeader {
+    name: string,
+    kind: int,
+    kind-label: string,
+    location: string,
+    favorite: bool,
+    deleted: bool,
+    editable: bool,
+}
+
+// Field kinds: 0 text, 1 URI, 2 TOTP, 3 multiline. Secret values arrive masked until revealed.
+export struct DetailField {
+    label: string,
+    value: string,
+    mono: bool,
+    secret: bool,
+    revealed: bool,
+    copy: int,
+    kind: int,
+}
+
+export struct AttachmentRow {
+    name: string,
+    size: string,
+}
+
+export struct EditField {
+    key: string,
+    label: string,
+    value: string,
+    secret: bool,
+    multiline: bool,
+    mono: bool,
+    generate: bool,
+}
+
+component DetailFieldRow inherits Rectangle {
+    in property <DetailField> field;
+    in property <string> totp-code;
+    in property <int> totp-expires;
+    in property <int> totp-period;
+    callback copy() -> bool;
+    callback reveal();
+    callback open();
+
+    property <int> remaining: root.totp-expires - Clock.now;
+    min-height: field.kind == 3 ? 48px * Theme.scale : 32px * Theme.scale;
+    HorizontalLayout {
+        spacing: Theme.s2;
+        Text {
+            width: 96px;
+            text: root.field.label;
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+            font-weight: 500;
+            vertical-alignment: root.field.kind == 3 ? top : center;
+            overflow: elide;
+        }
+        if root.field.kind != 2: Text {
+            text: root.field.value;
+            color: root.field.kind == 1 ? Theme.accent : Theme.text;
+            font-size: Theme.font-body;
+            font-family: root.field.mono || (root.field.secret && !root.field.revealed) ? Theme.mono : "";
+            vertical-alignment: root.field.kind == 3 ? top : center;
+            wrap: root.field.kind == 3 ? word-wrap : no-wrap;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: AccessibleRole.text;
+            accessible-label: root.field.label;
+            accessible-value: self.text;
+        }
+        if root.field.kind == 2: HorizontalLayout {
+            spacing: Theme.s2;
+            horizontal-stretch: 1;
+            Text {
+                text: root.totp-code;
+                font-family: Theme.mono;
+                font-size: Theme.font-totp;
+                font-weight: 500;
+                letter-spacing: 1px;
+                color: root.remaining < 5 ? Theme.warn-text : Theme.text;
+                animate color { duration: 300ms; }
+                vertical-alignment: center;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "TOTP code";
+                accessible-value: self.text;
+            }
+            TotpRing {
+                y: (parent.height - self.height) / 2;
+                remaining: root.remaining;
+                period: root.totp-period;
+            }
+            Text {
+                text: root.remaining + "s";
+                color: root.remaining < 5 ? Theme.warn-text : Theme.text-muted;
+                font-size: Theme.font-hint;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.field.secret: IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: root.field.revealed ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg");
+            label: (root.field.revealed ? "Hide " : "Reveal ") + root.field.label;
+            clicked => { root.reveal(); }
+        }
+        if root.field.kind == 1: IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("icons/external.svg");
+            label: "Open " + root.field.label;
+            hint: "⌘⇧Return";
+            clicked => { root.open(); }
+        }
+        if root.field.copy >= 0: CopyBtn {
+            y: (parent.height - self.height) / 2;
+            code: root.field.copy;
+            label: "Copy " + root.field.label;
+            emphasized: true;
+            copy => { return root.copy(); }
+        }
+    }
+}
+
+// Inline master password confirmation for items marked "Ask for master password".
+component RepromptRow inherits Rectangle {
+    in property <string> error;
+    callback submit(string);
+    callback cancel();
+
+    border-radius: Theme.radius-control;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        padding: Theme.s3;
+        spacing: Theme.s2;
+        Text {
+            text: "This item asks for your master password before showing or copying secrets.";
+            color: Theme.text;
+            font-size: Theme.font-hint;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.s2;
+            password := Field {
+                placeholder: "Master password";
+                label: "Reprompt master password";
+                password: true;
+                invalid: root.error != "";
+                accepted(text) => { root.submit(text); }
+                init => { self.focus-input(); }
+            }
+            Btn {
+                y: (parent.height - self.height) / 2;
+                text: "Confirm";
+                label: "Confirm master password";
+                kind: BtnKind.primary;
+                clicked => { root.submit(password.text); }
+            }
+            Btn {
+                y: (parent.height - self.height) / 2;
+                text: "Cancel";
+                label: "Cancel reprompt";
+                kind: BtnKind.ghost;
+                clicked => { root.cancel(); }
+            }
+        }
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.danger;
+            font-size: Theme.font-hint;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Reprompt error";
+            accessible-value: self.text;
+        }
+    }
+}
+
+component AttachmentsSection inherits VerticalLayout {
+    in property <[AttachmentRow]> attachments;
+    in property <bool> busy;
+    in property <string> status;
+    in property <bool> online;
+    in-out property <int> confirm-index: -1;
+    callback save(int);
+    callback delete(int);
+    callback attach();
+
+    spacing: Theme.s1;
+    HorizontalLayout {
+        spacing: Theme.s2;
+        SectionLabel {
+            text: "ATTACHMENTS";
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.busy: Spinner {
+            y: (parent.height - self.height) / 2;
+        }
+        if root.busy: Text {
+            text: root.status;
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+            vertical-alignment: center;
+        }
+        Btn {
+            text: "+ Attach file";
+            kind: BtnKind.ghost;
+            enabled: root.online && !root.busy;
+            clicked => { root.attach(); }
+        }
+    }
+    if !root.online: Text {
+        text: "Offline · attachments need a server connection";
+        color: Theme.text-muted;
+        font-size: Theme.font-hint;
+    }
+    if root.attachments.length == 0 && root.online: Text {
+        text: "No attachments";
+        color: Theme.text-muted;
+        font-size: Theme.font-hint;
+    }
+    for attachment[i] in root.attachments: VerticalLayout {
+        if root.confirm-index != i: HorizontalLayout {
+            spacing: Theme.s2;
+            min-height: 32px * Theme.scale;
+            Icon {
+                y: (parent.height - self.height) / 2;
+                source: @image-url("icons/paperclip.svg");
+                tint: Theme.text-muted;
+            }
+            Text {
+                text: attachment.name;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: attachment.size;
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                vertical-alignment: center;
+            }
+            Btn {
+                y: (parent.height - self.height) / 2;
+                text: "Save…";
+                label: "Save " + attachment.name;
+                kind: BtnKind.ghost;
+                enabled: root.online && !root.busy;
+                clicked => { root.save(i); }
+            }
+            IconBtn {
+                y: (parent.height - self.height) / 2;
+                icon: @image-url("icons/trash.svg");
+                label: "Delete " + attachment.name;
+                enabled: root.online && !root.busy;
+                clicked => { root.confirm-index = i; }
+            }
+        }
+        if root.confirm-index == i: InlineConfirm {
+            question: "Delete " + attachment.name + "?";
+            subject: "delete " + attachment.name;
+            confirmed => {
+                root.confirm-index = -1;
+                root.delete(i);
+            }
+            cancelled => { root.confirm-index = -1; }
+        }
+    }
+}
+
+export component DetailView inherits Rectangle {
+    in property <DetailHeader> header;
+    in property <[DetailField]> fields;
+    in property <string> totp-code;
+    in property <int> totp-expires;
+    in property <int> totp-period: 30;
+    in-out property <bool> confirm-delete: false;
+    in property <[AttachmentRow]> attachments;
+    in property <bool> attach-busy;
+    in property <string> attach-status;
+    in property <bool> online: true;
+    in-out property <int> attachment-confirm: -1;
+    in property <[string]> folder-options;
+    in-out property <int> folder-index;
+    in property <bool> reprompt-visible;
+    in property <string> reprompt-error;
+    callback reprompt-submit(string);
+    callback reprompt-cancel();
+    callback copy-field(int) -> bool;
+    callback reveal-field(int);
+    callback open-uri(int);
+    callback toggle-favorite();
+    callback edit();
+    callback delete-confirmed();
+    callback restore();
+    callback move-to-folder(int);
+    callback attachment-save(int);
+    callback attachment-delete(int);
+    callback attach-file();
+
+    background: Theme.surface;
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.s4;
+            spacing: Theme.s2;
+            HorizontalLayout {
+                spacing: Theme.s3;
+                KindChip {
+                    y: (parent.height - self.height) / 2;
+                    kind: root.header.kind;
+                    size: 28px;
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.header.name;
+                        color: Theme.text;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                        letter-spacing: -0.2px;
+                        overflow: elide;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Item name";
+                        accessible-value: self.text;
+                    }
+                    Text {
+                        text: root.header.kind-label + (root.header.location != "" ? " · " + root.header.location : "");
+                        color: Theme.text-muted;
+                        font-size: Theme.font-hint;
+                        overflow: elide;
+                    }
+                }
+                if !root.header.deleted: IconBtn {
+                    y: (parent.height - self.height) / 2;
+                    icon: root.header.favorite ? @image-url("icons/star-fill.svg") : @image-url("icons/star.svg");
+                    tint: root.header.favorite ? Theme.warn : Theme.text-muted;
+                    label: root.header.favorite ? "Remove from favorites" : "Add to favorites";
+                    hint: "⌘⇧F";
+                    enabled: root.header.editable && root.online;
+                    clicked => { root.toggle-favorite(); }
+                }
+            }
+            if !root.header.deleted && root.header.editable: HorizontalLayout {
+                spacing: Theme.s2;
+                Text {
+                    text: "Folder";
+                    width: 96px;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+                Select {
+                    label: "Move to folder";
+                    options: root.folder-options;
+                    index <=> root.folder-index;
+                    enabled: root.online;
+                    selected(i) => { root.move-to-folder(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Divider { }
+            if root.reprompt-visible: RepromptRow {
+                error: root.reprompt-error;
+                submit(password) => { root.reprompt-submit(password); }
+                cancel => { root.reprompt-cancel(); }
+            }
+            for field[i] in root.fields: DetailFieldRow {
+                field: field;
+                totp-code: root.totp-code;
+                totp-expires: root.totp-expires;
+                totp-period: root.totp-period;
+                copy => { return root.copy-field(i); }
+                reveal => { root.reveal-field(i); }
+                open => { root.open-uri(i); }
+            }
+            Divider { }
+            AttachmentsSection {
+                attachments: root.attachments;
+                busy: root.attach-busy;
+                status: root.attach-status;
+                online: root.online;
+                confirm-index <=> root.attachment-confirm;
+                save(i) => { root.attachment-save(i); }
+                delete(i) => { root.attachment-delete(i); }
+                attach => { root.attach-file(); }
+            }
+            Divider { }
+            if !root.confirm-delete: HorizontalLayout {
+                spacing: Theme.s2;
+                alignment: start;
+                if !root.header.deleted && root.header.editable: Btn {
+                    text: "Edit";
+                    hint: "⌘E";
+                    has-icon: true;
+                    icon: @image-url("icons/edit.svg");
+                    enabled: root.online;
+                    clicked => { root.edit(); }
+                }
+                if root.header.deleted: Btn {
+                    text: "Restore";
+                    enabled: root.online;
+                    clicked => { root.restore(); }
+                }
+                if root.header.editable: Btn {
+                    text: root.header.deleted ? "Delete permanently" : "Delete";
+                    kind: BtnKind.danger;
+                    enabled: root.online;
+                    clicked => { root.confirm-delete = true; }
+                }
+            }
+            if root.confirm-delete: InlineConfirm {
+                question: root.header.deleted ? "Delete forever?" : "Delete?";
+                subject: "delete";
+                confirmed => {
+                    root.confirm-delete = false;
+                    root.delete-confirmed();
+                }
+                cancelled => { root.confirm-delete = false; }
+            }
+            if !root.online: Text {
+                text: "Offline · changes need the server; they are disabled until it is reachable";
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+export component EditForm inherits Rectangle {
+    in property <string> title;
+    in property <[EditField]> fields;
+    in property <string> error;
+    in-out property <bool> favorite;
+    in-out property <bool> reprompt;
+    in property <[string]> folder-options;
+    in-out property <int> folder-index;
+    in property <bool> saving;
+    in property <bool> can-add-uri;
+    callback generate(int);
+    callback add-uri();
+    callback save();
+    callback cancel();
+
+    background: Theme.surface;
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.s4;
+            spacing: Theme.s2;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-title;
+                font-weight: 600;
+                letter-spacing: -0.2px;
+            }
+            for field[i] in root.fields: VerticalLayout {
+                spacing: Theme.s1;
+                Text {
+                    text: field.label;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    font-weight: 500;
+                }
+                if !field.multiline: HorizontalLayout {
+                    spacing: Theme.s1;
+                    Field {
+                        label: field.label;
+                        text <=> field.value;
+                        password: field.secret;
+                        mono: field.mono;
+                        horizontal-stretch: 1;
+                    }
+                    if field.generate: IconBtn {
+                        y: (parent.height - self.height) / 2;
+                        icon: @image-url("icons/refresh.svg");
+                        label: "Generate " + field.label;
+                        clicked => { root.generate(i); }
+                    }
+                }
+                if field.multiline: MultiField {
+                    label: field.label;
+                    text <=> field.value;
+                    mono: field.mono;
+                }
+            }
+            if root.can-add-uri: HorizontalLayout {
+                alignment: start;
+                Btn {
+                    text: "+ Add URI";
+                    kind: BtnKind.ghost;
+                    clicked => { root.add-uri(); }
+                }
+            }
+            Text {
+                text: "Folder";
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                font-weight: 500;
+            }
+            HorizontalLayout {
+                alignment: start;
+                Select {
+                    width: 220px;
+                    label: "Folder";
+                    options: root.folder-options;
+                    index <=> root.folder-index;
+                }
+            }
+            Check { text: "Favorite"; checked <=> root.favorite; }
+            Check { text: "Ask for master password"; checked <=> root.reprompt; }
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Edit error";
+                accessible-value: self.text;
+            }
+            HorizontalLayout {
+                spacing: Theme.s2;
+                alignment: start;
+                Btn {
+                    text: root.saving ? "Saving…" : "Save";
+                    kind: BtnKind.primary;
+                    enabled: !root.saving;
+                    clicked => { root.save(); }
+                }
+                Btn {
+                    text: "Cancel";
+                    hint: "Esc";
+                    enabled: !root.saving;
+                    clicked => { root.cancel(); }
+                }
+                if root.saving: Spinner {
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}

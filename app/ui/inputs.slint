@@ -1,0 +1,546 @@
+import { Theme } from "theme.slint";
+import { Icon, IconBtn, KeyCap } from "widgets.slint";
+
+// Single-line input: 1 px border, a 2 px outer focus ring that does not change its size, a danger
+// border when invalid, optional leading icon, trailing key cap and reveal toggle.
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <string> label: placeholder;
+    in property <bool> password: false;
+    in property <bool> mono: false;
+    in property <bool> enabled: true;
+    in property <bool> invalid: false;
+    in property <length> font-size: Theme.font-body;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <string> cap;
+    // The Quick Panel's borderless search draws no focus ring.
+    in property <bool> ring: true;
+    in-out property <bool> revealed: false;
+    out property <bool> has-focus: input.has-focus;
+    callback edited(string);
+    callback accepted(string);
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    public function select-everything() {
+        input.select-all();
+    }
+
+    forward-focus: input;
+    min-height: Theme.field-height;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: invalid ? Theme.danger : Theme.border;
+    opacity: enabled ? 1 : 0.5;
+
+    if input.has-focus && !root.invalid && root.ring: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
+        border-radius: root.border-radius + 2px;
+        border-width: Theme.focus-ring;
+        border-color: Theme.accent.with-alpha(0.55);
+    }
+
+    HorizontalLayout {
+        padding-left: root.has-icon ? Theme.s2 : 10px;
+        padding-right: root.password ? 2px : Theme.s2;
+        spacing: Theme.s2;
+        if root.has-icon: Icon {
+            y: (parent.height - self.height) / 2;
+            source: root.icon;
+            tint: Theme.text-muted;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            input := TextInput {
+                width: 100%;
+                height: 100%;
+                text <=> root.text;
+                enabled: root.enabled;
+                single-line: true;
+                vertical-alignment: center;
+                color: Theme.text;
+                font-size: root.font-size;
+                font-family: root.mono || (root.password && !root.revealed) ? Theme.mono : "";
+                selection-background-color: Theme.selection-hover;
+                selection-foreground-color: Theme.text;
+                input-type: root.password && !root.revealed ? InputType.password : InputType.text;
+                accessible-role: text-input;
+                accessible-label: root.label;
+                accessible-value: self.text;
+                accessible-placeholder-text: root.placeholder;
+                accessible-action-set-value(value) => {
+                    self.text = value;
+                    root.edited(value);
+                }
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(self.text); }
+            }
+            if root.text == "": Text {
+                x: 0;
+                height: 100%;
+                text: root.placeholder;
+                color: Theme.text-muted;
+                font-size: root.font-size;
+                vertical-alignment: center;
+            }
+        }
+        if root.cap != "" && root.text == "": KeyCap {
+            y: (parent.height - self.height) / 2;
+            text: root.cap;
+        }
+        if root.password: IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: root.revealed ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg");
+            label: root.revealed ? "Hide " + root.label : "Show " + root.label;
+            clicked => { root.revealed = !root.revealed; }
+        }
+    }
+}
+
+export component MultiField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> label;
+    in property <bool> mono: false;
+    in property <bool> enabled: true;
+    callback edited(string);
+
+    forward-focus: input;
+    min-height: 72px * Theme.scale;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    clip: true;
+
+    input := TextInput {
+        x: 10px;
+        y: Theme.s2;
+        width: parent.width - 20px;
+        height: parent.height - 2 * Theme.s2;
+        text <=> root.text;
+        enabled: root.enabled;
+        single-line: false;
+        wrap: word-wrap;
+        color: Theme.text;
+        font-size: Theme.font-body;
+        font-family: root.mono ? Theme.mono : "";
+        selection-background-color: Theme.selection-hover;
+        accessible-role: text-input;
+        accessible-label: root.label;
+        accessible-value: self.text;
+        accessible-action-set-value(value) => {
+            self.text = value;
+            root.edited(value);
+        }
+        edited => { root.edited(self.text); }
+    }
+}
+
+export component Check inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    min-height: 24px * Theme.scale;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.flip(); }
+
+    function flip() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.flip(); }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.s2;
+        alignment: start;
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: root.checked ? Theme.accent : Theme.surface;
+            border-width: root.checked ? 0px : 1px;
+            border-color: Theme.border;
+            animate background { duration: 100ms; }
+            if root.checked: Icon {
+                width: 12px;
+                height: 12px;
+                source: @image-url("icons/check.svg");
+                tint: Theme.accent-fg;
+            }
+        }
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Settings toggle: 36×20 track, 16 px knob sliding in 160 ms.
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> text;
+    in property <string> description;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    min-height: 32px * Theme.scale;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: switch;
+    accessible-label: root.text;
+    accessible-description: root.description;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.flip(); }
+
+    function flip() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.flip(); }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.s3;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.text;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                wrap: word-wrap;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+            }
+        }
+        Rectangle {
+            width: 36px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 10px;
+            background: root.checked ? Theme.accent : Theme.surface-raised;
+            border-width: root.checked ? 0px : 1px;
+            border-color: Theme.border;
+            animate background { duration: 160ms; easing: ease-out; }
+            Rectangle {
+                x: root.checked ? 18px : 2px;
+                y: 2px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: root.checked ? Theme.accent-fg : Theme.text-muted;
+                animate x { duration: 160ms; easing: ease-out; }
+            }
+        }
+    }
+}
+
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> index;
+    in property <string> label;
+    callback selected(int);
+
+    height: Theme.control-height;
+    border-radius: Theme.radius-control;
+    background: Theme.surface-raised;
+    accessible-role: tab-list;
+    accessible-label: root.label;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for option[i] in root.options: Rectangle {
+            border-radius: Theme.radius-control - 2px;
+            background: i == root.index ? Theme.surface : transparent;
+            border-width: i == root.index ? 1px : 0px;
+            border-color: Theme.border-subtle;
+            animate background { duration: 100ms; }
+            accessible-role: tab;
+            accessible-label: option;
+            accessible-item-selected: i == root.index;
+            accessible-action-default => {
+                root.index = i;
+                root.selected(i);
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.index = i;
+                    root.selected(i);
+                }
+            }
+            Text {
+                text: option;
+                color: i == root.index ? Theme.text : Theme.text-muted;
+                font-size: Theme.font-body;
+                font-weight: i == root.index ? 500 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component PopupPanel inherits Rectangle {
+    background: Theme.surface-popup;
+    border-radius: Theme.radius-popup;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.shadow-blur;
+    drop-shadow-offset-y: Theme.shadow-y;
+    drop-shadow-color: Theme.shadow;
+}
+
+export component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> danger: false;
+    in property <bool> selected: false;
+    callback clicked();
+    height: 28px * Theme.scale;
+    border-radius: Theme.radius-control;
+    background: ta.has-hover ? Theme.hover : selected ? Theme.selection : transparent;
+    animate background { duration: 100ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-action-default => { root.clicked(); }
+    ta := TouchArea { clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.text;
+            color: root.danger ? Theme.danger : Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: root.hint;
+            color: Theme.text-muted;
+            font-size: Theme.font-meta;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Compact select: shows the current option and opens a popup list.
+export component Select inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> index;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback selected(int);
+
+    height: Theme.control-height;
+    min-width: 120px;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.index >= 0 && root.index < root.options.length ? root.options[root.index] : "";
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: Theme.s2;
+        spacing: Theme.s1;
+        Text {
+            text: root.index >= 0 && root.index < root.options.length ? root.options[root.index] : "";
+            color: Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Icon {
+            y: (parent.height - self.height) / 2;
+            width: 12px;
+            height: 12px;
+            source: @image-url("icons/chevron-down.svg");
+            tint: Theme.text-muted;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + Theme.s1;
+        width: max(root.width, 180px);
+        PopupPanel {
+            VerticalLayout {
+                padding: Theme.s1;
+                for option[i] in root.options: MenuRow {
+                    text: option;
+                    selected: i == root.index;
+                    clicked => {
+                        root.index = i;
+                        root.selected(i);
+                        popup.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component Stepper inherits Rectangle {
+    in-out property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 9;
+    in property <string> label;
+    callback changed-value(int);
+
+    height: Theme.control-height;
+    width: 96px;
+    border-radius: Theme.radius-control;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface;
+    accessible-role: spinbox;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-action-increment => { root.step(1); }
+    accessible-action-decrement => { root.step(-1); }
+
+    function step(delta: int) {
+        if root.value + delta >= root.minimum && root.value + delta <= root.maximum {
+            root.value += delta;
+            root.changed-value(root.value);
+        }
+    }
+
+    HorizontalLayout {
+        TouchArea {
+            width: 28px;
+            clicked => { root.step(-1); }
+            Text { text: "−"; color: Theme.text; font-size: Theme.font-title; }
+        }
+        Text {
+            text: root.value;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            font-weight: 500;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        TouchArea {
+            width: 28px;
+            clicked => { root.step(1); }
+            Text { text: "+"; color: Theme.text; font-size: Theme.font-title; }
+        }
+    }
+}
+
+export component SliderBar inherits Rectangle {
+    in-out property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    in property <string> label;
+    callback changed-value(int);
+
+    property <float> fraction: (value - minimum) / max(1, maximum - minimum);
+    height: 20px;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-action-increment => { root.set-value(root.value + 1); }
+    accessible-action-decrement => { root.set-value(root.value - 1); }
+    accessible-action-set-value(v) => { root.set-value(v.to-float()); }
+
+    function set-value(v: float) {
+        if round(Math.clamp(v, root.minimum, root.maximum)) != root.value {
+            root.value = round(Math.clamp(v, root.minimum, root.maximum));
+            root.changed-value(root.value);
+        }
+    }
+
+    function from-x(x: length) {
+        root.set-value(root.minimum + (x / root.width) * (root.maximum - root.minimum));
+    }
+
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.surface-raised;
+    }
+    Rectangle {
+        x: 0;
+        y: (parent.height - 4px) / 2;
+        width: root.fraction * root.width;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.accent;
+    }
+    Rectangle {
+        x: root.fraction * (root.width - self.width);
+        width: 16px;
+        height: 16px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 8px;
+        background: Theme.surface;
+        border-width: 2px;
+        border-color: Theme.accent;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.from-x(self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.from-x(self.mouse-x);
+            }
+        }
+    }
+}

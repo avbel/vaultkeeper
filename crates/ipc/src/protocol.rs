@@ -1,0 +1,330 @@
+//! Messages exchanged over the socket.
+//!
+//! Compatibility rule: [`UiMessage::Hello`], [`DaemonMessage::Refused`] and [`Refusal`] keep their
+//! variant positions and fields forever, so a UI and a daemon of different versions can still
+//! tell each other that they differ. Everything else may change with [`PROTOCOL_VERSION`].
+
+use std::{sync::Arc, time::Duration};
+
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+use crate::dto::{
+    AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemDraftDto,
+    ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SessionStateDto, SshKeyDto,
+    TotpCodeDto, TwoFactorAnswerDto, WireError,
+};
+
+pub const PROTOCOL_VERSION: u32 = 1;
+
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Login waits on the KDF and the server, sync and attachments on transfers.
+const LONG_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// UI -> daemon.
+#[derive(Serialize, Deserialize)]
+pub enum UiMessage {
+    /// First message on every connection.
+    Hello {
+        protocol_version: u32,
+    },
+    Request {
+        id: u64,
+        call: Call,
+    },
+    SshApprovalReply {
+        request_id: u64,
+        approved: bool,
+    },
+}
+
+/// Daemon -> UI.
+#[derive(Serialize, Deserialize)]
+pub enum DaemonMessage {
+    /// Sent instead of [`DaemonMessage::Welcome`]; the daemon closes the socket right after.
+    Refused(Refusal),
+    Welcome(Box<Welcome>),
+    Response {
+        id: u64,
+        result: Result<Reply, WireError>,
+    },
+    Event(Event),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Refusal {
+    VersionMismatch {
+        daemon: u32,
+    },
+    /// Another UI process holds the connection.
+    Busy,
+}
+
+/// The handshake answer; it fills the client cache before the first call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Welcome {
+    pub protocol_version: u32,
+    /// Current value of the vault's `changes()` counter.
+    pub revision: u64,
+    pub snapshot: Snapshot,
+}
+
+/// What the UI reads synchronously and often, cached in the UI process. The daemon sends a fresh
+/// one before every `Changed` and before the response to any state-changing call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub state: SessionStateDto,
+    pub accounts: Vec<AccountDto>,
+    pub is_offline: bool,
+    pub folders: Result<Vec<FolderDto>, WireError>,
+    pub organizations: Result<Vec<OrganizationDto>, WireError>,
+    pub collections: Result<Vec<CollectionDto>, WireError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Event {
+    Snapshot(Box<Snapshot>),
+    /// New value of the vault's `changes()` counter.
+    Changed(u64),
+    OfflineChanged(bool),
+    Command(UiCommand),
+    /// Answer with [`UiMessage::SshApprovalReply`] carrying the same `request_id`.
+    SshApproval {
+        request_id: u64,
+        prompt: SshPrompt,
+    },
+    /// The daemon is quitting; the UI process should exit.
+    Shutdown,
+}
+
+/// What the daemon asks the UI process to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UiCommand {
+    ShowManager,
+    ShowQuickPanel,
+    ShowUnlock,
+    ShowLogin,
+    ShowSettings,
+    ShowGenerator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SshApprovalKind {
+    /// A sign request for one key.
+    Sign,
+    /// The agent wants to list keys before the vault was first unlocked.
+    List,
+}
+
+/// Everything the approval window shows; the daemon resolves key names and fingerprints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshPrompt {
+    pub kind: SshApprovalKind,
+    pub process: String,
+    pub pid: Option<u32>,
+    pub key_name: String,
+    pub fingerprint: String,
+    /// e.g. "git commit signing" or "agent forwarding".
+    pub purpose: Option<String>,
+}
+
+/// One variant per `VaultService` method. Paths travel as raw OS bytes.
+#[derive(Serialize, Deserialize)]
+pub enum Call {
+    State,
+    Changes,
+    Login {
+        request: LoginRequestDto,
+        two_factor: Option<TwoFactorAnswerDto>,
+        new_device_otp: Option<String>,
+    },
+    SendEmailCode,
+    UnlockWithPassword(Zeroizing<String>),
+    UnlockWithUserKey(Zeroizing<Vec<u8>>),
+    UserKey,
+    VerifyMasterPassword(Zeroizing<String>),
+    Lock,
+    Logout,
+    Accounts,
+    SwitchAccount(String),
+    BeginAddAccount,
+    Sync,
+    IsOffline,
+    Search {
+        query: String,
+        filter: FilterDto,
+    },
+    Folders,
+    Organizations,
+    Collections,
+    Reveal {
+        id: Arc<str>,
+        field: CopyFieldDto,
+    },
+    Totp {
+        id: Arc<str>,
+        unix_time: u64,
+    },
+    Draft(Arc<str>),
+    Save {
+        id: Option<Arc<str>>,
+        draft: Box<ItemDraftDto>,
+    },
+    Attachments(Arc<str>),
+    DownloadAttachment {
+        id: Arc<str>,
+        attachment_id: String,
+        dest: Vec<u8>,
+    },
+    UploadAttachment {
+        id: Arc<str>,
+        source: Vec<u8>,
+    },
+    DeleteAttachment {
+        id: Arc<str>,
+        attachment_id: String,
+    },
+    Trash(Arc<str>),
+    Restore(Arc<str>),
+    DeletePermanently(Arc<str>),
+    CreateFolder(String),
+    RenameFolder {
+        id: String,
+        name: String,
+    },
+    DeleteFolder(String),
+    SshKeys,
+}
+
+impl Call {
+    /// How long the client waits for the response.
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        match self {
+            Self::Login { .. }
+            | Self::Sync
+            | Self::DownloadAttachment { .. }
+            | Self::UploadAttachment { .. }
+            | Self::DeleteAttachment { .. } => LONG_TIMEOUT,
+            _ => DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Calls that may change what [`Snapshot`] holds; the daemon refreshes the client's cache
+    /// before it answers them, even when the vault did not bump its change counter.
+    #[must_use]
+    pub const fn changes_state(&self) -> bool {
+        !matches!(
+            self,
+            Self::State
+                | Self::Changes
+                | Self::UserKey
+                | Self::VerifyMasterPassword(_)
+                | Self::Accounts
+                | Self::IsOffline
+                | Self::Search { .. }
+                | Self::Folders
+                | Self::Organizations
+                | Self::Collections
+                | Self::Reveal { .. }
+                | Self::Totp { .. }
+                | Self::Draft(_)
+                | Self::Attachments(_)
+                | Self::DownloadAttachment { .. }
+                | Self::SshKeys
+        )
+    }
+}
+
+/// The successful result of a [`Call`].
+#[derive(Serialize, Deserialize)]
+pub enum Reply {
+    Unit,
+    Bool(bool),
+    Revision(u64),
+    State(SessionStateDto),
+    LoginStep(LoginStepDto),
+    UserKey(Zeroizing<Vec<u8>>),
+    Accounts(Vec<AccountDto>),
+    Items(Vec<ItemSummaryDto>),
+    Folders(Vec<FolderDto>),
+    Organizations(Vec<OrganizationDto>),
+    Collections(Vec<CollectionDto>),
+    Secret(Zeroizing<String>),
+    Totp(TotpCodeDto),
+    Draft(Box<ItemDraftDto>),
+    ItemId(Arc<str>),
+    Attachments(Vec<AttachmentDto>),
+    Attachment(AttachmentDto),
+    Folder(FolderDto),
+    SshKeys(Vec<SshKeyDto>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::{HEADER_LEN, decode, encode};
+
+    #[test]
+    fn handshake_variants_keep_their_wire_positions() {
+        let refused = encode(&DaemonMessage::Refused(Refusal::VersionMismatch {
+            daemon: 7,
+        }))
+        .expect("encode");
+        // Refused = variant 0, VersionMismatch = variant 0, then the version as a varint.
+        assert_eq!(&refused[HEADER_LEN..], &[0, 0, 7]);
+        let busy = encode(&DaemonMessage::Refused(Refusal::Busy)).expect("encode");
+        assert_eq!(&busy[HEADER_LEN..], &[0, 1]);
+    }
+
+    #[test]
+    fn network_calls_get_the_long_timeout() {
+        assert_eq!(Call::Sync.timeout(), LONG_TIMEOUT);
+        assert_eq!(
+            Call::UploadAttachment {
+                id: "i".into(),
+                source: Vec::new()
+            }
+            .timeout(),
+            LONG_TIMEOUT
+        );
+        assert_eq!(Call::Folders.timeout(), DEFAULT_TIMEOUT);
+        assert_eq!(Call::Lock.timeout(), DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn reads_do_not_change_state_and_writes_do() {
+        assert!(!Call::State.changes_state());
+        assert!(
+            !Call::Search {
+                query: String::new(),
+                filter: FilterDto::default()
+            }
+            .changes_state()
+        );
+        assert!(Call::Lock.changes_state());
+        assert!(Call::UnlockWithPassword(Zeroizing::new(String::new())).changes_state());
+        assert!(Call::SwitchAccount("a".to_owned()).changes_state());
+        assert!(Call::CreateFolder("x".to_owned()).changes_state());
+    }
+
+    #[test]
+    fn requests_decode_back() {
+        let frame = encode(&UiMessage::Request {
+            id: 9,
+            call: Call::Reveal {
+                id: "item".into(),
+                field: CopyFieldDto::Custom(2),
+            },
+        })
+        .expect("encode");
+        let UiMessage::Request {
+            id: 9,
+            call: Call::Reveal { id, field },
+        } = decode(&frame[HEADER_LEN..]).expect("decode")
+        else {
+            panic!("wrong message");
+        };
+        assert_eq!((id.as_ref(), field), ("item", CopyFieldDto::Custom(2)));
+    }
+}

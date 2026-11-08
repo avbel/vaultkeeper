@@ -1,0 +1,33 @@
+[package]
+name = "bwl-ipc"
+description = "Daemon <-> UI process IPC: VaultService proxy over a local socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Error mirrors: the vault's error tree wraps these crates' error types.
+bwl-api.workspace = true
+bwl-crypto.workspace = true
+bwl-gen.workspace = true
+bwl-vault.workspace = true
+# Peer credentials and executable path of the connecting process.
+libc = "0.2.191"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+# `rc`: list DTOs share the vault's `Arc<str>` fields instead of copying them.
+serde = { workspace = true, features = ["rc"] }
+# Rebuilds `serde_json::Error` payloads (cache / decode errors) on the client side.
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tracing.workspace = true
+url.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+
+[lints]
+workspace = true

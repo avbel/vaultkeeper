@@ -27,6 +27,16 @@ pub enum SessionState {
     Unlocked { server: Url, email: String },
 }
 
+/// A saved account. Only the active one can be unlocked; the others stay locked or logged out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountView {
+    pub id: Arc<str>,
+    pub server: Url,
+    pub email: Arc<str>,
+    pub active: bool,
+    pub logged_in: bool,
+}
+
 /// One list row. Contains no secrets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemSummary {
@@ -183,6 +193,14 @@ pub struct TwoFactorAnswer {
     pub provider: TwoFactorProvider,
     pub code: String,
     pub remember: bool,
+}
+
+/// File attached to an item. The content is never held decrypted in memory as a whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentView {
+    pub id: Arc<str>,
+    pub file_name: Arc<str>,
+    pub size_bytes: u64,
 }
 
 /// Key material handed to the SSH agent after unlock/sync.

@@ -1,0 +1,18 @@
+{
+  "message": "Too many login requests",
+  "validationErrors": {
+    "": [
+      "Too many login requests"
+    ]
+  },
+  "errorModel": {
+    "message": "Too many login requests",
+    "object": "error"
+  },
+  "error": "",
+  "error_description": "",
+  "exceptionMessage": null,
+  "exceptionStackTrace": null,
+  "innerExceptionMessage": null,
+  "object": "error"
+}

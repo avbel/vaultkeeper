@@ -1,10 +1,28 @@
+use std::fmt;
+
+use reqwest::{
+    RequestBuilder, StatusCode,
+    multipart::{Form, Part},
+};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    Result,
-    models::{Cipher, CipherRequest, Folder, PreloginResponse, SyncResponse, TokenResponse},
+    Error, Result,
+    http::{Reply, TRANSFER_TIMEOUT, Transport},
+    login::{classify_bad_request, is_invalid_grant},
+    models::{
+        Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, PreloginResponse,
+        SyncResponse, TokenResponse,
+    },
+    token,
 };
+
+const CLIENT_ID: &str = "desktop";
+const SCOPE: &str = "api offline_access";
 
 /// Identifies this installation to the server. `identifier` must be persisted across runs.
 #[derive(Debug, Clone)]
@@ -28,12 +46,45 @@ pub enum TwoFactorProvider {
     RecoveryCode = 8,
 }
 
-#[derive(Debug, Clone)]
+impl TwoFactorProvider {
+    /// Wire id used in `twoFactorProvider` and as a key of `TwoFactorProviders2`.
+    #[must_use]
+    pub const fn id(self) -> u8 {
+        self as u8
+    }
+
+    /// `None` for ids this client does not know, such as the retired U2F provider (4).
+    #[must_use]
+    pub const fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::Authenticator),
+            1 => Some(Self::Email),
+            2 => Some(Self::Duo),
+            3 => Some(Self::YubiKey),
+            5 => Some(Self::Remember),
+            6 => Some(Self::OrganizationDuo),
+            7 => Some(Self::WebAuthn),
+            8 => Some(Self::RecoveryCode),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct TwoFactorToken {
     pub provider: TwoFactorProvider,
     pub token: String,
     /// Ask the server for a remember-device token (`twoFactorRemember=1`).
     pub remember: bool,
+}
+
+impl fmt::Debug for TwoFactorToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TwoFactorToken")
+            .field("provider", &self.provider)
+            .field("remember", &self.remember)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -46,22 +97,35 @@ pub enum LoginOutcome {
 }
 
 /// Self-hosted layout: `{base}/identity/...` and `{base}/api/...`.
+///
+/// Transport failures surface as [`Error::Http`]; wrong passwords, rejected 2FA codes and other
+/// server-side refusals are [`Error::Server`] with the server's own message, so
+/// [`Error::is_offline`] cleanly separates "server unreachable" from "request refused".
 pub struct Client {
-    base: Url,
-    http: reqwest::Client,
+    transport: Transport,
     device: DeviceInfo,
+    device_type: String,
+    device_identifier: String,
 }
 
 impl Client {
     pub fn new(base: Url, device: DeviceInfo) -> Result<Self> {
-        let _ = (base, device);
-        todo!("step 4")
+        let transport = Transport::new(base, device.device_type)?;
+        Ok(Self {
+            transport,
+            device_type: device.device_type.to_string(),
+            device_identifier: device.identifier.to_string(),
+            device,
+        })
     }
 
     /// `POST {base}/identity/accounts/prelogin` with `{"email"}`.
     pub async fn prelogin(&self, email: &str) -> Result<PreloginResponse> {
-        let _ = (email, &self.base, &self.http, &self.device);
-        todo!("step 4")
+        let url = self
+            .transport
+            .endpoint(&["identity", "accounts", "prelogin"])?;
+        self.call(self.transport.post(url).json(&json!({ "email": email })))
+            .await
     }
 
     /// `POST {base}/identity/connect/token`, form-encoded password grant: `grant_type=password`,
@@ -74,37 +138,92 @@ impl Client {
         two_factor: Option<&TwoFactorToken>,
         new_device_otp: Option<&str>,
     ) -> Result<LoginOutcome> {
-        let _ = (email, password_hash, two_factor, new_device_otp);
-        todo!("step 4")
+        let provider = two_factor.map(|factor| factor.provider.id().to_string());
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "password"),
+            ("username", email),
+            ("password", password_hash),
+            ("scope", SCOPE),
+            ("client_id", CLIENT_ID),
+            ("deviceType", &self.device_type),
+            ("deviceIdentifier", &self.device_identifier),
+            ("deviceName", &self.device.name),
+        ];
+        if let (Some(factor), Some(provider)) = (two_factor, provider.as_deref()) {
+            form.push(("twoFactorToken", &factor.token));
+            form.push(("twoFactorProvider", provider));
+            form.push(("twoFactorRemember", if factor.remember { "1" } else { "0" }));
+        }
+        if let Some(otp) = new_device_otp {
+            form.push(("newDeviceOtp", otp));
+        }
+
+        let reply = self.token_request(&form).await?;
+        if reply.status.is_success() {
+            return Ok(LoginOutcome::Success(Box::new(reply.json()?)));
+        }
+        if reply.status == StatusCode::BAD_REQUEST {
+            return classify_bad_request(&reply);
+        }
+        Err(reply.failure())
     }
 
     /// `POST {base}/api/two-factor/send-email-login` so the server emails a 2FA code.
     pub async fn send_email_login(&self, email: &str, password_hash: &str) -> Result<()> {
-        let _ = (email, password_hash);
-        todo!("step 4")
+        let url = self
+            .transport
+            .endpoint(&["api", "two-factor", "send-email-login"])?;
+        let body = json!({
+            "email": email,
+            "masterPasswordHash": password_hash,
+            "deviceIdentifier": self.device_identifier,
+        });
+        self.call_empty(self.transport.post(url).json(&body)).await
     }
 
-    /// `grant_type=refresh_token`, `client_id=desktop`.
+    /// `grant_type=refresh_token`, `client_id=desktop`. A refresh token the server rejects
+    /// (HTTP 400 `invalid_grant`) is reported as [`Error::Unauthorized`]: the caller must log in again.
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenResponse> {
-        let _ = refresh_token;
-        todo!("step 4")
+        let form = [
+            ("grant_type", "refresh_token"),
+            ("client_id", CLIENT_ID),
+            ("refresh_token", refresh_token),
+        ];
+        let reply = self.token_request(&form).await?;
+        if reply.status == StatusCode::BAD_REQUEST && is_invalid_grant(&reply.body) {
+            return Err(Error::Unauthorized);
+        }
+        reply.into_success()?.json()
     }
 
     /// `GET {base}/api/sync?excludeDomains=true`.
     pub async fn sync(&self, access_token: &str) -> Result<SyncResponse> {
-        let _ = access_token;
-        todo!("step 4")
+        let mut url = self.transport.endpoint(&["api", "sync"])?;
+        url.set_query(Some("excludeDomains=true"));
+        self.call(self.transport.get(url).bearer_auth(access_token))
+            .await
     }
 
     /// `POST /api/ciphers` (personal) or `POST /api/ciphers/create` with `collectionIds` (org).
+    ///
+    /// The server rejects writes without `encryptedFor`, the acting user's id; it is taken from
+    /// the access token so callers cannot forget it.
     pub async fn create_cipher(
         &self,
         access_token: &str,
         cipher: &CipherRequest,
         collection_ids: &[String],
     ) -> Result<Cipher> {
-        let _ = (access_token, cipher, collection_ids);
-        todo!("step 4")
+        let body = cipher_body(cipher, access_token)?;
+        let request = if cipher.organization_id.is_some() || !collection_ids.is_empty() {
+            let url = self.transport.endpoint(&["api", "ciphers", "create"])?;
+            let wrapped = json!({ "cipher": body, "collectionIds": collection_ids });
+            self.transport.post(url).json(&wrapped)
+        } else {
+            let url = self.transport.endpoint(&["api", "ciphers"])?;
+            self.transport.post(url).json(&body)
+        };
+        self.call(request.bearer_auth(access_token)).await
     }
 
     /// `PUT /api/ciphers/{id}`.
@@ -114,32 +233,45 @@ impl Client {
         id: &str,
         cipher: &CipherRequest,
     ) -> Result<Cipher> {
-        let _ = (access_token, id, cipher);
-        todo!("step 4")
+        let body = cipher_body(cipher, access_token)?;
+        let url = self.transport.endpoint(&["api", "ciphers", id])?;
+        self.call(
+            self.transport
+                .put(url)
+                .bearer_auth(access_token)
+                .json(&body),
+        )
+        .await
     }
 
     /// Soft delete (`PUT /api/ciphers/{id}/delete`, moves to trash).
     pub async fn trash_cipher(&self, access_token: &str, id: &str) -> Result<()> {
-        let _ = (access_token, id);
-        todo!("step 4")
+        let url = self.transport.endpoint(&["api", "ciphers", id, "delete"])?;
+        self.call_empty(self.transport.put(url).bearer_auth(access_token))
+            .await
     }
 
     /// `PUT /api/ciphers/{id}/restore`.
     pub async fn restore_cipher(&self, access_token: &str, id: &str) -> Result<Cipher> {
-        let _ = (access_token, id);
-        todo!("step 4")
+        let url = self
+            .transport
+            .endpoint(&["api", "ciphers", id, "restore"])?;
+        self.call(self.transport.put(url).bearer_auth(access_token))
+            .await
     }
 
     /// Permanent delete (`DELETE /api/ciphers/{id}`).
     pub async fn delete_cipher(&self, access_token: &str, id: &str) -> Result<()> {
-        let _ = (access_token, id);
-        todo!("step 4")
+        let url = self.transport.endpoint(&["api", "ciphers", id])?;
+        self.call_empty(self.transport.delete(url).bearer_auth(access_token))
+            .await
     }
 
     /// `POST /api/folders` with `{"name": <EncString>}`.
     pub async fn create_folder(&self, access_token: &str, enc_name: &str) -> Result<Folder> {
-        let _ = (access_token, enc_name);
-        todo!("step 4")
+        let url = self.transport.endpoint(&["api", "folders"])?;
+        let request = self.transport.post(url).bearer_auth(access_token);
+        self.call(request.json(&json!({ "name": enc_name }))).await
     }
 
     /// `PUT /api/folders/{id}`.
@@ -149,13 +281,147 @@ impl Client {
         id: &str,
         enc_name: &str,
     ) -> Result<Folder> {
-        let _ = (access_token, id, enc_name);
-        todo!("step 4")
+        let url = self.transport.endpoint(&["api", "folders", id])?;
+        let request = self.transport.put(url).bearer_auth(access_token);
+        self.call(request.json(&json!({ "name": enc_name }))).await
     }
 
     /// `DELETE /api/folders/{id}`.
     pub async fn delete_folder(&self, access_token: &str, id: &str) -> Result<()> {
-        let _ = (access_token, id);
-        todo!("step 4")
+        let url = self.transport.endpoint(&["api", "folders", id])?;
+        self.call_empty(self.transport.delete(url).bearer_auth(access_token))
+            .await
     }
+
+    /// `GET /api/ciphers/{id}/attachment/{attachment_id}`: metadata plus a fresh download URL.
+    pub async fn attachment_info(
+        &self,
+        access_token: &str,
+        cipher_id: &str,
+        attachment_id: &str,
+    ) -> Result<Attachment> {
+        let url = self.attachment_url(cipher_id, attachment_id)?;
+        self.call(self.transport.get(url).bearer_auth(access_token))
+            .await
+    }
+
+    /// Streams an attachment into `writer` without buffering it and returns the byte count.
+    ///
+    /// `url` is the value of [`Attachment::url`]: relative to the server, or absolute on the
+    /// configured server's origin. Any other host is refused with [`Error::UntrustedUrl`] because
+    /// the URL's own token, not an Authorization header, authorizes the download.
+    pub async fn download_attachment(
+        &self,
+        url: &str,
+        mut writer: impl AsyncWrite + Unpin,
+    ) -> Result<u64> {
+        let url = self.transport.resolve_same_origin(url)?;
+        let request = self.transport.get(url).timeout(TRANSFER_TIMEOUT);
+        let mut response = self.transport.open_sensitive(request).await?;
+
+        let mut written = 0_u64;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(reqwest::Error::without_url)?
+        {
+            writer.write_all(&chunk).await?;
+            written += chunk.len() as u64;
+        }
+        writer.flush().await?;
+        Ok(written)
+    }
+
+    /// `POST /api/ciphers/{id}/attachment/v2`: registers the encrypted file name, key and size
+    /// and returns the id to upload the data to.
+    pub async fn create_attachment(
+        &self,
+        access_token: &str,
+        cipher_id: &str,
+        enc_file_name: &str,
+        enc_key: &str,
+        file_size: u64,
+    ) -> Result<AttachmentUpload> {
+        let url = self
+            .transport
+            .endpoint(&["api", "ciphers", cipher_id, "attachment", "v2"])?;
+        let body = json!({ "key": enc_key, "fileName": enc_file_name, "fileSize": file_size });
+        self.call(
+            self.transport
+                .post(url)
+                .bearer_auth(access_token)
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Uploads the encrypted file as the multipart field `data`, streaming `body` (`len` bytes).
+    pub async fn upload_attachment_data(
+        &self,
+        access_token: &str,
+        cipher_id: &str,
+        attachment_id: &str,
+        body: reqwest::Body,
+        len: u64,
+    ) -> Result<()> {
+        let url = self.attachment_url(cipher_id, attachment_id)?;
+        let part = Part::stream_with_length(body, len)
+            .file_name("data")
+            .mime_str("application/octet-stream")?;
+        let request = self
+            .transport
+            .post(url)
+            .bearer_auth(access_token)
+            .multipart(Form::new().part("data", part))
+            .timeout(TRANSFER_TIMEOUT);
+        self.call_empty(request).await
+    }
+
+    /// `DELETE /api/ciphers/{id}/attachment/{attachment_id}`.
+    pub async fn delete_attachment(
+        &self,
+        access_token: &str,
+        cipher_id: &str,
+        attachment_id: &str,
+    ) -> Result<()> {
+        let url = self.attachment_url(cipher_id, attachment_id)?;
+        self.call_empty(self.transport.delete(url).bearer_auth(access_token))
+            .await
+    }
+
+    fn attachment_url(&self, cipher_id: &str, attachment_id: &str) -> Result<Url> {
+        self.transport
+            .endpoint(&["api", "ciphers", cipher_id, "attachment", attachment_id])
+    }
+
+    async fn token_request(&self, form: &[(&str, &str)]) -> Result<Reply> {
+        let url = self.transport.endpoint(&["identity", "connect", "token"])?;
+        self.transport
+            .execute(self.transport.post(url).form(form))
+            .await
+    }
+
+    async fn call<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T> {
+        self.transport
+            .execute(request)
+            .await?
+            .into_success()?
+            .json()
+    }
+
+    async fn call_empty(&self, request: RequestBuilder) -> Result<()> {
+        self.transport.execute(request).await?.into_success()?;
+        Ok(())
+    }
+}
+
+fn cipher_body(cipher: &CipherRequest, access_token: &str) -> Result<Value> {
+    let mut body = serde_json::to_value(cipher)?;
+    if let Value::Object(map) = &mut body {
+        map.insert(
+            "encryptedFor".into(),
+            Value::String(token::subject(access_token)?),
+        );
+    }
+    Ok(body)
 }

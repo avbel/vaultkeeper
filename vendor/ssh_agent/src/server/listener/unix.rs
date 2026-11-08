@@ -34,8 +34,12 @@ impl UnixListener {
     /// Returns an error if the socket path cannot be resolved, the stale socket cannot be removed,
     /// binding fails, or permissions cannot be set.
     pub(crate) fn new() -> Result<Self> {
-        let socket_path = get_socket_path()?;
+        Self::bind(get_socket_path()?)
+    }
 
+    /// bwl patch: same as [`UnixListener::new`] but for a caller-chosen path, so the embedding
+    /// app does not have to set `BITWARDEN_SSH_AUTH_SOCK` process-wide.
+    pub(crate) fn bind(socket_path: PathBuf) -> Result<Self> {
         remove_stale_socket(&socket_path)?;
 
         debug!(?socket_path, "Binding socket");
