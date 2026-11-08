@@ -1,0 +1,27 @@
+[package]
+name = "bwl-crypto"
+description = "Bitwarden-compatible key derivation and EncString crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aes.workspace = true
+argon2.workspace = true
+base64.workspace = true
+cbc.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+rand.workspace = true
+rsa.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

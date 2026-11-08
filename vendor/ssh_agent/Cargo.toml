@@ -1,0 +1,38 @@
+# Vendored from bitwarden/clients apps/desktop/desktop_native/ssh_agent (see ../UPSTREAM.txt).
+# Versions are kept at upstream pins: rsa must stay at 0.9.6 until ssh-key 0.7 is adopted upstream.
+[package]
+name = "ssh_agent"
+edition = "2021"
+license = "GPL-3.0"
+version = "0.0.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0.103"
+async-trait = "0.1.89"
+base64 = "0.22.1"
+mockall = "0.15.0"
+rkyv = "=0.8.17"
+rsa = "=0.9.6"
+secure_memory = { path = "../secure_memory" }
+sha2 = "0.10.9"
+signature = "2.2.0"
+ssh-key = { version = "=0.6.7", features = ["encryption", "ed25519", "p256", "p384", "p521", "rsa", "rand_core"] }
+sysinfo = "0.38.2"
+thiserror = "2.0.17"
+tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync"] }
+tokio-util = "0.7.17"
+tracing = "0.1.44"
+
+[target.'cfg(unix)'.dependencies]
+homedir = "0.3.6"
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Pipes"] }
+
+[dev-dependencies]
+rand = "0.9.3"
+serial_test = "4.0.1"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tracing-subscriber = "0.3.22"

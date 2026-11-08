@@ -1,0 +1,88 @@
+[workspace]
+resolver = "3"
+members = [
+    "app",
+    "crates/api",
+    "crates/crypto",
+    "crates/gen",
+    "crates/platform",
+    "crates/ssh",
+    "crates/vault",
+    "vendor/secure_memory",
+    "vendor/ssh_agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+bwl-api = { path = "crates/api" }
+bwl-crypto = { path = "crates/crypto" }
+bwl-gen = { path = "crates/gen" }
+bwl-platform = { path = "crates/platform" }
+bwl-ssh = { path = "crates/ssh" }
+bwl-vault = { path = "crates/vault" }
+secure_memory = { path = "vendor/secure_memory" }
+ssh_agent = { path = "vendor/ssh_agent" }
+
+aes = "0.9.4"
+aes-gcm = "0.11.1"
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+arboard = "3.7.0"
+auto-launch = "0.6.0"
+base64 = "0.23.1"
+cbc = "0.2.1"
+data-encoding = "2.11.1"
+directories = "6.0.0"
+global-hotkey = "0.9.0"
+hkdf = "0.13.0"
+hmac = "0.13.0"
+interprocess = "2.4.8"
+objc2-local-authentication = "0.3.2"
+p256 = "0.14.0"
+pbkdf2 = "0.13.0"
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form"] }
+rsa = "0.10.0-rc.22"
+security-framework = "3.7.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+slint = "1.18.1"
+subtle = "2.6.1"
+swift-rs = "1.0.9"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = { version = "2.5.8", features = ["serde"] }
+uuid = { version = "1.29.1", features = ["v4", "serde"] }
+wiremock = "0.6.5"
+zeroize = { version = "1.9.1", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Option structs and wire models are naturally bool-heavy.
+struct_excessive_bools = "allow"
+doc_markdown = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

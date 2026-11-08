@@ -1,0 +1,1 @@
+upstream: bitwarden/clients @ 4fe208f3eceb3eba5d9f67cf9201ae7b623ec71a apps/desktop/desktop_native

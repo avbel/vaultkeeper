@@ -1,0 +1,21 @@
+[package]
+name = "bwl-ssh"
+description = "SSH agent adapter over the vendored Bitwarden ssh_agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ssh_agent.workspace = true
+# Same version as the vendored agent so parsed keys are interchangeable.
+ssh-key = { version = "=0.6.7", features = ["rand_core", "ed25519", "p256", "p384", "rsa", "encryption"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

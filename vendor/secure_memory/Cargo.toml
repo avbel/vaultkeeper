@@ -1,0 +1,19 @@
+# Vendored from bitwarden/clients apps/desktop/desktop_native/secure_memory (see ../UPSTREAM.txt).
+[package]
+name = "secure_memory"
+edition = "2021"
+license = "GPL-3.0"
+version = "0.0.0"
+publish = false
+
+[dependencies]
+aes-gcm = "0.11.0"
+memsec = { version = "0.7.0", features = ["alloc_ext"] }
+rand = "0.9.3"
+tracing = "0.1.44"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils = "0.2.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

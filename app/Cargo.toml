@@ -1,0 +1,26 @@
+[package]
+name = "bw-lite"
+description = "Lightweight desktop client for Vaultwarden"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bwl-gen.workspace = true
+bwl-platform.workspace = true
+bwl-ssh.workspace = true
+bwl-vault.workspace = true
+global-hotkey.workspace = true
+slint.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[build-dependencies]
+slint-build = "1.18.1"
+
+[lints]
+workspace = true

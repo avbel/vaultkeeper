@@ -1,0 +1,33 @@
+[package]
+name = "bwl-platform"
+description = "OS integration: keychain, Touch ID, autostart, clipboard, single instance, hardening"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+arboard.workspace = true
+auto-launch.workspace = true
+directories.workspace = true
+hkdf.workspace = true
+interprocess.workspace = true
+p256 = { workspace = true, features = ["ecdh"] }
+rand.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-local-authentication.workspace = true
+security-framework.workspace = true
+swift-rs.workspace = true
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+swift-rs = { workspace = true, features = ["build"] }
+
+[lints]
+workspace = true

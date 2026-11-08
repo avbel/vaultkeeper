@@ -1,0 +1,31 @@
+[package]
+name = "bwl-vault"
+description = "Session state, encrypted cache, decrypted views and vault operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Integration tests against a docker Vaultwarden (VW_URL env var).
+vw-it = []
+
+[dependencies]
+bwl-api.workspace = true
+bwl-crypto.workspace = true
+bwl-gen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+
+[lints]
+workspace = true
