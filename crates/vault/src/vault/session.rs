@@ -25,6 +25,9 @@ use crate::{
 /// Vaultwarden and the official server both answer a wrong master password with this text.
 const WRONG_PASSWORD_MESSAGE: &str = "username or password is incorrect";
 
+/// How long the typed password and derived key wait for the 2FA / new-device round.
+const PENDING_LOGIN_TTL: Duration = Duration::from_mins(10);
+
 /// Kept between the password round and the 2FA / new-device round, so the KDF runs once.
 pub(crate) struct PendingLogin {
     server: Url,
@@ -34,9 +37,14 @@ pub(crate) struct PendingLogin {
     master_key: MasterKey,
     kdf: KdfRecord,
     client: Arc<Client>,
+    created: Instant,
 }
 
 impl PendingLogin {
+    fn expired(&self) -> bool {
+        self.created.elapsed() >= PENDING_LOGIN_TTL
+    }
+
     fn matches(&self, request: &LoginRequest) -> bool {
         self.server == request.server
             && self.email.eq_ignore_ascii_case(request.email.trim())
@@ -112,7 +120,25 @@ impl Inner {
             .collect()
     }
 
+    /// The typed password and derived key outlive this call only while the server waits for a
+    /// second round; after an error (often the real password with a typo) they are wiped at once.
     pub(crate) async fn login(
+        self: &Arc<Self>,
+        request: LoginRequest,
+        two_factor: Option<TwoFactorAnswer>,
+        new_device_otp: Option<String>,
+    ) -> Result<LoginStep> {
+        let step = self.login_round(request, two_factor, new_device_otp).await;
+        if !matches!(
+            step,
+            Ok(LoginStep::TwoFactorRequired(_) | LoginStep::NewDeviceOtpRequired)
+        ) {
+            self.clear_pending();
+        }
+        step
+    }
+
+    async fn login_round(
         self: &Arc<Self>,
         request: LoginRequest,
         two_factor: Option<TwoFactorAnswer>,
@@ -184,7 +210,7 @@ impl Inner {
     }
 
     pub(crate) async fn send_email_code(&self) -> Result<()> {
-        let pending = lock(&self.pending).clone().ok_or(Error::LoggedOut)?;
+        let pending = self.live_pending().ok_or(Error::LoggedOut)?;
         pending
             .client
             .send_email_login(&pending.email, &pending.hash)
@@ -194,7 +220,7 @@ impl Inner {
 
     /// Reuses the KDF result of the previous round when server, email and password match.
     async fn pending_login(self: &Arc<Self>, request: &LoginRequest) -> Result<Arc<PendingLogin>> {
-        if let Some(pending) = lock(&self.pending).clone()
+        if let Some(pending) = self.live_pending()
             && pending.matches(request)
         {
             return Ok(pending);
@@ -229,6 +255,7 @@ impl Inner {
             master_key,
             kdf,
             client,
+            created: Instant::now(),
         });
         *lock(&self.pending) = Some(Arc::clone(&pending));
         Ok(pending)
@@ -497,7 +524,16 @@ impl Inner {
         Ok(())
     }
 
+    fn live_pending(&self) -> Option<Arc<PendingLogin>> {
+        let mut pending = lock(&self.pending);
+        if pending.as_ref().is_some_and(|login| login.expired()) {
+            pending.take();
+        }
+        pending.clone()
+    }
+
     pub(crate) fn lock_session(&self) {
+        self.clear_pending();
         let previous = {
             let mut state = self.write_state();
             let state = &mut *state;

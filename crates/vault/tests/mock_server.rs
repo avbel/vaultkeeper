@@ -423,6 +423,78 @@ async fn two_factor_rounds_reuse_the_derived_key_and_store_the_remember_token() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_failed_or_abandoned_login_keeps_no_typed_password_or_derived_key() {
+    let fake = Fake::start().await;
+    fake.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/identity/accounts/prelogin"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "kdf": 0, "kdfIterations": 5000 })),
+        )
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .and(body_string_contains("twoFactorToken="))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "Two factor required.",
+            "TwoFactorProviders2": { "1": { "Email": "us***@example.com" } }
+        })))
+        .with_priority(1)
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .and(body_string_contains("username=typo%40example.com"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "invalid_username_or_password",
+            "ErrorModel": { "Message": "Username or password is incorrect. Try again" }
+        })))
+        .with_priority(2)
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "Two factor required.",
+            "TwoFactorProviders2": { "1": { "Email": "us***@example.com" } }
+        })))
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/two-factor/send-email-login"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&fake.server)
+        .await;
+
+    let harness = harness();
+    let vault = &harness.vault;
+    let typo = LoginRequest {
+        email: "typo@example.com".into(),
+        ..fake.request()
+    };
+    assert!(vault.login(typo, None, None).await.is_err());
+    assert!(
+        matches!(vault.send_email_code().await, Err(Error::LoggedOut)),
+        "a rejected password leaves no pending login"
+    );
+
+    assert!(matches!(
+        vault.login(fake.request(), None, None).await.unwrap(),
+        LoginStep::TwoFactorRequired(_)
+    ));
+    vault.send_email_code().await.unwrap();
+    vault.lock();
+    assert!(
+        matches!(vault.send_email_code().await, Err(Error::LoggedOut)),
+        "locking abandons the second round"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn new_device_verification_round() {
     let fake = Fake::start().await;
     fake.server.reset().await;

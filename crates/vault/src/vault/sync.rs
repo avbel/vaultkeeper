@@ -30,6 +30,10 @@ impl Inner {
                 |client, token| async move { client.sync(&token).await },
             )
             .await?;
+        // Locked while the request was in flight: don't decrypt a whole vault copy to drop it.
+        if !self.is_current(ctx.epoch) {
+            return Ok(());
+        }
         let previous = Arc::clone(&ctx.keys);
         let (keys, data) = self
             .config
