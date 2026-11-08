@@ -85,6 +85,7 @@ mod tests {
         let frame = encode(&UiMessage::SshApprovalReply {
             request_id: 300,
             approved: true,
+            remember: false,
         })
         .expect("encode");
         client.write_all(&frame).await.expect("write");
@@ -96,11 +97,12 @@ mod tests {
         let UiMessage::SshApprovalReply {
             request_id,
             approved,
+            remember,
         } = decode(&body).expect("decode")
         else {
             panic!("wrong message");
         };
-        assert_eq!((request_id, approved), (300, true));
+        assert_eq!((request_id, approved, remember), (300, true, false));
         assert!(read_frame(&mut server).await.expect("eof").is_none());
     }
 

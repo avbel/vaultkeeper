@@ -17,7 +17,6 @@ pub enum SidebarKey {
     NoFolder,
     Folder(Arc<str>),
     Organization(Arc<str>),
-    /// `Filter` has no collection field yet, so this filters by its organization.
     Collection {
         organization: Arc<str>,
         id: Arc<str>,
@@ -230,12 +229,15 @@ pub fn filter_for(key: &SidebarKey) -> Option<Filter> {
             folder: Some(Some(Arc::clone(id))),
             ..Filter::default()
         },
-        SidebarKey::Organization(organization) | SidebarKey::Collection { organization, .. } => {
-            Filter {
-                organization: Some(Some(Arc::clone(organization))),
-                ..Filter::default()
-            }
-        }
+        SidebarKey::Organization(organization) => Filter {
+            organization: Some(Some(Arc::clone(organization))),
+            ..Filter::default()
+        },
+        SidebarKey::Collection { organization, id } => Filter {
+            organization: Some(Some(Arc::clone(organization))),
+            collection: Some(Arc::clone(id)),
+            ..Filter::default()
+        },
         SidebarKey::Trash => Filter {
             trash: true,
             ..Filter::default()
@@ -397,9 +399,14 @@ mod tests {
             organization: Arc::from("o"),
             id: Arc::from("c"),
         };
+        let by_collection = filter_for(&collection).expect("c");
+        assert_eq!(by_collection.organization, Some(Some(Arc::from("o"))));
+        assert_eq!(by_collection.collection, Some(Arc::from("c")));
         assert_eq!(
-            filter_for(&collection).expect("c").organization,
-            Some(Some(Arc::from("o")))
+            filter_for(&SidebarKey::Organization(Arc::from("o")))
+                .expect("o")
+                .collection,
+            None
         );
         assert!(filter_for(&SidebarKey::Trash).expect("t").trash);
     }

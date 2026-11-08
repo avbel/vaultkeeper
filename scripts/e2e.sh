@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Runs the bwl-vault end-to-end scenarios against a disposable Vaultwarden + Mailpit.
+# Runs the end-to-end scenarios against a disposable Vaultwarden + Mailpit: the bwl-vault ones,
+# then the app's, which start a real `bw-lite --daemon` process (headless, own data dir and
+# keychain item prefix) and drive it over IPC.
 #
 #   scripts/e2e.sh                 # all scenarios
-#   scripts/e2e.sh websocket       # extra args go to `cargo test` (test name filter, --nocapture, ...)
+#   scripts/e2e.sh websocket       # extra args go to both `cargo test` runs (name filter, ...)
 #
 # VW_PORT / MAILPIT_PORT pick the host ports (defaults 8098 / 8025, or a free port when taken).
 # KEEP_E2E_STACK=1 leaves the containers running for debugging.
@@ -66,7 +68,8 @@ wait_for vaultwarden "http://localhost:$VW_PORT/alive"
 wait_for mailpit "http://localhost:$MAILPIT_PORT/api/v1/info"
 
 cd "$ROOT"
-VW_URL="http://localhost:$VW_PORT" \
-MAILPIT_URL="http://localhost:$MAILPIT_PORT" \
-VW_ADMIN_TOKEN="$VW_ADMIN_TOKEN" \
-    cargo test -p bwl-vault --features vw-it "$@"
+export VW_URL="http://localhost:$VW_PORT"
+export MAILPIT_URL="http://localhost:$MAILPIT_PORT"
+export VW_ADMIN_TOKEN
+cargo test -p bwl-vault --features vw-it "$@"
+cargo test -p bw-lite --features vw-it --test e2e_daemon "$@"

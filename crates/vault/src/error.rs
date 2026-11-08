@@ -18,6 +18,9 @@ pub enum Error {
     NoSuchField,
     #[error("item is read-only")]
     ReadOnly,
+    /// A write refused because the server is unreachable; the cached vault stays readable.
+    #[error("{OFFLINE_MESSAGE}")]
+    Offline,
     #[error(transparent)]
     Api(#[from] bwl_api::Error),
     #[error(transparent)]
@@ -28,25 +31,23 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("corrupt cache: {0}")]
     Cache(#[from] serde_json::Error),
+    /// Every step of a log out that failed; the other steps still ran.
+    #[error(transparent)]
+    Logout(LogoutErrors),
 }
 
-/// Shown when a write is refused because the server is unreachable. It travels as a 503 so
-/// [`Error::is_offline`] (and `bwl_api::Error::is_offline`) recognise it.
+/// What [`Error::Offline`] displays.
 pub const OFFLINE_MESSAGE: &str = "Offline: the vault is read-only until the server is reachable";
-const OFFLINE_STATUS: u16 = 503;
 
 impl Error {
     /// True for transport failures, gateway errors and writes refused while offline.
     #[must_use]
     pub fn is_offline(&self) -> bool {
-        matches!(self, Self::Api(error) if error.is_offline())
-    }
-
-    pub(crate) fn offline() -> Self {
-        Self::Api(bwl_api::Error::Server {
-            status: OFFLINE_STATUS,
-            message: OFFLINE_MESSAGE.to_owned(),
-        })
+        match self {
+            Self::Offline => true,
+            Self::Api(error) => error.is_offline(),
+            _ => false,
+        }
     }
 
     /// The server answered with data this client can't use (a missing key, a bad id).
@@ -68,8 +69,7 @@ impl Error {
 }
 
 /// Every step of a log out that failed. The log out still ran all the other steps; the trait
-/// method reports this as `Error::Io` with this value as the source (downcast with
-/// `io::Error::get_ref`).
+/// method reports this as [`Error::Logout`].
 #[derive(Debug)]
 pub struct LogoutErrors(pub Vec<Error>);
 
@@ -87,7 +87,7 @@ impl std::error::Error for LogoutErrors {}
 
 impl From<LogoutErrors> for Error {
     fn from(errors: LogoutErrors) -> Self {
-        Self::Io(std::io::Error::other(errors))
+        Self::Logout(errors)
     }
 }
 
@@ -104,17 +104,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn offline_error_is_recognised_as_offline_by_both_crates() {
-        let error = Error::offline();
-        assert!(error.is_offline());
-        let Error::Api(api) = &error else {
-            panic!("expected an API error");
-        };
-        assert!(api.is_offline());
-        assert_eq!(
-            error.to_string(),
-            format!("server error (503): {OFFLINE_MESSAGE}")
-        );
+    fn refused_writes_are_offline_and_say_so() {
+        assert!(Error::Offline.is_offline());
+        assert_eq!(Error::Offline.to_string(), OFFLINE_MESSAGE);
+    }
+
+    #[test]
+    fn gateway_statuses_from_the_api_are_offline() {
+        let gateway = Error::Api(bwl_api::Error::Server {
+            status: 503,
+            message: "Service Unavailable".to_owned(),
+        });
+        assert!(gateway.is_offline());
     }
 
     #[test]
@@ -126,17 +127,17 @@ mod tests {
     }
 
     #[test]
-    fn logout_errors_keep_every_failure_and_downcast_back() {
+    fn logout_errors_keep_every_failure() {
         let error: Error = LogoutErrors(vec![Error::NotFound, Error::Locked]).into();
         assert_eq!(
             error.to_string(),
-            "storage error: log out finished with 2 error(s); item not found; vault is locked"
+            "log out finished with 2 error(s); item not found; vault is locked"
         );
-        let Error::Io(io) = &error else {
-            panic!("expected an I/O error");
+        let Error::Logout(errors) = &error else {
+            panic!("expected the collected log out errors, got {error:?}");
         };
-        let inner = io.get_ref().and_then(|e| e.downcast_ref::<LogoutErrors>());
-        assert_eq!(inner.map(|errors| errors.0.len()), Some(2));
+        assert_eq!(errors.0.len(), 2);
+        assert!(!error.is_offline());
     }
 
     #[test]

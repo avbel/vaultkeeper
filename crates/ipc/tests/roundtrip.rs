@@ -167,10 +167,36 @@ async fn master_password_check_and_sync() {
             .expect("verify")
     );
     vault.sync().await.expect("sync");
+    assert_eq!(
+        vault.last_sync(),
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(common::LAST_SYNC_UNIX))
+    );
     daemon.fake.set_offline(true);
+    // The fake fails with a real reqwest transport error, which cannot cross the socket as is.
     let error = vault.sync().await.expect_err("offline");
-    assert!(error.is_offline(), "{error:?}");
+    assert!(matches!(error, bwl_vault::Error::Offline), "{error:?}");
+    assert!(error.is_offline());
     assert!(vault.is_offline());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_probe_round_trips_in_any_state() {
+    let daemon = Daemon::start(FakeVault::new(bwl_vault::model::SessionState::LoggedOut, 0)).await;
+    let (vault, _events) = daemon.connect().await;
+    let server = common::url("https://vw.lan:8443/vw");
+    let probe = vault.probe_server(&server).await.expect("probe");
+    assert_eq!(probe.version.as_deref(), Some(common::PROBE_VERSION));
+    assert!(
+        daemon
+            .fake
+            .log()
+            .contains(&"probe_server https://vw.lan:8443/vw".to_owned()),
+        "{:?}",
+        daemon.fake.log()
+    );
+    daemon.fake.set_offline(true);
+    let error = vault.probe_server(&server).await.expect_err("unreachable");
+    assert!(error.is_offline(), "{error:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

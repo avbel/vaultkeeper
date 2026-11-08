@@ -12,6 +12,8 @@
 //!   are exactly sized `Zeroizing` vectors, and secret DTOs wipe themselves on drop.
 //! - **Calls** are multiplexed by id, so a slow sync does not hold up a search; the daemon runs
 //!   up to 8 at once per connection.
+//! - **Notices** ([`UiNotice`]: settings saved, user activity) go the other way without an answer,
+//!   to the channel given in [`ServeOptions::with_notices`].
 //! - **Latency** of a blocking round-trip (`search`, `reveal`, `totp`, `draft`), measured by
 //!   `tests/latency.rs` (1000 `search` calls over 400 items, M-series Mac, 2026-11-08):
 //!
@@ -36,5 +38,7 @@ mod server;
 pub use client::{EventStream, RemoteVault, SshApproval, UiEvent};
 pub use error::{ConvertError, IpcError, ipc_error};
 pub use peer::{PeerCredentials, PeerVerifier, SameExecutable};
-pub use protocol::{PROTOCOL_VERSION, SshApprovalKind, SshPrompt, UiCommand};
+pub use protocol::{
+    PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt, UiCommand, UiNotice,
+};
 pub use server::{DaemonEvent, ServeOptions, ServerHandle, serve, serve_with};

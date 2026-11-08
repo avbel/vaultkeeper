@@ -479,7 +479,8 @@ async fn an_unreachable_server_switches_to_offline_and_the_probe_recovers_withou
     assert_eq!(names(vault), ["Cached"], "the cached vault stays readable");
 
     let refused = vault.save(None, note_draft("later")).await.unwrap_err();
-    assert!(refused.is_offline(), "{refused:?}");
+    assert!(matches!(refused, Error::Offline), "{refused:?}");
+    assert!(refused.is_offline());
     assert!(
         fake.requests_to("/api/ciphers").await.is_empty(),
         "nothing was sent"
@@ -758,15 +759,11 @@ async fn logout_keeps_wiping_after_a_failed_step_and_reports_it() {
     assert!(account_dir.is_dir());
 
     let error = vault.logout().await.unwrap_err();
-    let Error::Io(io) = &error else {
+    let Error::Logout(LogoutErrors(collected)) = &error else {
         panic!("expected the collected errors, got {error:?}");
     };
-    let collected = io
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<LogoutErrors>())
-        .unwrap();
-    assert_eq!(collected.0.len(), 1);
-    assert!(collected.0[0].to_string().contains("keychain locked"));
+    assert_eq!(collected.len(), 1);
+    assert!(collected[0].to_string().contains("keychain locked"));
     assert!(!account_dir.exists(), "later steps still ran");
     assert_eq!(vault.state(), SessionState::LoggedOut);
     assert!(matches!(
@@ -945,4 +942,65 @@ async fn locked_and_logged_out_calls_report_their_state() {
     assert!(matches!(vault.user_key(), Err(Error::Locked)));
     assert!(matches!(vault.folders(), Err(Error::Locked)));
     assert!(vault.ssh_keys().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_reports_the_version_and_needs_no_session() {
+    let fake = Fake::start().await;
+    fake.mount_status("GET", "/alive", 200).await;
+    Mock::given(method("GET"))
+        .and(path("/api/version"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#""1.37.5""#))
+        .mount(&fake.server)
+        .await;
+    let harness = harness();
+    assert_eq!(harness.vault.state(), SessionState::LoggedOut);
+
+    let probe = harness.vault.probe_server(&fake.url()).await.unwrap();
+    assert_eq!(probe.version.as_deref(), Some("1.37.5"));
+    assert_eq!(harness.vault.state(), SessionState::LoggedOut);
+    assert!(
+        !harness.vault.is_offline(),
+        "a probe never flips offline mode"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_keeps_a_path_prefix_and_tolerates_a_missing_version() {
+    let fake = Fake::start().await;
+    fake.mount_status("GET", "/vw/alive", 200).await;
+    let harness = harness();
+    let prefixed = fake.url().join("vw").unwrap();
+
+    let probe = harness.vault.probe_server(&prefixed).await.unwrap();
+    assert_eq!(probe.version, None, "404 on /vw/api/version");
+    assert_eq!(fake.requests_to("/vw/api/version").await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_of_a_dead_or_failing_server_is_an_error() {
+    let fake = Fake::start().await;
+    fake.mount_status("GET", "/alive", 503).await;
+    let harness = harness();
+    let gateway = harness.vault.probe_server(&fake.url()).await.unwrap_err();
+    assert!(gateway.is_offline(), "{gateway:?}");
+
+    let not_vaultwarden = Fake::start().await;
+    let error = harness
+        .vault
+        .probe_server(&not_vaultwarden.url())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::Api(bwl_api::Error::Server { status: 404, .. })
+        ),
+        "{error:?}"
+    );
+    assert!(!error.is_offline());
+
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let refused = harness.vault.probe_server(&dead).await.unwrap_err();
+    assert!(refused.is_offline(), "{refused:?}");
 }

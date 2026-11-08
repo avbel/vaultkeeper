@@ -2,14 +2,16 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use bw_lite::{
-    SshApprovalRequest, UiCommand, cli,
+    SshApprovalRequest, UiCommand,
+    cli::{self, Mode},
     hooks::Hooks,
     mock::{MOCK_MASTER_PASSWORD, MockConfig, MockVault, mock_user_key},
-    run::{UiOptions, run_ui},
+    run::{Backend, UiOptions, run_ui, select_backend},
 };
 use tokio::sync::{mpsc, oneshot};
 
 fn main() -> anyhow::Result<()> {
+    bwl_platform::hardening::harden_process();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -21,11 +23,15 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("{}", cli::USAGE);
         return Ok(());
     }
-    anyhow::ensure!(
-        args.mock,
-        "the daemon and the real vault are wired in the integration step; run with --mock\n\n{}",
-        cli::USAGE
-    );
+    match args.mode() {
+        Mode::Mock => run_mock(args),
+        Mode::Ui { first_unlock } => bw_lite::ui_process::run(first_unlock),
+        Mode::Daemon(launch) => bw_lite::daemon::run(launch),
+    }
+}
+
+/// `--mock`: the UI alone, in one process with its own tray, on the built-in mock vault.
+fn run_mock(args: cli::Args) -> anyhow::Result<()> {
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -74,6 +80,7 @@ fn main() -> anyhow::Result<()> {
     if args.demo_ssh {
         send_demo_ssh_request(commands.clone(), runtime.handle());
     }
+    select_backend(Backend::Standalone)?;
     run_ui(
         vault,
         hooks,
@@ -83,8 +90,10 @@ fn main() -> anyhow::Result<()> {
             host_tray: true,
             tray_only: args.tray || initial.is_some(),
             initial,
+            ui_process: false,
+            first_unlock: true,
         },
-        || tracing::info!("last window closed; the mock keeps running in the tray"),
+        |_| tracing::info!("last window closed; the mock keeps running in the tray"),
     )?;
     drop(commands);
     runtime.shutdown_timeout(Duration::from_secs(1));
@@ -110,7 +119,7 @@ fn send_demo_ssh_request(
         if commands.send(UiCommand::ShowSshApproval(request)).is_err() {
             return;
         }
-        let approved = answer.await.unwrap_or(false);
-        tracing::info!(approved, "demo SSH request answered");
+        let decision = answer.await.unwrap_or(bwl_ipc::SshDecision::DENY);
+        tracing::info!(?decision, "demo SSH request answered");
     });
 }

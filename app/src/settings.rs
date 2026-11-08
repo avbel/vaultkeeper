@@ -1,8 +1,13 @@
-//! User preferences and their mapping to the Settings window's option lists.
+//! User preferences and their mapping to the Settings window's option lists. Both processes read
+//! them from `settings.json` (see [`crate::os::settings_file`]); unknown or missing fields fall
+//! back to the defaults, so an older or newer file still loads.
 
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {
     #[default]
     System,
@@ -10,19 +15,22 @@ pub enum ThemeChoice {
     Dark,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LockTimeout {
     Minutes(u16),
     OnSleep,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ClipboardClear {
     Seconds(u16),
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SshApproval {
     #[default]
     Always,
@@ -30,7 +38,8 @@ pub enum SshApproval {
 }
 
 /// Large-text setting: multiplies every font size and row height.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TextScale {
     #[default]
     Default,
@@ -69,7 +78,7 @@ impl TextScale {
 }
 
 /// Manager window placement in logical pixels, restored when it opens again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGeometry {
     pub x: i32,
     pub y: i32,
@@ -95,7 +104,8 @@ impl WindowGeometry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub theme: ThemeChoice,
     pub text_scale: TextScale,
@@ -126,6 +136,33 @@ impl Default for Settings {
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
             hotkey: "Cmd+Shift+Space".to_owned(),
+        }
+    }
+}
+
+impl Settings {
+    /// Pulls values a hand-edited file may carry back into the supported range.
+    #[must_use]
+    pub fn sanitized(self) -> Self {
+        let lock_timeout = match self.lock_timeout {
+            LockTimeout::Minutes(0) => LockTimeout::Minutes(1),
+            other => other,
+        };
+        let clipboard_clear = match self.clipboard_clear {
+            ClipboardClear::Seconds(0) => ClipboardClear::Seconds(1),
+            other => other,
+        };
+        let hotkey = if self.hotkey.trim().is_empty() {
+            Self::default().hotkey
+        } else {
+            self.hotkey
+        };
+        Self {
+            lock_timeout,
+            clipboard_clear,
+            hotkey,
+            manager_geometry: self.manager_geometry.map(WindowGeometry::clamped),
+            ..self
         }
     }
 }
@@ -283,6 +320,78 @@ mod tests {
                 sidebar_collapsed: true,
             }
         );
+    }
+
+    #[test]
+    fn json_round_trips_every_field() {
+        let settings = Settings {
+            theme: ThemeChoice::Dark,
+            text_scale: TextScale::Larger,
+            manager_geometry: Some(WindowGeometry {
+                x: 10,
+                y: 20,
+                width: 1120,
+                height: 700,
+                sidebar_collapsed: true,
+            }),
+            lock_timeout: LockTimeout::OnSleep,
+            clipboard_clear: ClipboardClear::Never,
+            start_at_login: true,
+            ask_unlock_on_start: true,
+            require_master_password_on_start: true,
+            ssh_agent: false,
+            ssh_approval: SshApproval::RememberUntilLock,
+            ssh_touch_id: true,
+            hotkey: "Cmd+Alt+K".to_owned(),
+        };
+        let json = serde_json::to_string(&settings).expect("encode");
+        let back: Settings = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, settings);
+    }
+
+    #[test]
+    fn the_file_format_is_stable_snake_case() {
+        let json = r#"{"theme":"light","lock_timeout":{"minutes":5},"clipboard_clear":{"seconds":10},
+            "ssh_approval":"remember_until_lock","text_scale":"large"}"#;
+        let settings: Settings = serde_json::from_str(json).expect("decode");
+        assert_eq!(settings.theme, ThemeChoice::Light);
+        assert_eq!(settings.lock_timeout, LockTimeout::Minutes(5));
+        assert_eq!(settings.clipboard_clear, ClipboardClear::Seconds(10));
+        assert_eq!(settings.ssh_approval, SshApproval::RememberUntilLock);
+        assert_eq!(settings.text_scale, TextScale::Large);
+        assert_eq!(
+            settings.hotkey, "Cmd+Shift+Space",
+            "missing fields take the default"
+        );
+        let on_sleep: Settings =
+            serde_json::from_str(r#"{"lock_timeout":"on_sleep","unknown":1}"#).expect("decode");
+        assert_eq!(on_sleep.lock_timeout, LockTimeout::OnSleep);
+    }
+
+    #[test]
+    fn sanitizing_fixes_values_the_ui_never_writes() {
+        let odd = Settings {
+            lock_timeout: LockTimeout::Minutes(0),
+            clipboard_clear: ClipboardClear::Seconds(0),
+            hotkey: "  ".to_owned(),
+            manager_geometry: Some(WindowGeometry {
+                x: -5,
+                y: 0,
+                width: 10,
+                height: 10,
+                sidebar_collapsed: false,
+            }),
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(odd.lock_timeout, LockTimeout::Minutes(1));
+        assert_eq!(odd.clipboard_clear, ClipboardClear::Seconds(1));
+        assert_eq!(odd.hotkey, "Cmd+Shift+Space");
+        assert_eq!(
+            odd.manager_geometry.map(|g| (g.x, g.width, g.height)),
+            Some((0, 760, 480))
+        );
+        assert_eq!(Settings::default().sanitized(), Settings::default());
     }
 
     #[test]

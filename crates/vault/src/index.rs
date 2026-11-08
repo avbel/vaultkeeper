@@ -422,7 +422,7 @@ impl VaultData {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| passes(&entry.summary, filter))
+            .filter(|(_, entry)| passes(entry, filter))
             .filter_map(|(position, entry)| entry.rank(&query, &terms).map(|rank| (rank, position)))
             .collect();
         // Stable, so rows of equal rank keep their name order.
@@ -437,14 +437,14 @@ impl VaultData {
         let mut out = Vec::with_capacity(self.entries.len());
         for id in mru {
             if let Some(&position) = self.by_id.get(id.0.as_ref()) {
-                let summary = &self.entries[position].summary;
-                if passes(summary, filter) && seen.insert(position) {
-                    out.push(summary.clone());
+                let entry = &self.entries[position];
+                if passes(entry, filter) && seen.insert(position) {
+                    out.push(entry.summary.clone());
                 }
             }
         }
         for (position, entry) in self.entries.iter().enumerate() {
-            if !seen.contains(&position) && passes(&entry.summary, filter) {
+            if !seen.contains(&position) && passes(entry, filter) {
                 out.push(entry.summary.clone());
             }
         }
@@ -540,7 +540,8 @@ fn sort_by_name<T>(views: &mut [T], name: impl Fn(&T) -> &Arc<str>) {
     views.sort_by_cached_key(|view| name(view).to_lowercase());
 }
 
-fn passes(summary: &ItemSummary, filter: &Filter) -> bool {
+fn passes(entry: &Entry, filter: &Filter) -> bool {
+    let summary = &entry.summary;
     summary.deleted == filter.trash
         && filter.kind.is_none_or(|kind| summary.kind == kind)
         && filter
@@ -552,6 +553,13 @@ fn passes(summary: &ItemSummary, filter: &Filter) -> bool {
             .as_ref()
             .is_none_or(|organization| summary.organization_id == *organization)
         && (!filter.favorites_only || summary.favorite)
+        && filter.collection.as_ref().is_none_or(|collection| {
+            entry
+                .cipher
+                .collection_ids
+                .iter()
+                .any(|id| id.as_str() == collection.as_ref())
+        })
 }
 
 pub(crate) fn record_recent(mru: &mut VecDeque<ItemId>, id: &ItemId) {
@@ -765,6 +773,37 @@ mod tests {
             }),
             ["n2"]
         );
+    }
+
+    #[test]
+    fn collection_filter_matches_any_assigned_collection() {
+        let keys = ring();
+        let in_both = Cipher {
+            collection_ids: vec!["col-a".into(), "col-b".into()],
+            ..note("x1", "Shared runbook", &keys)
+        };
+        let in_b = Cipher {
+            collection_ids: vec!["col-b".into()],
+            ..login("x2", "Deploy", "ci", "pw", &keys)
+        };
+        let personal = note("x3", "Diary", &keys);
+        let data = VaultData::build(testutil::sync(vec![in_both, in_b, personal], vec![]), &keys);
+        let none = VecDeque::new();
+        let in_collection = |id: &str, query: &str| {
+            let filter = Filter {
+                collection: Some(id.into()),
+                ..Filter::default()
+            };
+            ids(&data.search(query, &filter, &none))
+                .iter()
+                .map(|id| (*id).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(in_collection("col-a", ""), ["x1"]);
+        assert_eq!(in_collection("col-b", ""), ["x2", "x1"]);
+        assert_eq!(in_collection("col-b", "deploy"), ["x2"]);
+        assert_eq!(in_collection("col-c", ""), Vec::<String>::new());
+        assert_eq!(ids(&data.search("", &Filter::default(), &none)).len(), 3);
     }
 
     #[test]

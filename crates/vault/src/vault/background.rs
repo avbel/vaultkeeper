@@ -283,14 +283,7 @@ async fn websocket_task(inner: Arc<Inner>, epoch: u64, server: Url) {
 /// `GET {base}/alive` with backoff until the server answers, then an immediate full sync.
 async fn probe_task(inner: Arc<Inner>, epoch: u64, server: Url, immediate: bool) {
     let timings = &inner.config.timings;
-    // Same TLS stack as bwl-api, so a server the API trusts is also reachable for the probe.
-    let http = match reqwest::Client::builder()
-        .tls_backend_rustls()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(timings.probe_timeout)
-        .timeout(timings.probe_timeout)
-        .build()
-    {
+    let http = match probe_client(timings.probe_timeout) {
         Ok(http) => http,
         Err(error) => {
             tracing::warn!(%error, "could not build the offline probe client");
@@ -341,13 +334,28 @@ pub(crate) fn next_probe_delay(current: Duration, initial: Duration, max: Durati
     }
 }
 
-fn alive_url(server: &Url) -> Result<Url, url::ParseError> {
+/// Same TLS stack as bwl-api, so a server the API trusts is also reachable for the probes.
+pub(super) fn probe_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .tls_backend_rustls()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .build()
+}
+
+/// `server` joined with a relative `path`, keeping a path prefix such as `/vw`.
+pub(super) fn server_url(server: &Url, path: &str) -> Result<Url, url::ParseError> {
     let mut base = server.clone();
     if !base.path().ends_with('/') {
-        let path = format!("{}/", base.path());
-        base.set_path(&path);
+        let prefixed = format!("{}/", base.path());
+        base.set_path(&prefixed);
     }
-    base.join("alive")
+    base.join(path)
+}
+
+fn alive_url(server: &Url) -> Result<Url, url::ParseError> {
+    server_url(server, "alive")
 }
 
 async fn is_alive(http: &reqwest::Client, url: &Url) -> bool {

@@ -9,7 +9,7 @@ use crate::{
     index::record_recent,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SessionState,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe, SessionState,
         SshKeyMaterial, TwoFactorAnswer,
     },
     reveal,
@@ -80,6 +80,14 @@ impl VaultService for Vault {
 
     fn is_offline(&self) -> bool {
         self.inner.is_offline()
+    }
+
+    fn last_sync(&self) -> Option<std::time::SystemTime> {
+        *lock(&self.inner.last_sync)
+    }
+
+    async fn probe_server(&self, server: &url::Url) -> Result<ServerProbe> {
+        super::probe::probe(server, self.inner.config.timings.probe_timeout).await
     }
 
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>> {

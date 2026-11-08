@@ -24,7 +24,10 @@ use crate::{
     dto::WireError,
     frame::{decode, encode, read_frame},
     peer,
-    protocol::{DaemonMessage, Event, PROTOCOL_VERSION, Refusal, Snapshot, UiMessage, Welcome},
+    protocol::{
+        DaemonMessage, Event, PROTOCOL_VERSION, Refusal, Snapshot, SshDecision, UiMessage,
+        UiNotice, Welcome,
+    },
 };
 
 /// Frames queued for the writer; producers wait when the UI reads slowly.
@@ -145,6 +148,7 @@ async fn serve_session<S: VaultService>(
         approvals,
         limit: Arc::new(Semaphore::new(shared.max_concurrent_calls)),
         calls: Arc::clone(&calls),
+        notices: shared.notices.clone(),
     };
     let mut reader = TaskGuard(tokio::spawn(read_requests(read, requests)));
     let ended = tokio::select! {
@@ -204,6 +208,7 @@ struct Requests<S> {
     limit: Arc<Semaphore>,
     /// Shared with the session so the calls outlive this reader.
     calls: Arc<Mutex<JoinSet<()>>>,
+    notices: Option<mpsc::Sender<UiNotice>>,
 }
 
 async fn read_requests<S: VaultService>(
@@ -230,7 +235,18 @@ async fn read_requests<S: VaultService>(
             UiMessage::SshApprovalReply {
                 request_id,
                 approved,
-            } => requests.approvals.resolve(request_id, approved),
+                remember,
+            } => requests
+                .approvals
+                .resolve(request_id, SshDecision { approved, remember }),
+            UiMessage::Notice(notice) => {
+                // Notices are hints (a settings reload, activity); dropping one under load is fine.
+                if let Some(notices) = &requests.notices
+                    && notices.try_send(notice).is_err()
+                {
+                    tracing::debug!(?notice, "UI notice dropped");
+                }
+            }
             UiMessage::Hello { .. } => return Err(IpcError::Protocol("Hello after the handshake")),
         }
         let mut calls = lock_calls(&requests.calls);
@@ -322,11 +338,11 @@ struct Approvals {
 #[derive(Default)]
 struct ApprovalTable {
     next_id: u64,
-    pending: HashMap<u64, oneshot::Sender<bool>>,
+    pending: HashMap<u64, oneshot::Sender<SshDecision>>,
 }
 
 impl Approvals {
-    fn register(&self, reply: oneshot::Sender<bool>) -> u64 {
+    fn register(&self, reply: oneshot::Sender<SshDecision>) -> u64 {
         let mut table = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         table.pending.retain(|_, reply| !reply.is_closed());
         table.next_id += 1;
@@ -335,7 +351,7 @@ impl Approvals {
         id
     }
 
-    fn resolve(&self, id: u64, approved: bool) {
+    fn resolve(&self, id: u64, decision: SshDecision) {
         let reply = self
             .inner
             .lock()
@@ -343,7 +359,7 @@ impl Approvals {
             .pending
             .remove(&id);
         if let Some(reply) = reply {
-            let _ = reply.send(approved);
+            let _ = reply.send(decision);
         }
     }
 }
@@ -428,6 +444,11 @@ fn snapshot<S: VaultService>(service: &S) -> Snapshot {
         state: service.state().into(),
         accounts: service.accounts().into_iter().map(Into::into).collect(),
         is_offline: service.is_offline(),
+        last_sync: service.last_sync().and_then(|time| {
+            time.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|elapsed| elapsed.as_secs())
+        }),
         folders: wire_list(service.folders()),
         organizations: wire_list(service.organizations()),
         collections: wire_list(service.collections()),

@@ -582,3 +582,75 @@ fn reprompt_also_guards_reveal_in_the_detail_pane() {
         reveal(&h, "PayPal", CopyField::Password)
     );
 }
+
+#[test]
+fn a_collection_lists_only_its_items_not_the_whole_organization() {
+    let (_h, manager) = open();
+    // The mock organization holds 24 items: every third in Finance, the rest in Engineering.
+    click(&manager, "Acme Corp");
+    assert_eq!(manager.get_rows().row_count(), 24);
+    // A folder is also called "Finance"; the collection is the entry under the organization.
+    let entries = manager.get_sidebar_entries();
+    let organization = sidebar_index(&manager, "Acme Corp");
+    let collection = |label: &str| {
+        (usize::try_from(organization).expect("index")..entries.row_count())
+            .find(|row| {
+                entries
+                    .row_data(*row)
+                    .is_some_and(|entry| entry.label == label)
+            })
+            .and_then(|row| i32::try_from(row).ok())
+            .unwrap_or_else(|| panic!("no collection {label}"))
+    };
+    manager.invoke_sidebar_select(collection("Finance"));
+    pump();
+    let finance = row_names(&manager);
+    assert_eq!(finance.len(), 8);
+    manager.invoke_sidebar_select(collection("Engineering"));
+    pump();
+    let engineering = row_names(&manager);
+    assert_eq!(engineering.len(), 16);
+    assert!(finance.iter().all(|name| !engineering.contains(name)));
+    assert!(
+        finance
+            .iter()
+            .chain(&engineering)
+            .all(|name| name.starts_with("Acme "))
+    );
+}
+
+#[test]
+fn a_pasted_private_key_is_stored_as_openssh_with_its_public_key() {
+    let h = harness(Setup {
+        ssh_keys: Some(std::sync::Arc::new(bw_lite::os::SshKeys)),
+        ..Setup::default()
+    });
+    h.app.start(false);
+    let manager = h.app.manager_window().expect("manager");
+    set_size(&manager, 1120.0, 1600.0);
+    let (pasted, public_key, fingerprint) = bwl_ssh::generate_ed25519().expect("key");
+    manager.invoke_new_item(4);
+    pump();
+    type_into(&manager, "Name", "pasted key");
+    type_into(&manager, "Private key", &pasted);
+    type_into(&manager, "Public key", "stale");
+    click(&manager, "Save");
+    let saved = h.vault.last_saved().expect("save");
+    let ItemData::SshKey {
+        public_key: saved_public,
+        fingerprint: saved_fingerprint,
+        ..
+    } = &saved.data
+    else {
+        panic!("SSH key draft expected");
+    };
+    assert_eq!(saved_public, &public_key, "derived from the private key");
+    assert_eq!(saved_fingerprint, &fingerprint);
+
+    manager.invoke_new_item(4);
+    pump();
+    type_into(&manager, "Name", "garbage");
+    type_into(&manager, "Private key", "-----BEGIN NOTHING-----");
+    click(&manager, "Save");
+    assert!(value_of(&manager, "Edit error").contains("Not a usable private key"));
+}

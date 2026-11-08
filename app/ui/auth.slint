@@ -204,6 +204,9 @@ export component LoginWindow inherits Window {
     in property <[string]> server-suggestions;
     in property <string> server-error;
     in property <string> server-warning;
+    // "Reachable · Vaultwarden 1.37.5" once the URL answered, or why it did not.
+    in property <string> server-probe;
+    in property <bool> server-probe-ok;
     in property <[string]> providers;
     in-out property <int> provider-index: 0;
     in property <bool> email-provider-selected;
@@ -294,6 +297,15 @@ export component LoginWindow inherits Window {
                 wrap: word-wrap;
                 accessible-role: AccessibleRole.text;
                 accessible-label: "Server warning";
+                accessible-value: self.text;
+            }
+            if root.server-error == "" && root.server-probe != "": Text {
+                text: root.server-probe;
+                color: root.server-probe-ok ? Theme.success-text : Theme.warn-text;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Server status";
                 accessible-value: self.text;
             }
             Rectangle { height: Theme.s1; }

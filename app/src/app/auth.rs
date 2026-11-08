@@ -1,12 +1,12 @@
 //! Lock screen, login (with 2FA and new-device steps) and account switching.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use bwl_vault::{
     TwoFactorProvider, VaultService,
     model::{AccountView, LoginRequest, LoginStep, SessionState, TwoFactorAnswer},
 };
-use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, VecModel};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -17,8 +17,12 @@ use crate::{
     viewmodel::{self, LoginError, account_rows, host, initial},
 };
 
+/// Typing pauses this long before the server URL is probed.
+const PROBE_DEBOUNCE: Duration = Duration::from_millis(600);
+
 pub(super) struct LoginState {
     pub(super) window: LoginWindow,
+    probe_timer: Timer,
     /// Kept between the credential step and the 2FA / device steps.
     pending: Option<(Url, String, Zeroizing<String>)>,
     providers: Vec<TwoFactorProvider>,
@@ -98,6 +102,7 @@ impl<S: VaultService> App<S> {
             CloseRequestResponse::HideWindow,
             |app| {
                 app.close_lock_window();
+                app.deny_ssh_waiting_for_unlock();
                 CloseRequestResponse::HideWindow
             }
         ));
@@ -136,14 +141,18 @@ impl<S: VaultService> App<S> {
         }
         self.target.set(super::Target::None);
         self.open_lock_window();
-        let password_required = self.settings.borrow().require_master_password_on_start;
-        if self.touch_id_enrolled() && !password_required {
+        if self.touch_id_enrolled() {
             self.unlock_touch_id();
         }
     }
 
+    /// Touch ID is offered when enrolled, except before the first unlock since the app started
+    /// while "Require master password on app start" is on.
     pub(super) fn touch_id_enrolled(&self) -> bool {
-        self.hooks.biometrics.is_available()
+        let password_first =
+            self.first_unlock.get() && self.settings.borrow().require_master_password_on_start;
+        !password_first
+            && self.hooks.biometrics.is_available()
             && self
                 .active_account()
                 .is_some_and(|account| self.hooks.biometrics.is_enrolled(&account.id))
@@ -313,19 +322,68 @@ impl<S: VaultService> App<S> {
         servers.dedup();
         let suggestions: Vec<SharedString> = servers.into_iter().map(SharedString::from).collect();
         window.set_server_suggestions(ModelRc::new(VecModel::from(suggestions)));
-        if let Some(server) = server {
+        let prefilled = server.and_then(|server| {
             window.set_server(server.into());
-            validate_server(&window, server);
-        }
+            validate_server(&window, server)
+        });
         window.set_can_cancel(previous.is_some());
         self.bind_login(&window);
         show(&window, "login");
         *self.login.borrow_mut() = Some(LoginState {
             window,
+            probe_timer: Timer::default(),
             pending: None,
             providers: Vec::new(),
             previous,
         });
+        if let Some(url) = prefilled {
+            self.probe_server(url);
+        }
+    }
+
+    fn server_edited(&self, text: &str) {
+        let Some(window) = self.login_window() else {
+            return;
+        };
+        let url = validate_server(&window, text);
+        window.set_server_probe(SharedString::new());
+        let guard = self.login.borrow();
+        let Some(login) = guard.as_ref() else {
+            return;
+        };
+        login.probe_timer.stop();
+        if let Some(url) = url {
+            login.probe_timer.start(
+                slint::TimerMode::SingleShot,
+                PROBE_DEBOUNCE,
+                handler!(self, |app| app.probe_server(url.clone())),
+            );
+        }
+    }
+
+    fn probe_server(&self, url: Url) {
+        let vault = Arc::clone(&self.vault);
+        let probed = url.clone();
+        self.exec.spawn(
+            async move { vault.probe_server(&probed).await },
+            handler!(self, |app, result| app.server_probed(&url, &result)),
+        );
+    }
+
+    /// Ignores the answer when the field moved on to another URL meanwhile.
+    fn server_probed(&self, url: &Url, result: &bwl_vault::Result<bwl_vault::model::ServerProbe>) {
+        let Some(window) = self.login_window() else {
+            return;
+        };
+        let current = server_url::normalize(&window.get_server())
+            .ok()
+            .map(|server| server.url);
+        if current.as_ref() != Some(url) {
+            return;
+        }
+        let (text, ok) = viewmodel::probe_text(result);
+        window.set_server_probe(text.into());
+        window.set_server_probe_ok(ok);
     }
 
     pub(super) fn close_login(&self) {
@@ -345,12 +403,7 @@ impl<S: VaultService> App<S> {
                 CloseRequestResponse::HideWindow
             }
         ));
-        let weak = window.as_weak();
-        window.on_server_edited(move |text| {
-            if let Some(window) = weak.upgrade() {
-                validate_server(&window, &text);
-            }
-        });
+        window.on_server_edited(handler!(self, |app, text| app.server_edited(&text)));
         window.on_submit_credentials(handler!(self, |app| app.submit_credentials()));
         window.on_submit_two_factor(handler!(self, |app| app.submit_second_step(true)));
         window.on_submit_new_device(handler!(self, |app| app.submit_second_step(false)));

@@ -15,7 +15,7 @@ use crate::dto::{
     TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers.
@@ -35,7 +35,20 @@ pub enum UiMessage {
     SshApprovalReply {
         request_id: u64,
         approved: bool,
+        /// "Remember for this key until lock" was ticked.
+        remember: bool,
     },
+    /// Fire-and-forget news from the UI process; never answered.
+    Notice(UiNotice),
+}
+
+/// What the UI process tells the daemon outside of `VaultService` calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UiNotice {
+    /// `settings.json` was rewritten; the daemon re-reads it (hotkey, lock timeout, SSH agent).
+    SettingsChanged,
+    /// The user typed or clicked in a UI window; resets the lock timeout.
+    Activity,
 }
 
 /// Daemon -> UI.
@@ -76,6 +89,8 @@ pub struct Snapshot {
     pub state: SessionStateDto,
     pub accounts: Vec<AccountDto>,
     pub is_offline: bool,
+    /// Unix seconds of the last finished sync.
+    pub last_sync: Option<u64>,
     pub folders: Result<Vec<FolderDto>, WireError>,
     pub organizations: Result<Vec<OrganizationDto>, WireError>,
     pub collections: Result<Vec<CollectionDto>, WireError>,
@@ -106,6 +121,13 @@ pub enum UiCommand {
     ShowLogin,
     ShowSettings,
     ShowGenerator,
+    /// The lock screen, with Touch ID offered once right away; after the unlock nothing else
+    /// opens. For "Ask to unlock on start" and for SSH requests before the first unlock.
+    UnlockInTray,
+    /// The daemon rewrote `settings.json` (theme from the tray menu); re-read it.
+    ReloadSettings,
+    /// The global hotkey: open the Quick Panel, or close it when it is open.
+    ToggleQuickPanel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -114,6 +136,29 @@ pub enum SshApprovalKind {
     Sign,
     /// The agent wants to list keys before the vault was first unlocked.
     List,
+}
+
+/// The user's answer to an SSH approval. Dropping the sender instead counts as deny.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SshDecision {
+    pub approved: bool,
+    /// Approve this key again without asking until the vault locks.
+    pub remember: bool,
+}
+
+impl SshDecision {
+    pub const DENY: Self = Self {
+        approved: false,
+        remember: false,
+    };
+
+    #[must_use]
+    pub const fn approve(remember: bool) -> Self {
+        Self {
+            approved: true,
+            remember,
+        }
+    }
 }
 
 /// Everything the approval window shows; the daemon resolves key names and fingerprints.
@@ -194,6 +239,7 @@ pub enum Call {
     },
     DeleteFolder(String),
     SshKeys,
+    ProbeServer(String),
 }
 
 impl Call {
@@ -232,6 +278,7 @@ impl Call {
                 | Self::Attachments(_)
                 | Self::DownloadAttachment { .. }
                 | Self::SshKeys
+                | Self::ProbeServer(_)
         )
     }
 }
@@ -258,6 +305,7 @@ pub enum Reply {
     Attachment(AttachmentDto),
     Folder(FolderDto),
     SshKeys(Vec<SshKeyDto>),
+    ServerProbe { version: Option<String> },
 }
 
 #[cfg(test)]
@@ -306,6 +354,16 @@ mod tests {
         assert!(Call::UnlockWithPassword(Zeroizing::new(String::new())).changes_state());
         assert!(Call::SwitchAccount("a".to_owned()).changes_state());
         assert!(Call::CreateFolder("x".to_owned()).changes_state());
+        assert!(!Call::ProbeServer("https://vault.example".to_owned()).changes_state());
+    }
+
+    #[test]
+    fn notices_decode_back() {
+        let frame = encode(&UiMessage::Notice(UiNotice::SettingsChanged)).expect("encode");
+        let UiMessage::Notice(notice) = decode(&frame[HEADER_LEN..]).expect("decode") else {
+            panic!("wrong message");
+        };
+        assert_eq!(notice, UiNotice::SettingsChanged);
     }
 
     #[test]

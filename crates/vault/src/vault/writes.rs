@@ -15,7 +15,7 @@ impl Inner {
     pub(crate) fn writable_ctx(&self) -> Result<Ctx> {
         let ctx = self.unlocked_ctx()?;
         if self.is_offline() {
-            return Err(Error::offline());
+            return Err(Error::Offline);
         }
         Ok(ctx)
     }

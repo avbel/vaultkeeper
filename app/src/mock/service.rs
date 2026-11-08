@@ -8,15 +8,16 @@ use bwl_vault::{
     Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemData,
-        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SessionState,
-        SshKeyMaterial, TwoFactorAnswer,
+        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe,
+        SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::{
-    Account, Inner, MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MockCall, MockVault,
+    Account, Inner, MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MOCK_SERVER_VERSION,
+    MockCall, MockVault,
     data::{self, AccountData, MockItem},
     state::{
         fake_totp, field_value, matches, not_bitwarden, rank, set_deleted, unix_now, unreachable,
@@ -285,6 +286,21 @@ impl VaultService for MockVault {
 
     fn is_offline(&self) -> bool {
         self.offline.load(Ordering::SeqCst)
+    }
+
+    /// Hosts containing "unreachable" or "notbitwarden" fail like `check_login` does.
+    async fn probe_server(&self, server: &url::Url) -> Result<ServerProbe> {
+        self.delay().await;
+        let host = server.host_str().unwrap_or_default();
+        if host.contains("unreachable") {
+            return Err(unreachable());
+        }
+        if host.contains("notbitwarden") {
+            return Err(not_bitwarden());
+        }
+        Ok(ServerProbe {
+            version: Some(MOCK_SERVER_VERSION.to_owned()),
+        })
     }
 
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>> {

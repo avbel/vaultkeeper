@@ -1,6 +1,6 @@
 use tokio::sync::{mpsc, oneshot};
 
-use crate::protocol::{SshPrompt, UiCommand};
+use crate::protocol::{SshDecision, SshPrompt, UiCommand};
 
 /// What the daemon pushes to the UI process, besides cache refreshes (those surface through
 /// `VaultService::changes`).
@@ -19,8 +19,8 @@ pub enum UiEvent {
 pub struct SshApproval {
     pub request_id: u64,
     pub prompt: SshPrompt,
-    /// Send `true` to approve. Dropping it counts as deny.
-    pub reply: oneshot::Sender<bool>,
+    /// Dropping it counts as deny.
+    pub reply: oneshot::Sender<SshDecision>,
 }
 
 /// Events from the daemon. Ends (`next` returns `None`) when the connection is gone, which is

@@ -23,11 +23,11 @@ use bwl_ipc::{
     serve, serve_with,
 };
 use bwl_vault::{
-    Error, OFFLINE_MESSAGE, Result, TotpCode, TwoFactorProvider, VaultService,
+    Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, CustomField, Filter, FolderView,
         ItemData, ItemDraft, ItemId, ItemKind, ItemSummary, LoginRequest, LoginStep,
-        OrganizationView, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        OrganizationView, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -46,6 +46,20 @@ pub const SLOW_SAVE: &str = "slow save";
 pub const USER_KEY: [u8; 64] = [7; 64];
 pub const SSH_PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----\n";
 const SLOW_CALL: Duration = Duration::from_millis(50);
+
+/// What the fake's `probe_server` reports, as Vaultwarden's `/api/version` would.
+pub const PROBE_VERSION: &str = "1.37.5";
+/// The fake's `last_sync` while online: 2026-11-08T12:00:00Z.
+pub const LAST_SYNC_UNIX: u64 = 1_762_603_200;
+
+/// A real reqwest transport failure: nothing listens on the discard port.
+pub async fn transport_failure() -> reqwest::Error {
+    reqwest::Client::new()
+        .get("http://127.0.0.1:9/")
+        .send()
+        .await
+        .expect_err("nothing listens on port 9")
+}
 
 pub fn url(text: &str) -> Url {
     Url::parse(text).expect("valid URL")
@@ -389,16 +403,28 @@ impl VaultService for FakeVault {
         }
         self.record("sync".to_owned());
         if self.offline.load(Ordering::SeqCst) {
-            return Err(Error::Api(bwl_api::Error::Server {
-                status: 503,
-                message: OFFLINE_MESSAGE.to_owned(),
-            }));
+            return Err(Error::Api(bwl_api::Error::Http(transport_failure().await)));
         }
         Ok(())
     }
 
     fn is_offline(&self) -> bool {
         self.offline.load(Ordering::SeqCst)
+    }
+
+    fn last_sync(&self) -> Option<std::time::SystemTime> {
+        (!self.offline.load(Ordering::SeqCst))
+            .then(|| std::time::UNIX_EPOCH + Duration::from_secs(LAST_SYNC_UNIX))
+    }
+
+    async fn probe_server(&self, server: &Url) -> Result<ServerProbe> {
+        self.record(format!("probe_server {server}"));
+        if self.offline.load(Ordering::SeqCst) {
+            return Err(Error::Api(bwl_api::Error::Http(transport_failure().await)));
+        }
+        Ok(ServerProbe {
+            version: Some(PROBE_VERSION.to_owned()),
+        })
     }
 
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>> {

@@ -250,6 +250,7 @@ pub struct FilterDto {
     pub kind: Option<ItemKindDto>,
     pub folder: Option<Option<Arc<str>>>,
     pub organization: Option<Option<Arc<str>>>,
+    pub collection: Option<Arc<str>>,
     pub favorites_only: bool,
     pub trash: bool,
 }
@@ -260,6 +261,7 @@ impl From<&Filter> for FilterDto {
             kind: filter.kind.map(Into::into),
             folder: filter.folder.clone(),
             organization: filter.organization.clone(),
+            collection: filter.collection.clone(),
             favorites_only: filter.favorites_only,
             trash: filter.trash,
         }
@@ -272,6 +274,7 @@ impl From<FilterDto> for Filter {
             kind: filter.kind.map(Into::into),
             folder: filter.folder,
             organization: filter.organization,
+            collection: filter.collection,
             favorites_only: filter.favorites_only,
             trash: filter.trash,
         }
@@ -571,6 +574,7 @@ mod tests {
                 kind: Some(ItemKind::SshKey),
                 folder: Some(None),
                 organization: Some(Some("o1".into())),
+                collection: Some("c1".into()),
                 favorites_only: true,
                 trash: true,
             },

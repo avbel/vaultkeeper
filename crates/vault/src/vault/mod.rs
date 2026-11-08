@@ -9,6 +9,7 @@
 mod attachments;
 mod background;
 mod logout;
+mod probe;
 mod service_impl;
 mod session;
 mod sync;

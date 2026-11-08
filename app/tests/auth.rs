@@ -357,3 +357,91 @@ fn ask_to_unlock_on_start_waits_for_the_password_when_it_is_required() {
     click(&lock, "Unlock");
     assert!(matches!(h.vault.state(), SessionState::Unlocked { .. }));
 }
+
+#[test]
+fn the_server_line_names_the_server_once_typing_pauses() {
+    let h = harness(Setup::default());
+    let login = open_login_for_new_account(&h);
+    assert_eq!(
+        value_of(&login, "Server status"),
+        format!(
+            "Reachable · Vaultwarden {}",
+            bw_lite::mock::MOCK_SERVER_VERSION
+        ),
+        "the prefilled server is probed right away"
+    );
+    type_into(&login, "Server URL", "https://unreachable.example");
+    assert!(!exists(&login, "Server status"), "cleared while typing");
+    common::elapse(std::time::Duration::from_millis(300));
+    assert!(!exists(&login, "Server status"), "still debouncing");
+    common::elapse(std::time::Duration::from_millis(400));
+    assert_eq!(value_of(&login, "Server status"), "Can't reach server");
+    assert!(!login.get_server_probe_ok());
+    type_into(&login, "Server URL", "https://vw.example.net");
+    common::elapse(std::time::Duration::from_millis(700));
+    assert!(login.get_server_probe_ok());
+    assert!(value_of(&login, "Server status").starts_with("Reachable"));
+}
+
+#[test]
+fn require_master_password_hides_touch_id_until_the_first_unlock() {
+    let h = harness(Setup {
+        settings: bw_lite::settings::Settings {
+            require_master_password_on_start: true,
+            ..bw_lite::settings::Settings::default()
+        },
+        ..Setup::default()
+    });
+    h.app.start(false);
+    h.app.open_settings();
+    click(
+        &h.app.settings_window().expect("settings"),
+        "Enrol Touch ID",
+    );
+    h.app.lock();
+    let lock = h.app.lock_window().expect("lock");
+    assert!(
+        !lock.get_touch_id_available(),
+        "the app has not been unlocked since it started"
+    );
+    type_into(&lock, "Master password", MOCK_MASTER_PASSWORD);
+    click(&lock, "Unlock");
+    h.app.lock();
+    let lock = h.app.lock_window().expect("lock again");
+    assert!(
+        lock.get_touch_id_available(),
+        "after one password unlock Touch ID is back"
+    );
+
+    // A UI process the daemon starts after an unlock already happened (no `--first-unlock`).
+    let later = harness(Setup {
+        settings: bw_lite::settings::Settings {
+            require_master_password_on_start: true,
+            ..bw_lite::settings::Settings::default()
+        },
+        ..Setup::default()
+    });
+    later.app.start(false);
+    later.app.open_settings();
+    click(
+        &later.app.settings_window().expect("settings"),
+        "Enrol Touch ID",
+    );
+    later.app.lock();
+    assert!(
+        !later
+            .app
+            .lock_window()
+            .expect("lock")
+            .get_touch_id_available()
+    );
+    later.app.set_first_unlock(false);
+    assert!(
+        later
+            .app
+            .lock_window()
+            .expect("lock")
+            .get_touch_id_available(),
+        "the daemon said an unlock already happened"
+    );
+}

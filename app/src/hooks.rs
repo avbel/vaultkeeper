@@ -1,11 +1,12 @@
-//! Side effects the UI needs from the OS, behind small traits. The integration step wires them to
-//! `bwl-platform`, `bwl-ssh` and `global-hotkey`; until then the logging stubs below stand in.
+//! Side effects the UI needs from the OS, behind small traits. [`crate::os`] wires them to
+//! `bwl-platform`, `bwl-ssh`, AppKit and the daemon; `--mock` and the UI tests use the logging
+//! stubs below.
 
 use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
@@ -31,6 +32,10 @@ pub trait Clipboard: Send + Sync {
     fn copy(&self, text: &str, clear_after: Option<Duration>) -> HookResult<()>;
     /// Clears the clipboard now if it still holds the last value we copied.
     fn clear_if_ours(&self);
+    /// When the pending clear runs; the UI process must not exit before that.
+    fn pending_clear(&self) -> Option<Instant> {
+        None
+    }
 }
 
 /// Touch ID, keyed by account so each account has its own Secure Enclave wrap.
@@ -78,6 +83,8 @@ pub trait SettingsStore: Send + Sync {
 /// macOS activation policy: a Dock icon only while the Manager window is open.
 pub trait DockIcon: Send + Sync {
     fn set_visible(&self, visible: bool);
+    /// Brings the app to the front, so a window shown for a hotkey or tray click gets the keys.
+    fn activate(&self) {}
 }
 
 pub trait SshAgentControl: Send + Sync {
@@ -88,6 +95,12 @@ pub trait SshAgentControl: Send + Sync {
 /// "New SSH key" support: `(private OpenSSH PEM, public key line, SHA256 fingerprint)`.
 pub trait SshKeyTool: Send + Sync {
     fn generate(&self) -> HookResult<(Zeroizing<String>, String, String)>;
+    /// Converts a pasted private key (OpenSSH, PKCS#8, RSA or EC PEM) to the stored OpenSSH form
+    /// with its public key and fingerprint. `None` keeps the text as typed.
+    fn import(&self, private_key: &str) -> HookResult<Option<(Zeroizing<String>, String, String)>> {
+        let _ = private_key;
+        Ok(None)
+    }
 }
 
 /// Window placement that needs the screen list: the Quick Panel is centred on the cursor's screen

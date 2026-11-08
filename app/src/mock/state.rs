@@ -13,11 +13,8 @@ use super::{
 };
 
 /// What the real vault returns when the server can't be reached (`Error::is_offline` is true).
-pub(super) fn unreachable() -> Error {
-    Error::Api(bwl_api::Error::Server {
-        status: 503,
-        message: bwl_vault::OFFLINE_MESSAGE.to_owned(),
-    })
+pub(super) const fn unreachable() -> Error {
+    Error::Offline
 }
 
 pub(super) fn not_bitwarden() -> Error {
@@ -100,6 +97,10 @@ pub(super) fn matches(item: &MockItem, filter: &Filter) -> bool {
             .as_ref()
             .is_none_or(|organization| &summary.organization_id == organization)
         && (!filter.favorites_only || summary.favorite)
+        && filter
+            .collection
+            .as_ref()
+            .is_none_or(|collection| item.draft.collection_ids.iter().any(|id| id == collection))
 }
 
 /// Lower is better; `None` means no match.

@@ -10,19 +10,33 @@ use super::{App, SshApprovalRequest, Target};
 pub enum UiCommand {
     ShowManager,
     ShowQuickPanel,
+    /// The global hotkey: open the Quick Panel, or close it when open.
+    ToggleQuickPanel,
     ShowSshApproval(SshApprovalRequest),
     ShowUnlock,
     ShowLogin,
+    ShowSettings,
+    ShowGenerator,
+    /// The lock screen, Touch ID offered once; the unlock opens nothing else ("Ask to unlock on
+    /// start", SSH requests before the first unlock).
+    UnlockInTray,
     /// Opens the Manager on the first item matching `query` (unlocked only).
     ShowItem {
         query: String,
     },
     /// The vault changed in the daemon (sync, lock timeout, sleep).
     VaultChanged,
+    /// The daemon rewrote the settings (theme from the tray menu).
+    ReloadSettings,
+    /// The server became unreachable (`true`) or reachable again.
+    OfflineChanged(bool),
 }
 
 impl<S: VaultService> App<S> {
     pub fn handle(&self, command: UiCommand) {
+        if command.shows_a_window() {
+            self.hooks.dock.activate();
+        }
         match command {
             UiCommand::ShowManager => self.open_vault(),
             UiCommand::ShowQuickPanel => {
@@ -30,6 +44,7 @@ impl<S: VaultService> App<S> {
                     self.toggle_quick_panel();
                 }
             }
+            UiCommand::ToggleQuickPanel => self.toggle_quick_panel(),
             UiCommand::ShowSshApproval(request) => self.request_ssh_approval(request),
             UiCommand::ShowUnlock => match self.vault.state() {
                 SessionState::Locked { .. } => {
@@ -40,9 +55,25 @@ impl<S: VaultService> App<S> {
                 SessionState::Unlocked { .. } => self.open_manager(),
             },
             UiCommand::ShowLogin => self.show_login_for_state(),
+            UiCommand::ShowSettings => self.open_settings(),
+            UiCommand::ShowGenerator => self.open_generator_window(),
+            UiCommand::UnlockInTray => {
+                if matches!(self.vault.state(), SessionState::Locked { .. }) {
+                    self.ask_unlock_on_start();
+                }
+            }
             UiCommand::ShowItem { query } => self.show_item(&query),
             UiCommand::VaultChanged => self.on_vault_changed(),
+            UiCommand::ReloadSettings => self.reload_settings(),
+            UiCommand::OfflineChanged(offline) => self.offline_changed(offline),
         }
+    }
+
+    fn offline_changed(&self, offline: bool) {
+        if offline {
+            self.toast(super::OFFLINE_TOAST, false);
+        }
+        self.refresh_status();
     }
 
     fn show_item(&self, query: &str) {
@@ -92,5 +123,15 @@ impl<S: VaultService> App<S> {
                 callback();
             }
         });
+    }
+}
+
+impl UiCommand {
+    /// Commands that put a window in front of the user, so the app must come forward first.
+    const fn shows_a_window(&self) -> bool {
+        !matches!(
+            self,
+            Self::VaultChanged | Self::ReloadSettings | Self::OfflineChanged(_)
+        )
     }
 }

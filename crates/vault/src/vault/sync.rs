@@ -47,7 +47,6 @@ impl Inner {
         }
         self.persist_vault(&ctx).await?;
         self.syncs.fetch_add(1, Ordering::Relaxed);
-        *lock(&self.last_sync) = Some(SystemTime::now());
         self.set_offline(false);
         Ok(())
     }
@@ -82,6 +81,8 @@ impl Inner {
             (previous, ssh_changed, record)
         };
         drop(previous);
+        // Before the bump, so whoever reacts to it (the UI's status line) reads the new time.
+        *lock(&self.last_sync) = Some(SystemTime::now());
         self.bump();
         if ssh_changed {
             self.bump_ssh();

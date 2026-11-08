@@ -247,6 +247,11 @@ pub fn error_text(error: &Error) -> String {
         Error::Gen(error) => error.to_string(),
         Error::Io(error) => format!("Storage error: {error}"),
         Error::Cache(_) => "The local cache is damaged; sync again".to_owned(),
+        Error::Offline => bwl_vault::OFFLINE_MESSAGE.to_owned(),
+        Error::Logout(errors) => match errors.0.as_slice() {
+            [only] => format!("Logged out, but one step failed: {}", error_text(only)),
+            steps => format!("Logged out, but {} steps failed", steps.len()),
+        },
     }
 }
 
@@ -292,6 +297,20 @@ pub fn login_error(error: &Error) -> LoginError {
         Error::Api(bwl_api::Error::Url(_)) => LoginError::Server("Not a valid URL".to_owned()),
         Error::InvalidPassword => LoginError::General("Wrong email or master password".to_owned()),
         other => LoginError::General(error_text(other)),
+    }
+}
+
+/// The login screen's line under the server URL, and whether it is good news.
+#[must_use]
+pub fn probe_text(result: &bwl_vault::Result<bwl_vault::model::ServerProbe>) -> (String, bool) {
+    match result {
+        Ok(probe) => match &probe.version {
+            Some(version) => (format!("Reachable · Vaultwarden {version}"), true),
+            None => ("Reachable".to_owned(), true),
+        },
+        Err(error) => match login_error(error) {
+            LoginError::Server(text) | LoginError::General(text) => (text, false),
+        },
     }
 }
 
@@ -533,10 +552,53 @@ mod tests {
         );
         let gateway = Error::Api(bwl_api::Error::Server {
             status: 503,
-            message: bwl_vault::OFFLINE_MESSAGE.to_owned(),
+            message: "Service Unavailable".to_owned(),
         });
         assert_eq!(login_error(&gateway), LoginError::Server(CANT_REACH.into()));
-        assert_eq!(error_text(&gateway), bwl_vault::OFFLINE_MESSAGE);
+        assert_eq!(error_text(&gateway), "Service Unavailable");
+        assert_eq!(
+            login_error(&Error::Offline),
+            LoginError::Server(CANT_REACH.into())
+        );
+        assert_eq!(error_text(&Error::Offline), bwl_vault::OFFLINE_MESSAGE);
+    }
+
+    #[test]
+    fn probe_lines() {
+        let found = Ok(bwl_vault::model::ServerProbe {
+            version: Some("1.37.5".to_owned()),
+        });
+        assert_eq!(
+            probe_text(&found),
+            ("Reachable · Vaultwarden 1.37.5".to_owned(), true)
+        );
+        let bare = Ok(bwl_vault::model::ServerProbe { version: None });
+        assert_eq!(probe_text(&bare), ("Reachable".to_owned(), true));
+        assert_eq!(
+            probe_text(&Err(Error::Offline)),
+            (CANT_REACH.to_owned(), false)
+        );
+        let not_found = Err(Error::Api(bwl_api::Error::Server {
+            status: 404,
+            message: "Not Found".to_owned(),
+        }));
+        assert_eq!(probe_text(&not_found), (NOT_COMPATIBLE.to_owned(), false));
+    }
+
+    #[test]
+    fn log_out_failures_are_summarised() {
+        let one = Error::Logout(bwl_vault::LogoutErrors(vec![Error::Io(
+            std::io::Error::other("keychain locked"),
+        )]));
+        assert_eq!(
+            error_text(&one),
+            "Logged out, but one step failed: Storage error: keychain locked"
+        );
+        let two = Error::Logout(bwl_vault::LogoutErrors(vec![
+            Error::NotFound,
+            Error::Locked,
+        ]));
+        assert_eq!(error_text(&two), "Logged out, but 2 steps failed");
     }
 
     #[test]

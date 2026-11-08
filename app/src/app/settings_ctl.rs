@@ -162,9 +162,27 @@ impl<S: VaultService> App<S> {
         }));
         window.on_hotkey_accepted(handler!(self, |app, accelerator| {
             let accelerator = accelerator.trim().to_owned();
-            app.update_settings(|settings| settings.hotkey.clone_from(&accelerator));
-            app.report(app.hooks.hotkey.register(&accelerator));
+            // Checked before saving: the daemon registers whatever the file says.
+            match app.hooks.hotkey.register(&accelerator) {
+                Ok(()) => app.update_settings(|settings| settings.hotkey.clone_from(&accelerator)),
+                Err(error) => app.report(Err(error)),
+            }
         }));
+    }
+
+    /// Re-reads the store after the daemon changed it and applies what is visible.
+    pub(super) fn reload_settings(&self) {
+        let fresh = self.hooks.settings.load();
+        *self.settings.borrow_mut() = fresh;
+        self.apply_theme_everywhere();
+        let window = self
+            .settings_window
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong);
+        if let Some(window) = window {
+            self.fill_settings(&window);
+        }
     }
 
     pub(super) fn update_settings(&self, change: impl FnOnce(&mut Settings)) {

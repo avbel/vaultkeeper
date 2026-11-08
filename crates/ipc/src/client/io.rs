@@ -16,7 +16,7 @@ use super::{Cache, Frame, Shared, SshApproval, UiEvent};
 use crate::{
     IpcError,
     frame::{decode, encode, read_frame},
-    protocol::{DaemonMessage, Event, PROTOCOL_VERSION, Refusal, UiMessage, Welcome},
+    protocol::{DaemonMessage, Event, PROTOCOL_VERSION, Refusal, SshDecision, UiMessage, Welcome},
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -260,12 +260,13 @@ fn on_event(
 async fn send_decision(
     outbox: mpsc::UnboundedSender<Frame>,
     request_id: u64,
-    decision: oneshot::Receiver<bool>,
+    decision: oneshot::Receiver<SshDecision>,
 ) {
-    let approved = decision.await.unwrap_or(false);
+    let decision = decision.await.unwrap_or(SshDecision::DENY);
     match encode(&UiMessage::SshApprovalReply {
         request_id,
-        approved,
+        approved: decision.approved,
+        remember: decision.remember,
     }) {
         Ok(frame) => {
             let _ = outbox.send(frame);

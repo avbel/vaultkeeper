@@ -140,6 +140,38 @@ impl<S: VaultService> App<S> {
         self.update_ticker();
     }
 
+    /// A pasted private key in another format becomes OpenSSH with its public key and
+    /// fingerprint. An unchanged key is left alone: re-encoding OpenSSH picks a new random
+    /// check value, so every save would rewrite the item.
+    fn normalize_ssh_key(&self, draft: ItemDraft) -> Result<ItemDraft, String> {
+        let ItemData::SshKey { private_key, .. } = &draft.data else {
+            return Ok(draft);
+        };
+        let unchanged = self
+            .manager
+            .borrow()
+            .as_ref()
+            .and_then(|manager| manager.edit.as_ref())
+            .is_some_and(|edit| {
+                matches!(&edit.base.data, ItemData::SshKey { private_key: base, .. } if base == private_key)
+            });
+        if unchanged || private_key.trim().is_empty() {
+            return Ok(draft);
+        }
+        match self.hooks.ssh_keys.import(private_key) {
+            Ok(Some((private_key, public_key, fingerprint))) => Ok(ItemDraft {
+                data: ItemData::SshKey {
+                    private_key,
+                    public_key,
+                    fingerprint,
+                },
+                ..draft
+            }),
+            Ok(None) => Ok(draft),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// The form's current values applied to its base draft.
     fn edited_draft(&self) -> Option<(Option<ItemId>, Result<ItemDraft, edit_form::EditError>)> {
         let guard = self.manager.borrow();
@@ -170,11 +202,14 @@ impl<S: VaultService> App<S> {
         let Some((id, draft)) = self.edited_draft() else {
             return;
         };
-        let draft = match draft {
+        let draft = match draft
+            .map_err(|error| error.to_string())
+            .and_then(|draft| self.normalize_ssh_key(draft))
+        {
             Ok(draft) => draft,
             Err(error) => {
                 if let Some(manager) = self.manager.borrow().as_ref() {
-                    manager.window.set_edit_error(error.to_string().into());
+                    manager.window.set_edit_error(error.into());
                 }
                 return;
             }

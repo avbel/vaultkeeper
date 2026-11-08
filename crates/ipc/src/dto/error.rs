@@ -3,11 +3,9 @@
 //! The UI matches on vault and API error variants and calls `is_offline()`, so the tree is
 //! rebuilt on the client side variant for variant. Where an inner value cannot be rebuilt the
 //! nearest equivalent is used:
-//! - `Api(Http)`: `reqwest::Error` has no public constructor, so it becomes `Api(Io(..))` with the
-//!   original text (kind `NotConnected` when it was an offline failure, `Other` otherwise). The
-//!   UI shows "Can't reach server" for both `Http` and `Io`, so what it displays is unchanged;
-//!   only `error.is_offline()` turns false. The UI's offline signal is the cached
-//!   `VaultService::is_offline()` and the `OfflineChanged` event, both of which stay exact.
+//! - `Api(Http)`: `reqwest::Error` has no public constructor. A transport failure (the server is
+//!   unreachable) becomes [`Error::Offline`], so `error.is_offline()` stays true in the UI
+//!   process; any other `Http` error becomes `Api(Io(..))` with the original text.
 //! - `&'static str` payloads (crypto and generator errors) are mapped back through tables of the
 //!   messages those crates use; an unknown message becomes [`UNKNOWN_DETAIL`].
 //! - `Io` errors keep their kind (for the common kinds) and their text, not their source chain.
@@ -72,6 +70,8 @@ pub enum WireError {
     Gen(GenErrorDto),
     Io(IoErrorDto),
     Cache(String),
+    Offline,
+    Logout(Vec<WireError>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +156,8 @@ impl From<&Error> for WireError {
             }
             Error::Io(io) => Self::Io(io.into()),
             Error::Cache(json) => Self::Cache(json.to_string()),
+            Error::Offline => Self::Offline,
+            Error::Logout(errors) => Self::Logout(errors.0.iter().map(Self::from).collect()),
         }
     }
 }
@@ -169,6 +171,9 @@ impl From<WireError> for Error {
             WireError::NotFound => Self::NotFound,
             WireError::NoSuchField => Self::NoSuchField,
             WireError::ReadOnly => Self::ReadOnly,
+            WireError::Offline | WireError::Api(ApiErrorDto::Http { offline: true, .. }) => {
+                Self::Offline
+            }
             WireError::Api(api) => Self::Api(api.into()),
             WireError::Crypto(crypto) => Self::Crypto(crypto.into()),
             WireError::Gen(GenErrorDto::InvalidTotp(detail)) => {
@@ -179,6 +184,9 @@ impl From<WireError> for Error {
             ),
             WireError::Io(io) => Self::Io(io.into()),
             WireError::Cache(message) => Self::Cache(serde_json::Error::custom(message)),
+            WireError::Logout(errors) => Self::Logout(bwl_vault::LogoutErrors(
+                errors.into_iter().map(Self::from).collect(),
+            )),
         }
     }
 }
@@ -404,18 +412,58 @@ mod tests {
     }
 
     #[test]
-    fn offline_write_refusal_keeps_status_message_and_offline_flag() {
-        let error = Error::Api(bwl_api::Error::Server {
-            status: 503,
-            message: bwl_vault::OFFLINE_MESSAGE.to_owned(),
-        });
-        let back = proxied(&error);
+    fn offline_write_refusal_round_trips() {
+        let back = proxied(&Error::Offline);
+        assert!(matches!(back, Error::Offline), "{back:?}");
+        assert!(back.is_offline());
+        assert_eq!(back.to_string(), bwl_vault::OFFLINE_MESSAGE);
+    }
+
+    #[test]
+    fn gateway_status_keeps_status_message_and_offline_flag() {
+        let back = proxied(&Error::Api(bwl_api::Error::Server {
+            status: 502,
+            message: "Bad Gateway".to_owned(),
+        }));
         assert!(back.is_offline());
         assert!(matches!(
             &back,
-            Error::Api(bwl_api::Error::Server { status: 503, message })
-                if message == bwl_vault::OFFLINE_MESSAGE
+            Error::Api(bwl_api::Error::Server { status: 502, message }) if message == "Bad Gateway"
         ));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_is_still_offline_after_the_trip() {
+        // A real reqwest transport failure: nothing listens on the discard port.
+        let failure = reqwest::Client::new()
+            .get("http://127.0.0.1:9/alive")
+            .send()
+            .await
+            .expect_err("nothing listens on port 9");
+        let error = Error::Api(bwl_api::Error::Http(failure));
+        assert!(error.is_offline(), "precondition: {error:?}");
+        let back = proxied(&error);
+        assert!(matches!(back, Error::Offline), "{back:?}");
+        assert!(back.is_offline());
+    }
+
+    #[test]
+    fn logout_errors_keep_every_step() {
+        let error = Error::Logout(bwl_vault::LogoutErrors(vec![
+            Error::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "keychain locked",
+            )),
+            Error::NotFound,
+        ]));
+        let back = proxied(&error);
+        let Error::Logout(bwl_vault::LogoutErrors(steps)) = &back else {
+            panic!("expected Logout, got {back:?}");
+        };
+        assert_eq!(steps.len(), 2);
+        assert!(matches!(&steps[0], Error::Io(io) if io.kind() == io::ErrorKind::PermissionDenied));
+        assert!(matches!(steps[1], Error::NotFound));
+        assert_eq!(back.to_string(), error.to_string());
     }
 
     #[test]
@@ -450,29 +498,25 @@ mod tests {
     }
 
     #[test]
-    fn http_errors_are_rebuilt_as_api_io_errors_with_their_text() {
-        let dto = ApiErrorDto::Http {
+    fn offline_http_errors_become_offline_and_others_api_io_with_their_text() {
+        let unreachable = WireError::Api(ApiErrorDto::Http {
             message: "network error: error sending request".to_owned(),
             offline: true,
-        };
-        let back = Error::Api(dto.into());
-        let Error::Api(bwl_api::Error::Io(io)) = &back else {
-            panic!("expected Api(Io), got {back:?}");
-        };
-        assert_eq!(io.kind(), io::ErrorKind::NotConnected);
-        assert_eq!(
-            back.to_string(),
-            "i/o error: network error: error sending request"
-        );
-        let builder = ApiErrorDto::Http {
+        });
+        let back = Error::from(unreachable);
+        assert!(matches!(back, Error::Offline), "{back:?}");
+        assert!(back.is_offline());
+        let builder = WireError::Api(ApiErrorDto::Http {
             message: "network error: builder error".to_owned(),
             offline: false,
-        };
-        let back = Error::Api(builder.into());
+        });
+        let back = Error::from(builder);
         let Error::Api(bwl_api::Error::Io(io)) = &back else {
             panic!("expected Api(Io), got {back:?}");
         };
         assert_eq!(io.kind(), io::ErrorKind::Other);
+        assert_eq!(back.to_string(), "i/o error: network error: builder error");
+        assert!(!back.is_offline());
     }
 
     #[test]

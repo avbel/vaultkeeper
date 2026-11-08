@@ -83,6 +83,8 @@ pub struct Filter {
     pub folder: Option<Option<Arc<str>>>,
     /// `Some(None)` = personal vault only.
     pub organization: Option<Option<Arc<str>>>,
+    /// Items assigned to this collection (an organization item can be in several).
+    pub collection: Option<Arc<str>>,
     pub favorites_only: bool,
     pub trash: bool,
 }
@@ -201,6 +203,14 @@ pub struct AttachmentView {
     pub id: Arc<str>,
     pub file_name: Arc<str>,
     pub size_bytes: u64,
+}
+
+/// What the login screen shows after the server URL was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerProbe {
+    /// The version `/api/version` reports (Vaultwarden's own release, e.g. "1.37.5"); `None` when
+    /// the server answers `/alive` but not that endpoint.
+    pub version: Option<String>,
 }
 
 /// Key material handed to the SSH agent after unlock/sync.

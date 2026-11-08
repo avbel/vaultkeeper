@@ -225,3 +225,21 @@ async fn authenticator_two_factor_smoke_test() {
     assert_eq!(step, LoginStep::Done);
     assert!(matches!(test.vault.state(), SessionState::Unlocked { .. }));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_names_the_vaultwarden_release_before_any_login() {
+    let env = env();
+    let expected: String = env
+        .http
+        .get(env.vw.join("api/version").unwrap())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let test = TestVault::new();
+    let probe = test.vault.probe_server(&env.vw).await.unwrap();
+    assert_eq!(probe.version.as_deref(), Some(expected.as_str()));
+    assert_eq!(test.vault.state(), SessionState::LoggedOut);
+}

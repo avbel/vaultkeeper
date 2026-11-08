@@ -13,7 +13,7 @@ use std::{
 use bw_lite::{
     App,
     exec::Exec,
-    hooks::{Clipboard, Clock, FileDialogs, HookResult, Hooks, SettingsStore},
+    hooks::{Clipboard, Clock, FileDialogs, HookResult, Hooks, SettingsStore, SshKeyTool},
     mock::{MockConfig, MockVault},
     settings::Settings,
 };
@@ -35,6 +35,11 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .build()
         .expect("test runtime")
 });
+
+/// Runs vault calls a test makes directly, outside the UI.
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    RUNTIME.block_on(future)
+}
 
 /// The testing backend is per thread; a thread reused by the test runner already has one.
 pub fn init_backend() {
@@ -149,6 +154,8 @@ pub struct Setup {
     pub unlocked: bool,
     pub offline: bool,
     pub settings: Settings,
+    /// Replaces the mock SSH key tool (e.g. with the real one).
+    pub ssh_keys: Option<Arc<dyn SshKeyTool>>,
 }
 
 impl Default for Setup {
@@ -157,6 +164,7 @@ impl Default for Setup {
             unlocked: true,
             offline: false,
             settings: Settings::default(),
+            ssh_keys: None,
         }
     }
 }
@@ -174,12 +182,16 @@ pub fn harness(setup: Setup) -> Harness {
         saved: Mutex::new(Some(setup.settings)),
     });
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
+    let defaults = Hooks::logging();
     let hooks = Hooks {
         clipboard: Arc::clone(&clipboard) as Arc<dyn Clipboard>,
         files: Arc::clone(&files) as Arc<dyn FileDialogs>,
         settings: Arc::clone(&settings) as Arc<dyn SettingsStore>,
         clock: Arc::clone(&clock) as Arc<dyn Clock>,
-        ..Hooks::logging()
+        ssh_keys: setup
+            .ssh_keys
+            .unwrap_or_else(|| Arc::clone(&defaults.ssh_keys)),
+        ..defaults
     };
     let app = App::new(
         Arc::clone(&vault),

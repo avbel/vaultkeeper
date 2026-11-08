@@ -27,6 +27,8 @@ url.workspace = true
 zeroize = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+# A real transport failure for the offline-error round trip; already in the build via bwl-api.
+reqwest.workspace = true
 tokio = { workspace = true, features = ["io-util", "test-util"] }
 
 [lints]

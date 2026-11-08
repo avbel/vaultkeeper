@@ -84,10 +84,14 @@ impl<S: VaultService> App<S> {
             return;
         };
         let now = self.hooks.clock.unix_now();
-        let since = self
-            .last_sync
-            .get()
-            .map(|synced| now.saturating_sub(synced));
+        // The daemon's own syncs (timer, websocket, on unlock) count, not only the UI's.
+        let synced = self
+            .vault
+            .last_sync()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_secs())
+            .max(self.last_sync.get());
+        let since = synced.map(|synced| now.saturating_sub(synced));
         let ssh_keys = self.settings.borrow().ssh_agent.then(|| {
             manager
                 .counts

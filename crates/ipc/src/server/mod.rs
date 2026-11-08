@@ -28,7 +28,7 @@ use tokio::{
 use crate::{
     IpcError, PeerVerifier, SameExecutable,
     peer::own_uid,
-    protocol::{SshPrompt, UiCommand},
+    protocol::{SshDecision, SshPrompt, UiCommand, UiNotice},
 };
 
 const DIR_MODE: u32 = 0o700;
@@ -45,10 +45,10 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 pub enum DaemonEvent {
     Command(UiCommand),
-    /// Send `true` on `reply` to approve. Dropping it, or the UI disconnecting, counts as deny.
+    /// Dropping `reply`, or the UI disconnecting, counts as deny.
     SshApproval {
         prompt: SshPrompt,
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::Sender<SshDecision>,
     },
     /// Tells the connected UI process to exit.
     Shutdown,
@@ -61,6 +61,8 @@ pub struct ServeOptions {
     pub max_concurrent_calls: usize,
     /// How long a new connection may take to send `Hello`.
     pub handshake_timeout: Duration,
+    /// Where [`UiNotice`]s from the UI process go; dropped when `None` or when the channel is full.
+    pub notices: Option<mpsc::Sender<UiNotice>>,
 }
 
 impl ServeOptions {
@@ -74,6 +76,15 @@ impl ServeOptions {
             verifier: Arc::new(verifier),
             max_concurrent_calls: DEFAULT_MAX_CALLS,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            notices: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_notices(self, notices: mpsc::Sender<UiNotice>) -> Self {
+        Self {
+            notices: Some(notices),
+            ..self
         }
     }
 }
@@ -85,12 +96,19 @@ pub struct ServerHandle {
     path: PathBuf,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
+    slot: Arc<Semaphore>,
 }
 
 impl ServerHandle {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// A UI process finished the handshake and is still connected.
+    #[must_use]
+    pub fn is_ui_connected(&self) -> bool {
+        self.slot.available_permits() == 0
     }
 
     /// Sends `Shutdown` to the connected UI, waits up to a second for it to go out, then stops.
@@ -122,6 +140,7 @@ struct Shared<S> {
     uid: u32,
     max_concurrent_calls: usize,
     handshake_timeout: Duration,
+    notices: Option<mpsc::Sender<UiNotice>>,
     /// One permit: the connected UI process.
     slot: Arc<Semaphore>,
 }
@@ -148,6 +167,7 @@ pub async fn serve_with<S: VaultService>(
     remove_stale_socket(&path)?;
     let listener = bind(&path)?;
     let (stop, stop_rx) = watch::channel(false);
+    let slot = Arc::new(Semaphore::new(1));
     let shared = Arc::new(Shared {
         service,
         events: Arc::new(Mutex::new(events)),
@@ -155,13 +175,15 @@ pub async fn serve_with<S: VaultService>(
         uid: own_uid(),
         max_concurrent_calls: options.max_concurrent_calls.max(1),
         handshake_timeout: options.handshake_timeout,
-        slot: Arc::new(Semaphore::new(1)),
+        notices: options.notices,
+        slot: Arc::clone(&slot),
     });
     let task = tokio::spawn(accept_loop(listener, shared, stop_rx));
     Ok(ServerHandle {
         path,
         stop,
         task: Some(task),
+        slot,
     })
 }
 

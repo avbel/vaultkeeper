@@ -35,7 +35,7 @@ use crate::{
     ConvertError, IpcError,
     dto::WireError,
     frame::encode,
-    protocol::{Call, Reply, Snapshot, UiMessage},
+    protocol::{Call, Reply, Snapshot, UiMessage, UiNotice},
 };
 
 /// `VaultService` backed by the daemon. Dropping it closes the connection and joins the I/O
@@ -75,6 +75,15 @@ impl RemoteVault {
             .cache
             .read()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Sends a notice without waiting; fails only when the daemon connection is gone.
+    pub fn notify(&self, notice: UiNotice) -> Result<(), IpcError> {
+        let frame = encode(&UiMessage::Notice(notice))?;
+        self.shared
+            .outbox
+            .send(frame)
+            .map_err(|_| IpcError::Disconnected)
     }
 
     async fn call(&self, call: Call) -> bwl_vault::Result<Reply> {
@@ -221,6 +230,7 @@ struct Cache {
     state: SessionState,
     accounts: Vec<AccountView>,
     is_offline: bool,
+    last_sync: Option<std::time::SystemTime>,
     folders: Result<Vec<FolderView>, WireError>,
     organizations: Result<Vec<OrganizationView>, WireError>,
     collections: Result<Vec<CollectionView>, WireError>,
@@ -238,6 +248,9 @@ impl TryFrom<Snapshot> for Cache {
                 .map(AccountView::try_from)
                 .collect::<Result<_, _>>()?,
             is_offline: snapshot.is_offline,
+            last_sync: snapshot
+                .last_sync
+                .map(|unix| std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix)),
             folders: model_list(snapshot.folders),
             organizations: model_list(snapshot.organizations),
             collections: model_list(snapshot.collections),

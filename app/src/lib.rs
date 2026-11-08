@@ -1,21 +1,25 @@
 //! bw-lite desktop app: a Slint UI shell over `bwl_vault::VaultService`.
 //!
-//! The binary wires the real vault and OS hooks; `--mock` runs everything on [`mock::MockVault`]
-//! with logging stubs for the hooks in [`hooks`].
+//! One binary, two processes: [`daemon`] (`--daemon`/`--tray`) owns the vault, SSH agent, tray
+//! and hotkey; [`ui_process`] (`--ui`) shows the windows over IPC and exits when idle. `--mock`
+//! runs the UI alone on [`mock::MockVault`] with the logging stubs in [`hooks`].
 
 pub mod app;
 pub mod cli;
+pub mod daemon;
 pub mod detail;
 pub mod edit_form;
 pub mod exec;
 pub mod hooks;
 pub mod keymap;
 pub mod mock;
+pub mod os;
 pub mod rows;
 pub mod run;
 pub mod server_url;
 pub mod settings;
 pub mod sidebar;
+pub mod ui_process;
 pub mod viewmodel;
 
 pub mod ui {

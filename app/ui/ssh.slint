@@ -18,6 +18,8 @@ export component SshPrompt inherits Window {
     in property <bool> touch-id-required;
     in property <bool> busy;
     in-out property <bool> remember;
+    // "SSH requires approval: remember until lock"; with "always" nothing is remembered.
+    in property <bool> allow-remember: true;
     in-out property <int> seconds-left: 30;
     in property <int> timeout: 30;
 
@@ -89,7 +91,7 @@ export component SshPrompt inherits Window {
                     color: Theme.text-muted;
                     wrap: char-wrap;
                 }
-                Check { text: "Remember for this key until lock"; checked <=> root.remember; }
+                if root.allow-remember: Check { text: "Remember for this key until lock"; checked <=> root.remember; }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
                     spacing: Theme.gap;

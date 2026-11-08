@@ -117,6 +117,8 @@ pub struct App<S: VaultService> {
     quick: RefCell<Option<Quick>>,
     lock_window: RefCell<Option<LockWindow>>,
     failed_unlocks: Cell<i32>,
+    /// No unlock since the app started: "Require master password on app start" hides Touch ID.
+    first_unlock: Cell<bool>,
     login: RefCell<Option<LoginState>>,
     settings_window: RefCell<Option<SettingsWindow>>,
     generator_window: RefCell<Option<GeneratorWindow>>,
@@ -153,6 +155,7 @@ impl<S: VaultService> App<S> {
             quick: RefCell::new(None),
             lock_window: RefCell::new(None),
             failed_unlocks: Cell::new(0),
+            first_unlock: Cell::new(true),
             login: RefCell::new(None),
             settings_window: RefCell::new(None),
             generator_window: RefCell::new(None),
@@ -171,6 +174,12 @@ impl<S: VaultService> App<S> {
     #[must_use]
     pub fn vault(&self) -> &Arc<S> {
         &self.vault
+    }
+
+    /// The `--ui` process learns from the daemon whether an unlock already happened.
+    pub fn set_first_unlock(&self, first_unlock: bool) {
+        self.first_unlock.set(first_unlock);
+        self.refresh_lock_window();
     }
 
     /// Registers the global hotkey and, unless `tray_only`, shows the window for the current
@@ -226,6 +235,7 @@ impl<S: VaultService> App<S> {
     }
 
     fn on_unlocked(&self) {
+        self.first_unlock.set(false);
         self.failed_unlocks.set(0);
         self.close_lock_window();
         self.close_login();
@@ -237,6 +247,7 @@ impl<S: VaultService> App<S> {
             // Nothing asked for a window (unlock at login): stay in the tray.
             Target::None => {}
         }
+        self.show_next_ssh_prompt();
         self.sync_now();
     }
 

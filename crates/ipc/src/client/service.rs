@@ -4,7 +4,7 @@ use bwl_vault::{
     Error, Result, TotpCode, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SessionState,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe, SessionState,
         SshKeyMaterial, TwoFactorAnswer,
     },
 };
@@ -130,6 +130,20 @@ impl VaultService for RemoteVault {
 
     fn is_offline(&self) -> bool {
         self.cache().is_offline
+    }
+
+    fn last_sync(&self) -> Option<std::time::SystemTime> {
+        self.cache().last_sync
+    }
+
+    async fn probe_server(&self, server: &url::Url) -> Result<ServerProbe> {
+        match self
+            .call(Call::ProbeServer(server.as_str().to_owned()))
+            .await?
+        {
+            Reply::ServerProbe { version } => Ok(ServerProbe { version }),
+            _ => Err(unexpected()),
+        }
     }
 
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>> {

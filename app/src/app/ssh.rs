@@ -1,13 +1,16 @@
-//! SSH sign approvals: one prompt at a time, auto-deny after 30 s, optional Touch ID.
+//! SSH sign approvals: one prompt at a time, auto-deny after 30 s, optional Touch ID. A request
+//! that arrives while the vault is locked shows the lock screen first and its prompt after the
+//! unlock.
 
 use std::{collections::HashSet, collections::VecDeque, sync::Arc, time::Duration};
 
-use bwl_vault::VaultService;
+use bwl_ipc::SshDecision;
+use bwl_vault::{VaultService, model::SessionState};
 use slint::Timer;
 use tokio::sync::oneshot;
 
 use super::{App, handler, hide, retire, show};
-use crate::ui::SshPrompt;
+use crate::{settings::SshApproval, ui::SshPrompt};
 
 pub const SSH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -20,8 +23,8 @@ pub struct SshApprovalRequest {
     pub fingerprint: String,
     /// e.g. "git commit signing" or "agent forwarding".
     pub purpose: Option<String>,
-    /// `true` approves; dropping it counts as deny.
-    pub reply: oneshot::Sender<bool>,
+    /// Dropping it counts as deny.
+    pub reply: oneshot::Sender<SshDecision>,
 }
 
 #[derive(Default)]
@@ -41,8 +44,8 @@ fn stop_timer(timer: Option<Timer>) {
     }
 }
 
-fn reply(request: SshApprovalRequest, approved: bool) {
-    if request.reply.send(approved).is_err() {
+fn reply(request: SshApprovalRequest, decision: SshDecision) {
+    if request.reply.send(decision).is_err() {
         tracing::debug!(
             key = request.key_name,
             "SSH requester went away before the answer"
@@ -53,16 +56,33 @@ fn reply(request: SshApprovalRequest, approved: bool) {
 impl<S: VaultService> App<S> {
     /// Entry point for the agent's approval channel.
     pub fn request_ssh_approval(&self, request: SshApprovalRequest) {
-        if self.ssh.borrow().remembered.contains(&request.fingerprint) {
-            reply(request, true);
-            return;
+        match self.vault.state() {
+            SessionState::LoggedOut => {
+                reply(request, SshDecision::DENY);
+                return;
+            }
+            SessionState::Unlocked { .. }
+                if self.ssh.borrow().remembered.contains(&request.fingerprint) =>
+            {
+                reply(request, SshDecision::approve(true));
+                return;
+            }
+            SessionState::Locked { .. } => {
+                self.ssh.borrow_mut().pending.push_back(request);
+                self.open_lock_window();
+                return;
+            }
+            SessionState::Unlocked { .. } => {}
         }
         self.ssh.borrow_mut().pending.push_back(request);
         self.show_next_ssh_prompt();
     }
 
-    fn show_next_ssh_prompt(&self) {
-        if self.ssh.borrow().current.is_some() {
+    /// Runs after every unlock too, for requests that waited on the lock screen.
+    pub(super) fn show_next_ssh_prompt(&self) {
+        if self.ssh.borrow().current.is_some()
+            || !matches!(self.vault.state(), SessionState::Unlocked { .. })
+        {
             return;
         }
         let Some(request) = self.ssh.borrow_mut().pending.pop_front() else {
@@ -72,7 +92,7 @@ impl<S: VaultService> App<S> {
             Ok(window) => window,
             Err(error) => {
                 tracing::error!(%error, "cannot create the SSH prompt; denying");
-                reply(request, false);
+                reply(request, SshDecision::DENY);
                 return;
             }
         };
@@ -86,6 +106,9 @@ impl<S: VaultService> App<S> {
         window.set_fingerprint(request.fingerprint.as_str().into());
         window.set_purpose(request.purpose.clone().unwrap_or_default().into());
         window.set_touch_id_required(self.settings.borrow().ssh_touch_id);
+        window.set_allow_remember(
+            self.settings.borrow().ssh_approval == SshApproval::RememberUntilLock,
+        );
         let seconds = i32::try_from(SSH_TIMEOUT.as_secs()).unwrap_or(30);
         window.set_timeout(seconds);
         window.set_seconds_left(seconds);
@@ -130,12 +153,14 @@ impl<S: VaultService> App<S> {
     }
 
     fn finish_ssh(&self, approved: bool, remember: bool) {
+        let remember = approved
+            && remember
+            && self.settings.borrow().ssh_approval == SshApproval::RememberUntilLock;
         let request = {
             let mut queue = self.ssh.borrow_mut();
             stop_timer(queue.timeout.take());
             let request = queue.current.take();
             if let Some(request) = &request
-                && approved
                 && remember
             {
                 queue.remembered.insert(request.fingerprint.clone());
@@ -143,7 +168,7 @@ impl<S: VaultService> App<S> {
             request
         };
         if let Some(request) = request {
-            reply(request, approved);
+            reply(request, SshDecision { approved, remember });
         }
         if let Some(window) = self.ssh_prompt.borrow_mut().take() {
             hide(&window);
@@ -167,12 +192,23 @@ impl<S: VaultService> App<S> {
                 .collect()
         };
         for request in requests {
-            reply(request, false);
+            reply(request, SshDecision::DENY);
         }
         if let Some(window) = self.ssh_prompt.borrow_mut().take() {
             hide(&window);
             retire(window);
             self.window_closed();
+        }
+    }
+
+    /// The lock screen was closed without unlocking: requests waiting behind it are denied.
+    pub(super) fn deny_ssh_waiting_for_unlock(&self) {
+        if matches!(self.vault.state(), SessionState::Unlocked { .. }) {
+            return;
+        }
+        let waiting: Vec<SshApprovalRequest> = self.ssh.borrow_mut().pending.drain(..).collect();
+        for request in waiting {
+            reply(request, SshDecision::DENY);
         }
     }
 

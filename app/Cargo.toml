@@ -15,11 +15,23 @@ path = "src/lib.rs"
 name = "bw-lite"
 path = "src/main.rs"
 
+[features]
+# End-to-end tests against the docker Vaultwarden (scripts/e2e.sh). Also lets a `--daemon` built
+# with it accept the test process as its UI peer and skip the keychain's real item names; release
+# builds never have it.
+vw-it = []
+
 [dependencies]
 anyhow.workspace = true
 bwl-api.workspace = true
 bwl-gen.workspace = true
+bwl-ipc.workspace = true
+bwl-platform.workspace = true
+bwl-ssh.workspace = true
 bwl-vault.workspace = true
+global-hotkey.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 # Software renderer only: the window process measured +28 MB resident after a window is dropped
 # with it, against +45 MB with femtovg (docs/solutions/bw-lite-architecture.md, step 0).
 slint = { workspace = true, default-features = false, features = [
@@ -33,15 +45,43 @@ slint = { workspace = true, default-features = false, features = [
     "unstable-winit-030",
 ] }
 thiserror.workspace = true
-tokio.workspace = true
+# `process` spawns and reaps the UI process, `signal` turns SIGTERM into a graceful quit.
+tokio = { workspace = true, features = ["process", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
+uuid.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Activation policy (Dock icon only while the Manager is open) and the cursor's screen for the
+# Quick Panel; the same objc2 generation global-hotkey and rfd already pull in.
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSAppearance",
+    "NSApplication",
+    "NSEvent",
+    "NSResponder",
+    "NSScreen",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSString",
+] }
+# Native open/save panels for attachments; no portal or Wayland backends on macOS.
+rfd = { version = "0.18.0", default-features = false }
+
 [dev-dependencies]
+# Registers e2e accounts with the client's own crypto, as the bwl-vault scenarios do.
+bwl-crypto.workspace = true
 # Internal Slint crate without semver guarantees; must match the slint version exactly.
 i-slint-backend-testing = "=1.18.1"
+reqwest.workspace = true
+tempfile = "3.27.0"
 
 [build-dependencies]
 slint-build = "1.18.1"

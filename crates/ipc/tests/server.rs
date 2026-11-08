@@ -12,7 +12,7 @@ use std::{
 
 use bwl_ipc::{
     DaemonEvent, IpcError, PROTOCOL_VERSION, PeerCredentials, RemoteVault, ServeOptions,
-    SshApprovalKind, SshPrompt, UiCommand, UiEvent,
+    SshApprovalKind, SshDecision, SshPrompt, UiCommand, UiEvent, UiNotice,
     dto::{SessionStateDto, WireError},
     frame::{HEADER_LEN, MAX_FRAME_LEN, encode},
     ipc_error,
@@ -111,12 +111,19 @@ async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
         panic!("expected an approval request");
     };
     assert_eq!(request.prompt, prompt());
-    request.reply.send(true).expect("reply");
+    request
+        .reply
+        .send(SshDecision::approve(true))
+        .expect("reply");
     assert_eq!(
         tokio::time::timeout(EVENT_WAIT, approved)
             .await
             .expect("in time"),
-        Ok(true)
+        Ok(SshDecision {
+            approved: true,
+            remember: true
+        }),
+        "the answer and the remember choice both reach the daemon"
     );
 
     let (reply, denied) = oneshot::channel();
@@ -143,7 +150,7 @@ async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
         tokio::time::timeout(EVENT_WAIT, denied)
             .await
             .expect("in time"),
-        Ok(false),
+        Ok(SshDecision::DENY),
         "dropping the reply denies"
     );
 }
@@ -169,7 +176,7 @@ async fn pending_approval_is_denied_when_the_ui_disconnects() {
         .await
         .expect("in time");
     assert!(
-        decision.is_err() || decision == Ok(false),
+        decision.is_err() || decision == Ok(SshDecision::DENY),
         "a vanished UI never approves: {decision:?}"
     );
     drop(request);
@@ -389,6 +396,7 @@ fn logged_out_snapshot() -> Snapshot {
         state: SessionStateDto::LoggedOut,
         accounts: Vec::new(),
         is_offline: false,
+        last_sync: None,
         folders: Err(WireError::LoggedOut),
         organizations: Err(WireError::LoggedOut),
         collections: Err(WireError::LoggedOut),
@@ -616,4 +624,59 @@ async fn stale_socket_is_replaced_but_a_live_daemon_or_a_plain_file_is_not() {
         refused.err()
     );
     assert_eq!(std::fs::read(dir.socket()).expect("kept"), b"not a socket");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notices_from_the_ui_reach_the_daemon_channel() {
+    let (notices, mut received) = mpsc::channel(4);
+    let options = ServeOptions::new().expect("options").with_notices(notices);
+    let daemon = Daemon::start_with(FakeVault::new(unlocked(), 0), options).await;
+    let (vault, _events) = daemon.connect().await;
+    vault
+        .notify(UiNotice::SettingsChanged)
+        .expect("notify settings");
+    vault.notify(UiNotice::Activity).expect("notify activity");
+    let first = tokio::time::timeout(EVENT_WAIT, received.recv()).await;
+    let second = tokio::time::timeout(EVENT_WAIT, received.recv()).await;
+    assert_eq!(first.expect("in time"), Some(UiNotice::SettingsChanged));
+    assert_eq!(second.expect("in time"), Some(UiNotice::Activity));
+    assert!(
+        daemon.fake.log().is_empty(),
+        "notices are not vault calls: {:?}",
+        daemon.fake.log()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notices_without_a_daemon_channel_are_ignored() {
+    let daemon = Daemon::start(FakeVault::new(unlocked(), 0)).await;
+    let (vault, _events) = daemon.connect().await;
+    vault.notify(UiNotice::Activity).expect("notify");
+    assert_eq!(
+        vault
+            .search("", &bwl_vault::model::Filter::default())
+            .map(|items| items.len())
+            .ok(),
+        Some(0)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_handle_reports_whether_a_ui_is_connected() {
+    let daemon = Daemon::start(FakeVault::new(locked(), 0)).await;
+    let server = daemon.server.as_ref().expect("server");
+    assert!(!server.is_ui_connected());
+    let (vault, events) = daemon.connect().await;
+    assert!(server.is_ui_connected());
+    drop((vault, events));
+    let deadline = Instant::now() + EVENT_WAIT;
+    while server.is_ui_connected() {
+        assert!(
+            Instant::now() < deadline,
+            "the slot is released after a disconnect"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let notify_after_close = RemoteVault::connect(daemon.socket()).await;
+    assert!(notify_after_close.is_ok(), "the next UI may connect");
 }

@@ -7,7 +7,7 @@ use crate::{
     Result, TotpCode,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SessionState,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe, SessionState,
         SshKeyMaterial, TwoFactorAnswer,
     },
 };
@@ -71,8 +71,17 @@ pub trait VaultService: Send + Sync + 'static {
     fn sync(&self) -> impl Future<Output = Result<()>> + Send;
 
     /// True while the server is unreachable; the UI shows an "offline mode" toast when it opens.
-    /// Writes fail with an API error while offline.
+    /// Writes fail with [`crate::Error::Offline`] while offline.
     fn is_offline(&self) -> bool;
+
+    /// When the last full sync of the active account finished, if one did since start.
+    fn last_sync(&self) -> Option<std::time::SystemTime> {
+        None
+    }
+
+    /// Login-screen check of a server URL: `GET /alive`, then `GET /api/version`. Works in any
+    /// session state and changes nothing. An unreachable server is an offline error.
+    fn probe_server(&self, server: &url::Url) -> impl Future<Output = Result<ServerProbe>> + Send;
 
     /// Most-recently-used first when `query` is empty; otherwise ranked by name/subtitle/URI match.
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>>;

@@ -109,7 +109,17 @@ pub(super) async fn dispatch<S: VaultService>(
         Call::SshKeys => reply(blocking(service, S::ssh_keys).await?, |keys| {
             Reply::SshKeys(convert_all(keys))
         }),
+        Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
     }
+}
+
+async fn probe<S: VaultService>(service: &S, server: &str) -> Result<Reply, WireError> {
+    let server = url::Url::parse(server).map_err(crate::ConvertError::Url)?;
+    reply(service.probe_server(&server).await, |probe| {
+        Reply::ServerProbe {
+            version: probe.version,
+        }
+    })
 }
 
 fn reply<T>(

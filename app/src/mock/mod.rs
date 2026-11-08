@@ -36,6 +36,8 @@ pub fn mock_user_key(account_id: &str) -> zeroize::Zeroizing<Vec<u8>> {
     zeroize::Zeroizing::new(format!("mock-user-key:{account_id}").into_bytes())
 }
 pub const MOCK_2FA_CODE: &str = "123456";
+/// What the mock's server probe reports, like Vaultwarden's `/api/version`.
+pub const MOCK_SERVER_VERSION: &str = "1.37.5";
 pub const MOCK_DEVICE_CODE: &str = "654321";
 
 /// Calls with side effects, recorded so tests can assert what the UI asked for.
