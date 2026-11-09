@@ -26,6 +26,9 @@ export component QuickPanel inherits Window {
     always-on-top: true;
     width: 560px;
     height: 44px + 1px + 8 * Theme.row-height-compact + 1px + 28px;
+    // The window's own size reads 0×0 until it is shown, too late for placing it.
+    out property <length> panel-width: self.width;
+    out property <length> panel-height: self.height;
     background: Theme.surface;
     default-font-size: Theme.font-body;
     forward-focus: search;

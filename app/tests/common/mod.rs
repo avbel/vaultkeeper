@@ -13,7 +13,10 @@ use std::{
 use bw_lite::{
     App,
     exec::Exec,
-    hooks::{Clipboard, Clock, FileDialogs, HookResult, Hooks, SettingsStore, SshKeyTool},
+    hooks::{
+        Clipboard, Clock, FileDialogs, HookResult, Hooks, SettingsStore, SshKeyTool,
+        WindowPlacement,
+    },
     mock::{MockConfig, MockVault},
     settings::Settings,
 };
@@ -140,6 +143,22 @@ impl SettingsStore for RecordingSettings {
     }
 }
 
+/// Records the size the Quick Panel asks to be placed with.
+#[derive(Default)]
+pub struct RecordingPlacement {
+    pub requested: Mutex<Option<(f32, f32)>>,
+}
+
+impl WindowPlacement for RecordingPlacement {
+    fn quick_panel_origin(&self, width: f32, height: f32) -> Option<slint::LogicalPosition> {
+        *self
+            .requested
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((width, height));
+        None
+    }
+}
+
 pub struct FixedClock(pub Mutex<u64>);
 
 impl Clock for FixedClock {
@@ -155,6 +174,7 @@ pub struct Harness {
     pub files: Arc<FakeFiles>,
     pub settings: Arc<RecordingSettings>,
     pub clock: Arc<FixedClock>,
+    pub placement: Arc<RecordingPlacement>,
 }
 
 pub struct Setup {
@@ -190,12 +210,14 @@ pub fn harness(setup: Setup) -> Harness {
         ..RecordingSettings::default()
     });
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
+    let placement = Arc::new(RecordingPlacement::default());
     let defaults = Hooks::mock(&vault, &[]);
     let hooks = Hooks {
         clipboard: Arc::clone(&clipboard) as Arc<dyn Clipboard>,
         files: Arc::clone(&files) as Arc<dyn FileDialogs>,
         settings: Arc::clone(&settings) as Arc<dyn SettingsStore>,
         clock: Arc::clone(&clock) as Arc<dyn Clock>,
+        placement: Arc::clone(&placement) as Arc<dyn WindowPlacement>,
         ssh_keys: setup
             .ssh_keys
             .unwrap_or_else(|| Arc::clone(&defaults.ssh_keys)),
@@ -213,6 +235,7 @@ pub fn harness(setup: Setup) -> Harness {
         files,
         settings,
         clock,
+        placement,
     }
 }
 

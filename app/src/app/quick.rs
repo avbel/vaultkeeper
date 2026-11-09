@@ -67,14 +67,10 @@ impl<S: VaultService> App<S> {
         self.bind_quick(&window);
         window.set_locked(locked);
         window.set_touch_id_available(self.touch_id_enrolled());
-        let size = window
-            .window()
-            .size()
-            .to_logical(window.window().scale_factor());
         if let Some(origin) = self
             .hooks
             .placement
-            .quick_panel_origin(size.width, size.height)
+            .quick_panel_origin(window.get_panel_width(), window.get_panel_height())
         {
             window.window().set_position(origin);
         }

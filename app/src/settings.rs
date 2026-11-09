@@ -185,6 +185,56 @@ impl Settings {
     }
 }
 
+/// "Cmd+Shift+Space" as macOS shows it, "⌘⇧Space": modifiers as symbols in Apple's order
+/// (⌃⌥⇧⌘), then the key. `KeyK` / `Digit1` (global-hotkey's code names) become `K` / `1`.
+#[must_use]
+pub fn hotkey_symbols(accelerator: &str) -> String {
+    const ORDER: [(&str, &[&str]); 4] = [
+        ("⌃", &["ctrl", "control"]),
+        ("⌥", &["alt", "option"]),
+        ("⇧", &["shift"]),
+        (
+            "⌘",
+            &[
+                "cmd",
+                "command",
+                "super",
+                "meta",
+                "cmdorctrl",
+                "commandorcontrol",
+            ],
+        ),
+    ];
+    let parts: Vec<&str> = accelerator
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    let Some((key, modifiers)) = parts.split_last() else {
+        return String::new();
+    };
+    let mut text: String = ORDER
+        .iter()
+        .filter(|(_, names)| {
+            modifiers
+                .iter()
+                .any(|modifier| names.contains(&modifier.to_ascii_lowercase().as_str()))
+        })
+        .map(|(symbol, _)| *symbol)
+        .collect();
+    let key = key
+        .strip_prefix("Key")
+        .or_else(|| key.strip_prefix("Digit"))
+        .filter(|rest| rest.len() == 1)
+        .unwrap_or(key);
+    text.push_str(&if key.len() == 1 {
+        key.to_ascii_uppercase()
+    } else {
+        key.to_owned()
+    });
+    text
+}
+
 pub const LOCK_OPTIONS: [LockTimeout; 6] = [
     LockTimeout::Minutes(1),
     LockTimeout::Minutes(5),
@@ -348,6 +398,16 @@ mod tests {
             assert_eq!(settings.theme, ThemeChoice::Dark, "{json}");
             assert_eq!(settings.last_login, None, "{json}");
         }
+    }
+
+    #[test]
+    fn hotkeys_are_shown_with_mac_symbols_in_apple_order() {
+        assert_eq!(hotkey_symbols("Cmd+Shift+Space"), "⇧⌘Space");
+        assert_eq!(hotkey_symbols("Shift+Cmd+KeyK"), "⇧⌘K");
+        assert_eq!(hotkey_symbols("ctrl+alt+Digit1"), "⌃⌥1");
+        assert_eq!(hotkey_symbols("Cmd+Alt+k"), "⌥⌘K");
+        assert_eq!(hotkey_symbols("F5"), "F5");
+        assert_eq!(hotkey_symbols(""), "");
     }
 
     #[test]

@@ -62,7 +62,9 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         })
         .collect();
     tray.set_accounts(ModelRc::new(VecModel::from(labels)));
-    tray.set_theme_index(daemon.settings().theme.index());
+    let settings = daemon.settings();
+    tray.set_theme_index(settings.theme.index());
+    tray.set_quick_hotkey(crate::settings::hotkey_symbols(&settings.hotkey).into());
     // Re-read on every refresh: a system appearance switch shows on the next vault or settings
     // change (a sync runs at least every 30 minutes).
     tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {

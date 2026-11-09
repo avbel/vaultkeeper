@@ -20,6 +20,18 @@ fn open(unlocked: bool) -> (Harness, bw_lite::ui::QuickPanel) {
     (h, panel)
 }
 
+#[test]
+fn the_panel_is_placed_with_its_real_size_not_the_unshown_zero_size() {
+    let (h, panel) = open(true);
+    let requested = *h.placement.requested.lock().expect("placement");
+    assert_eq!(
+        requested,
+        Some((panel.get_panel_width(), panel.get_panel_height()))
+    );
+    assert_eq!(requested.map(|(width, _)| width), Some(560.0));
+    assert!(requested.is_some_and(|(_, height)| height > 0.0));
+}
+
 fn expected(h: &Harness, name: &str, field: CopyField) -> String {
     let item = h.vault.search(name, &Filter::default()).expect("search")[0].clone();
     h.vault.reveal(&item.id, field).expect("reveal").to_string()

@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Clock } from "theme.slint";
-import { Btn, BtnKind, Divider, EmptyState, Field, Icon, IconBtn, MenuRow, PopupPanel, SkeletonRows, Toast } from "kit.slint";
+import { Btn, BtnKind, Divider, EmptyState, Field, Icon, MenuRow, PopupPanel, SkeletonRows, Toast } from "kit.slint";
 import { ItemRow, RowData } from "row.slint";
 import { AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
 import { GeneratorView, GeneratorState } from "generator.slint";
@@ -13,6 +13,7 @@ component NewMenu inherits Rectangle {
     height: Theme.control-height;
     Btn {
         width: 100%;
+        height: root.height;
         text: "+ New";
         hint: "⌘N";
         label: "New item";
@@ -280,7 +281,10 @@ export component ManagerWindow inherits Window {
                         lock => { root.lock(); }
                         logout-confirmed => { root.logout-confirmed(); }
                     }
+                    // Every toolbar control has the field height, so their tops and bottoms line up.
                     search := Field {
+                        height: Theme.field-height;
+                        y: (parent.height - self.height) / 2;
                         has-icon: true;
                         icon: @image-url("icons/search.svg");
                         cap: "⌘F";
@@ -291,17 +295,21 @@ export component ManagerWindow inherits Window {
                         edited(text) => { root.search-edited(text); }
                     }
                     NewMenu {
+                        height: Theme.field-height;
                         y: (parent.height - self.height) / 2;
                         new-item(kind) => { root.new-item(kind); }
                     }
-                    IconBtn {
+                    Btn {
+                        width: Theme.field-height;
+                        height: Theme.field-height;
                         y: (parent.height - self.height) / 2;
+                        has-icon: true;
                         icon: @image-url("icons/gear.svg");
                         label: "Settings";
-                        hint: "⌘,";
                         clicked => { root.open-settings(); }
                     }
                     Btn {
+                        height: Theme.field-height;
                         y: (parent.height - self.height) / 2;
                         text: "Lock";
                         hint: "⌘⇧L";
