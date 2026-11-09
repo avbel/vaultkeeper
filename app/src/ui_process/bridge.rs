@@ -25,6 +25,7 @@ pub fn bridge(event: UiEvent) -> Bridged {
                     key_name: prompt.key_name,
                     fingerprint: prompt.fingerprint,
                     purpose: prompt.purpose,
+                    return_to: prompt.return_to,
                     reply: approval.reply,
                 }))
             }
@@ -38,11 +39,11 @@ pub fn bridge(event: UiEvent) -> Bridged {
 }
 
 #[must_use]
-pub const fn command_for(command: bwl_ipc::UiCommand) -> UiCommand {
+pub fn command_for(command: bwl_ipc::UiCommand) -> UiCommand {
     match command {
         bwl_ipc::UiCommand::ShowManager => UiCommand::ShowManager,
-        bwl_ipc::UiCommand::ShowQuickPanel => UiCommand::ShowQuickPanel,
-        bwl_ipc::UiCommand::ToggleQuickPanel => UiCommand::ToggleQuickPanel,
+        bwl_ipc::UiCommand::ShowQuickPanel { target } => UiCommand::ShowQuickPanel { target },
+        bwl_ipc::UiCommand::ToggleQuickPanel { target } => UiCommand::ToggleQuickPanel { target },
         bwl_ipc::UiCommand::ShowUnlock => UiCommand::ShowUnlock,
         bwl_ipc::UiCommand::ShowLogin => UiCommand::ShowLogin,
         bwl_ipc::UiCommand::ShowSettings => UiCommand::ShowSettings,
@@ -67,6 +68,10 @@ mod tests {
             key_name: "deploy".to_owned(),
             fingerprint: "SHA256:abc".to_owned(),
             purpose: Some("git commit signing".to_owned()),
+            return_to: Some(bwl_ipc::TypingTarget {
+                pid: 377,
+                name: "Terminal".to_owned(),
+            }),
         }
     }
 
@@ -74,8 +79,19 @@ mod tests {
     fn every_daemon_command_has_its_app_command() {
         let pairs = [
             (bwl_ipc::UiCommand::ShowManager, "ShowManager"),
-            (bwl_ipc::UiCommand::ShowQuickPanel, "ShowQuickPanel"),
-            (bwl_ipc::UiCommand::ToggleQuickPanel, "ToggleQuickPanel"),
+            (
+                bwl_ipc::UiCommand::ShowQuickPanel { target: None },
+                "ShowQuickPanel { target: None }",
+            ),
+            (
+                bwl_ipc::UiCommand::ToggleQuickPanel {
+                    target: Some(bwl_ipc::TypingTarget {
+                        pid: 812,
+                        name: "Safari".to_owned(),
+                    }),
+                },
+                r#"ToggleQuickPanel { target: Some(TypingTarget { pid: 812, name: "Safari" }) }"#,
+            ),
             (bwl_ipc::UiCommand::ShowUnlock, "ShowUnlock"),
             (bwl_ipc::UiCommand::ShowLogin, "ShowLogin"),
             (bwl_ipc::UiCommand::ShowSettings, "ShowSettings"),
@@ -109,6 +125,11 @@ mod tests {
             ("git", Some(7), "deploy")
         );
         assert_eq!(request.fingerprint, "SHA256:abc");
+        assert_eq!(
+            request.return_to.as_ref().map(|app| app.pid),
+            Some(377),
+            "the app to return to after the answer"
+        );
         request
             .reply
             .send(SshDecision::approve(false))

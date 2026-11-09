@@ -109,7 +109,10 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
         .context("apply command-line settings")?;
     let initial = match (args.select, args.quick) {
         (Some(query), _) => Some(UiCommand::ShowItem { query }),
-        (None, true) => Some(UiCommand::ShowQuickPanel),
+        // Read before the event loop starts; launching brings this process to the front.
+        (None, true) => Some(UiCommand::ShowQuickPanel {
+            target: hooks.autotype.frontmost(),
+        }),
         (None, false) => None,
     };
     let (commands, receiver) = mpsc::unbounded_channel();
@@ -150,6 +153,7 @@ fn send_demo_ssh_request(
             key_name: "github-signing".to_owned(),
             fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".to_owned(),
             purpose: Some("git commit signing".to_owned()),
+            return_to: None,
             reply,
         };
         if commands.send(UiCommand::ShowSshApproval(request)).is_err() {

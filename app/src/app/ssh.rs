@@ -17,7 +17,7 @@ use slint::Timer;
 use tokio::sync::oneshot;
 
 use super::{App, handler, hide, retire, show};
-use crate::{settings::SshApproval, ui::SshPrompt};
+use crate::{hooks::TypingTarget, settings::SshApproval, ui::SshPrompt};
 
 pub const SSH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -30,6 +30,8 @@ pub struct SshApprovalRequest {
     pub fingerprint: String,
     /// e.g. "git commit signing" or "agent forwarding".
     pub purpose: Option<String>,
+    /// The app in front when the request arrived; it gets the front back after the answer.
+    pub return_to: Option<TypingTarget>,
     /// Dropping it counts as deny.
     pub reply: oneshot::Sender<SshDecision>,
 }
@@ -84,6 +86,11 @@ impl<S: VaultService> App<S> {
             }
             SessionState::Locked { .. } => {
                 self.ssh.borrow_mut().enqueue(request);
+                // This unlock is for the prompt only: a Manager the lock closed earlier stays
+                // closed. A Touch ID prompt already up keeps the window it was started for.
+                if !self.right_away_pending() {
+                    self.target.set(super::Target::None);
+                }
                 self.request_unlock(super::unlock::UnlockView::LockWindow);
                 return;
             }
@@ -166,6 +173,9 @@ impl<S: VaultService> App<S> {
             stop_timer(queue.timeout.take());
             queue.current.take().map(|current| current.request)
         };
+        let return_to = request
+            .as_ref()
+            .and_then(|request| request.return_to.clone());
         if let Some(request) = request {
             reply(request, SshDecision { approved, remember });
         }
@@ -175,6 +185,13 @@ impl<S: VaultService> App<S> {
             self.window_closed();
         }
         self.show_next_ssh_prompt();
+        // Showing the prompt brought every bw-lite window forward, a Manager left open behind
+        // the terminal included; the terminal gets the front back, and the Manager stays behind.
+        if self.ssh_prompt.borrow().is_none()
+            && let Some(app) = return_to
+        {
+            self.hooks.autotype.give_focus_back(&app);
+        }
     }
 
     /// Lock, logout and account switch: deny everything pending.

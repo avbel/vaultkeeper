@@ -793,7 +793,7 @@ async fn a_second_launch_forwards_to_the_running_daemon() {
         matches!(
             event,
             Some(UiEvent::Command {
-                command: UiCommand::ShowQuickPanel,
+                command: UiCommand::ShowQuickPanel { target: None },
                 ..
             })
         ),

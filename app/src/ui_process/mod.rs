@@ -200,6 +200,7 @@ mod tests {
                 key_name: "deploy".to_owned(),
                 fingerprint: "SHA256:abc".to_owned(),
                 purpose: None,
+                return_to: None,
             },
             reply,
         });

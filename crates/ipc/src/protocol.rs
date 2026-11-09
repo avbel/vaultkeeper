@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -128,11 +128,24 @@ pub enum Event {
     Shutdown,
 }
 
+/// The app that was in front when the user asked for the Quick Panel; auto-type gives the focus
+/// back to it and types there.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TypingTarget {
+    pub pid: i32,
+    pub name: String,
+}
+
 /// What the daemon asks the UI process to show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UiCommand {
     ShowManager,
-    ShowQuickPanel,
+    /// `target` is read by the daemon when the request arrives: the UI process activates itself
+    /// when it starts or shows a window, so by the time it sees the command the app the user
+    /// was in is no longer in front.
+    ShowQuickPanel {
+        target: Option<TypingTarget>,
+    },
     ShowUnlock,
     ShowLogin,
     ShowSettings,
@@ -142,8 +155,11 @@ pub enum UiCommand {
     UnlockInTray,
     /// The daemon rewrote `settings.json` (theme from the tray menu); re-read it.
     ReloadSettings,
-    /// The global hotkey: open the Quick Panel, or close it when it is open.
-    ToggleQuickPanel,
+    /// The global hotkey: open the Quick Panel, or close it when it is open. `target` as for
+    /// [`UiCommand::ShowQuickPanel`].
+    ToggleQuickPanel {
+        target: Option<TypingTarget>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -187,6 +203,9 @@ pub struct SshPrompt {
     pub fingerprint: String,
     /// e.g. "git commit signing" or "agent forwarding".
     pub purpose: Option<String>,
+    /// The app in front when the request arrived (usually the terminal running ssh); it gets
+    /// the front back once the prompt is answered.
+    pub return_to: Option<TypingTarget>,
 }
 
 /// Why a Touch ID enrolment or unlock in the daemon did not happen. Vault errors (locked, wrong
@@ -439,6 +458,37 @@ mod tests {
             panic!("wrong message");
         };
         assert_eq!(notice, UiNotice::SettingsChanged);
+    }
+
+    #[test]
+    fn quick_panel_commands_carry_their_typing_target() {
+        let safari = TypingTarget {
+            pid: 812,
+            name: "Safari".to_owned(),
+        };
+        for command in [
+            UiCommand::ToggleQuickPanel {
+                target: Some(safari.clone()),
+            },
+            UiCommand::ShowQuickPanel {
+                target: Some(safari.clone()),
+            },
+            UiCommand::ToggleQuickPanel { target: None },
+        ] {
+            let frame = encode(&DaemonMessage::Event(Event::Command {
+                seq: 3,
+                command: command.clone(),
+            }))
+            .expect("encode");
+            let DaemonMessage::Event(Event::Command {
+                seq: 3,
+                command: back,
+            }) = decode(&frame[HEADER_LEN..]).expect("decode")
+            else {
+                panic!("wrong message");
+            };
+            assert_eq!(back, command);
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use bwl_ipc::UiCommand;
+use bwl_ipc::{TypingTarget, UiCommand};
 use bwl_vault::model::{AccountView, SessionState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,10 +35,18 @@ pub enum Launch {
     QuickPanel,
 }
 
+/// `frontmost` reads the app in front (bw-lite excluded); only "Quick search" asks for it.
 #[must_use]
-pub fn tray(action: TrayAction, state: &SessionState, accounts: &[AccountView]) -> Vec<Effect> {
+pub fn tray(
+    action: TrayAction,
+    state: &SessionState,
+    accounts: &[AccountView],
+    frontmost: impl FnOnce() -> Option<TypingTarget>,
+) -> Vec<Effect> {
     match action {
-        TrayAction::QuickSearch => vec![Effect::Show(UiCommand::ShowQuickPanel)],
+        TrayAction::QuickSearch => vec![Effect::Show(UiCommand::ShowQuickPanel {
+            target: frontmost(),
+        })],
         TrayAction::OpenVault => vec![Effect::Show(UiCommand::ShowManager)],
         TrayAction::Generator => vec![Effect::Show(UiCommand::ShowGenerator)],
         TrayAction::LockToggle => match state {
@@ -79,22 +87,27 @@ pub enum HotkeySlot {
     Generator,
 }
 
-/// The Quick Panel hotkey toggles the panel; the Generator hotkey opens the Generator window.
+/// The Quick Panel hotkey toggles the panel, carrying the app in front for auto-type (read by
+/// `frontmost`); the Generator hotkey opens the Generator window.
 #[must_use]
-pub const fn hotkey(slot: HotkeySlot) -> Effect {
+pub fn hotkey(slot: HotkeySlot, frontmost: impl FnOnce() -> Option<TypingTarget>) -> Effect {
     match slot {
-        HotkeySlot::QuickPanel => Effect::Show(UiCommand::ToggleQuickPanel),
+        HotkeySlot::QuickPanel => Effect::Show(UiCommand::ToggleQuickPanel {
+            target: frontmost(),
+        }),
         HotkeySlot::Generator => Effect::Show(UiCommand::ShowGenerator),
     }
 }
 
-/// A second launch of the app forwards what it was asked to show to the running daemon.
+/// A second launch of the app forwards what it was asked to show to the running daemon. It
+/// arrives off the main thread, where the frontmost app cannot be read, so a panel opened this
+/// way has no auto-type target.
 #[must_use]
 pub const fn second_launch(command: bwl_platform::single_instance::Command) -> Effect {
     match command {
         bwl_platform::single_instance::Command::ShowManager => Effect::Show(UiCommand::ShowManager),
         bwl_platform::single_instance::Command::ShowQuickPanel => {
-            Effect::Show(UiCommand::ShowQuickPanel)
+            Effect::Show(UiCommand::ShowQuickPanel { target: None })
         }
     }
 }
@@ -105,7 +118,7 @@ pub const fn second_launch(command: bwl_platform::single_instance::Command) -> E
 pub fn startup(launch: Launch, state: &SessionState, ask_unlock_on_start: bool) -> Option<Effect> {
     match launch {
         Launch::Manager => Some(Effect::Show(UiCommand::ShowManager)),
-        Launch::QuickPanel => Some(Effect::Show(UiCommand::ShowQuickPanel)),
+        Launch::QuickPanel => Some(Effect::Show(UiCommand::ShowQuickPanel { target: None })),
         Launch::Tray => (ask_unlock_on_start && matches!(state, SessionState::Locked { .. }))
             .then_some(Effect::Show(UiCommand::UnlockInTray)),
     }
@@ -138,6 +151,21 @@ mod tests {
         }
     }
 
+    fn safari() -> TypingTarget {
+        TypingTarget {
+            pid: 812,
+            name: "Safari".to_owned(),
+        }
+    }
+
+    fn no_read() -> Option<TypingTarget> {
+        panic!("only the Quick Panel reads the frontmost app")
+    }
+
+    fn tray_now(action: TrayAction, state: &SessionState, accounts: &[AccountView]) -> Vec<Effect> {
+        tray(action, state, accounts, no_read)
+    }
+
     fn locked() -> SessionState {
         SessionState::Locked {
             server: server(),
@@ -159,63 +187,73 @@ mod tests {
     fn menu_items_open_their_window() {
         let state = locked();
         assert_eq!(
-            tray(TrayAction::QuickSearch, &state, &[]),
-            [Effect::Show(UiCommand::ShowQuickPanel)]
+            tray(TrayAction::QuickSearch, &state, &[], || Some(safari())),
+            [Effect::Show(UiCommand::ShowQuickPanel {
+                target: Some(safari())
+            })],
+            "Quick search carries the app in front"
         );
         assert_eq!(
-            tray(TrayAction::OpenVault, &state, &[]),
+            tray(TrayAction::QuickSearch, &state, &[], || None),
+            [Effect::Show(UiCommand::ShowQuickPanel { target: None })]
+        );
+        assert_eq!(
+            tray_now(TrayAction::OpenVault, &state, &[]),
             [Effect::Show(UiCommand::ShowManager)]
         );
         assert_eq!(
-            tray(TrayAction::Generator, &state, &[]),
+            tray_now(TrayAction::Generator, &state, &[]),
             [Effect::Show(UiCommand::ShowGenerator)]
         );
-        assert_eq!(tray(TrayAction::Quit, &state, &[]), [Effect::Quit]);
+        assert_eq!(tray_now(TrayAction::Quit, &state, &[]), [Effect::Quit]);
     }
 
     #[test]
     fn lock_toggle_follows_the_session() {
         assert_eq!(
-            tray(TrayAction::LockToggle, &unlocked(), &[]),
+            tray_now(TrayAction::LockToggle, &unlocked(), &[]),
             [Effect::Lock]
         );
         assert_eq!(
-            tray(TrayAction::LockToggle, &locked(), &[]),
+            tray_now(TrayAction::LockToggle, &locked(), &[]),
             [Effect::Show(UiCommand::ShowUnlock)]
         );
         assert_eq!(
-            tray(TrayAction::LockToggle, &SessionState::LoggedOut, &[]),
+            tray_now(TrayAction::LockToggle, &SessionState::LoggedOut, &[]),
             [Effect::Show(UiCommand::ShowLogin)]
         );
     }
 
     #[test]
     fn sync_needs_an_unlocked_vault() {
-        assert_eq!(tray(TrayAction::SyncNow, &unlocked(), &[]), [Effect::Sync]);
-        assert_eq!(tray(TrayAction::SyncNow, &locked(), &[]), []);
+        assert_eq!(
+            tray_now(TrayAction::SyncNow, &unlocked(), &[]),
+            [Effect::Sync]
+        );
+        assert_eq!(tray_now(TrayAction::SyncNow, &locked(), &[]), []);
     }
 
     #[test]
     fn switching_shows_the_target_lock_screen() {
         let accounts = [account("alice", true), account("bob", false)];
         assert_eq!(
-            tray(TrayAction::SwitchAccount(1), &unlocked(), &accounts),
+            tray_now(TrayAction::SwitchAccount(1), &unlocked(), &accounts),
             [
                 Effect::SwitchAccount(Arc::from("bob")),
                 Effect::Show(UiCommand::ShowUnlock)
             ]
         );
         assert_eq!(
-            tray(TrayAction::SwitchAccount(0), &unlocked(), &accounts),
+            tray_now(TrayAction::SwitchAccount(0), &unlocked(), &accounts),
             [Effect::Show(UiCommand::ShowManager)],
             "the active account just opens"
         );
         assert_eq!(
-            tray(TrayAction::SwitchAccount(5), &unlocked(), &accounts),
+            tray_now(TrayAction::SwitchAccount(5), &unlocked(), &accounts),
             []
         );
         assert_eq!(
-            tray(TrayAction::SwitchAccount(-1), &unlocked(), &accounts),
+            tray_now(TrayAction::SwitchAccount(-1), &unlocked(), &accounts),
             []
         );
     }
@@ -223,11 +261,18 @@ mod tests {
     #[test]
     fn hotkey_and_second_launch() {
         assert_eq!(
-            hotkey(HotkeySlot::QuickPanel),
-            Effect::Show(UiCommand::ToggleQuickPanel)
+            hotkey(HotkeySlot::QuickPanel, || Some(safari())),
+            Effect::Show(UiCommand::ToggleQuickPanel {
+                target: Some(safari())
+            })
         );
         assert_eq!(
-            hotkey(HotkeySlot::Generator),
+            hotkey(HotkeySlot::QuickPanel, || None),
+            Effect::Show(UiCommand::ToggleQuickPanel { target: None }),
+            "bw-lite or nothing in front"
+        );
+        assert_eq!(
+            hotkey(HotkeySlot::Generator, no_read),
             Effect::Show(UiCommand::ShowGenerator)
         );
         assert_eq!(
@@ -236,7 +281,7 @@ mod tests {
         );
         assert_eq!(
             second_launch(Command::ShowQuickPanel),
-            Effect::Show(UiCommand::ShowQuickPanel)
+            Effect::Show(UiCommand::ShowQuickPanel { target: None })
         );
         assert_eq!(forwarded(Launch::QuickPanel), Command::ShowQuickPanel);
         assert_eq!(forwarded(Launch::Tray), Command::ShowManager);
@@ -257,7 +302,7 @@ mod tests {
         );
         assert_eq!(
             startup(Launch::QuickPanel, &SessionState::LoggedOut, false),
-            Some(Effect::Show(UiCommand::ShowQuickPanel))
+            Some(Effect::Show(UiCommand::ShowQuickPanel { target: None }))
         );
     }
 }

@@ -80,6 +80,32 @@ pub fn stopped(target: &TypingTarget, reason: &str) -> HookError {
     }
 }
 
+/// The frontmost app, bw-lite's own processes included; `None` off the main thread, where
+/// `NSWorkspace` is not kept current (its updates arrive on the main run loop).
+#[must_use]
+pub fn frontmost_any() -> Option<TypingTarget> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::frontmost_any()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[must_use]
+pub fn on_main_thread() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::MainThreadMarker::new().is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 pub struct SystemAutoType;
 
 impl AutoType for SystemAutoType {
@@ -119,6 +145,13 @@ impl AutoType for SystemAutoType {
     fn cancel(&self) {
         #[cfg(target_os = "macos")]
         macos::cancel();
+    }
+
+    fn give_focus_back(&self, target: &TypingTarget) {
+        #[cfg(target_os = "macos")]
+        macos::give_focus_back(target);
+        #[cfg(not(target_os = "macos"))]
+        let _ = target;
     }
 }
 
@@ -190,11 +223,16 @@ mod macos {
     }
 
     pub(super) fn frontmost() -> Option<TypingTarget> {
-        let app = frontmost_app()?;
-        let pid = app.processIdentifier();
-        if pid == own_pid() {
+        frontmost_any().filter(|target| target.pid != own_pid())
+    }
+
+    pub(super) fn frontmost_any() -> Option<TypingTarget> {
+        if MainThreadMarker::new().is_none() {
+            tracing::warn!("frontmost app read off the main thread; ignored");
             return None;
         }
+        let app = frontmost_app()?;
+        let pid = app.processIdentifier();
         let name = app
             .localizedName()
             .map_or_else(|| "The app".to_owned(), |name| name.to_string());
@@ -253,6 +291,19 @@ mod macos {
             tracing::warn!(app = target.name, "activation request refused");
         }
         Ok(())
+    }
+
+    pub(super) fn give_focus_back(target: &TypingTarget) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        // The panel also closes when the user clicks into another app; that app keeps the front.
+        if !NSApplication::sharedApplication(mtm).isActive() {
+            return;
+        }
+        if let Err(error) = activate(mtm, target) {
+            tracing::debug!(%error, "cannot give the focus back");
+        }
     }
 
     pub(super) fn cancel() {

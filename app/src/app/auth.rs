@@ -102,6 +102,9 @@ impl<S: VaultService> App<S> {
             self,
             CloseRequestResponse::HideWindow,
             |app| {
+                // Closed without unlocking: what the unlock would have opened is not wanted
+                // any more, so a later unlock (an SSH request's) does not bring it up.
+                app.target.set(super::Target::None);
                 app.close_lock_window();
                 app.deny_ssh_waiting_for_unlock();
                 CloseRequestResponse::HideWindow

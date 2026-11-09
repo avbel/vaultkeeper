@@ -326,7 +326,7 @@ impl<S: VaultService> App<S> {
     /// For the global hotkey and the tray's "Quick search".
     pub fn toggle_quick_panel(&self) {
         if self.quick.borrow().is_some() {
-            self.close_quick_panel();
+            self.dismiss_quick_panel();
             return;
         }
         match self.vault.state() {

@@ -89,6 +89,9 @@ pub trait DockIcon: Send + Sync {
     fn set_visible(&self, visible: bool);
     /// Brings the app to the front, so a window shown for a hotkey or tray click gets the keys.
     fn activate(&self) {}
+    /// The last window closed: give up the front, so a windowless bw-lite is never the active
+    /// app (the next Quick Panel hotkey would find nothing to type into).
+    fn hide(&self) {}
 }
 
 pub trait SshAgentControl: Send + Sync {
@@ -117,20 +120,17 @@ pub trait Clock: Send + Sync {
     fn unix_now(&self) -> u64;
 }
 
-/// The app that was in front when the Quick Panel was asked for: auto-type gives focus back to
-/// it and types there.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypingTarget {
-    pub pid: i32,
-    pub name: String,
-}
+/// The daemon reads it and sends it with the Quick Panel commands, so one type serves both sides.
+pub use bwl_ipc::TypingTarget;
 
 /// Runs on the UI thread once typing finished or stopped.
 pub type AutoTypeDone = Box<dyn FnOnce(HookResult<()>)>;
 
 /// Synthesized keystrokes into another app (Quick Panel ⌘⇧↩).
 pub trait AutoType: Send + Sync {
-    /// The frontmost app, `None` when it is bw-lite itself or unknown.
+    /// The frontmost app, `None` when it is bw-lite itself or unknown. Only `--mock` asks: the
+    /// UI process activates itself before it sees a command, so the daemon reads the target
+    /// there and sends it along.
     fn frontmost(&self) -> Option<TypingTarget>;
     /// Whether macOS lets this process post keystrokes (Accessibility). With `prompt`, macOS
     /// shows its own permission dialog when it does not.
@@ -140,6 +140,11 @@ pub trait AutoType: Send + Sync {
     fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone);
     /// Stops typing that is still running (the vault locked); `done` reports it as cancelled.
     fn cancel(&self) {}
+    /// The Quick Panel was dismissed without typing: bring `target` back to the front, like
+    /// Spotlight does, unless the user already moved on to another app.
+    fn give_focus_back(&self, target: &TypingTarget) {
+        let _ = target;
+    }
 }
 
 #[derive(Clone)]

@@ -8,10 +8,11 @@ use std::{cell::Cell, rc::Rc};
 use bw_lite::{SshApprovalRequest, UiCommand, mock::MOCK_MASTER_PASSWORD, settings::Settings};
 use bwl_vault::{VaultService, model::SessionState};
 use common::{
-    Harness, Setup, TouchIdOutcome, click, during_next_prompt, enabled, harness, pump, type_into,
-    value_of,
+    CMD_SHIFT, Harness, Setup, TouchIdOutcome, click, during_next_prompt, enabled, harness, key,
+    pump, safari, special, type_into, value_of,
 };
 use slint::ComponentHandle;
+use slint::platform::Key;
 use tokio::sync::oneshot;
 
 fn locked_with(settings: Settings) -> Harness {
@@ -85,13 +86,31 @@ fn the_hotkey_opens_an_unlocked_quick_panel_after_touch_id() {
     let h = locked_with(right_away());
     answer_next(&h, TouchIdOutcome::Unlock);
     let seen = watch_for_lock_views(&h);
-    h.app.handle(UiCommand::ToggleQuickPanel);
+    h.app.handle(UiCommand::ToggleQuickPanel { target: None });
     pump();
     assert_eq!(seen.get(), Some(false), "no locked Quick Panel first");
     let quick = h.app.quick_panel().expect("Quick Panel");
     assert!(!quick.get_locked(), "the panel opens on its search");
     assert!(h.app.lock_window().is_none());
     assert!(h.app.manager_window().is_none());
+}
+
+#[test]
+fn the_hotkey_target_survives_the_touch_id_unlock_and_gets_typed_into() {
+    let h = locked_with(right_away());
+    answer_next(&h, TouchIdOutcome::Unlock);
+    // The system prompt and the UI process have the focus by now.
+    *h.autotype.frontmost.lock().expect("frontmost") = None;
+    h.app.handle(UiCommand::ToggleQuickPanel {
+        target: Some(safari()),
+    });
+    pump();
+    let quick = h.app.quick_panel().expect("Quick Panel");
+    type_into(&quick, "Quick search", "tailscale");
+    key(&quick, &special(Key::Return), CMD_SHIFT);
+    let typed = h.autotype.typed();
+    assert_eq!(typed.len(), 1, "{:?}", quick.get_toast_text());
+    assert_eq!(typed[0].0, safari());
 }
 
 #[test]
@@ -104,7 +123,7 @@ fn a_cancel_shows_the_lock_window_without_an_error_and_does_not_ask_again() {
     assert_eq!(lock.get_error_text(), "", "a cancel is not an error");
     assert!(matches!(h.vault.state(), SessionState::Locked { .. }));
     h.app.open_vault();
-    h.app.handle(UiCommand::ToggleQuickPanel);
+    h.app.handle(UiCommand::ToggleQuickPanel { target: None });
     pump();
     assert_eq!(
         prompts(&h),
@@ -230,7 +249,7 @@ fn requests_while_the_prompt_is_up_start_no_second_prompt() {
     let windows = Rc::new(Cell::new(usize::MAX));
     let counted = Rc::clone(&windows);
     during_next_prompt(move || {
-        app.handle(UiCommand::ToggleQuickPanel);
+        app.handle(UiCommand::ToggleQuickPanel { target: None });
         app.handle(UiCommand::ShowManager);
         assert!(app.lock_window().is_none() && app.quick_panel().is_none());
         counted.set(app.open_window_count());
@@ -277,6 +296,7 @@ fn an_ssh_request_while_locked_goes_straight_to_its_approval() {
         key_name: "github-signing".to_owned(),
         fingerprint: "SHA256:abc".to_owned(),
         purpose: None,
+        return_to: None,
         reply,
     });
     pump();

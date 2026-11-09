@@ -88,6 +88,11 @@ impl DockIcon for AppKitDock {
         #[cfg(target_os = "macos")]
         macos::activate();
     }
+
+    fn hide(&self) {
+        #[cfg(target_os = "macos")]
+        macos::hide();
+    }
 }
 
 pub struct CursorScreen;
@@ -204,10 +209,26 @@ mod macos {
         }
     }
 
+    /// Only while active: hiding an app in the background would do nothing useful, and macOS
+    /// activates the app that was in front before bw-lite.
+    pub(super) fn hide() {
+        let Some(mtm) = main_thread() else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        if app.isActive() {
+            app.hide(None);
+        }
+    }
+
     // Cooperative `activate()` (macOS 14+) is ignored when another app is frontmost, which is
     // always the case when the daemon's hotkey or tray asks this process for a window.
     #[allow(deprecated)]
     fn activate_app(app: &NSApplication) {
+        // `hide` on the last window close; a hidden app's new windows would stay hidden.
+        if app.isHidden() {
+            app.unhideWithoutActivation();
+        }
         app.activateIgnoringOtherApps(true);
     }
 

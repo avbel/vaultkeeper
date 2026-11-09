@@ -10,7 +10,11 @@ use std::{
 };
 
 use bw_lite::{
-    daemon::{Daemon, DaemonConfig, Peers, routing::Effect},
+    daemon::{
+        Daemon, DaemonConfig, Peers,
+        routing::{self, Effect, HotkeySlot, TrayAction},
+        target::FrontmostApp,
+    },
     os::{
         ClipboardKeeper,
         layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
@@ -19,7 +23,9 @@ use bw_lite::{
     settings::Settings,
     ui_process::answer,
 };
-use bwl_ipc::{ClipboardHost, EventStream, RemoteVault, UiCommand, UiEvent, UiNotice};
+use bwl_ipc::{
+    ClipboardHost, EventStream, RemoteVault, TypingTarget, UiCommand, UiEvent, UiNotice,
+};
 use bwl_ssh::{ApprovalKind, ApprovalRequest};
 use bwl_vault::{
     MemorySecretStore, VaultService,
@@ -162,7 +168,7 @@ async fn commands_wait_for_the_ui_and_arrive_in_order() {
     let dir = DataDir::new();
     let daemon = start(&dir).await;
     daemon.apply(Effect::Show(UiCommand::ShowManager));
-    daemon.apply(Effect::Show(UiCommand::ToggleQuickPanel));
+    daemon.apply(Effect::Show(UiCommand::ToggleQuickPanel { target: None }));
     assert!(!daemon.ui_connected());
 
     let (_vault, mut events) = connect(&dir).await;
@@ -177,9 +183,107 @@ async fn commands_wait_for_the_ui_and_arrive_in_order() {
         next(&mut events).await,
         UiEvent::Command {
             seq: 2,
-            command: UiCommand::ToggleQuickPanel
+            command: UiCommand::ToggleQuickPanel { target: None }
         }
     ));
+    daemon.shutdown().await;
+}
+
+/// The app macOS reports in front, set by the test.
+#[derive(Default)]
+struct FakeFrontmost(Mutex<Option<TypingTarget>>);
+
+impl FakeFrontmost {
+    fn set(&self, pid: i32, name: &str) {
+        *self.0.lock().unwrap() = Some(TypingTarget {
+            pid,
+            name: name.to_owned(),
+        });
+    }
+}
+
+impl FrontmostApp for FakeFrontmost {
+    fn frontmost(&self) -> Option<TypingTarget> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+fn safari() -> TypingTarget {
+    TypingTarget {
+        pid: 812,
+        name: "Safari".to_owned(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hotkey_and_quick_search_send_the_app_that_was_in_front() {
+    let dir = DataDir::new();
+    let frontmost = Arc::new(FakeFrontmost::default());
+    frontmost.set(812, "Safari");
+    let mut config = DaemonConfig::new(dir.path().to_owned(), Arc::new(MemorySecretStore::new()));
+    config.peers = Peers::AnyOfThisUser;
+    config.clipboard = Arc::new(FakeClipboard::default());
+    config.frontmost = Arc::clone(&frontmost) as Arc<dyn FrontmostApp>;
+    let daemon = Daemon::start(config).await.unwrap();
+    // As the hotkey and tray handlers do: read when the request arrives, before the UI starts.
+    daemon.apply(routing::hotkey(HotkeySlot::QuickPanel, || {
+        daemon.typing_target()
+    }));
+    let state = daemon.vault().state();
+    for effect in routing::tray(TrayAction::QuickSearch, &state, &[], || {
+        daemon.typing_target()
+    }) {
+        daemon.apply(effect);
+    }
+    // The UI that reads them later is in front by then; that no longer matters.
+    frontmost.set(i32::try_from(std::process::id()).unwrap(), "bw-lite");
+    let (_vault, mut events) = connect(&dir).await;
+    let UiEvent::Command {
+        command: toggle, ..
+    } = next(&mut events).await
+    else {
+        panic!("expected the hotkey's command");
+    };
+    assert_eq!(
+        toggle,
+        UiCommand::ToggleQuickPanel {
+            target: Some(safari())
+        }
+    );
+    let UiEvent::Command { command: show, .. } = next(&mut events).await else {
+        panic!("expected Quick search's command");
+    };
+    assert_eq!(
+        show,
+        UiCommand::ShowQuickPanel {
+            target: Some(safari())
+        }
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_daemon_and_its_ui_process_in_front_are_no_typing_target() {
+    let dir = DataDir::new();
+    let (script, log) = hanging_ui(&dir);
+    let frontmost = Arc::new(FakeFrontmost::default());
+    let mut config = DaemonConfig::new(dir.path().to_owned(), Arc::new(MemorySecretStore::new()));
+    config.peers = Peers::AnyOfThisUser;
+    config.clipboard = Arc::new(FakeClipboard::default());
+    config.ui_exe = Some(script);
+    config.ui_hang_after = Duration::from_mins(1);
+    config.frontmost = Arc::clone(&frontmost) as Arc<dyn FrontmostApp>;
+    let daemon = Daemon::start(config).await.unwrap();
+    assert_eq!(daemon.typing_target(), None, "nothing in front");
+    frontmost.set(i32::try_from(std::process::id()).unwrap(), "bw-lite");
+    assert_eq!(daemon.typing_target(), None, "the daemon itself");
+    daemon.apply(Effect::Show(UiCommand::ShowManager));
+    eventually(|| starts(&log) >= 1).await;
+    let child: i32 = pids(&log)[0].parse().unwrap();
+    frontmost.set(child, "bw-lite");
+    assert_eq!(daemon.typing_target(), None, "the UI process it started");
+    frontmost.set(812, "Safari");
+    assert_eq!(daemon.typing_target(), Some(safari()));
     daemon.shutdown().await;
 }
 
@@ -484,5 +588,48 @@ async fn commands_lost_with_a_killed_ui_do_not_get_its_replacement_killed() {
         "the replacement was killed for its predecessor's command"
     );
     assert_eq!(starts(&log), 2, "no third start");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ssh_prompt_carries_the_app_that_was_in_front_when_the_request_came() {
+    let dir = DataDir::new();
+    let frontmost = Arc::new(FakeFrontmost::default());
+    frontmost.set(377, "Terminal");
+    let mut config = DaemonConfig::new(dir.path().to_owned(), Arc::new(MemorySecretStore::new()));
+    config.peers = Peers::AnyOfThisUser;
+    config.clipboard = Arc::new(FakeClipboard::default());
+    config.frontmost = Arc::clone(&frontmost) as Arc<dyn FrontmostApp>;
+    let daemon = Daemon::start(config).await.unwrap();
+    let (_ui, mut events) = connect(&dir).await;
+    let (reply, _agent) = oneshot::channel();
+    let asking = tokio::spawn({
+        let daemon = Arc::clone(&daemon);
+        async move {
+            daemon
+                .approve(ApprovalRequest {
+                    kind: ApprovalKind::Sign {
+                        cipher_id: Some("cipher".to_owned()),
+                        process_name: Some("ssh".to_owned()),
+                        is_forwarding: false,
+                        namespace: None,
+                    },
+                    reply,
+                })
+                .await;
+        }
+    });
+    let UiEvent::SshApproval(approval) = next(&mut events).await else {
+        panic!("expected the approval prompt");
+    };
+    assert_eq!(
+        approval.prompt.return_to,
+        Some(TypingTarget {
+            pid: 377,
+            name: "Terminal".to_owned(),
+        })
+    );
+    drop(approval);
+    tokio::time::timeout(WAIT, asking).await.unwrap().unwrap();
     daemon.shutdown().await;
 }

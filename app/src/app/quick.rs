@@ -99,6 +99,22 @@ impl<S: VaultService> App<S> {
         }
     }
 
+    /// Closes the panel without typing (Esc, the hotkey again, a copy, focus lost): the app it
+    /// was opened from gets the front back, unless another bw-lite window stays open.
+    pub(super) fn dismiss_quick_panel(&self) {
+        let target = self
+            .quick
+            .borrow()
+            .as_ref()
+            .and_then(|quick| quick.typing_target.clone());
+        self.close_quick_panel();
+        if let Some(target) = target
+            && self.open_window_count() == 0
+        {
+            self.hooks.autotype.give_focus_back(&target);
+        }
+    }
+
     pub(super) fn close_quick_panel(&self) {
         self.forget_declined_touch_id();
         self.typing_target.replace(None);
@@ -145,7 +161,7 @@ impl<S: VaultService> App<S> {
                 (sender.upgrade(), current.and_then(|weak| weak.upgrade()))
                 && std::ptr::eq(sender.window(), current.window())
             {
-                app.close_quick_panel();
+                app.dismiss_quick_panel();
             }
         }));
         window.on_toast_dismissed(handler!(self, |app| {
@@ -216,7 +232,7 @@ impl<S: VaultService> App<S> {
         if let Some(item) = self.quick_item(None)
             && self.copy_item_field(&item, field)
         {
-            self.close_quick_panel();
+            self.dismiss_quick_panel();
         }
         true
     }
@@ -246,7 +262,7 @@ impl<S: VaultService> App<S> {
             }
             self.refresh_quick();
         } else {
-            self.close_quick_panel();
+            self.dismiss_quick_panel();
         }
         true
     }
@@ -260,7 +276,7 @@ impl<S: VaultService> App<S> {
         if locked {
             return match command {
                 Command::Escape | Command::CloseWindow | Command::QuickPanel => {
-                    self.close_quick_panel();
+                    self.dismiss_quick_panel();
                     true
                 }
                 Command::Quit => {
@@ -306,7 +322,7 @@ impl<S: VaultService> App<S> {
                 true
             }
             Command::QuickPanel | Command::CloseWindow => {
-                self.close_quick_panel();
+                self.dismiss_quick_panel();
                 true
             }
             Command::Quit => {

@@ -35,7 +35,10 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
 
 fn run(daemon: &Arc<Daemon>, action: TrayAction) {
     let vault = daemon.vault();
-    for effect in routing::tray(action, &vault.state(), &vault.accounts()) {
+    let effects = routing::tray(action, &vault.state(), &vault.accounts(), || {
+        daemon.typing_target()
+    });
+    for effect in effects {
         if effect == Effect::Quit {
             if let Err(error) = slint::quit_event_loop() {
                 tracing::error!(%error, "cannot quit the event loop");

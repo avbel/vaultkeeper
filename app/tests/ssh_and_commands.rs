@@ -6,6 +6,7 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use bw_lite::{
     SshApprovalRequest, UiCommand,
+    hooks::TypingTarget,
     mock::MOCK_MASTER_PASSWORD,
     settings::{Settings, SshApproval},
 };
@@ -24,6 +25,7 @@ fn request(fingerprint: &str) -> (SshApprovalRequest, oneshot::Receiver<SshDecis
             key_name: "github-signing".to_owned(),
             fingerprint: fingerprint.to_owned(),
             purpose: Some("git commit signing".to_owned()),
+            return_to: None,
             reply,
         },
         answer,
@@ -205,7 +207,7 @@ fn commands_open_windows_and_the_last_close_is_reported() {
     h.app.handle(UiCommand::ShowUnlock);
     assert!(h.app.lock_window().is_some());
     assert_eq!(h.app.open_window_count(), 1);
-    h.app.handle(UiCommand::ShowQuickPanel);
+    h.app.handle(UiCommand::ShowQuickPanel { target: None });
     let panel = h.app.quick_panel().expect("panel");
     assert!(panel.get_locked());
     panel.invoke_unlock(bw_lite::mock::MOCK_MASTER_PASSWORD.into());
@@ -313,9 +315,9 @@ fn daemon_commands_open_settings_generator_and_toggle_the_quick_panel() {
     assert!(h.app.settings_window().is_some());
     h.app.handle(UiCommand::ShowGenerator);
     assert!(h.app.generator_window().is_some());
-    h.app.handle(UiCommand::ToggleQuickPanel);
+    h.app.handle(UiCommand::ToggleQuickPanel { target: None });
     assert!(h.app.quick_panel().is_some());
-    h.app.handle(UiCommand::ToggleQuickPanel);
+    h.app.handle(UiCommand::ToggleQuickPanel { target: None });
     pump();
     assert!(
         h.app.quick_panel().is_none(),
@@ -341,4 +343,143 @@ fn reload_settings_applies_what_the_daemon_saved() {
         manager.global::<bw_lite::ui::Theme>().get_mode(),
         bw_lite::ui::ThemeMode::Dark
     );
+}
+
+fn terminal() -> TypingTarget {
+    TypingTarget {
+        pid: 377,
+        name: "Terminal".to_owned(),
+    }
+}
+
+/// A request the daemon saw arrive while Terminal was in front.
+fn request_from_terminal(
+    fingerprint: &str,
+) -> (SshApprovalRequest, oneshot::Receiver<SshDecision>) {
+    let (request, answer) = request(fingerprint);
+    (
+        SshApprovalRequest {
+            return_to: Some(terminal()),
+            ..request
+        },
+        answer,
+    )
+}
+
+fn given_back(h: &common::Harness) -> Vec<TypingTarget> {
+    h.autotype.given_back.lock().expect("given back").clone()
+}
+
+type AnswerWith = fn(&bw_lite::ui::SshPrompt);
+
+#[test]
+fn every_answer_hands_the_front_back_and_opens_no_manager() {
+    let answers: [(&str, AnswerWith); 3] = [
+        ("approve", |prompt| click(prompt, "Approve")),
+        ("deny", |prompt| click(prompt, "Deny")),
+        ("Esc", |prompt| {
+            key(prompt, &special(Key::Escape), Mods::default());
+        }),
+    ];
+    for (name, answer_with) in answers {
+        let h = harness(Setup::default());
+        let (req, _rx) = request_from_terminal("SHA256:term");
+        h.app.handle(UiCommand::ShowSshApproval(req));
+        answer_with(&h.app.ssh_prompt().expect("prompt"));
+        pump();
+        assert!(h.app.ssh_prompt().is_none(), "{name}");
+        assert!(h.app.manager_window().is_none(), "{name}: no Manager");
+        assert_eq!(given_back(&h), [terminal()], "{name}");
+        assert_eq!(h.dock.hides(), 1, "{name}: no windowless bw-lite in front");
+    }
+}
+
+#[test]
+fn a_timed_out_prompt_hands_the_front_back_too() {
+    let h = harness(Setup::default());
+    let (req, rx) = request_from_terminal("SHA256:late");
+    h.app.handle(UiCommand::ShowSshApproval(req));
+    elapse(Duration::from_secs(31));
+    pump();
+    assert_eq!(answer(rx), Some(false));
+    assert_eq!(given_back(&h), [terminal()]);
+}
+
+#[test]
+fn the_front_goes_back_once_the_last_queued_prompt_is_answered() {
+    let h = harness(Setup::default());
+    let (first, _rx1) = request_from_terminal("SHA256:one");
+    let (second, _rx2) = request_from_terminal("SHA256:two");
+    h.app.request_ssh_approval(first);
+    h.app.request_ssh_approval(second);
+    click(&h.app.ssh_prompt().expect("first"), "Approve");
+    assert!(given_back(&h).is_empty(), "the next prompt needs the keys");
+    click(&h.app.ssh_prompt().expect("second"), "Approve");
+    assert_eq!(given_back(&h), [terminal()]);
+}
+
+#[test]
+fn a_manager_left_open_behind_the_terminal_stays_behind_it() {
+    let h = harness(Setup::default());
+    h.app.handle(UiCommand::ShowManager);
+    let (req, _rx) = request_from_terminal("SHA256:behind");
+    h.app.handle(UiCommand::ShowSshApproval(req));
+    click(&h.app.ssh_prompt().expect("prompt"), "Approve");
+    pump();
+    assert_eq!(given_back(&h), [terminal()], "Terminal comes back on top");
+    assert!(
+        h.app.manager_window().is_some(),
+        "the user's Manager is not closed"
+    );
+    assert_eq!(h.dock.hides(), 0, "a window is still open");
+}
+
+#[test]
+fn an_unlock_for_ssh_after_a_lock_with_the_manager_open_shows_only_the_prompt() {
+    let h = harness(Setup::default());
+    h.app.handle(UiCommand::ShowManager);
+    h.app.lock();
+    pump();
+    assert!(h.app.manager_window().is_none(), "the lock closed it");
+    let (req, rx) = request_from_terminal("SHA256:after-lock");
+    h.app.handle(UiCommand::ShowSshApproval(req));
+    let lock = h.app.lock_window().expect("lock screen");
+    type_into(&lock, "Master password", MOCK_MASTER_PASSWORD);
+    click(&lock, "Unlock");
+    pump();
+    assert!(
+        h.app.manager_window().is_none(),
+        "only the prompt after the unlock"
+    );
+    let prompt = h.app.ssh_prompt().expect("prompt");
+    click(&prompt, "Approve");
+    pump();
+    assert_eq!(answer(rx), Some(true));
+    assert!(
+        h.app.manager_window().is_none(),
+        "no Manager after the answer"
+    );
+    assert_eq!(given_back(&h), [terminal()]);
+}
+
+#[test]
+fn a_lock_screen_closed_unanswered_forgets_the_manager_it_stood_for() {
+    let h = harness(Setup::default());
+    h.app.handle(UiCommand::ShowManager);
+    h.app.lock();
+    pump();
+    let lock = h.app.lock_window().expect("lock screen for the Manager");
+    lock.window()
+        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+    pump();
+    // Unlocked later outside this window, e.g. by another request's Touch ID in the daemon.
+    common::block_on(
+        h.vault
+            .unlock_with_password(zeroize::Zeroizing::new(MOCK_MASTER_PASSWORD.to_owned())),
+    )
+    .expect("unlock");
+    h.app.handle(UiCommand::VaultChanged);
+    pump();
+    assert!(matches!(h.vault.state(), SessionState::Unlocked { .. }));
+    assert!(h.app.manager_window().is_none());
 }

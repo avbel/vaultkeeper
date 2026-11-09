@@ -16,7 +16,7 @@ use std::{
 use anyhow::Context;
 use bwl_ipc::{
     ClipboardHost, DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind,
-    SshDecision, SshPrompt, TouchIdBackend, UiCommand, UiNotice,
+    SshDecision, SshPrompt, TouchIdBackend, TypingTarget, UiCommand, UiNotice,
 };
 use bwl_platform::{network::NetworkEvent, power::PowerEvent};
 use bwl_ssh::{ApprovalKind, ApprovalRequest};
@@ -33,6 +33,7 @@ use super::{
     lock::{self, Activity, LockCheck, LockWatch},
     routing::Effect,
     ssh::{SshControl, purpose},
+    target::{FrontmostApp, SystemFrontmost, outside},
 };
 use crate::{
     os::{
@@ -73,6 +74,8 @@ pub struct DaemonConfig {
     pub clipboard: Arc<dyn ClipboardKeeper>,
     /// How long a started UI may leave a command unanswered before it is killed.
     pub ui_hang_after: Duration,
+    /// Where the Quick Panel's auto-type goes, read when the hotkey or tray asks for the panel.
+    pub frontmost: Arc<dyn FrontmostApp>,
 }
 
 impl DaemonConfig {
@@ -87,6 +90,7 @@ impl DaemonConfig {
             peers: Peers::SameExecutable,
             clipboard: Keeper::system(),
             ui_hang_after: UI_HANG_AFTER,
+            frontmost: Arc::new(SystemFrontmost),
         }
     }
 }
@@ -108,6 +112,7 @@ pub struct Daemon {
     ssh: SshControl,
     touch_id: Arc<dyn DaemonBiometrics>,
     clipboard: Arc<dyn ClipboardKeeper>,
+    frontmost: Arc<dyn FrontmostApp>,
     /// The account the vault was last seen unlocked for; a change means lock, logout or switch.
     unlocked_as: Mutex<Option<Identity>>,
     /// One Touch ID sheet at a time; concurrent sign requests wait their turn.
@@ -132,6 +137,7 @@ impl Daemon {
             touch_id,
             clipboard,
             ui_hang_after,
+            frontmost,
         } = config;
         let runtime = Handle::current();
         let device = device::load_or_create(&data_dir).context("read the device id")?;
@@ -170,6 +176,7 @@ impl Daemon {
             quitting: AtomicBool::new(false),
             touch_id,
             clipboard,
+            frontmost,
             unlocked_as: Mutex::new(None),
             presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
@@ -239,6 +246,29 @@ impl Daemon {
     #[must_use]
     pub fn ssh_socket(&self) -> &Path {
         self.ssh.socket()
+    }
+
+    /// The app in front now, for auto-type from the Quick Panel; `None` when it is bw-lite
+    /// (this daemon or its UI process) or unknown. Call it before the effect that starts or
+    /// shows the UI, which comes forward.
+    #[must_use]
+    pub fn typing_target(&self) -> Option<TypingTarget> {
+        // 0 for "no child" matches nothing: `outside` never accepts pid 0.
+        let own = [std::process::id(), self.launcher.child_pid().unwrap_or(0)];
+        outside(self.frontmost.frontmost(), &own)
+    }
+
+    /// [`Daemon::typing_target`] from a Tokio task: the system source may wait for the main
+    /// thread, so it runs on a blocking thread.
+    async fn typing_target_off_main(self: &Arc<Self>) -> Option<TypingTarget> {
+        let daemon = Arc::clone(self);
+        match tokio::task::spawn_blocking(move || daemon.typing_target()).await {
+            Ok(target) => target,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the frontmost app");
+                None
+            }
+        }
     }
 
     /// Runs one routed effect; a user action, so it also counts as activity for the lock timer.
@@ -498,6 +528,7 @@ impl Daemon {
             return true;
         }
         let label = self.ssh.label(&cipher_id);
+        let return_to = self.typing_target_off_main().await;
         let prompt = SshPrompt {
             kind: SshApprovalKind::Sign,
             process: request
@@ -509,6 +540,7 @@ impl Daemon {
                 .map_or_else(|| "SSH key".to_owned(), |label| label.name.clone()),
             fingerprint: label.map(|label| label.fingerprint).unwrap_or_default(),
             purpose: request.purpose,
+            return_to,
         };
         let (decision_tx, decision) = oneshot::channel();
         if !self.send(|seq| DaemonEvent::SshApproval {

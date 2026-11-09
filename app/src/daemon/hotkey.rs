@@ -38,8 +38,10 @@ impl Hotkey {
                 .unwrap_or_else(PoisonError::into_inner)
                 .get(&event.id)
                 .copied();
+            // Carbon calls hotkey handlers on the main thread (global-hotkey 0.9 installs them on
+            // the application event target), where the frontmost app can be read.
             if let Some(slot) = slot {
-                daemon.apply(routing::hotkey(slot));
+                daemon.apply(routing::hotkey(slot, || daemon.typing_target()));
             }
         }));
         Ok(Self {

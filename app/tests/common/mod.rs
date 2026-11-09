@@ -15,8 +15,8 @@ use bw_lite::{
     autotype::{Stroke, typed_text},
     exec::Exec,
     hooks::{
-        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, FileDialogs, HookError, HookResult,
-        Hooks, SettingsStore, SshKeyTool, TypingTarget, WindowPlacement,
+        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, DockIcon, FileDialogs, HookError,
+        HookResult, Hooks, SettingsStore, SshKeyTool, TypingTarget, WindowPlacement,
     },
     mock::{MockConfig, MockVault},
     settings::Settings,
@@ -260,6 +260,8 @@ pub struct FakeAutoType {
     pub trusted: std::sync::atomic::AtomicBool,
     pub trust_checks: Mutex<Vec<bool>>,
     pub typed: Mutex<Vec<(TypingTarget, String)>>,
+    /// Apps a dismissed Quick Panel handed the front back to.
+    pub given_back: Mutex<Vec<TypingTarget>>,
     /// The next run reports this instead of success.
     pub fail_with: Mutex<Option<String>>,
     /// Keeps the next run going until [`FakeAutoType::finish`] or a cancel.
@@ -281,6 +283,7 @@ impl Default for FakeAutoType {
             trusted: std::sync::atomic::AtomicBool::new(true),
             trust_checks: Mutex::default(),
             typed: Mutex::default(),
+            given_back: Mutex::default(),
             fail_with: Mutex::default(),
             hold: std::sync::atomic::AtomicBool::new(false),
             cancels: std::sync::atomic::AtomicUsize::new(0),
@@ -341,6 +344,39 @@ impl AutoType for FakeAutoType {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self::finish(Err(HookError::Cancelled));
     }
+
+    fn give_focus_back(&self, target: &TypingTarget) {
+        self.given_back
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(target.clone());
+    }
+}
+
+/// Counts how often the app was activated and hidden.
+#[derive(Default)]
+pub struct RecordingDock {
+    pub activations: std::sync::atomic::AtomicUsize,
+    pub hides: std::sync::atomic::AtomicUsize,
+}
+
+impl RecordingDock {
+    pub fn hides(&self) -> usize {
+        self.hides.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl DockIcon for RecordingDock {
+    fn set_visible(&self, _visible: bool) {}
+
+    fn activate(&self) {
+        self.activations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn hide(&self) {
+        self.hides.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 pub struct Harness {
@@ -354,6 +390,7 @@ pub struct Harness {
     pub clock: Arc<FixedClock>,
     pub placement: Arc<RecordingPlacement>,
     pub autotype: Arc<FakeAutoType>,
+    pub dock: Arc<RecordingDock>,
 }
 
 pub struct Setup {
@@ -394,6 +431,7 @@ pub fn harness(setup: Setup) -> Harness {
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
     let placement = Arc::new(RecordingPlacement::default());
     let autotype = Arc::new(FakeAutoType::default());
+    let dock = Arc::new(RecordingDock::default());
     let defaults = Hooks::mock(&vault, &[]);
     let touch_id = setup.scripted_touch_id.then(|| {
         Arc::new(ScriptedTouchId {
@@ -413,6 +451,7 @@ pub fn harness(setup: Setup) -> Harness {
         clock: Arc::clone(&clock) as Arc<dyn Clock>,
         placement: Arc::clone(&placement) as Arc<dyn WindowPlacement>,
         autotype: Arc::clone(&autotype) as Arc<dyn AutoType>,
+        dock: Arc::clone(&dock) as Arc<dyn DockIcon>,
         ssh_keys: setup
             .ssh_keys
             .unwrap_or_else(|| Arc::clone(&defaults.ssh_keys)),
@@ -433,6 +472,7 @@ pub fn harness(setup: Setup) -> Harness {
         clock,
         placement,
         autotype,
+        dock,
     }
 }
 

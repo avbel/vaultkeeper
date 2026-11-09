@@ -4,14 +4,21 @@
 use bwl_vault::{VaultService, model::SessionState};
 
 use super::{App, SshApprovalRequest, Target};
+use crate::hooks::TypingTarget;
 
 /// What the daemon can ask the UI process to show.
 #[derive(Debug)]
 pub enum UiCommand {
     ShowManager,
-    ShowQuickPanel,
+    /// `target` is where auto-type goes: the app that was in front when the user asked, as the
+    /// daemon saw it.
+    ShowQuickPanel {
+        target: Option<TypingTarget>,
+    },
     /// The global hotkey: open the Quick Panel, or close it when open.
-    ToggleQuickPanel,
+    ToggleQuickPanel {
+        target: Option<TypingTarget>,
+    },
     ShowSshApproval(SshApprovalRequest),
     ShowUnlock,
     ShowLogin,
@@ -34,28 +41,26 @@ pub enum UiCommand {
 
 impl<S: VaultService> App<S> {
     pub fn handle(&self, command: UiCommand) {
-        // Read before bw-lite comes forward; auto-type gives the focus back to this app. Any
-        // other window request drops it, so a panel opened later from inside bw-lite (⌘K) never
-        // types into an app that was in front long ago. An open panel keeps its own copy.
-        if matches!(
-            command,
-            UiCommand::ShowQuickPanel | UiCommand::ToggleQuickPanel
-        ) {
-            self.typing_target.replace(self.hooks.autotype.frontmost());
-        } else if command.shows_a_window() {
-            self.typing_target.replace(None);
-        }
-        if command.shows_a_window() {
+        // Any other window request drops the target, so a panel opened later from inside
+        // bw-lite (⌘K) never types into an app that was in front long ago. An open panel keeps
+        // its own copy.
+        // The hotkey on an open panel closes it and hands the front back; activating first
+        // would only flash bw-lite forward.
+        let closes_panel =
+            matches!(command, UiCommand::ToggleQuickPanel { .. }) && self.quick.borrow().is_some();
+        if command.shows_a_window() && !closes_panel {
+            self.typing_target
+                .replace(command.typing_target().and_then(not_bw_lite));
             self.hooks.dock.activate();
         }
         match command {
             UiCommand::ShowManager => self.open_vault(),
-            UiCommand::ShowQuickPanel => {
+            UiCommand::ShowQuickPanel { .. } => {
                 if self.quick.borrow().is_none() {
                     self.toggle_quick_panel();
                 }
             }
-            UiCommand::ToggleQuickPanel => self.toggle_quick_panel(),
+            UiCommand::ToggleQuickPanel { .. } => self.toggle_quick_panel(),
             UiCommand::ShowSshApproval(request) => self.request_ssh_approval(request),
             UiCommand::ShowUnlock => match self.vault.state() {
                 SessionState::Locked { .. } => {
@@ -131,16 +136,31 @@ impl<S: VaultService> App<S> {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            if app.open_window_count() == 0
-                && let Some(callback) = app.on_last_window_closed.borrow().as_ref()
-            {
+            if app.open_window_count() != 0 {
+                return;
+            }
+            app.hooks.dock.hide();
+            if let Some(callback) = app.on_last_window_closed.borrow().as_ref() {
                 callback();
             }
         });
     }
 }
 
+/// Typing into bw-lite itself would type the password into its own search field.
+fn not_bw_lite(target: TypingTarget) -> Option<TypingTarget> {
+    let own = i32::try_from(std::process::id()).ok();
+    (target.pid > 0 && Some(target.pid) != own).then_some(target)
+}
+
 impl UiCommand {
+    fn typing_target(&self) -> Option<TypingTarget> {
+        match self {
+            Self::ShowQuickPanel { target } | Self::ToggleQuickPanel { target } => target.clone(),
+            _ => None,
+        }
+    }
+
     /// Commands that put a window in front of the user, so the app must come forward first.
     const fn shows_a_window(&self) -> bool {
         !matches!(

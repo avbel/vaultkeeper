@@ -12,7 +12,7 @@ use std::{
 
 use bwl_ipc::{
     DaemonEvent, IpcError, PROTOCOL_VERSION, PeerCredentials, RemoteVault, ServeOptions,
-    SshApprovalKind, SshDecision, SshPrompt, UiCommand, UiEvent, UiNotice,
+    SshApprovalKind, SshDecision, SshPrompt, TypingTarget, UiCommand, UiEvent, UiNotice,
     dto::{SessionStateDto, WireError},
     frame::{HEADER_LEN, MAX_FRAME_LEN, encode},
     ipc_error,
@@ -42,13 +42,29 @@ fn prompt() -> SshPrompt {
         key_name: "deploy".to_owned(),
         fingerprint: "SHA256:abc".to_owned(),
         purpose: Some("git commit signing".to_owned()),
+        return_to: Some(TypingTarget {
+            pid: 377,
+            name: "Terminal".to_owned(),
+        }),
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_queued_before_the_ui_connects_are_delivered_in_order() {
     let daemon = Daemon::start(FakeVault::new(locked(), 0)).await;
-    for (seq, command) in [(1, UiCommand::ShowQuickPanel), (2, UiCommand::ShowUnlock)] {
+    let safari = TypingTarget {
+        pid: 812,
+        name: "Safari".to_owned(),
+    };
+    for (seq, command) in [
+        (
+            1,
+            UiCommand::ShowQuickPanel {
+                target: Some(safari.clone()),
+            },
+        ),
+        (2, UiCommand::ShowUnlock),
+    ] {
         daemon
             .events
             .send(DaemonEvent::Command { seq, command })
@@ -60,8 +76,8 @@ async fn commands_queued_before_the_ui_connects_are_delivered_in_order() {
         next_event(&mut events).await,
         Some(UiEvent::Command {
             seq: 1,
-            command: UiCommand::ShowQuickPanel
-        })
+            command: UiCommand::ShowQuickPanel { target: Some(ref target) }
+        }) if *target == safari
     ));
     assert!(matches!(
         next_event(&mut events).await,
@@ -75,20 +91,33 @@ async fn commands_queued_before_the_ui_connects_are_delivered_in_order() {
         (4, UiCommand::ShowLogin),
         (5, UiCommand::ShowSettings),
         (6, UiCommand::ShowGenerator),
+        (
+            7,
+            UiCommand::ToggleQuickPanel {
+                target: Some(safari.clone()),
+            },
+        ),
+        (8, UiCommand::ToggleQuickPanel { target: None }),
     ] {
         daemon
             .events
-            .send(DaemonEvent::Command { seq, command })
+            .send(DaemonEvent::Command {
+                seq,
+                command: command.clone(),
+            })
             .await
             .expect("send");
-        match next_event(&mut events).await {
-            Some(
-                event @ UiEvent::Command {
-                    command: received, ..
-                },
-            ) => {
-                assert_eq!(received, command);
-                assert_eq!(event.seq(), Some(seq), "the daemon's number reaches the UI");
+        let event = next_event(&mut events).await;
+        match &event {
+            Some(UiEvent::Command {
+                command: received, ..
+            }) => {
+                assert_eq!(*received, command);
+                assert_eq!(
+                    event.as_ref().and_then(UiEvent::seq),
+                    Some(seq),
+                    "the daemon's number reaches the UI"
+                );
             }
             other => panic!("expected {command:?}, got {other:?}"),
         }

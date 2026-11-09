@@ -5,6 +5,7 @@ use bwl_vault::{
     VaultService,
     model::{CopyField, ItemSummary, SessionState},
 };
+use slint::ComponentHandle;
 use zeroize::Zeroizing;
 
 use super::{App, handler};
@@ -30,7 +31,7 @@ impl<S: VaultService> App<S> {
             return false;
         };
         if !self.reprompt_cleared(&item) {
-            self.toast(super::reprompt::CONFIRM_IN_MANAGER, true);
+            self.panel_toast(super::reprompt::CONFIRM_IN_MANAGER);
             return true;
         }
         let Some(target) = self
@@ -39,7 +40,7 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .and_then(|quick| quick.typing_target.clone())
         else {
-            self.toast(NO_TARGET, true);
+            self.panel_toast(NO_TARGET);
             return true;
         };
         if !self.hooks.autotype.is_trusted(true) {
@@ -67,13 +68,13 @@ impl<S: VaultService> App<S> {
             Ok(value) => Some(value),
             Err(bwl_vault::Error::NoSuchField) => Some(Zeroizing::new(String::new())),
             Err(error) => {
-                self.toast(&viewmodel::error_text(&error), true);
+                self.panel_toast(&viewmodel::error_text(&error));
                 None
             }
         };
         let password = reveal(CopyField::Password)?;
         if password.is_empty() {
-            self.toast(NO_PASSWORD, true);
+            self.panel_toast(NO_PASSWORD);
             return None;
         }
         let username = reveal(CopyField::Username)?;
@@ -99,7 +100,25 @@ impl<S: VaultService> App<S> {
     /// (it hides after a few seconds) drops it.
     fn show_notice(&self, text: &str) {
         self.pending_notice.replace(Some(text.to_owned()));
-        self.toast(text, true);
+        self.panel_toast(text);
+    }
+
+    /// An error about the panel's auto-type, on the panel: `toast` prefers an open Manager,
+    /// which may sit behind other apps, so the user pressing ⌘⇧↩ in the panel would see nothing.
+    fn panel_toast(&self, text: &str) {
+        let Some(window) = self
+            .quick
+            .borrow()
+            .as_ref()
+            .map(|quick| quick.window.clone_strong())
+        else {
+            self.toast(text, true);
+            return;
+        };
+        tracing::warn!(text, "error toast");
+        window.set_toast_text(text.into());
+        window.set_toast_error(true);
+        window.set_toast_shown(true);
     }
 
     /// The Quick Panel's toast closed on screen, so a notice it showed has been read.

@@ -10,6 +10,7 @@ pub mod lock;
 pub mod routing;
 pub mod secrets;
 pub mod ssh;
+pub mod target;
 mod tray;
 
 use std::{sync::Arc, time::Duration};

@@ -46,7 +46,8 @@ pub use clipboard::ClipboardHost;
 pub use error::{ConvertError, IpcError, ipc_error};
 pub use peer::{PeerCredentials, PeerVerifier, SameExecutable};
 pub use protocol::{
-    PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt, TouchIdFailure, UiCommand, UiNotice,
+    PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt, TouchIdFailure, TypingTarget,
+    UiCommand, UiNotice,
 };
 pub use server::{DaemonEvent, ServeOptions, ServerHandle, serve, serve_with};
 pub use touch_id::TouchIdBackend;

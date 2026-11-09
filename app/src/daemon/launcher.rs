@@ -74,6 +74,7 @@ pub const fn judge(acked: u64, seq: u64, modal: bool) -> Hang {
 
 struct Running {
     started: Instant,
+    pid: Option<u32>,
     kill: Option<oneshot::Sender<()>>,
 }
 
@@ -148,6 +149,7 @@ impl Launcher {
         let (kill, killed) = oneshot::channel();
         *running = Some(Running {
             started,
+            pid: child.id(),
             kill: Some(kill),
         });
         drop(running);
@@ -161,6 +163,12 @@ impl Launcher {
     /// Called by the reaper before it decides about a restart.
     pub fn exited(&self) {
         *self.running() = None;
+    }
+
+    /// The running child's process id; `None` when none runs or it already exited.
+    #[must_use]
+    pub fn child_pid(&self) -> Option<u32> {
+        self.running().as_ref().and_then(|running| running.pid)
     }
 
     /// How long the running child has been up.
