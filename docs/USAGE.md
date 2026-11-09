@@ -90,7 +90,7 @@ To try it without editing the config:
 
 ```sh
 SSH_AUTH_SOCK="$HOME/Library/Application Support/bw-lite/ssh-agent.sock" ssh-add -l
-ssh -o IdentityAgent="~/Library/Application Support/bw-lite/ssh-agent.sock" -T git@github.com
+ssh -o 'IdentityAgent "~/Library/Application Support/bw-lite/ssh-agent.sock"' -T git@github.com
 ```
 
 Each sign request opens an approval window (process and key fingerprint, auto-deny after 30 s).
@@ -124,7 +124,7 @@ Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *D
 
 To uninstall:
 1. Log out of each account in the app, then quit it.
-2. `rm -rf /Applications/bw-lite.app "~/Library/Application Support/bw-lite" ~/Library/LaunchAgents/bw-lite.plist`.
+2. `rm -rf /Applications/bw-lite.app "$HOME/Library/Application Support/bw-lite" ~/Library/LaunchAgents/bw-lite.plist`.
 
 ## Command line
 
