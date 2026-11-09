@@ -299,14 +299,27 @@ export component GeneratorWindow inherits Window {
     title: "bw-lite — generator";
     icon: @image-url("icons/tray-dark.svg");
     preferred-width: 420px;
-    preferred-height: 560px;
+    preferred-height: 28px + view.content-height;
     min-width: 360px;
-    min-height: 420px;
+    min-height: 240px;
     background: Theme.surface;
     default-font-size: Theme.font-body;
     VerticalLayout {
-        // Leaves the transparent title bar to the traffic lights.
-        padding-top: 28px;
-        GeneratorView { }
+        // The title in the transparent title bar beside the traffic lights, as in Settings.
+        Rectangle {
+            height: 28px;
+            WindowMoveArea { }
+            Text {
+                text: "Generator";
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        view := GeneratorView {
+            show-title: false;
+        }
     }
 }

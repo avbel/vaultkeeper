@@ -31,13 +31,17 @@ export global GeneratorState {
 export component GeneratorView inherits Rectangle {
     callback close();
     in property <bool> closable: false;
+    // The standalone window draws its title in the title bar instead.
+    in property <bool> show-title: true;
+    // What the options need, so a window can size itself without an empty gap below them.
+    out property <length> content-height: body.preferred-height;
     background: Theme.surface;
 
     ScrollView {
-        VerticalLayout {
+        body := VerticalLayout {
             padding: Theme.padding;
             spacing: Theme.gap;
-            HorizontalLayout {
+            if root.show-title || root.closable: HorizontalLayout {
                 spacing: Theme.gap;
                 Text {
                     text: "Generator";
