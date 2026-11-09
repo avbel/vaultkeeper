@@ -14,8 +14,10 @@ component NewMenu inherits Rectangle {
     Btn {
         width: 100%;
         height: root.height;
-        text: "+ New";
+        text: "New";
         hint: "⌘N";
+        has-icon: true;
+        icon: @image-url("icons/key.svg");
         label: "New item";
         kind: BtnKind.primary;
         clicked => { popup.show(); }

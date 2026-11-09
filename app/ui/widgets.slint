@@ -110,10 +110,14 @@ export component Btn inherits Rectangle {
         padding-right: root.text == "" ? 6px : 10px;
         spacing: Theme.s2;
         alignment: center;
-        if root.has-icon: Icon {
-            y: (parent.height - self.height) / 2;
-            source: root.icon;
-            tint: root.fg;
+        // A layout ignores `y` on its children; a centred column puts the icon on the text's
+        // middle line.
+        if root.has-icon: VerticalLayout {
+            alignment: center;
+            Icon {
+                source: root.icon;
+                tint: root.fg;
+            }
         }
         if root.text != "": Text {
             text: root.text;
