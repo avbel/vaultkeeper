@@ -197,7 +197,10 @@ fn auto_approver(mut events: EventStream, approve: Arc<AtomicBool>, remember: bo
                     };
                     let _ = approval.reply.send(decision);
                 }
-                UiEvent::Command(UiCommand::UnlockInTray) => {
+                UiEvent::Command {
+                    command: UiCommand::UnlockInTray,
+                    ..
+                } => {
                     counters.unlock_prompts.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => {}
@@ -787,7 +790,13 @@ async fn a_second_launch_forwards_to_the_running_daemon() {
     assert!(second.success(), "the second instance exits at once");
     let event = tokio::time::timeout(WAIT, events.next()).await.unwrap();
     assert!(
-        matches!(event, Some(UiEvent::Command(UiCommand::ShowQuickPanel))),
+        matches!(
+            event,
+            Some(UiEvent::Command {
+                command: UiCommand::ShowQuickPanel,
+                ..
+            })
+        ),
         "{event:?}"
     );
     terminate(daemon).await;

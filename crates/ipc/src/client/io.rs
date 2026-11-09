@@ -237,17 +237,25 @@ fn on_event(
             shared.write_cache().is_offline = offline;
             let _ = events.send(UiEvent::OfflineChanged(offline));
         }
-        Event::Command(command) => {
-            let _ = events.send(UiEvent::Command(command));
+        Event::Command { seq, command } => {
+            let _ = events.send(UiEvent::Command { seq, command });
         }
-        Event::SshApproval { request_id, prompt } => {
+        Event::SshApproval {
+            seq,
+            request_id,
+            prompt,
+        } => {
             let (reply, decision) = oneshot::channel();
             approvals.spawn(send_decision(shared.outbox.clone(), request_id, decision));
             let _ = events.send(UiEvent::SshApproval(SshApproval {
+                seq,
                 request_id,
                 prompt,
                 reply,
             }));
+        }
+        Event::Skipped(seq) => {
+            let _ = events.send(UiEvent::Skipped(seq));
         }
         Event::Shutdown => {
             let _ = events.send(UiEvent::Shutdown);

@@ -245,9 +245,7 @@ impl Daemon {
     pub fn apply(self: &Arc<Self>, effect: Effect) {
         self.activity.touch();
         match effect {
-            Effect::Show(command) => {
-                self.send(DaemonEvent::Command(command));
-            }
+            Effect::Show(command) => self.send_command(command),
             Effect::Lock => self.vault.lock(),
             Effect::Sync => self.vault.request_sync(),
             Effect::SwitchAccount(id) => {
@@ -261,27 +259,30 @@ impl Daemon {
         }
     }
 
-    /// Queues an event for the UI and makes sure a UI process is on its way to read it, and
-    /// answers it in time.
-    fn send(self: &Arc<Self>, event: DaemonEvent) -> bool {
-        if let Err(error) = self.events.try_send(event) {
-            tracing::warn!(%error, "UI event dropped");
-            return false;
-        }
-        let seq = self.hang.delivered.fetch_add(1, Ordering::SeqCst) + 1;
+    fn send_command(self: &Arc<Self>, command: UiCommand) {
+        self.send(|seq| DaemonEvent::Command { seq, command });
+    }
+
+    /// Queues the event `numbered` builds with its number, makes sure a UI process is on its
+    /// way to read it, and that it answers in time.
+    fn send(self: &Arc<Self>, numbered: impl FnOnce(u64) -> DaemonEvent) -> bool {
+        let seq = {
+            // Numbering and queueing under one lock keeps the queue in number order with no
+            // gaps, which `ui_exited` relies on.
+            let mut sent = guard(&self.hang.sent);
+            let seq = *sent + 1;
+            if let Err(error) = self.events.try_send(numbered(seq)) {
+                tracing::warn!(%error, "UI event dropped");
+                return false;
+            }
+            *sent = seq;
+            seq
+        };
         self.ensure_ui();
         if self.launcher.can_start() {
             drop(self.runtime.spawn(watch_answer(Arc::clone(self), seq)));
         }
         true
-    }
-
-    /// The UI's main loop got through its first `handled` events.
-    fn ui_alive(&self, handled: u64) {
-        let base = self.hang.base.load(Ordering::SeqCst);
-        self.hang
-            .acked
-            .fetch_max(base.saturating_add(handled), Ordering::SeqCst);
     }
 
     fn queued_events(&self) -> u64 {
@@ -303,15 +304,16 @@ impl Daemon {
     }
 
     fn ui_exited(self: &Arc<Self>, ran_for: Duration) {
-        // What the old UI received counts as answered; the next one counts from here.
-        let queued = self.queued_events();
-        let base = self
-            .hang
-            .delivered
-            .load(Ordering::SeqCst)
-            .saturating_sub(queued);
-        self.hang.base.store(base, Ordering::SeqCst);
-        self.hang.acked.fetch_max(base, Ordering::SeqCst);
+        // What the old UI took from the queue went with it and counts as answered; otherwise
+        // its watchers would kill the next UI, which never gets those events.
+        let queued = {
+            let sent = guard(&self.hang.sent);
+            let queued = self.queued_events();
+            self.hang
+                .acked
+                .fetch_max(sent.saturating_sub(queued), Ordering::SeqCst);
+            queued
+        };
         self.hang.modal.store(false, Ordering::SeqCst);
         self.launcher.exited();
         let quitting = self.quitting.load(Ordering::SeqCst);
@@ -333,7 +335,7 @@ impl Daemon {
         }
         self.apply_settings(fresh);
         if self.ui_connected() {
-            self.send(DaemonEvent::Command(UiCommand::ReloadSettings));
+            self.send_command(UiCommand::ReloadSettings);
         }
     }
 
@@ -440,7 +442,9 @@ impl Daemon {
         }
     }
 
-    async fn approve(self: &Arc<Self>, request: ApprovalRequest) {
+    /// Answers one request of the SSH agent; public so tests can stand in for the agent.
+    #[doc(hidden)]
+    pub async fn approve(self: &Arc<Self>, request: ApprovalRequest) {
         let ApprovalRequest { kind, mut reply } = request;
         let approved = match kind {
             ApprovalKind::List => self.approve_list(&mut reply).await,
@@ -475,7 +479,7 @@ impl Daemon {
                 true
             }
             SessionState::Locked { .. } => {
-                self.send(DaemonEvent::Command(UiCommand::UnlockInTray));
+                self.send_command(UiCommand::UnlockInTray);
                 self.wait_unlocked(reply).await
             }
         }
@@ -523,7 +527,8 @@ impl Daemon {
             purpose: request.purpose,
         };
         let (decision_tx, decision) = oneshot::channel();
-        if !self.send(DaemonEvent::SshApproval {
+        if !self.send(|seq| DaemonEvent::SshApproval {
+            seq,
             prompt,
             reply: decision_tx,
         }) {
@@ -613,7 +618,9 @@ async fn notices_loop(daemon: Arc<Daemon>, mut notices: mpsc::Receiver<UiNotice>
         match notice {
             UiNotice::SettingsChanged => daemon.reload_settings().await,
             UiNotice::Activity => daemon.activity.touch(),
-            UiNotice::Alive(handled) => daemon.ui_alive(handled),
+            UiNotice::Alive(seq) => {
+                daemon.hang.acked.fetch_max(seq, Ordering::SeqCst);
+            }
             UiNotice::Modal(open) => daemon.hang.modal.store(open, Ordering::SeqCst),
         }
     }
@@ -711,16 +718,14 @@ async fn watch_answer(daemon: Arc<Daemon>, seq: u64) {
     }
 }
 
-/// Counts that tell a hung UI process from a slow one.
+/// Event numbers that tell a hung UI process from a slow one.
 struct HangWatch {
     after: Duration,
-    /// Events queued for the UI since the daemon started.
-    delivered: AtomicU64,
-    /// Events some UI's main loop got through (or that went with a UI that exited).
+    /// The number of the last event queued for the UI; numbers start at 1.
+    sent: Mutex<u64>,
+    /// Every event up to this number was answered by some UI's main loop, or went with a UI
+    /// that exited.
     acked: AtomicU64,
-    /// `delivered` minus what was still queued when the last UI exited: where the running UI's
-    /// own count starts.
-    base: AtomicU64,
     modal: AtomicBool,
     /// The watchdog killed the UI: start a new one when it is reaped.
     respawn: AtomicBool,
@@ -730,9 +735,8 @@ impl HangWatch {
     const fn new(after: Duration) -> Self {
         Self {
             after,
-            delivered: AtomicU64::new(0),
+            sent: Mutex::new(0),
             acked: AtomicU64::new(0),
-            base: AtomicU64::new(0),
             modal: AtomicBool::new(false),
             respawn: AtomicBool::new(false),
         }

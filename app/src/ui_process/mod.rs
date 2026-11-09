@@ -105,11 +105,9 @@ async fn forward_events(
     commands: mpsc::UnboundedSender<UiCommand>,
     notify: Notifier,
 ) {
-    let mut received = 0_u64;
     while let Some(event) = events.next().await {
-        if matches!(event, UiEvent::Command(_) | UiEvent::SshApproval(_)) {
-            received += 1;
-            report_alive(&notify, received);
+        if let Some(answer) = answer(&event) {
+            report_alive(&notify, answer);
         }
         match bridge(event) {
             Bridged::Command(command) => {
@@ -132,11 +130,18 @@ async fn forward_events(
     }
 }
 
+/// What the UI tells the daemon once its main loop got to `event`; `None` for events the daemon
+/// does not wait on. Skipped events are answered too: the daemon counts them like the others.
+#[must_use]
+pub fn answer(event: &UiEvent) -> Option<UiNotice> {
+    event.seq().map(UiNotice::Alive)
+}
+
 /// Answers from the main loop, so a UI whose main thread hangs stays silent and the daemon's
 /// watchdog restarts it; this task alone would keep reading the socket.
-fn report_alive(notify: &Notifier, received: u64) {
+fn report_alive(notify: &Notifier, answer: UiNotice) {
     let notify = Arc::clone(notify);
-    if let Err(error) = slint::invoke_from_event_loop(move || notify(UiNotice::Alive(received))) {
+    if let Err(error) = slint::invoke_from_event_loop(move || notify(answer)) {
         tracing::debug!(%error, "event loop gone; no answer to the daemon");
     }
 }
@@ -167,5 +172,44 @@ fn linger_ended(app: &Weak<App<RemoteVault>>) {
                 tracing::error!(%error, "cannot quit the event loop");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bwl_ipc::{SshApproval, SshApprovalKind, SshPrompt, UiCommand};
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[test]
+    fn every_numbered_event_is_answered_with_its_own_number() {
+        let command = UiEvent::Command {
+            seq: 4,
+            command: UiCommand::ShowManager,
+        };
+        assert_eq!(answer(&command), Some(UiNotice::Alive(4)));
+        let (reply, _answer) = oneshot::channel();
+        let approval = UiEvent::SshApproval(SshApproval {
+            seq: 5,
+            request_id: 1,
+            prompt: SshPrompt {
+                kind: SshApprovalKind::Sign,
+                process: "git".to_owned(),
+                pid: None,
+                key_name: "deploy".to_owned(),
+                fingerprint: "SHA256:abc".to_owned(),
+                purpose: None,
+            },
+            reply,
+        });
+        assert_eq!(answer(&approval), Some(UiNotice::Alive(5)));
+        assert_eq!(
+            answer(&UiEvent::Skipped(6)),
+            Some(UiNotice::Alive(6)),
+            "the daemon waits on withdrawn events too"
+        );
+        assert_eq!(answer(&UiEvent::OfflineChanged(true)), None);
+        assert_eq!(answer(&UiEvent::Shutdown), None);
     }
 }

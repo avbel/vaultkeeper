@@ -48,35 +48,48 @@ fn prompt() -> SshPrompt {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_queued_before_the_ui_connects_are_delivered_in_order() {
     let daemon = Daemon::start(FakeVault::new(locked(), 0)).await;
-    for command in [UiCommand::ShowQuickPanel, UiCommand::ShowUnlock] {
+    for (seq, command) in [(1, UiCommand::ShowQuickPanel), (2, UiCommand::ShowUnlock)] {
         daemon
             .events
-            .send(DaemonEvent::Command(command))
+            .send(DaemonEvent::Command { seq, command })
             .await
             .expect("queue");
     }
     let (_vault, mut events) = daemon.connect().await;
     assert!(matches!(
         next_event(&mut events).await,
-        Some(UiEvent::Command(UiCommand::ShowQuickPanel))
+        Some(UiEvent::Command {
+            seq: 1,
+            command: UiCommand::ShowQuickPanel
+        })
     ));
     assert!(matches!(
         next_event(&mut events).await,
-        Some(UiEvent::Command(UiCommand::ShowUnlock))
+        Some(UiEvent::Command {
+            seq: 2,
+            command: UiCommand::ShowUnlock
+        })
     ));
-    for command in [
-        UiCommand::ShowManager,
-        UiCommand::ShowLogin,
-        UiCommand::ShowSettings,
-        UiCommand::ShowGenerator,
+    for (seq, command) in [
+        (3, UiCommand::ShowManager),
+        (4, UiCommand::ShowLogin),
+        (5, UiCommand::ShowSettings),
+        (6, UiCommand::ShowGenerator),
     ] {
         daemon
             .events
-            .send(DaemonEvent::Command(command))
+            .send(DaemonEvent::Command { seq, command })
             .await
             .expect("send");
         match next_event(&mut events).await {
-            Some(UiEvent::Command(received)) => assert_eq!(received, command),
+            Some(
+                event @ UiEvent::Command {
+                    command: received, ..
+                },
+            ) => {
+                assert_eq!(received, command);
+                assert_eq!(event.seq(), Some(seq), "the daemon's number reaches the UI");
+            }
             other => panic!("expected {command:?}, got {other:?}"),
         }
     }
@@ -85,23 +98,31 @@ async fn commands_queued_before_the_ui_connects_are_delivered_in_order() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
     let daemon = Daemon::start(FakeVault::new(unlocked(), 0)).await;
-    // Expired before any UI showed up: must be skipped, not shown.
+    // Expired before any UI showed up: must be skipped, not shown, but its number still reaches
+    // the UI so the daemon's count of answered events does not fall behind.
     let (stale_reply, stale) = oneshot::channel();
     drop(stale);
     daemon
         .events
         .send(DaemonEvent::SshApproval {
+            seq: 1,
             prompt: prompt(),
             reply: stale_reply,
         })
         .await
         .expect("queue");
     let (_vault, mut events) = daemon.connect().await;
+    let skipped = next_event(&mut events).await;
+    assert!(
+        matches!(skipped, Some(UiEvent::Skipped(1))),
+        "no prompt for the expired request: {skipped:?}"
+    );
 
     let (reply, approved) = oneshot::channel();
     daemon
         .events
         .send(DaemonEvent::SshApproval {
+            seq: 2,
             prompt: prompt(),
             reply,
         })
@@ -111,6 +132,7 @@ async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
         panic!("expected an approval request");
     };
     assert_eq!(request.prompt, prompt());
+    assert_eq!(request.seq, 2);
     request
         .reply
         .send(SshDecision::approve(true))
@@ -136,6 +158,7 @@ async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
     daemon
         .events
         .send(DaemonEvent::SshApproval {
+            seq: 3,
             prompt: list_prompt.clone(),
             reply,
         })
@@ -190,6 +213,7 @@ async fn a_late_or_repeated_reply_never_answers_another_request() {
     daemon
         .events
         .send(DaemonEvent::SshApproval {
+            seq: 1,
             prompt: prompt(),
             reply,
         })
@@ -214,6 +238,7 @@ async fn a_late_or_repeated_reply_never_answers_another_request() {
     daemon
         .events
         .send(DaemonEvent::SshApproval {
+            seq: 2,
             prompt: prompt(),
             reply,
         })
@@ -256,6 +281,7 @@ async fn pending_approval_is_denied_when_the_ui_disconnects() {
     daemon
         .events
         .send(DaemonEvent::SshApproval {
+            seq: 1,
             prompt: prompt(),
             reply,
         })

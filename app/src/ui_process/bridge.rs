@@ -15,7 +15,7 @@ pub enum Bridged {
 #[must_use]
 pub fn bridge(event: UiEvent) -> Bridged {
     match event {
-        UiEvent::Command(command) => Bridged::Command(command_for(command)),
+        UiEvent::Command { command, .. } => Bridged::Command(command_for(command)),
         UiEvent::SshApproval(approval) => match approval.prompt.kind {
             SshApprovalKind::Sign => {
                 let prompt = approval.prompt;
@@ -32,6 +32,7 @@ pub fn bridge(event: UiEvent) -> Bridged {
             SshApprovalKind::List => Bridged::Ignore,
         },
         UiEvent::OfflineChanged(offline) => Bridged::Command(UiCommand::OfflineChanged(offline)),
+        UiEvent::Skipped(_) => Bridged::Ignore,
         UiEvent::Shutdown => Bridged::Quit,
     }
 }
@@ -91,6 +92,7 @@ mod tests {
     fn sign_requests_become_prompts_whose_answer_reaches_the_daemon() {
         let (reply, answer) = oneshot::channel();
         let event = UiEvent::SshApproval(SshApproval {
+            seq: 1,
             request_id: 1,
             prompt: prompt(SshApprovalKind::Sign),
             reply,
@@ -118,12 +120,17 @@ mod tests {
     fn stray_list_requests_are_denied_and_shutdown_quits() {
         let (reply, answer) = oneshot::channel();
         let event = UiEvent::SshApproval(SshApproval {
+            seq: 2,
             request_id: 2,
             prompt: prompt(SshApprovalKind::List),
             reply,
         });
         assert!(matches!(bridge(event), Bridged::Ignore));
         assert!(answer.blocking_recv().is_err(), "dropped, so denied");
+        assert!(
+            matches!(bridge(UiEvent::Skipped(3)), Bridged::Ignore),
+            "a withdrawn request shows nothing"
+        );
         assert!(matches!(bridge(UiEvent::Shutdown), Bridged::Quit));
         assert!(matches!(
             bridge(UiEvent::OfflineChanged(true)),

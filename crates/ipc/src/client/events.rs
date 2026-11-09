@@ -6,17 +6,36 @@ use crate::protocol::{SshDecision, SshPrompt, UiCommand};
 /// `VaultService::changes`).
 #[derive(Debug)]
 pub enum UiEvent {
-    Command(UiCommand),
+    Command {
+        seq: u64,
+        command: UiCommand,
+    },
     SshApproval(SshApproval),
+    /// The daemon withdrew its event `seq` before it got here; nothing to show.
+    Skipped(u64),
     /// The UI shows or dismisses the "Offline mode" toast.
     OfflineChanged(bool),
     /// The daemon is quitting; the UI process should exit.
     Shutdown,
 }
 
+impl UiEvent {
+    /// The daemon's number for this event, which the UI acknowledges with
+    /// [`crate::UiNotice::Alive`] once its main loop got to it; `None` for events nobody waits on.
+    #[must_use]
+    pub const fn seq(&self) -> Option<u64> {
+        match self {
+            Self::Command { seq, .. } | Self::Skipped(seq) => Some(*seq),
+            Self::SshApproval(approval) => Some(approval.seq),
+            Self::OfflineChanged(_) | Self::Shutdown => None,
+        }
+    }
+}
+
 /// An SSH sign/list request waiting for the user.
 #[derive(Debug)]
 pub struct SshApproval {
+    pub seq: u64,
     pub request_id: u64,
     pub prompt: SshPrompt,
     /// Dropping it counts as deny.

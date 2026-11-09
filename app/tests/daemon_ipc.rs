@@ -17,12 +17,15 @@ use bw_lite::{
         settings_file::SettingsFile,
     },
     settings::{Settings, ThemeChoice},
+    ui_process::answer,
 };
 use bwl_ipc::{ClipboardHost, EventStream, RemoteVault, UiCommand, UiEvent, UiNotice};
+use bwl_ssh::{ApprovalKind, ApprovalRequest};
 use bwl_vault::{
     MemorySecretStore, VaultService,
     model::{Filter, LoginRequest, SessionState},
 };
+use tokio::{sync::oneshot, task::JoinHandle};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -165,11 +168,17 @@ async fn commands_wait_for_the_ui_and_arrive_in_order() {
     let (_vault, mut events) = connect(&dir).await;
     assert!(matches!(
         next(&mut events).await,
-        UiEvent::Command(UiCommand::ShowManager)
+        UiEvent::Command {
+            seq: 1,
+            command: UiCommand::ShowManager
+        }
     ));
     assert!(matches!(
         next(&mut events).await,
-        UiEvent::Command(UiCommand::ToggleQuickPanel)
+        UiEvent::Command {
+            seq: 2,
+            command: UiCommand::ToggleQuickPanel
+        }
     ));
     daemon.shutdown().await;
 }
@@ -249,7 +258,10 @@ async fn a_theme_from_the_tray_is_saved_and_the_ui_reloads() {
     assert_eq!(saved.hotkey, "Cmd+Alt+K", "other settings are kept");
     assert!(matches!(
         next(&mut events).await,
-        UiEvent::Command(UiCommand::ReloadSettings)
+        UiEvent::Command {
+            command: UiCommand::ReloadSettings,
+            ..
+        }
     ));
     assert!(
         seen.has_changed().unwrap(),
@@ -392,21 +404,117 @@ async fn a_ui_that_answers_from_its_main_loop_is_kept() {
     daemon.apply(Effect::Show(UiCommand::ShowManager));
     eventually(|| starts(&log) >= 1).await;
     let (ui, mut events) = connect(&dir).await;
+    let shown = next(&mut events).await;
     assert!(matches!(
-        next(&mut events).await,
-        UiEvent::Command(UiCommand::ShowManager)
+        shown,
+        UiEvent::Command {
+            command: UiCommand::ShowManager,
+            ..
+        }
     ));
-    ui.notify(UiNotice::Alive(1)).unwrap();
+    ui.notify(answer(&shown).unwrap()).unwrap();
     // A file panel holds the main loop: the next command waits for the user, not the watchdog.
     ui.notify(UiNotice::Modal(true)).unwrap();
     daemon.apply(Effect::Show(UiCommand::ShowGenerator));
     assert!(matches!(
         next(&mut events).await,
-        UiEvent::Command(UiCommand::ShowGenerator)
+        UiEvent::Command {
+            command: UiCommand::ShowGenerator,
+            ..
+        }
     ));
     tokio::time::sleep(hang_after + Duration::from_millis(700)).await;
     assert_eq!(starts(&log), 1, "nothing replaced");
     assert!(alive(&pids(&log)[0]), "nothing killed");
     assert!(daemon.ui_connected());
+    daemon.shutdown().await;
+}
+
+/// Plays a healthy `--ui` process: every event is answered as `ui_process` answers it from its
+/// main loop, approvals are left to the user (never answered).
+fn healthy_ui(ui: RemoteVault, mut events: EventStream) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut prompts = Vec::new();
+        while let Some(event) = events.next().await {
+            if let Some(answer) = answer(&event) {
+                ui.notify(answer).unwrap();
+            }
+            if let UiEvent::SshApproval(approval) = event {
+                prompts.push(approval);
+            }
+        }
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ssh_request_given_up_before_the_ui_connected_does_not_get_it_killed() {
+    let dir = DataDir::new();
+    let (script, log) = hanging_ui(&dir);
+    let hang_after = Duration::from_secs(2);
+    let daemon = start_with_ui(&dir, script, hang_after).await;
+    // A sign request while no UI is connected queues a prompt and starts one; the ssh client gives
+    // up (Ctrl-C, its timeout) before that UI connects.
+    let (reply, agent) = oneshot::channel();
+    let request = ApprovalRequest {
+        kind: ApprovalKind::Sign {
+            cipher_id: Some("cipher".to_owned()),
+            process_name: Some("git".to_owned()),
+            is_forwarding: false,
+            namespace: Some("git".to_owned()),
+        },
+        reply,
+    };
+    let asking = tokio::spawn({
+        let daemon = Arc::clone(&daemon);
+        async move { daemon.approve(request).await }
+    });
+    eventually(|| starts(&log) >= 1).await;
+    drop(agent);
+    tokio::time::timeout(WAIT, asking).await.unwrap().unwrap();
+    let pid = pids(&log).remove(0);
+    let (ui, events) = connect(&dir).await;
+    let answering = healthy_ui(ui, events);
+    tokio::time::sleep(hang_after + Duration::from_millis(700)).await;
+    assert!(alive(&pid), "the dead request alone got the UI killed");
+    daemon.apply(Effect::Show(UiCommand::ShowManager));
+    tokio::time::sleep(hang_after + Duration::from_millis(700)).await;
+    assert!(
+        alive(&pid),
+        "the command after the dead request got the UI killed"
+    );
+    assert_eq!(starts(&log), 1, "nothing replaced");
+    assert!(daemon.ui_connected());
+    daemon.shutdown().await;
+    answering.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commands_lost_with_a_killed_ui_do_not_get_its_replacement_killed() {
+    let dir = DataDir::new();
+    let (script, log) = hanging_ui(&dir);
+    let hang_after = Duration::from_secs(2);
+    let daemon = start_with_ui(&dir, script, hang_after).await;
+    let sent = tokio::time::Instant::now();
+    daemon.apply(Effect::Show(UiCommand::ShowManager));
+    eventually(|| starts(&log) >= 1).await;
+    // A hung UI: it takes both commands from the daemon but its main loop never gets to them.
+    let (ui, mut events) = connect(&dir).await;
+    next(&mut events).await;
+    tokio::time::sleep_until(sent + hang_after / 2).await;
+    daemon.apply(Effect::Show(UiCommand::ShowGenerator));
+    next(&mut events).await;
+    // Gone before the first command's watcher kills it, so the daemon can start a replacement.
+    drop((ui, events));
+    eventually(|| starts(&log) >= 2).await;
+    let [first, second] = <[String; 2]>::try_from(pids(&log)).unwrap();
+    eventually(|| !alive(&first)).await;
+    // The second command's watcher fires after the replacement started; that command went with
+    // the killed UI, so it must not count against the new one.
+    tokio::time::sleep_until(sent + hang_after / 2 + hang_after + Duration::from_millis(700)).await;
+    assert!(
+        alive(&second),
+        "the replacement was killed for its predecessor's command"
+    );
+    assert_eq!(starts(&log), 2, "no third start");
     daemon.shutdown().await;
 }

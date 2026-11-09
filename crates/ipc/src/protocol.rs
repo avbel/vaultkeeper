@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -50,9 +50,9 @@ pub enum UiNotice {
     SettingsChanged,
     /// The user typed or clicked in a UI window; resets the lock timeout.
     Activity,
-    /// The UI's main loop ran after the n-th command or SSH approval this UI process received, so
-    /// the daemon can tell a hung UI from a slow one. A running count, so a dropped notice is
-    /// covered by the next.
+    /// The UI's main loop got to the daemon's event `seq` (see [`Event::Command`]), so the daemon
+    /// can tell a hung UI from a slow one. Covers every earlier event too, so a dropped notice is
+    /// made up for by the next.
     Alive(u64),
     /// A native modal dialog (file panel) holds the main loop; `false` when it closed.
     Modal(bool),
@@ -109,12 +109,21 @@ pub enum Event {
     /// New value of the vault's `changes()` counter.
     Changed(u64),
     OfflineChanged(bool),
-    Command(UiCommand),
+    /// `seq` is the daemon's number for a command or SSH approval, increasing in the order it
+    /// queued them; the UI acknowledges it with [`UiNotice::Alive`] from its main loop.
+    Command {
+        seq: u64,
+        command: UiCommand,
+    },
     /// Answer with [`UiMessage::SshApprovalReply`] carrying the same `request_id`.
     SshApproval {
+        seq: u64,
         request_id: u64,
         prompt: SshPrompt,
     },
+    /// Stands in for event `seq` that was withdrawn before it got here (an SSH approval the agent
+    /// stopped waiting for); nothing to show, but it is acknowledged like the others.
+    Skipped(u64),
     /// The daemon is quitting; the UI process should exit.
     Shutdown,
 }

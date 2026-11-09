@@ -315,18 +315,17 @@ async fn forward_events<S: VaultService>(
     let mut source = source.lock_owned().await;
     while let Some(event) = source.recv().await {
         let event = match event {
-            DaemonEvent::Command(command) => Event::Command(command),
+            DaemonEvent::Command { seq, command } => Event::Command { seq, command },
             DaemonEvent::Shutdown => Event::Shutdown,
-            DaemonEvent::SshApproval { prompt, reply } => {
-                if reply.is_closed() {
-                    // The agent gave up while no UI was connected.
-                    continue;
-                }
-                Event::SshApproval {
-                    request_id: approvals.register(reply),
-                    prompt,
-                }
-            }
+            // The agent gave up while no UI was connected. Dropping the event silently would
+            // leave the UI's acknowledgements short of `seq`, and the daemon would take the
+            // healthy UI for a hung one.
+            DaemonEvent::SshApproval { seq, reply, .. } if reply.is_closed() => Event::Skipped(seq),
+            DaemonEvent::SshApproval { seq, prompt, reply } => Event::SshApproval {
+                seq,
+                request_id: approvals.register(reply),
+                prompt,
+            },
         };
         if publisher.send_event(event).await.is_err() {
             break;

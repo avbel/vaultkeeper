@@ -41,12 +41,18 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// What the daemon pushes to the UI process. Events wait in the channel while no UI is
-/// connected and are delivered, at most once, to the next one.
+/// connected and are delivered, at most once, to the next one. `seq` is the daemon's number for
+/// the event, passed through to the UI (see [`crate::protocol::Event::Command`]).
 #[derive(Debug)]
 pub enum DaemonEvent {
-    Command(UiCommand),
-    /// Dropping `reply`, or the UI disconnecting, counts as deny.
+    Command {
+        seq: u64,
+        command: UiCommand,
+    },
+    /// Dropping `reply`, or the UI disconnecting, counts as deny. Once `reply` is closed the UI
+    /// gets [`crate::protocol::Event::Skipped`] instead of the prompt.
     SshApproval {
+        seq: u64,
         prompt: SshPrompt,
         reply: oneshot::Sender<SshDecision>,
     },
