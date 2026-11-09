@@ -263,12 +263,17 @@ fn api_error_text(error: &bwl_api::Error) -> String {
     match error {
         bwl_api::Error::Http(_) | bwl_api::Error::Io(_) => CANT_REACH.to_owned(),
         bwl_api::Error::UntrustedUrl(host) => format!("Blocked a request to untrusted host {host}"),
+        bwl_api::Error::Tls(detail) => tls_text(detail),
         bwl_api::Error::Decode(_) => NOT_COMPATIBLE.to_owned(),
         bwl_api::Error::Url(_) => "Not a valid server URL".to_owned(),
         bwl_api::Error::InvalidServerUrl(reason) => format!("Server URL refused: {reason}"),
         bwl_api::Error::Server { message, .. } => message.clone(),
         bwl_api::Error::Unauthorized => "Session expired; log in again".to_owned(),
     }
+}
+
+fn tls_text(detail: &str) -> String {
+    format!("Secure connection failed: {detail}")
 }
 
 pub const CANT_REACH: &str = "Can't reach server";
@@ -297,6 +302,7 @@ pub fn login_error(error: &Error) -> LoginError {
             },
         ) => LoginError::Server(NOT_COMPATIBLE.to_owned()),
         Error::Api(bwl_api::Error::Url(_)) => LoginError::Server("Not a valid URL".to_owned()),
+        Error::Api(bwl_api::Error::Tls(detail)) => LoginError::Server(tls_text(detail)),
         Error::InvalidPassword => LoginError::General("Wrong email or master password".to_owned()),
         other => LoginError::General(error_text(other)),
     }
@@ -536,6 +542,12 @@ mod tests {
             message: "Two-step token is invalid".to_owned(),
         });
         assert_eq!(error_text(&server), "Two-step token is invalid");
+        let tls = Error::Api(bwl_api::Error::Tls(
+            "the server's certificate has expired".to_owned(),
+        ));
+        let expected = "Secure connection failed: the server's certificate has expired";
+        assert_eq!(error_text(&tls), expected);
+        assert_eq!(login_error(&tls), LoginError::Server(expected.into()));
         assert_eq!(
             login_error(&server),
             LoginError::General("Two-step token is invalid".into())

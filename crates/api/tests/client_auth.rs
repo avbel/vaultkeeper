@@ -520,6 +520,32 @@ async fn unreachable_server_is_a_network_error_that_means_offline() {
 }
 
 #[tokio::test]
+async fn a_failed_tls_handshake_is_a_tls_error_not_offline() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Plain HTTP on the port an https:// URL points at: the client's handshake fails in rustls,
+    // the same path an expired or untrusted certificate takes.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut hello = [0; 512];
+        let _ = socket.read(&mut hello).await;
+        let _ = socket
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+            .await;
+    });
+
+    let error = client_for(&format!("https://{address}"))
+        .prelogin(EMAIL)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::Tls(_)), "{error:?}");
+    assert!(!error.is_offline());
+}
+
+#[tokio::test]
 async fn undecodable_success_body_is_a_decode_error_not_an_offline_signal() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

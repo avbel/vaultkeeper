@@ -84,6 +84,7 @@ pub enum ApiErrorDto {
     Unauthorized,
     Io(IoErrorDto),
     UntrustedUrl(String),
+    Tls(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +234,7 @@ impl From<&bwl_api::Error> for ApiErrorDto {
             bwl_api::Error::Unauthorized => Self::Unauthorized,
             bwl_api::Error::Io(io) => Self::Io(io.into()),
             bwl_api::Error::UntrustedUrl(host) => Self::UntrustedUrl(host.clone()),
+            bwl_api::Error::Tls(detail) => Self::Tls(detail.clone()),
             bwl_api::Error::InvalidServerUrl(_) => Self::Server {
                 status: 400,
                 message: error.to_string(),
@@ -264,6 +266,7 @@ impl From<ApiErrorDto> for bwl_api::Error {
             ApiErrorDto::Unauthorized => Self::Unauthorized,
             ApiErrorDto::Io(io) => Self::Io(io.into()),
             ApiErrorDto::UntrustedUrl(host) => Self::UntrustedUrl(host),
+            ApiErrorDto::Tls(detail) => Self::Tls(detail),
         }
     }
 }
@@ -500,6 +503,14 @@ mod tests {
             proxied(&Error::Api(bwl_api::Error::UntrustedUrl("evil.example".to_owned()))),
             Error::Api(bwl_api::Error::UntrustedUrl(host)) if host == "evil.example"
         ));
+        let tls = proxied(&Error::Api(bwl_api::Error::Tls(
+            "certificate expired".to_owned(),
+        )));
+        assert!(
+            matches!(&tls, Error::Api(bwl_api::Error::Tls(detail)) if detail == "certificate expired"),
+            "{tls:?}"
+        );
+        assert!(!tls.is_offline(), "a bad certificate is not offline mode");
         let back = proxied(&Error::Api(bwl_api::Error::Io(io::Error::new(
             io::ErrorKind::ConnectionReset,
             "reset by peer",

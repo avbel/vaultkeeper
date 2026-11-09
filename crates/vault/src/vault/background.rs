@@ -362,8 +362,11 @@ async fn is_alive(http: &reqwest::Client, url: &Url) -> bool {
     match http.get(url.clone()).send().await {
         Ok(response) => response.status().is_success(),
         Err(error) => {
-            tracing::debug!(error = %error.without_url(), "offline probe failed");
-            false
+            let error = bwl_api::Error::from(error.without_url());
+            tracing::debug!(%error, "offline probe failed");
+            // The server answered with a bad certificate: let the sync fail with that error
+            // instead of showing "offline" while waiting for a server that is already up.
+            matches!(error, bwl_api::Error::Tls(_))
         }
     }
 }

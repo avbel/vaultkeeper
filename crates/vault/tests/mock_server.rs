@@ -8,7 +8,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use bwl_api::{
     DeviceInfo, TwoFactorProvider,
-    models::{Cipher, Login, Profile, SyncResponse},
+    models::{Cipher, Login, Profile, SshKey, SyncResponse},
 };
 use bwl_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
 use bwl_vault::{
@@ -114,6 +114,31 @@ impl Fake {
                 username: enc("someone"),
                 password: enc(password),
                 ..Login::default()
+            }),
+            edit: true,
+            view_password: true,
+            revision_date: "2026-11-08T17:00:59.321Z".into(),
+            ..Cipher::default()
+        }
+    }
+
+    fn ssh_key(&self, id: &str, private_key: Option<&str>) -> Cipher {
+        let enc = |plain: &str| {
+            Some(
+                EncString::encrypt(plain.as_bytes(), &self.user_key)
+                    .unwrap()
+                    .to_string(),
+            )
+        };
+        Cipher {
+            id: id.into(),
+            r#type: 5,
+            name: enc(id),
+            ssh_key: Some(SshKey {
+                private_key: private_key.and_then(enc),
+                public_key: enc("ssh-ed25519 AAAA test"),
+                key_fingerprint: enc("SHA256:test"),
+                ..SshKey::default()
             }),
             edit: true,
             view_password: true,
@@ -286,6 +311,24 @@ fn note_draft(name: &str) -> ItemDraft {
         data: ItemData::SecureNote,
         revision_date: None,
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_broken_ssh_item_is_skipped_and_the_other_keys_are_still_served() {
+    let fake = Fake::start().await;
+    let good = "-----BEGIN OPENSSH PRIVATE KEY-----\ngood\n-----END OPENSSH PRIVATE KEY-----\n";
+    let harness = logged_in(
+        &fake,
+        vec![
+            fake.ssh_key("broken", None),
+            fake.ssh_key("good", Some(good)),
+        ],
+    )
+    .await;
+    let keys = harness.vault.ssh_keys().unwrap();
+    let served: Vec<_> = keys.iter().map(|key| &*key.cipher_id.0).collect();
+    assert_eq!(served, ["good"]);
+    assert_eq!(keys[0].private_key.as_str(), good);
 }
 
 #[tokio::test(flavor = "multi_thread")]

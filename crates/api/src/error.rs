@@ -5,7 +5,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("network error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
+    /// The server answered but the TLS handshake failed: an expired or untrusted certificate,
+    /// a name mismatch, or plain HTTP on an HTTPS port. Not offline, retrying won't help.
+    #[error("secure connection failed: {0}")]
+    Tls(String),
     #[error("invalid server URL: {0}")]
     Url(#[from] url::ParseError),
     #[error("server URL refused: {0}")]
@@ -23,6 +27,61 @@ pub enum Error {
     /// An attachment URL named a host other than the configured server, so nothing was sent.
     #[error("refusing to contact untrusted host {0}")]
     UntrustedUrl(String),
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        match tls_failure(&error) {
+            Some(detail) => Self::Tls(detail),
+            None => Self::Http(error),
+        }
+    }
+}
+
+/// Finds a rustls error in the chain. reqwest wraps it in an `io::Error`, whose `source()`
+/// skips the wrapped error, so io errors are opened with `get_ref` instead.
+fn tls_failure(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(tls) = error.downcast_ref::<rustls::Error>() {
+            return Some(describe_tls(tls));
+        }
+        current = match error.downcast_ref::<std::io::Error>() {
+            Some(io) => io
+                .get_ref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static)),
+            None => error.source(),
+        };
+    }
+    None
+}
+
+fn describe_tls(error: &rustls::Error) -> String {
+    use rustls::CertificateError;
+
+    match error {
+        rustls::Error::InvalidCertificate(CertificateError::Expired) => {
+            "the server's certificate has expired".to_owned()
+        }
+        rustls::Error::InvalidCertificate(CertificateError::NotValidYet) => {
+            "the server's certificate is not valid yet (check the clock)".to_owned()
+        }
+        rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer) => {
+            "the server's certificate is not trusted (unknown issuer)".to_owned()
+        }
+        rustls::Error::InvalidCertificate(
+            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. },
+        ) => "the server's certificate is for a different host name".to_owned(),
+        rustls::Error::InvalidCertificate(CertificateError::Revoked) => {
+            "the server's certificate has been revoked".to_owned()
+        }
+        // The macOS verifier reports most rejections this way, with the system's own text,
+        // e.g. "“vault.example.com” certificate is expired: -67818".
+        rustls::Error::InvalidCertificate(CertificateError::Other(other)) => {
+            format!("the server's certificate was rejected: {other}")
+        }
+        other => other.to_string(),
+    }
 }
 
 impl Error {
@@ -63,5 +122,33 @@ mod tests {
         assert!(!server.is_offline());
         assert!(!Error::Unauthorized.is_offline());
         assert!(!Error::UntrustedUrl("evil.example".into()).is_offline());
+        assert!(!Error::Tls("expired".into()).is_offline());
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("client error")]
+    struct Wrapper(#[source] std::io::Error);
+
+    #[test]
+    fn a_certificate_error_inside_an_io_error_is_found_and_described() {
+        let io = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
+        );
+        assert_eq!(
+            tls_failure(&Wrapper(io)).as_deref(),
+            Some("the server's certificate has expired")
+        );
+        let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        assert_eq!(
+            tls_failure(&unknown).as_deref(),
+            Some("the server's certificate is not trusted (unknown issuer)")
+        );
+    }
+
+    #[test]
+    fn plain_transport_errors_are_not_tls_failures() {
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert_eq!(tls_failure(&Wrapper(refused)), None);
     }
 }

@@ -29,6 +29,31 @@ fn unlock_success_closes_the_lock_screen_and_opens_the_manager() {
 }
 
 #[test]
+fn a_masked_password_is_not_exposed_to_accessibility_clients() {
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+
+    let h = locked();
+    h.app.start(false);
+    let lock = h.app.lock_window().expect("lock window");
+    type_into(&lock, "Master password", "s3cret typed");
+    assert_eq!(lock.get_password(), "s3cret typed");
+    let exposed = || {
+        ElementHandle::find_by_accessible_label(&lock, "Master password")
+            .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+            .expect("password input")
+            .accessible_value()
+            .map(|value| value.to_string())
+    };
+    assert_eq!(exposed().as_deref(), Some(""), "masked");
+    click(&lock, "Show Master password");
+    assert_eq!(
+        exposed().as_deref(),
+        Some("s3cret typed"),
+        "revealed on purpose"
+    );
+}
+
+#[test]
 fn wrong_password_shows_the_attempt_count_and_shakes_without_unlocking() {
     let h = locked();
     h.app.start(false);

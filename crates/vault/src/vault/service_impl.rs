@@ -192,21 +192,25 @@ impl VaultService for Vault {
         let Some(unlocked) = state.active.as_ref().and_then(|a| a.unlocked.as_ref()) else {
             return Ok(Vec::new());
         };
-        unlocked
+        // One broken item (no private key, an org key we can't decrypt) is skipped, so the
+        // agent still gets every other key and drops deleted ones.
+        let keys = unlocked
             .data
             .ssh_entries()
-            .map(|entry| {
-                Ok(SshKeyMaterial {
-                    cipher_id: entry.summary.id.clone(),
-                    name: entry.summary.name.to_string(),
-                    private_key: reveal::reveal(
-                        &entry.cipher,
-                        &unlocked.keys,
-                        CopyField::SshPrivateKey,
-                        0,
-                    )?,
-                })
+            .filter_map(|entry| {
+                match reveal::reveal(&entry.cipher, &unlocked.keys, CopyField::SshPrivateKey, 0) {
+                    Ok(private_key) => Some(SshKeyMaterial {
+                        cipher_id: entry.summary.id.clone(),
+                        name: entry.summary.name.to_string(),
+                        private_key,
+                    }),
+                    Err(error) => {
+                        tracing::warn!(%error, item = %entry.summary.id.0, "SSH key item skipped");
+                        None
+                    }
+                }
             })
-            .collect()
+            .collect();
+        Ok(keys)
     }
 }

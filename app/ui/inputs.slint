@@ -74,7 +74,9 @@ export component Field inherits Rectangle {
                 input-type: root.password && !root.revealed ? InputType.password : InputType.text;
                 accessible-role: text-input;
                 accessible-label: root.label;
-                accessible-value: self.text;
+                // Screen readers and other accessibility clients may read this; keep a masked
+                // secret out of it.
+                accessible-value: root.password && !root.revealed ? "" : self.text;
                 accessible-placeholder-text: root.placeholder;
                 accessible-action-set-value(value) => {
                     self.text = value;
