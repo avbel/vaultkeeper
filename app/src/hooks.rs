@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 
 use bwl_vault::VaultService;
 
-use crate::{mock::MockVault, settings::Settings};
+use crate::{autotype::Stroke, mock::MockVault, settings::Settings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
@@ -117,6 +117,31 @@ pub trait Clock: Send + Sync {
     fn unix_now(&self) -> u64;
 }
 
+/// The app that was in front when the Quick Panel was asked for: auto-type gives focus back to
+/// it and types there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypingTarget {
+    pub pid: i32,
+    pub name: String,
+}
+
+/// Runs on the UI thread once typing finished or stopped.
+pub type AutoTypeDone = Box<dyn FnOnce(HookResult<()>)>;
+
+/// Synthesized keystrokes into another app (Quick Panel ⌘⇧↩).
+pub trait AutoType: Send + Sync {
+    /// The frontmost app, `None` when it is bw-lite itself or unknown.
+    fn frontmost(&self) -> Option<TypingTarget>;
+    /// Whether macOS lets this process post keystrokes (Accessibility). With `prompt`, macOS
+    /// shows its own permission dialog when it does not.
+    fn is_trusted(&self, prompt: bool) -> bool;
+    /// Brings `target` back to the front, waits for it and types `strokes` without blocking the
+    /// UI thread. Stops when `target` does not come forward or another app takes the front.
+    fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone);
+    /// Stops typing that is still running (the vault locked); `done` reports it as cancelled.
+    fn cancel(&self) {}
+}
+
 #[derive(Clone)]
 pub struct Hooks {
     pub clipboard: Arc<dyn Clipboard>,
@@ -132,6 +157,7 @@ pub struct Hooks {
     pub ssh_keys: Arc<dyn SshKeyTool>,
     pub placement: Arc<dyn WindowPlacement>,
     pub clock: Arc<dyn Clock>,
+    pub autotype: Arc<dyn AutoType>,
 }
 
 impl Hooks {
@@ -171,6 +197,7 @@ impl Hooks {
             ssh_keys: Arc::new(crate::mock::MockSshKeys),
             placement: Arc::new(OsPlacement),
             clock: Arc::new(SystemClock),
+            autotype: Arc::new(LogAutoType),
         }
     }
 }
@@ -349,6 +376,28 @@ impl SshAgentControl for LogSshAgent {
 
     fn socket_path(&self) -> String {
         "~/Library/Application Support/bw-lite/ssh-agent.sock".to_owned()
+    }
+}
+
+struct LogAutoType;
+
+impl AutoType for LogAutoType {
+    fn frontmost(&self) -> Option<TypingTarget> {
+        None
+    }
+
+    fn is_trusted(&self, prompt: bool) -> bool {
+        tracing::info!(prompt, "accessibility check (stub): trusted");
+        true
+    }
+
+    fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone) {
+        tracing::info!(
+            app = target.name,
+            strokes = strokes.len(),
+            "auto-type (stub)"
+        );
+        done(Ok(()));
     }
 }
 

@@ -23,6 +23,8 @@ pub(super) enum Pending {
     Edit,
 }
 
+pub const CONFIRM_IN_MANAGER: &str = "Open in Manager (⌘O) to confirm your master password";
+
 #[must_use]
 pub const fn is_secret(field: CopyField) -> bool {
     matches!(
@@ -58,7 +60,7 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .map(|manager| manager.window.clone_strong())
         else {
-            self.toast("Open in Manager (⌘O) to confirm your master password", true);
+            self.toast(CONFIRM_IN_MANAGER, true);
             return;
         };
         let shown = self

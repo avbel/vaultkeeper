@@ -12,10 +12,11 @@ use std::{
 
 use bw_lite::{
     App,
+    autotype::{Stroke, typed_text},
     exec::Exec,
     hooks::{
-        Biometrics, Clipboard, Clock, FileDialogs, HookError, HookResult, Hooks, SettingsStore,
-        SshKeyTool, WindowPlacement,
+        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, FileDialogs, HookError, HookResult,
+        Hooks, SettingsStore, SshKeyTool, TypingTarget, WindowPlacement,
     },
     mock::{MockConfig, MockVault},
     settings::Settings,
@@ -247,6 +248,101 @@ impl Biometrics for ScriptedTouchId {
     }
 }
 
+thread_local! {
+    /// The `done` of typing that [`FakeAutoType::hold`] keeps running; it is not `Send`.
+    static HELD_TYPING: std::cell::RefCell<Option<AutoTypeDone>> = std::cell::RefCell::new(None);
+}
+
+/// Auto-type that records what it would type. Safari is in front and Accessibility is granted
+/// unless a test says otherwise.
+pub struct FakeAutoType {
+    pub frontmost: Mutex<Option<TypingTarget>>,
+    pub trusted: std::sync::atomic::AtomicBool,
+    pub trust_checks: Mutex<Vec<bool>>,
+    pub typed: Mutex<Vec<(TypingTarget, String)>>,
+    /// The next run reports this instead of success.
+    pub fail_with: Mutex<Option<String>>,
+    /// Keeps the next run going until [`FakeAutoType::finish`] or a cancel.
+    pub hold: std::sync::atomic::AtomicBool,
+    pub cancels: std::sync::atomic::AtomicUsize,
+}
+
+pub fn safari() -> TypingTarget {
+    TypingTarget {
+        pid: 501,
+        name: "Safari".to_owned(),
+    }
+}
+
+impl Default for FakeAutoType {
+    fn default() -> Self {
+        Self {
+            frontmost: Mutex::new(Some(safari())),
+            trusted: std::sync::atomic::AtomicBool::new(true),
+            trust_checks: Mutex::default(),
+            typed: Mutex::default(),
+            fail_with: Mutex::default(),
+            hold: std::sync::atomic::AtomicBool::new(false),
+            cancels: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl FakeAutoType {
+    pub fn typed(&self) -> Vec<(TypingTarget, String)> {
+        self.typed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn finish(result: HookResult<()>) {
+        if let Some(done) = HELD_TYPING.with(|slot| slot.borrow_mut().take()) {
+            done(result);
+        }
+    }
+}
+
+impl AutoType for FakeAutoType {
+    fn frontmost(&self) -> Option<TypingTarget> {
+        self.frontmost
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn is_trusted(&self, prompt: bool) -> bool {
+        self.trust_checks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(prompt);
+        self.trusted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone) {
+        self.typed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((target, typed_text(&strokes).to_string()));
+        if self.hold.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            HELD_TYPING.with(|slot| *slot.borrow_mut() = Some(done));
+            return;
+        }
+        let failure = self
+            .fail_with
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        done(failure.map_or(Ok(()), |text| Err(HookError::Failed(text))));
+    }
+
+    fn cancel(&self) {
+        self.cancels
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self::finish(Err(HookError::Cancelled));
+    }
+}
+
 pub struct Harness {
     pub app: Rc<App<MockVault>>,
     /// Set when [`Setup::scripted_touch_id`] is.
@@ -257,6 +353,7 @@ pub struct Harness {
     pub settings: Arc<RecordingSettings>,
     pub clock: Arc<FixedClock>,
     pub placement: Arc<RecordingPlacement>,
+    pub autotype: Arc<FakeAutoType>,
 }
 
 pub struct Setup {
@@ -296,6 +393,7 @@ pub fn harness(setup: Setup) -> Harness {
     });
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
     let placement = Arc::new(RecordingPlacement::default());
+    let autotype = Arc::new(FakeAutoType::default());
     let defaults = Hooks::mock(&vault, &[]);
     let touch_id = setup.scripted_touch_id.then(|| {
         Arc::new(ScriptedTouchId {
@@ -314,6 +412,7 @@ pub fn harness(setup: Setup) -> Harness {
         settings: Arc::clone(&settings) as Arc<dyn SettingsStore>,
         clock: Arc::clone(&clock) as Arc<dyn Clock>,
         placement: Arc::clone(&placement) as Arc<dyn WindowPlacement>,
+        autotype: Arc::clone(&autotype) as Arc<dyn AutoType>,
         ssh_keys: setup
             .ssh_keys
             .unwrap_or_else(|| Arc::clone(&defaults.ssh_keys)),
@@ -333,6 +432,7 @@ pub fn harness(setup: Setup) -> Harness {
         settings,
         clock,
         placement,
+        autotype,
     }
 }
 
@@ -412,6 +512,10 @@ pub const CMD: Mods = Mods {
 };
 pub const SHIFT: Mods = Mods {
     cmd: false,
+    shift: true,
+};
+pub const CMD_SHIFT: Mods = Mods {
+    cmd: true,
     shift: true,
 };
 

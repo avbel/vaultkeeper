@@ -34,6 +34,17 @@ pub enum UiCommand {
 
 impl<S: VaultService> App<S> {
     pub fn handle(&self, command: UiCommand) {
+        // Read before bw-lite comes forward; auto-type gives the focus back to this app. Any
+        // other window request drops it, so a panel opened later from inside bw-lite (⌘K) never
+        // types into an app that was in front long ago. An open panel keeps its own copy.
+        if matches!(
+            command,
+            UiCommand::ShowQuickPanel | UiCommand::ToggleQuickPanel
+        ) {
+            self.typing_target.replace(self.hooks.autotype.frontmost());
+        } else if command.shows_a_window() {
+            self.typing_target.replace(None);
+        }
         if command.shows_a_window() {
             self.hooks.dock.activate();
         }
@@ -105,6 +116,7 @@ impl<S: VaultService> App<S> {
             self.ssh_prompt.borrow().is_some(),
             // Counted like a window, so the process does not linger out under the system prompt.
             self.right_away_pending(),
+            self.autotyping.get(),
         ]
         .into_iter()
         .filter(|open| *open)

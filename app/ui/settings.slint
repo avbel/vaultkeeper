@@ -49,6 +49,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> touch-id-right-away;
     in-out property <bool> show-shortcuts: true;
     in-out property <string> hotkey;
+    in-out property <string> generator-hotkey;
     in property <string> error-text;
 
     callback theme-selected(int);
@@ -68,6 +69,7 @@ export component SettingsWindow inherits Window {
     callback touch-id-right-away-toggled(bool);
     callback show-shortcuts-toggled(bool);
     callback hotkey-accepted(string);
+    callback generator-hotkey-accepted(string);
 
     VerticalLayout {
         // The window title, drawn in the transparent title bar beside the traffic lights.
@@ -226,6 +228,17 @@ export component SettingsWindow inherits Window {
                         mono: true;
                         text <=> root.hotkey;
                         accepted(text) => { root.hotkey-accepted(text); }
+                    }
+                }
+                SettingRow {
+                    text: "Generator hotkey";
+                    Field {
+                        width: 200px;
+                        label: "Generator hotkey";
+                        placeholder: "None";
+                        mono: true;
+                        text <=> root.generator-hotkey;
+                        accepted(text) => { root.generator-hotkey-accepted(text); }
                     }
                 }
                 if root.error-text != "": Text {

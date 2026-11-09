@@ -8,7 +8,7 @@ use bw_lite::{
     ui::{GeneratorState, Theme, ThemeMode},
 };
 use common::{Harness, Setup, click, harness, pump, type_into};
-use slint::{ComponentHandle, Model};
+use slint::ComponentHandle;
 
 fn open_generator() -> (Harness, bw_lite::ui::GeneratorWindow) {
     let h = harness(Setup::default());
@@ -33,11 +33,6 @@ fn opening_generates_and_option_changes_regenerate() {
     assert!(
         !second.chars().any(|c| c.is_ascii_digit()),
         "numbers were turned off: {second}"
-    );
-    assert_eq!(state.get_history().row_count(), 1);
-    assert_eq!(
-        state.get_history().row_data(0).expect("history").as_str(),
-        first
     );
     find_slider(&window).set_accessible_value("32");
     pump();
@@ -241,4 +236,37 @@ fn a_reset_of_unreadable_settings_is_shown_once_when_a_window_opens() {
             .reset_notice
             .load(std::sync::atomic::Ordering::SeqCst)
     );
+}
+
+fn settings_window(h: &Harness) -> bw_lite::ui::SettingsWindow {
+    h.app.open_settings();
+    pump();
+    h.app.settings_window().expect("settings window")
+}
+
+fn saved_generator_hotkey(h: &Harness) -> String {
+    h.settings.load().generator_hotkey
+}
+
+#[test]
+fn a_generator_hotkey_is_saved_and_clearing_it_removes_it() {
+    let h = harness(Setup::default());
+    let window = settings_window(&h);
+    assert_eq!(window.get_generator_hotkey(), "", "none by default");
+    window.invoke_generator_hotkey_accepted("Cmd+Alt+G".into());
+    pump();
+    assert_eq!(saved_generator_hotkey(&h), "Cmd+Alt+G");
+    window.invoke_generator_hotkey_accepted("  ".into());
+    pump();
+    assert_eq!(saved_generator_hotkey(&h), "");
+}
+
+#[test]
+fn the_quick_panel_shortcut_is_refused_as_the_generator_hotkey() {
+    let h = harness(Setup::default());
+    let window = settings_window(&h);
+    window.invoke_generator_hotkey_accepted("shift+cmd+space".into());
+    pump();
+    assert_eq!(saved_generator_hotkey(&h), "");
+    assert!(window.get_error_text().contains("Quick Panel"));
 }

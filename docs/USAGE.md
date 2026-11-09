@@ -51,7 +51,9 @@ clipboard if it holds a copied secret.
 - **Quick Panel:** ⌘⇧Space (Settings → Shortcuts) or the tray icon → *Quick search*. Type, then:
   - Enter copies the password;
   - ⇧Enter copies the username;
-  - ⌘Enter copies the TOTP code.
+  - ⌘Enter copies the TOTP code;
+  - ⌘⇧Enter, or the *Auto-type* button on a login row, types the username, Tab and the password
+    into the app that was in front when you opened the panel (see *Auto-type* below).
 - **Edit conflicts:** if the item changed on another device while you were editing, saving is
   refused with a message; your typed values stay in the form, Cancel loads the latest version.
 - **Manager window:** every row has one-click copy buttons for username, password and TOTP (with a
@@ -72,6 +74,29 @@ clipboard if it holds a copied secret.
   switch.
 - **Broken settings file:** if `settings.json` cannot be read, bw-lite starts with the defaults,
   keeps the old file as `settings.json.broken` and says so once in a window toast.
+
+## Auto-type
+
+Open the Quick Panel with the hotkey (or the tray) while the login form is in front, pick the
+login and press ⌘⇧Enter or its *Auto-type* button. The panel closes, the previous app comes back
+to the front and bw-lite types `username`, Tab, `password` as key presses (only the password when
+the username is empty). Nothing goes through the clipboard. It works for logins with a password.
+
+- Items with *Ask for master password* need it first: open them in the Manager (⌘O) and confirm,
+  then *Auto-type* works until the vault locks.
+- Typing starts once you let go of ⌘ and ⇧. It stops, and the next window says why, when the app
+  does not come back to the front within a second, when another app (or bw-lite) comes to the
+  front while typing, when a modifier key is held down, or when the vault locks.
+- Opened with ⌘K from the Manager there is no other app to type into; in the Manager ⌘⇧Enter
+  opens the item's URI.
+
+**Accessibility permission.** macOS lets an app send key presses to other apps only with the
+Accessibility permission. The first *Auto-type* shows the system's request; allow bw-lite in
+System Settings → Privacy & Security → Accessibility, then try again. Nothing is typed until it is
+allowed. macOS ties the permission to the app's code signature: a build signed with the
+"bw-lite local" certificate (`scripts/make-signing-cert.sh`) keeps it across rebuilds; an
+ad-hoc signed build is a new app to macOS after each rebuild, so remove the old bw-lite entry
+from the list and allow it again.
 
 ## Touch ID
 
@@ -143,7 +168,8 @@ Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *D
 
 Settings → Shortcuts → *Show keyboard shortcuts* (on by default). Off hides the shortcut hints:
 button suffixes such as *Lock ⌘⇧L*, key caps in fields (*⌘F*, *Esc*), *Settings ⌘,* on the lock
-window and the hotkey after *Quick search* in the tray menu. Every open window follows at once. The
+window, the hotkey after *Quick search* in the tray menu and *⌘⇧↩* next to the Quick Panel's
+Auto-type button. Every open window follows at once. The
 shortcuts keep working, and the key legends stay: the Quick Panel footer (Enter, ⇧Enter, ⌘Enter…)
 and the Manager's empty detail pane.
 

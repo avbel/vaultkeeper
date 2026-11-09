@@ -40,7 +40,7 @@ fn folder_index(
 impl<S: VaultService> App<S> {
     pub(super) fn bind_manager_edit(&self, window: &ManagerWindow) {
         window.on_new_item(handler!(self, |app, kind| app.new_item(kind)));
-        window.on_edit_generate(handler!(self, |app, index| app.generate_into(index)));
+        window.on_edit_generate(handler!(self, |app, index| app.open_generator_for(index)));
         window.on_edit_add_uri(handler!(self, |app| app.add_uri_field()));
         window.on_edit_save(handler!(self, |app| app.save_edit()));
         window.on_edit_cancel(handler!(self, |app| app.cancel_edit()));
@@ -360,34 +360,28 @@ impl<S: VaultService> App<S> {
         }
     }
 
-    fn generate_into(&self, index: i32) {
-        let value = match self.generate_password() {
-            Ok(value) => value,
-            Err(error) => {
-                self.toast(&error, true);
-                return;
-            }
-        };
-        let guard = self.manager.borrow();
-        let Some(edit) = guard.as_ref().and_then(|manager| manager.edit.as_ref()) else {
-            return;
-        };
-        let Some(index) = usize::try_from(index).ok() else {
-            return;
-        };
-        if let Some(mut field) = edit.fields.row_data(index) {
-            field.value = value.as_str().into();
-            edit.fields.set_row_data(index, field);
+    /// The field's generate button: the generator slide-over, whose "Use this password" fills
+    /// this field and returns to the form (its copy button works as everywhere).
+    fn open_generator_for(&self, index: i32) {
+        if let Some(manager) = self.manager.borrow().as_ref() {
+            let state =
+                slint::ComponentHandle::global::<crate::ui::GeneratorState>(&manager.window);
+            state.set_use_target(index);
+            state.set_can_use(true);
         }
+        self.open_detail_generator();
     }
 
-    /// Fills the edit form's password field from the generator slide-over.
-    pub(super) fn use_generated(&self, value: &str) -> bool {
+    /// Fills edit-form row `target` from the generator slide-over.
+    pub(super) fn use_generated(&self, target: i32, value: &str) -> bool {
         let guard = self.manager.borrow();
         let Some(edit) = guard.as_ref().and_then(|manager| manager.edit.as_ref()) else {
             return false;
         };
-        let Some(index) = edit.fields.iter().position(|field| field.key == "password") else {
+        let Some(index) = usize::try_from(target)
+            .ok()
+            .filter(|index| *index < edit.fields.row_count())
+        else {
             return false;
         };
         if let Some(mut field) = edit.fields.row_data(index) {

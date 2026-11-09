@@ -18,13 +18,13 @@ export global GeneratorState {
     in-out property <bool> include-number: false;
     in property <string> result;
     in property <string> error;
-    in property <[string]> history;
     // True when the generator was opened from an edit form, so "Use" can fill the password field.
     in property <bool> can-use: false;
+    // Edit-form row "Use this password" fills; set when the editor opened the generator.
+    in property <int> use-target: -1;
     callback options-changed();
     callback regenerate();
     callback copy-result() -> bool;
-    callback copy-history(int) -> bool;
     callback use-result();
 }
 
@@ -174,24 +174,6 @@ export component GeneratorView inherits Rectangle {
                 Check { text: "Include number"; checked <=> GeneratorState.include-number; toggled => { GeneratorState.options-changed(); } }
             }
             Check { text: "Avoid ambiguous characters"; checked <=> GeneratorState.avoid-ambiguous; toggled => { GeneratorState.options-changed(); } }
-            if GeneratorState.history.length > 0: SectionLabel { text: "History"; }
-            for entry[i] in GeneratorState.history: HorizontalLayout {
-                spacing: 4px;
-                Text {
-                    text: entry;
-                    font-family: Theme.mono;
-                    font-size: Theme.font-meta;
-                    color: Theme.text-muted;
-                    overflow: elide;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                CopyBtn {
-                    code: 1;
-                    label: "Copy history entry";
-                    copy => { return GeneratorState.copy-history(i); }
-                }
-            }
             Rectangle { vertical-stretch: 1; }
         }
     }

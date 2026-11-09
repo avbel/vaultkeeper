@@ -22,12 +22,6 @@ impl<S: VaultService> App<S> {
         tray.on_lock_toggle(handler!(self, |app| app.tray_lock_toggle()));
         tray.on_sync_now(handler!(self, |app| app.sync_now()));
         tray.on_switch_account(handler!(self, |app, index| app.switch_account_at(index)));
-        tray.on_theme_selected(handler!(self, |app, index| {
-            if let Some(theme) = crate::settings::ThemeChoice::from_index(index) {
-                app.set_theme(theme);
-            }
-        }));
-        tray.set_theme_index(self.settings.borrow().theme.index());
         tray.on_quit(handler!(self, |app| app.quit()));
         if let Err(error) = tray.show() {
             tracing::error!(%error, "cannot show the tray icon");

@@ -152,9 +152,7 @@ impl Shell {
         let hotkey = match hotkey::Hotkey::new(daemon) {
             Ok(hotkey) => {
                 let hotkey = std::rc::Rc::new(hotkey);
-                if let Err(error) = hotkey.bind(&daemon.settings().hotkey) {
-                    tracing::warn!(%error, "global hotkey not registered");
-                }
+                bind_hotkeys(&hotkey, &daemon.settings());
                 follow_hotkey_setting(daemon, &hotkey)?;
                 Some(hotkey)
             }
@@ -170,6 +168,17 @@ impl Shell {
     }
 }
 
+fn bind_hotkeys(hotkey: &hotkey::Hotkey, settings: &crate::settings::Settings) {
+    for (slot, accelerator) in [
+        (routing::HotkeySlot::QuickPanel, &settings.hotkey),
+        (routing::HotkeySlot::Generator, &settings.generator_hotkey),
+    ] {
+        if let Err(error) = hotkey.bind(slot, accelerator) {
+            tracing::warn!(%error, ?slot, "global hotkey not registered");
+        }
+    }
+}
+
 fn follow_hotkey_setting(
     daemon: &Arc<Daemon>,
     hotkey: &std::rc::Rc<hotkey::Hotkey>,
@@ -181,10 +190,8 @@ fn follow_hotkey_setting(
             let Some(hotkey) = weak.upgrade() else {
                 break;
             };
-            let accelerator = settings.borrow_and_update().hotkey.clone();
-            if let Err(error) = hotkey.bind(&accelerator) {
-                tracing::warn!(%error, "global hotkey unchanged");
-            }
+            let fresh = settings.borrow_and_update().clone();
+            bind_hotkeys(&hotkey, &fresh);
         }
     })?;
     Ok(())

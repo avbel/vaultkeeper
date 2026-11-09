@@ -8,10 +8,9 @@ export component TrayIcon inherits SystemTrayIcon {
     in property <bool> locked: true;
     in property <bool> logged-in: true;
     in property <[string]> accounts;
-    // 0 system, 1 light, 2 dark.
-    in property <int> theme-index: 0;
     // The global Quick Panel shortcut as shown to the user, e.g. "⇧⌘Space"; empty hides the hint.
     in property <string> quick-hotkey;
+    in property <string> generator-hotkey;
     in property <ColorScheme> menu-bar-scheme: ColorScheme.unknown;
     icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
@@ -24,7 +23,6 @@ export component TrayIcon inherits SystemTrayIcon {
     callback lock-toggle();
     callback sync-now();
     callback switch-account(int);
-    callback theme-selected(int);
     callback quit();
 
     Menu {
@@ -37,7 +35,7 @@ export component TrayIcon inherits SystemTrayIcon {
             activated => { root.open-vault(); }
         }
         MenuItem {
-            title: "Generator";
+            title: root.generator-hotkey == "" ? "Generator" : "Generator    " + root.generator-hotkey;
             activated => { root.generator(); }
         }
         MenuSeparator { }
@@ -56,13 +54,6 @@ export component TrayIcon inherits SystemTrayIcon {
             for account[i] in root.accounts: MenuItem {
                 title: account;
                 activated => { root.switch-account(i); }
-            }
-        }
-        Menu {
-            title: "Theme";
-            for choice[i] in ["System", "Light", "Dark"]: MenuItem {
-                title: (i == root.theme-index ? "✓ " : "    ") + choice;
-                activated => { root.theme-selected(i); }
             }
         }
         MenuSeparator { }

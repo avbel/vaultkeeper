@@ -29,9 +29,11 @@ component NewMenu inherits Rectangle {
                 padding: Theme.s1;
                 for kind[i] in ["Login", "Secure note", "Card", "Identity", "SSH key"]: MenuRow {
                     text: kind;
+                    // Report first: once closed, the popup's items are gone and nothing after
+                    // `close()` in this handler would run.
                     clicked => {
-                        popup.close();
                         root.new-item(i);
+                        popup.close();
                     }
                 }
             }
@@ -300,15 +302,6 @@ export component ManagerWindow inherits Window {
                         new-item(kind) => { root.new-item(kind); }
                     }
                     Btn {
-                        width: Theme.field-height;
-                        height: Theme.field-height;
-                        y: (parent.height - self.height) / 2;
-                        has-icon: true;
-                        icon: @image-url("icons/gear.svg");
-                        label: "Settings";
-                        clicked => { root.open-settings(); }
-                    }
-                    Btn {
                         height: Theme.field-height;
                         y: (parent.height - self.height) / 2;
                         text: "Lock";
@@ -316,6 +309,15 @@ export component ManagerWindow inherits Window {
                         has-icon: true;
                         icon: @image-url("icons/lock.svg");
                         clicked => { root.lock(); }
+                    }
+                    Btn {
+                        width: Theme.field-height;
+                        height: Theme.field-height;
+                        y: (parent.height - self.height) / 2;
+                        has-icon: true;
+                        icon: @image-url("icons/gear.svg");
+                        label: "Settings";
+                        clicked => { root.open-settings(); }
                     }
                 }
             }

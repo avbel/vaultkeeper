@@ -19,6 +19,8 @@ export struct RowData {
     // `Clock.now` value at which `totp-code` expires.
     totp-expires: int,
     totp-period: int,
+    // A login with a password: the Quick Panel offers auto-type.
+    auto-type: bool,
 }
 
 export component TotpCell inherits Rectangle {
@@ -80,15 +82,63 @@ export component TotpCell inherits Rectangle {
     }
 }
 
+// Types username, Tab, password into the app behind the Quick Panel. The selected row shows the
+// shortcut next to the glyph, unless shortcut hints are off.
+component AutoTypeBtn inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <bool> emphasized: false;
+    in property <bool> hint-shown: false;
+    callback clicked();
+
+    // Same width on every row, so the copy buttons stay in one column.
+    width: Theme.control-height + (Theme.show-shortcuts ? 30px * Theme.scale : 0px);
+    height: 24px * Theme.scale;
+    border-radius: Theme.radius-control;
+    background: ta.has-hover && root.enabled ? Theme.hover : transparent;
+    animate background { duration: 100ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: "Auto-type";
+    accessible-description: "Types the username, Tab and the password into the app behind";
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: Theme.s1;
+        padding-right: (Theme.control-height - 16px * Theme.scale) / 2;
+        if root.enabled && root.hint-shown && Theme.show-shortcuts: Text {
+            text: "⌘⇧↩";
+            color: Theme.text-muted;
+            font-size: Theme.font-meta;
+            vertical-alignment: center;
+        }
+        if root.enabled: Icon {
+            y: (parent.height - self.height) / 2;
+            source: @image-url("icons/keyboard.svg");
+            tint: Theme.text;
+            opacity: ta.has-hover || root.emphasized ? 1 : 0.55;
+        }
+    }
+}
+
 export component ItemRow inherits Rectangle {
     in property <RowData> data;
     in property <bool> selected;
     // Draws the inner focus ring on the selected row while the list is driven by the keyboard.
     in property <bool> keyboard-focus;
     in property <bool> compact: false;
+    // The Quick Panel shows the Auto-type button on logins.
+    in property <bool> offer-auto-type: false;
     callback clicked();
     callback double-clicked();
     callback copy(int) -> bool;
+    callback auto-type();
 
     height: compact ? Theme.row-height-compact : Theme.row-height;
     background: selected ? (ta.has-hover ? Theme.selection-hover : Theme.selection) : ta.has-hover ? Theme.hover : transparent;
@@ -155,6 +205,13 @@ export component ItemRow inherits Rectangle {
                 font-size: Theme.font-hint;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            if root.offer-auto-type: AutoTypeBtn {
+                y: (parent.height - self.height) / 2;
+                enabled: root.data.auto-type;
+                emphasized: ta.has-hover || root.selected;
+                hint-shown: root.selected;
+                clicked => { root.auto-type(); }
             }
             HorizontalLayout {
                 spacing: 2px;

@@ -27,8 +27,6 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.on_quit(on(TrayAction::Quit));
     let switch = Arc::clone(daemon);
     tray.on_switch_account(move |index| run(&switch, TrayAction::SwitchAccount(index)));
-    let theme = Arc::clone(daemon);
-    tray.on_theme_selected(move |index| run(&theme, TrayAction::Theme(index)));
     refresh(&tray, daemon);
     tray.show()?;
     watch(&tray, daemon)?;
@@ -63,8 +61,8 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         .collect();
     tray.set_accounts(ModelRc::new(VecModel::from(labels)));
     let settings = daemon.settings();
-    tray.set_theme_index(settings.theme.index());
-    tray.set_quick_hotkey(quick_hotkey_hint(&settings).into());
+    tray.set_quick_hotkey(hotkey_hint(&settings, &settings.hotkey).into());
+    tray.set_generator_hotkey(hotkey_hint(&settings, &settings.generator_hotkey).into());
     // Re-read on every refresh: a system appearance switch shows on the next vault or settings
     // change (a sync runs at least every 30 minutes).
     tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {
@@ -74,10 +72,10 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
     });
 }
 
-/// The hotkey suffix of "Quick search"; empty (no suffix) with "Show keyboard shortcuts" off.
-fn quick_hotkey_hint(settings: &crate::settings::Settings) -> String {
+/// The hotkey suffix of a tray item; empty (no suffix) with "Show keyboard shortcuts" off.
+fn hotkey_hint(settings: &crate::settings::Settings, accelerator: &str) -> String {
     if settings.show_shortcuts {
-        crate::settings::hotkey_symbols(&settings.hotkey)
+        crate::settings::hotkey_symbols(accelerator)
     } else {
         String::new()
     }
@@ -110,16 +108,20 @@ mod tests {
     use crate::settings::Settings;
 
     #[test]
-    fn the_quick_search_item_shows_the_hotkey_only_while_shortcuts_are_shown() {
+    fn tray_items_show_their_hotkeys_only_while_shortcuts_are_shown() {
         let shown = Settings {
             hotkey: "Cmd+Shift+Space".to_owned(),
+            generator_hotkey: "Cmd+Alt+G".to_owned(),
             ..Settings::default()
         };
-        assert_eq!(quick_hotkey_hint(&shown), "⇧⌘Space");
+        assert_eq!(hotkey_hint(&shown, &shown.hotkey), "⇧⌘Space");
+        assert_eq!(hotkey_hint(&shown, &shown.generator_hotkey), "⌥⌘G");
+        assert_eq!(hotkey_hint(&shown, ""), "", "no Generator hotkey set");
         let hidden = Settings {
             show_shortcuts: false,
             ..shown
         };
-        assert_eq!(quick_hotkey_hint(&hidden), "");
+        assert_eq!(hotkey_hint(&hidden, &hidden.hotkey), "");
+        assert_eq!(hotkey_hint(&hidden, &hidden.generator_hotkey), "");
     }
 }

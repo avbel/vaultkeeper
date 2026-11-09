@@ -59,13 +59,31 @@ zeroize.workspace = true
 # Quick Panel; the same objc2 generation global-hotkey and rfd already pull in.
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "libc",
     "std",
     "NSAppearance",
     "NSApplication",
     "NSEvent",
     "NSImage",
     "NSResponder",
+    "NSRunningApplication",
     "NSScreen",
+    "NSWorkspace",
+] }
+# Auto-type: Accessibility trust options and synthesized key events. Both already in the tree
+# through objc2-app-kit and arboard.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",

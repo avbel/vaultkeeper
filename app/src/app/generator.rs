@@ -2,21 +2,19 @@
 
 use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
 use bwl_vault::VaultService;
-use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};
 use crate::ui::{GeneratorState, GeneratorWindow};
-
-const HISTORY: usize = 10;
 
 #[derive(Default)]
 pub(super) struct GeneratorCore {
     passphrase_mode: bool,
     password: PasswordOptions,
     passphrase: PassphraseOptions,
+    /// Only the latest value is kept (no history): an earlier one is wiped when it is replaced.
     current: Zeroizing<String>,
-    history: Vec<Zeroizing<String>>,
 }
 
 impl GeneratorCore {
@@ -25,25 +23,18 @@ impl GeneratorCore {
     }
 
     /// Generated values are secrets of the account in use; logout and switch drop them.
-    pub(super) fn clear_history(&mut self) {
-        self.history.clear();
+    pub(super) fn clear(&mut self) {
         self.current = Zeroizing::new(String::new());
     }
 
-    pub(super) fn history_strings(&self) -> Vec<String> {
-        self.history
-            .iter()
-            .map(|entry| entry.to_string())
-            .chain((!self.current.is_empty()).then(|| self.current.to_string()))
+    pub(super) fn strings(&self) -> Vec<String> {
+        (!self.current.is_empty())
+            .then(|| self.current.to_string())
+            .into_iter()
             .collect()
     }
 
     fn push(&mut self, value: Zeroizing<String>) {
-        if !self.current.is_empty() {
-            let previous = std::mem::replace(&mut self.current, Zeroizing::new(String::new()));
-            self.history.insert(0, previous);
-            self.history.truncate(HISTORY);
-        }
         self.current = value;
     }
 }
@@ -92,12 +83,6 @@ fn write_state(state: &GeneratorState<'_>, core: &GeneratorCore) {
 
 fn write_result(state: &GeneratorState<'_>, core: &GeneratorCore) {
     state.set_result(core.current.as_str().into());
-    let history: Vec<SharedString> = core
-        .history
-        .iter()
-        .map(|entry| entry.as_str().into())
-        .collect();
-    state.set_history(ModelRc::new(VecModel::from(history)));
 }
 
 impl<S: VaultService> App<S> {
@@ -109,15 +94,14 @@ impl<S: VaultService> App<S> {
             let value = Zeroizing::new(app.generator.borrow().current().to_owned());
             app.copy_text("generated password", &value)
         }));
-        state.on_copy_history(handler!(self, false, |app, index| {
-            let value = usize::try_from(index)
-                .ok()
-                .and_then(|index| app.generator.borrow().history.get(index).cloned());
-            value.is_some_and(|value| app.copy_text("generated password", &value))
-        }));
         state.on_use_result(handler!(self, |app| {
             let value = Zeroizing::new(app.generator.borrow().current().to_owned());
-            if app.use_generated(&value) {
+            let target = app
+                .manager
+                .borrow()
+                .as_ref()
+                .map(|manager| manager.window.global::<GeneratorState>().get_use_target());
+            if target.is_some_and(|target| app.use_generated(target, &value)) {
                 app.close_detail_generator();
             }
         }));
@@ -144,14 +128,6 @@ impl<S: VaultService> App<S> {
             core.passphrase = passphrase;
         }
         self.regenerate();
-    }
-
-    pub(super) fn generate_password(&self) -> Result<Zeroizing<String>, String> {
-        let options = self.generator.borrow().password.clone();
-        self.hooks
-            .generator
-            .password(&options)
-            .map_err(|error| error.to_string())
     }
 
     pub(super) fn regenerate(&self) {
@@ -237,17 +213,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn history_keeps_the_last_ten_previous_values() {
+    fn only_the_latest_value_is_kept() {
         let mut core = GeneratorCore::default();
         for index in 0..15 {
             core.push(Zeroizing::new(format!("v{index}")));
         }
         assert_eq!(core.current(), "v14");
-        assert_eq!(core.history.len(), HISTORY);
-        assert_eq!(core.history[0].as_str(), "v13");
-        assert_eq!(core.history[9].as_str(), "v4");
-        core.clear_history();
-        assert_eq!(core.history_strings(), Vec::<String>::new());
+        assert_eq!(core.strings(), ["v14"]);
+        core.clear();
+        assert_eq!(core.strings(), Vec::<String>::new());
     }
 
     #[test]

@@ -99,6 +99,7 @@ impl<S: VaultService> App<S> {
         window.set_touch_id_right_away(settings.touch_id_right_away);
         window.set_show_shortcuts(settings.show_shortcuts);
         window.set_hotkey(settings.hotkey.as_str().into());
+        window.set_generator_hotkey(settings.generator_hotkey.as_str().into());
     }
 
     fn bind_settings(&self, window: &SettingsWindow) {
@@ -178,6 +179,24 @@ impl<S: VaultService> App<S> {
             // Checked before saving: the daemon registers whatever the file says.
             match app.hooks.hotkey.register(&accelerator) {
                 Ok(()) => app.update_settings(|settings| settings.hotkey.clone_from(&accelerator)),
+                Err(error) => app.report(Err(error)),
+            }
+        }));
+        window.on_generator_hotkey_accepted(handler!(self, |app, accelerator| {
+            let accelerator = accelerator.trim().to_owned();
+            let result = if accelerator.is_empty() {
+                Ok(())
+            } else if same_shortcut(&accelerator, &app.settings.borrow().hotkey) {
+                Err(crate::hooks::HookError::Failed(
+                    "Already the Quick Panel hotkey".to_owned(),
+                ))
+            } else {
+                app.hooks.hotkey.register(&accelerator)
+            };
+            match result {
+                Ok(()) => app.update_settings(|settings| {
+                    settings.generator_hotkey.clone_from(&accelerator);
+                }),
                 Err(error) => app.report(Err(error)),
             }
         }));
@@ -269,4 +288,10 @@ impl<S: VaultService> App<S> {
         self.report(result);
         self.refresh_lock_window();
     }
+}
+
+/// The same keys however they are spelled ("cmd+alt+g" and "Alt+Cmd+G").
+fn same_shortcut(a: &str, b: &str) -> bool {
+    crate::settings::hotkey_symbols(a).to_lowercase()
+        == crate::settings::hotkey_symbols(b).to_lowercase()
 }

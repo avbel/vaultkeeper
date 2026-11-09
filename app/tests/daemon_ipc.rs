@@ -16,7 +16,7 @@ use bw_lite::{
         layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
         settings_file::SettingsFile,
     },
-    settings::{Settings, ThemeChoice},
+    settings::Settings,
     ui_process::answer,
 };
 use bwl_ipc::{ClipboardHost, EventStream, RemoteVault, UiCommand, UiEvent, UiNotice};
@@ -236,38 +236,6 @@ async fn a_logged_out_agent_serves_no_keys() {
         stdout.contains("no identities"),
         "an empty list without a prompt, not a refusal: {stdout}"
     );
-    daemon.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_theme_from_the_tray_is_saved_and_the_ui_reloads() {
-    let dir = DataDir::new();
-    write_settings(
-        dir.path(),
-        &Settings {
-            hotkey: "Cmd+Alt+K".to_owned(),
-            ..Settings::default()
-        },
-    );
-    let daemon = start(&dir).await;
-    let (_vault, mut events) = connect(&dir).await;
-    let seen = daemon.subscribe_settings();
-    daemon.apply(Effect::SetTheme(ThemeChoice::Dark));
-    let saved = SettingsFile::read(&dir.path().join(SETTINGS_FILE));
-    assert_eq!(saved.theme, ThemeChoice::Dark);
-    assert_eq!(saved.hotkey, "Cmd+Alt+K", "other settings are kept");
-    assert!(matches!(
-        next(&mut events).await,
-        UiEvent::Command {
-            command: UiCommand::ReloadSettings,
-            ..
-        }
-    ));
-    assert!(
-        seen.has_changed().unwrap(),
-        "the tray and hotkey watchers hear it"
-    );
-    assert_eq!(daemon.settings().theme, ThemeChoice::Dark);
     daemon.shutdown().await;
 }
 

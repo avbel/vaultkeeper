@@ -102,7 +102,8 @@ The UI has two surfaces that share one vault core:
 - **List and Quick Panel:**
   - Moving and searching: ↑↓ move; typing always goes to search.
   - Copying: ↵ password · ⇧↵ username · ⌘↵ TOTP.
-  - Item actions: ⌘⇧↵ open URI · ⌘O open in Manager · ⌘E edit · ⌘F favorite.
+  - Item actions: ⌘⇧↵ auto-type in the Quick Panel (username, Tab, password into the app
+    behind it), open URI in the Manager · ⌘O open in Manager · ⌘E edit · ⌘F favorite.
   - App actions: ⌘N new · ⌘G generator · ⌘, settings.
   - Filters and dismissing: ⌘1…5 filter by type · Esc clears search, then closes the panel.
 - **Detail:** Tab moves through fields; ⌘C copies the focused field.

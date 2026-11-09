@@ -40,7 +40,7 @@ use crate::{
         layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
         settings_file::SettingsFile,
     },
-    settings::{Settings, SshApproval, ThemeChoice},
+    settings::{Settings, SshApproval},
 };
 
 /// Commands and approvals for the UI process; they wait here while none is connected.
@@ -253,7 +253,6 @@ impl Daemon {
                     tracing::warn!(%error, "account switch failed");
                 }
             }
-            Effect::SetTheme(theme) => self.set_theme(theme),
             // The shell quits its event loop and then calls `shutdown`.
             Effect::Quit => {}
         }
@@ -321,21 +320,6 @@ impl Daemon {
         if restart_after_exit(queued > 0, ran_for, quitting) || (killed && !quitting) {
             tracing::debug!("starting a new UI process after the last one left");
             self.ensure_ui();
-        }
-    }
-
-    fn set_theme(self: &Arc<Self>, theme: ThemeChoice) {
-        let path = self.data_dir.join(SETTINGS_FILE);
-        // Re-read first: the UI may have saved other changes since the daemon last looked.
-        let mut fresh = SettingsFile::read(&path);
-        fresh.theme = theme;
-        if let Err(error) = SettingsFile::write(&path, &fresh) {
-            tracing::warn!(%error, "theme not saved");
-            return;
-        }
-        self.apply_settings(fresh);
-        if self.ui_connected() {
-            self.send_command(UiCommand::ReloadSettings);
         }
     }
 

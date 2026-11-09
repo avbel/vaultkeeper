@@ -302,6 +302,83 @@ fn saving_from_the_prompt_stores_the_edit_then_switches() {
 }
 
 #[test]
+fn choosing_login_in_the_new_menu_opens_the_new_login_form() {
+    let (_h, manager) = open();
+    click(&manager, "New item");
+    pump();
+    click(&manager, "Login");
+    pump();
+    assert_eq!(manager.get_detail_mode(), 2, "the edit form is open");
+    assert_eq!(manager.get_edit_title(), "New login");
+}
+
+#[test]
+fn add_account_in_the_account_menu_opens_the_login_window() {
+    let (h, manager) = open();
+    click(&manager, "Accounts");
+    pump();
+    click(&manager, "Add account");
+    pump();
+    assert!(h.app.login_window().is_some());
+}
+
+#[test]
+fn picking_an_account_in_the_account_menu_switches_to_it() {
+    let (h, manager) = open();
+    click(&manager, "Accounts");
+    pump();
+    let label = h
+        .vault
+        .accounts()
+        .into_iter()
+        .find(|account| &*account.email == "bob@work.example.org")
+        .map(|account| {
+            format!(
+                "{} @ {}",
+                account.email,
+                bw_lite::viewmodel::host(&account.server)
+            )
+        })
+        .expect("bob");
+    click(&manager, &label);
+    pump();
+    assert!(
+        matches!(h.vault.state(), bwl_vault::model::SessionState::Locked { ref email, .. } if email == "bob@work.example.org")
+    );
+}
+
+#[test]
+fn the_password_generate_button_opens_the_generator_whose_use_fills_the_field() {
+    let (h, manager) = open();
+    click(&manager, "New item");
+    pump();
+    click(&manager, "Login");
+    pump();
+    click(&manager, "Generate Password");
+    pump();
+    assert_eq!(manager.get_detail_mode(), 3, "the generator slide-over");
+    let state = manager.global::<bw_lite::ui::GeneratorState>();
+    assert!(state.get_can_use());
+    let generated = state.get_result().to_string();
+    assert_ne!(generated, "");
+    click(&manager, "Copy generated value");
+    assert_eq!(h.clipboard.last().as_deref(), Some(generated.as_str()));
+    click(&manager, "Use this password");
+    pump();
+    assert_eq!(manager.get_detail_mode(), 2, "back to the form");
+    let fields = manager.get_edit_fields();
+    let password = (0..fields.row_count())
+        .filter_map(|row| fields.row_data(row))
+        .find(|field| field.key == "password")
+        .expect("password row");
+    assert_eq!(password.value.as_str(), generated);
+    assert!(
+        !state.get_can_use(),
+        "no Use button when opened another way"
+    );
+}
+
+#[test]
 fn new_item_requires_a_name_and_saves_into_the_selected_folder() {
     let (h, manager) = open();
     click(&manager, "Dev");

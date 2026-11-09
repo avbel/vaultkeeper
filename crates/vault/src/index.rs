@@ -2,12 +2,17 @@
 //! decrypted fields the list and search need. Secrets stay encrypted until `reveal`/`draft`.
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
 };
 
 use bwl_api::models::{Cipher, Collection, Folder, Profile, SyncResponse, cipher_type};
+use nucleo_matcher::{
+    Config, Matcher, Utf32Str,
+    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+};
 use serde::{Serialize, Serializer};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -17,6 +22,15 @@ use crate::{
     model::{CollectionView, Filter, FolderView, ItemId, ItemKind, ItemSummary, OrganizationView},
     store::CACHE_FORMAT,
 };
+
+/// Rank of fuzzy name matches and of fuzzy matches elsewhere; they follow every exact rank.
+const FUZZY_NAME: u8 = 5;
+const FUZZY_ANY: u8 = 6;
+
+thread_local! {
+    // The matcher keeps a scoring matrix that is expensive to allocate; one per searching thread.
+    static MATCHER: RefCell<Matcher> = RefCell::new(Matcher::new(Config::DEFAULT));
+}
 
 /// Most-recently-used list length; older entries fall off.
 pub(crate) const MRU_LIMIT: usize = 50;
@@ -117,6 +131,41 @@ impl Entry {
             return Some(4);
         }
         None
+    }
+
+    /// Typos and abbreviations ("gthb" for GitHub): each query word must appear in order, gaps
+    /// allowed, within the name or the subtitle (one field per word, never across fields, and
+    /// never in URIs, where long strings would match almost anything). Ranked `FUZZY_NAME` when
+    /// every word matched in the name. `chars` holds non-ASCII text decoded for the matcher; it
+    /// is zeroized when the search ends.
+    fn fuzzy_rank(
+        &self,
+        pattern: &Pattern,
+        matcher: &mut Matcher,
+        chars: &mut Vec<char>,
+    ) -> Option<(u8, u32)> {
+        let name = self.name_key();
+        let subtitle = &self.hay[self.name_end + FIELD_SEPARATOR.len_utf8()..self.subtitle_end];
+        let mut total = 0u32;
+        let mut all_in_name = true;
+        for atom in &pattern.atoms {
+            let in_name = atom.score(Utf32Str::new(name, chars), matcher);
+            let in_subtitle = atom.score(Utf32Str::new(subtitle, chars), matcher);
+            let best = match (in_name, in_subtitle) {
+                (Some(name), Some(subtitle)) if subtitle > name => {
+                    all_in_name = false;
+                    subtitle
+                }
+                (Some(name), _) => name,
+                (None, Some(subtitle)) => {
+                    all_in_name = false;
+                    subtitle
+                }
+                (None, None) => return None,
+            };
+            total = total.saturating_add(u32::from(best));
+        }
+        Some((if all_in_name { FUZZY_NAME } else { FUZZY_ANY }, total))
     }
 }
 
@@ -430,17 +479,34 @@ impl VaultData {
             return self.recent_first(filter, mru);
         }
         let terms: Vec<&str> = query.split_whitespace().collect();
-        let mut hits: Vec<(u8, usize)> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| passes(entry, filter))
-            .filter_map(|(position, entry)| entry.rank(&query, &terms).map(|rank| (rank, position)))
-            .collect();
-        // Stable, so rows of equal rank keep their name order.
-        hits.sort_by_key(|&(rank, _)| rank);
+        let pattern = Pattern::new(
+            &query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+        let mut chars = Zeroizing::new(Vec::new());
+        let mut hits: Vec<(u8, u32, usize)> = MATCHER.with_borrow_mut(|matcher| {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| passes(entry, filter))
+                .filter_map(|(position, entry)| {
+                    entry
+                        .rank(&query, &terms)
+                        .map(|rank| (rank, 0, position))
+                        .or_else(|| {
+                            entry
+                                .fuzzy_rank(&pattern, matcher, &mut chars)
+                                .map(|(rank, score)| (rank, score, position))
+                        })
+                })
+                .collect()
+        });
+        // Stable, so rows of equal rank and score keep their name order.
+        hits.sort_by_key(|&(rank, score, _)| (rank, std::cmp::Reverse(score)));
         hits.iter()
-            .map(|&(_, position)| self.entries[position].summary.clone())
+            .map(|&(_, _, position)| self.entries[position].summary.clone())
             .collect()
     }
 
@@ -716,6 +782,32 @@ mod tests {
             data.search("nothing like this", &Filter::default(), &none)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn typos_and_abbreviations_match_fuzzily_after_every_exact_match() {
+        let keys = ring();
+        let data = VaultData::build(
+            testutil::sync(
+                vec![
+                    login("hub", "GitHub", "octocat", "p", &keys),
+                    login("lab", "GitLab", "gthb-bot", "p", &keys),
+                    login("zur", "Zürich Bank", "anna", "p", &keys),
+                    login("mail", "Mail", "gthb", "p", &keys),
+                ],
+                vec![],
+            ),
+            &keys,
+        );
+        let none = VecDeque::new();
+        let find = |query: &str| ids(&data.search(query, &Filter::default(), &none)).join(",");
+        // "lab" and "mail" hold "gthb" exactly in the username (rank 2, name order); "hub" only
+        // fuzzily in its name, so it follows them.
+        assert_eq!(find("gthb"), "lab,mail,hub");
+        assert_eq!(find("gtlb"), "lab", "an abbreviation of the name");
+        assert_eq!(find("zurich"), "zur", "accents fold");
+        assert_eq!(find("git octo"), "hub", "every word must match");
+        assert_eq!(find("qqq"), "", "no letters in order, no match");
     }
 
     #[test]

@@ -165,6 +165,7 @@ pub fn to_row(item: &ItemSummary, totp: Option<&TotpCell>) -> RowData {
         totp_code: totp.map(|cell| cell.code.clone()).unwrap_or_default(),
         totp_expires: totp.map_or(0, |cell| cell.expires),
         totp_period: totp.map_or(30, |cell| cell.period),
+        auto_type: crate::autotype::can_auto_type(item),
     }
 }
 

@@ -378,7 +378,8 @@ impl<S: VaultService> App<S> {
             Command::CopyPassword => self.copy_selected(CopyField::Password),
             Command::CopyUsername => self.copy_selected(CopyField::Username),
             Command::CopyTotp => self.copy_selected(CopyField::Totp),
-            Command::OpenUri => {
+            // Nothing to type into from the Manager; ⌘⇧↩ keeps opening the item's URI there.
+            Command::AutoType => {
                 self.open_selected_uri();
                 true
             }

@@ -54,6 +54,7 @@ export component QuickPanel inherits Window {
     callback row-clicked(int);
     callback row-double-clicked(int);
     callback copy-row(int, int) -> bool;
+    callback auto-type-row(int);
     callback unlock(string);
     callback unlock-touch-id();
     callback focus-lost();
@@ -191,7 +192,9 @@ export component QuickPanel inherits Window {
                                 root.row-clicked(i);
                             }
                             double-clicked => { root.row-double-clicked(i); }
+                            offer-auto-type: true;
                             copy(code) => { return root.copy-row(i, code); }
+                            auto-type => { root.auto-type-row(i); }
                         }
                     }
                     if !root.locked && root.rows.length == 0: EmptyState {
@@ -214,6 +217,7 @@ export component QuickPanel inherits Window {
                         Hint { enter: true; text: "password"; }
                         Hint { key: "⌘"; enter: true; text: "TOTP"; }
                         Hint { key: "⇧"; enter: true; text: "username"; }
+                        Hint { key: "⌘⇧"; enter: true; text: "auto-type"; }
                         Hint { key: "⌘O"; text: "open"; }
                         Hint { key: "⌘L"; text: "lock"; }
                     }

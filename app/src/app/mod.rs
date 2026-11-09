@@ -5,6 +5,7 @@
 //! inline) or across `invoke_*` calls into Slint.
 
 mod auth;
+mod autotype_ctl;
 mod commands;
 mod copy;
 mod generator;
@@ -142,6 +143,13 @@ pub struct App<S: VaultService> {
     /// Re-prompt items whose master password was confirmed since the last lock.
     reprompt_verified: RefCell<std::collections::HashSet<bwl_vault::model::ItemId>>,
     reprompt_pending: RefCell<Option<(bwl_vault::model::ItemId, reprompt::Pending)>>,
+    /// The app in front when the daemon last asked for the Quick Panel, until the panel takes it.
+    typing_target: RefCell<Option<crate::hooks::TypingTarget>>,
+    /// Keystrokes are being typed into another app; counted like a window so the UI process
+    /// does not exit under them.
+    autotyping: Cell<bool>,
+    /// A message for the next window that shows (auto-type outcomes, the Accessibility hint).
+    pending_notice: RefCell<Option<String>>,
 }
 
 impl<S: VaultService> App<S> {
@@ -180,6 +188,9 @@ impl<S: VaultService> App<S> {
             on_last_window_closed: RefCell::new(None),
             reprompt_verified: RefCell::new(std::collections::HashSet::new()),
             reprompt_pending: RefCell::new(None),
+            typing_target: RefCell::new(None),
+            autotyping: Cell::new(false),
+            pending_notice: RefCell::new(None),
         })
     }
 
@@ -272,6 +283,7 @@ impl<S: VaultService> App<S> {
         self.close_quick_panel();
         self.deny_all_ssh();
         self.forget_reprompts();
+        self.hooks.autotype.cancel();
         if had_window && self.target.get() == Target::None {
             self.target.set(Target::Manager);
         }
@@ -280,7 +292,7 @@ impl<S: VaultService> App<S> {
     /// Logout or account switch: nothing from the previous account may stay in the UI.
     fn clear_account_ui(&self) {
         self.on_locked();
-        self.generator.borrow_mut().clear_history();
+        self.generator.borrow_mut().clear();
         self.refresh_generator_views();
         self.hooks.clipboard.clear_if_ours();
         self.clip.replace(None);
@@ -397,6 +409,10 @@ impl<S: VaultService> App<S> {
         if has_window && self.hooks.settings.take_reset_notice() {
             self.toast(SETTINGS_RESET_NOTICE, true);
         }
+        let notice = has_window.then(|| self.pending_notice.take()).flatten();
+        if let Some(notice) = notice {
+            self.toast(&notice, true);
+        }
     }
 
     /// Applies the theme mode, text size and shortcut hints to a window's `Theme` global. System mode leaves
@@ -435,12 +451,9 @@ impl<S: VaultService> App<S> {
         if let Some(window) = self.ssh_prompt.borrow().as_ref() {
             self.apply_theme(window);
         }
-        if let Some(tray) = self.tray.borrow().as_ref() {
-            tray.set_theme_index(self.settings.borrow().theme.index());
-        }
     }
 
-    /// Persists and applies a theme choice (Settings window and tray menu).
+    /// Persists and applies a theme choice from the Settings window.
     pub fn set_theme(&self, theme: ThemeChoice) {
         self.update_settings(|settings| settings.theme = theme);
         self.apply_theme_everywhere();
@@ -520,7 +533,7 @@ impl<S: VaultService> App<S> {
         if let Some(quick) = self.quick.borrow().as_ref() {
             strings.extend(quick.rows.visible_strings());
         }
-        strings.extend(self.generator.borrow().history_strings());
+        strings.extend(self.generator.borrow().strings());
         strings
     }
 }

@@ -9,7 +9,9 @@ pub enum Command {
     CopyPassword,
     CopyUsername,
     CopyTotp,
-    OpenUri,
+    /// ⌘⇧↩: the Quick Panel types username, Tab, password into the app behind it; the
+    /// Manager opens the item's URI.
+    AutoType,
     OpenInManager,
     Edit,
     ToggleFavorite,
@@ -57,7 +59,7 @@ pub fn command(text: &str, mods: Mods) -> Option<Command> {
     }
     if is_key(text, Key::Return) {
         return Some(match (mods.cmd, mods.shift) {
-            (true, true) => Command::OpenUri,
+            (true, true) => Command::AutoType,
             (true, false) => Command::CopyTotp,
             (false, true) => Command::CopyUsername,
             (false, false) => Command::CopyPassword,
@@ -124,7 +126,7 @@ mod tests {
         assert_eq!(command(&key(Key::Return), CMD), Some(Command::CopyTotp));
         assert_eq!(
             command(&key(Key::Return), CMD_SHIFT),
-            Some(Command::OpenUri)
+            Some(Command::AutoType)
         );
     }
 

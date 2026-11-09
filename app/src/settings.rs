@@ -124,6 +124,8 @@ pub struct Settings {
     pub ssh_approval: SshApproval,
     pub ssh_touch_id: bool,
     pub hotkey: String,
+    /// Opens the Generator window from anywhere; empty means no shortcut.
+    pub generator_hotkey: String,
     /// Shortcut hints next to buttons, in fields and in the tray menu; the shortcuts themselves
     /// always work.
     pub show_shortcuts: bool,
@@ -151,6 +153,7 @@ impl Default for Settings {
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
             hotkey: "Cmd+Shift+Space".to_owned(),
+            generator_hotkey: String::new(),
             show_shortcuts: true,
             touch_id_right_away: false,
             last_login: None,
@@ -439,6 +442,7 @@ mod tests {
             ssh_approval: SshApproval::RememberUntilLock,
             ssh_touch_id: true,
             hotkey: "Cmd+Alt+K".to_owned(),
+            generator_hotkey: "Cmd+Alt+G".to_owned(),
             show_shortcuts: false,
             touch_id_right_away: true,
             last_login: Some("2.sealed".to_owned()),

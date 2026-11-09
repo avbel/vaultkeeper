@@ -2,6 +2,7 @@
 //! bwl-gen, AppKit and rfd. Settings and SSH agent changes reach the daemon as IPC notices.
 
 pub mod appkit;
+pub mod autotype;
 mod biometrics;
 mod clipboard;
 pub mod fs;
@@ -54,6 +55,7 @@ impl Hooks {
             ssh_keys: Arc::new(SshKeys),
             placement: Arc::new(appkit::CursorScreen),
             clock: Arc::new(SystemClock),
+            autotype: Arc::new(autotype::SystemAutoType),
         }
     }
 }

@@ -260,6 +260,9 @@ export component Toggle inherits Rectangle {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 1;
+            spacing: 3px * Theme.scale;
+            padding-top: 4px * Theme.scale;
+            padding-bottom: 4px * Theme.scale;
             Text {
                 text: root.text;
                 color: Theme.text;

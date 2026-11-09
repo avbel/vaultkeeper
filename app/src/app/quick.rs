@@ -10,6 +10,7 @@ use slint::{ComponentHandle, ModelRc, SharedString};
 
 use super::{App, OFFLINE_TOAST, handler, hide, retire, show};
 use crate::{
+    hooks::TypingTarget,
     keymap::{self, Command, Mods},
     rows::RowsModel,
     ui::QuickPanel,
@@ -24,6 +25,8 @@ pub(super) struct Quick {
     /// The query the rows were last filled for: a vault change re-runs it and keeps the
     /// selected item, a new query starts again at the top.
     query: SharedString,
+    /// Where auto-type goes: the app in front when the hotkey or tray asked for the panel.
+    pub(super) typing_target: Option<TypingTarget>,
 }
 
 impl<S: VaultService> App<S> {
@@ -39,7 +42,13 @@ impl<S: VaultService> App<S> {
             .borrow()
             .as_ref()
             .map(|quick| quick.window.clone_strong());
+        let typing_target = self.typing_target.take();
         if let Some(window) = existing {
+            if let Some(quick) = self.quick.borrow_mut().as_mut()
+                && typing_target.is_some()
+            {
+                quick.typing_target = typing_target;
+            }
             // Switching between the password and search fields moves focus; don't read that as
             // the panel losing focus. `focus-search` re-arms the tracking.
             window.invoke_pause_focus_tracking();
@@ -78,6 +87,7 @@ impl<S: VaultService> App<S> {
             window: window.clone_strong(),
             rows,
             query: SharedString::new(),
+            typing_target,
         });
         if !locked {
             self.refresh_quick();
@@ -91,6 +101,7 @@ impl<S: VaultService> App<S> {
 
     pub(super) fn close_quick_panel(&self) {
         self.forget_declined_touch_id();
+        self.typing_target.replace(None);
         let Some(quick) = self.quick.borrow_mut().take() else {
             return;
         };
@@ -114,6 +125,9 @@ impl<S: VaultService> App<S> {
             app.quick_command(Command::OpenInManager);
         }));
         window.on_copy_row(handler!(self, false, |app, row, code| app.copy_quick_row(row, code)));
+        window.on_auto_type_row(handler!(self, |app, row| {
+            app.auto_type_row(Some(row));
+        }));
         window.on_key_command(handler!(self, false, |app, text, cmd, shift, alt| {
             keymap::command(&text, Mods { cmd, shift, alt })
                 .is_some_and(|command| app.quick_command(command))
@@ -138,6 +152,7 @@ impl<S: VaultService> App<S> {
             if let Some(quick) = app.quick.borrow().as_ref() {
                 quick.window.set_toast_shown(false);
             }
+            app.notice_seen();
         }));
         window.on_unlock(handler!(self, |app, password| app
             .unlock(zeroize::Zeroizing::new(password.to_string()))));
@@ -180,7 +195,7 @@ impl<S: VaultService> App<S> {
         self.refresh_totp();
     }
 
-    fn quick_item(&self, row: Option<i32>) -> Option<bwl_vault::model::ItemSummary> {
+    pub(super) fn quick_item(&self, row: Option<i32>) -> Option<bwl_vault::model::ItemSummary> {
         self.quick.borrow().as_ref().and_then(|quick| {
             let row = row.unwrap_or_else(|| quick.window.get_selected());
             usize::try_from(row)
@@ -261,15 +276,7 @@ impl<S: VaultService> App<S> {
             Command::CopyPassword => self.copy_and_dismiss(CopyField::Password),
             Command::CopyUsername => self.copy_and_dismiss(CopyField::Username),
             Command::CopyTotp => self.copy_and_dismiss(CopyField::Totp),
-            Command::OpenUri => {
-                if let Some(uri) = self.quick_item(None).and_then(|item| item.primary_uri)
-                    && let Err(error) = self.hooks.opener.open(&uri)
-                {
-                    self.toast(&error.to_string(), true);
-                }
-                self.close_quick_panel();
-                true
-            }
+            Command::AutoType => self.auto_type_row(None),
             Command::OpenInManager | Command::Edit => {
                 let item = self.quick_item(None);
                 self.close_quick_panel();

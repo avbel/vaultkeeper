@@ -601,6 +601,11 @@ impl<S: VaultService> App<S> {
                 (false, false) => 0,
             };
             manager.window.set_detail_mode(mode);
+            // Only the edit form's generate button offers "Use this password".
+            let state =
+                slint::ComponentHandle::global::<crate::ui::GeneratorState>(&manager.window);
+            state.set_can_use(false);
+            state.set_use_target(-1);
         }
     }
 }

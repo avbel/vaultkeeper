@@ -99,13 +99,13 @@ export component AccountSwitcher inherits Rectangle {
                     accessible-description: account.badge;
                     accessible-checked: account.active;
                     accessible-action-default => {
-                        popup.close();
                         root.switch-account(i);
+                        popup.close();
                     }
                     ata := TouchArea {
                         clicked => {
-                            popup.close();
                             root.switch-account(i);
+                            popup.close();
                         }
                     }
                     HorizontalLayout {
@@ -153,16 +153,16 @@ export component AccountSwitcher inherits Rectangle {
                 MenuRow {
                     text: "Add account";
                     clicked => {
-                        popup.close();
                         root.add-account();
+                        popup.close();
                     }
                 }
                 if root.show-lock: MenuRow {
                     text: "Lock";
                     hint: "⌘⇧L";
                     clicked => {
-                        popup.close();
                         root.lock();
+                        popup.close();
                     }
                 }
                 if !root.confirm-logout: MenuRow {
@@ -188,8 +188,8 @@ export component AccountSwitcher inherits Rectangle {
                             kind: BtnKind.danger-filled;
                             clicked => {
                                 root.confirm-logout = false;
-                                popup.close();
                                 root.logout-confirmed();
+                                popup.close();
                             }
                         }
                         Btn {

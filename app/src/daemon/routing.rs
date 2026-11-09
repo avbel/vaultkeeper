@@ -6,8 +6,6 @@ use std::sync::Arc;
 use bwl_ipc::UiCommand;
 use bwl_vault::model::{AccountView, SessionState};
 
-use crate::settings::ThemeChoice;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     QuickSearch,
@@ -16,7 +14,6 @@ pub enum TrayAction {
     LockToggle,
     SyncNow,
     SwitchAccount(i32),
-    Theme(i32),
     Quit,
 }
 
@@ -27,7 +24,6 @@ pub enum Effect {
     Lock,
     Sync,
     SwitchAccount(Arc<str>),
-    SetTheme(ThemeChoice),
     Quit,
 }
 
@@ -55,9 +51,6 @@ pub fn tray(action: TrayAction, state: &SessionState, accounts: &[AccountView]) 
             _ => Vec::new(),
         },
         TrayAction::SwitchAccount(index) => switch_account(index, accounts),
-        TrayAction::Theme(index) => ThemeChoice::from_index(index)
-            .map(|theme| vec![Effect::SetTheme(theme)])
-            .unwrap_or_default(),
         TrayAction::Quit => vec![Effect::Quit],
     }
 }
@@ -79,10 +72,20 @@ fn switch_account(index: i32, accounts: &[AccountView]) -> Vec<Effect> {
     ]
 }
 
-/// The global hotkey toggles the Quick Panel.
+/// The two global shortcuts the daemon registers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotkeySlot {
+    QuickPanel,
+    Generator,
+}
+
+/// The Quick Panel hotkey toggles the panel; the Generator hotkey opens the Generator window.
 #[must_use]
-pub const fn hotkey() -> Effect {
-    Effect::Show(UiCommand::ToggleQuickPanel)
+pub const fn hotkey(slot: HotkeySlot) -> Effect {
+    match slot {
+        HotkeySlot::QuickPanel => Effect::Show(UiCommand::ToggleQuickPanel),
+        HotkeySlot::Generator => Effect::Show(UiCommand::ShowGenerator),
+    }
 }
 
 /// A second launch of the app forwards what it was asked to show to the running daemon.
@@ -218,17 +221,15 @@ mod tests {
     }
 
     #[test]
-    fn theme_menu_maps_its_index() {
-        assert_eq!(
-            tray(TrayAction::Theme(2), &locked(), &[]),
-            [Effect::SetTheme(ThemeChoice::Dark)]
-        );
-        assert_eq!(tray(TrayAction::Theme(3), &locked(), &[]), []);
-    }
-
-    #[test]
     fn hotkey_and_second_launch() {
-        assert_eq!(hotkey(), Effect::Show(UiCommand::ToggleQuickPanel));
+        assert_eq!(
+            hotkey(HotkeySlot::QuickPanel),
+            Effect::Show(UiCommand::ToggleQuickPanel)
+        );
+        assert_eq!(
+            hotkey(HotkeySlot::Generator),
+            Effect::Show(UiCommand::ShowGenerator)
+        );
         assert_eq!(
             second_launch(Command::ShowManager),
             Effect::Show(UiCommand::ShowManager)
