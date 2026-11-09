@@ -584,6 +584,44 @@ fn sidebar_collapses_with_cmd_backslash() {
     assert!(!manager.get_sidebar_collapsed());
 }
 
+/// The collapsed rail's own button, not the hidden full-width sidebar row of the same name.
+fn click_rail(manager: &ManagerWindow, label: &str) {
+    i_slint_backend_testing::ElementHandle::find_by_accessible_label(manager, label)
+        .find(|element| {
+            element.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
+        })
+        .unwrap_or_else(|| panic!("no rail button {label:?}"))
+        .invoke_accessible_default_action();
+    pump();
+}
+
+#[test]
+fn the_collapsed_rail_keeps_all_items_favorites_and_types() {
+    let (_h, manager) = open();
+    let all = manager.get_rows().row_count();
+    key(&manager, "\\", CMD);
+    assert!(manager.get_sidebar_collapsed());
+
+    click_rail(&manager, "Favorites");
+    let rows = manager.get_rows();
+    assert!(rows.row_count() > 0 && rows.row_count() < all);
+    assert!(
+        rows.iter().all(|row| row.favorite),
+        "only favorites are listed"
+    );
+
+    click_rail(&manager, "Cards");
+    let cards = manager.get_rows();
+    assert!(cards.row_count() > 0 && cards.row_count() < all);
+    assert!(
+        cards.iter().all(|row| row.kind == 2),
+        "only cards are listed"
+    );
+
+    click_rail(&manager, "All items");
+    assert_eq!(manager.get_rows().row_count(), all);
+}
+
 #[test]
 fn move_to_folder_from_the_detail_pane_saves_the_new_folder() {
     let (h, manager) = open();

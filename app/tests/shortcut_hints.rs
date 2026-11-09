@@ -1,4 +1,5 @@
-//! Inline shortcut hints are always shown; the Lock button keeps its shortcut as a description.
+//! Inline shortcut hints are always shown; the icon-only New and Lock buttons keep their shortcuts
+//! as descriptions.
 
 mod common;
 
@@ -9,7 +10,7 @@ fn the_manager_shows_its_hints() {
     let h = harness(Setup::default());
     h.app.start(false);
     let manager = h.app.manager_window().expect("manager");
-    assert!(exists(&manager, "⌘N"), "the New button's hint");
+    assert!(exists(&manager, "New item"), "the icon-only New button");
     assert!(exists(&manager, "⌘F"), "the search field's key cap");
     assert!(exists(&manager, "Lock"), "the icon-only Lock button");
 }

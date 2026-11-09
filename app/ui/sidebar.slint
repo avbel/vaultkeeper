@@ -193,6 +193,34 @@ component SidebarRow inherits Rectangle {
     }
 }
 
+// A filter as a square icon button on the collapsed rail.
+component RailEntry inherits Rectangle {
+    in property <SidebarEntry> entry;
+    in property <bool> selected;
+    callback clicked();
+
+    width: Theme.control-height;
+    height: Theme.control-height;
+    border-radius: Theme.radius-control;
+    background: root.selected ? (ta.has-hover ? Theme.selection-hover : Theme.selection) : ta.has-hover ? Theme.hover : transparent;
+    animate background { duration: 100ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.entry.label;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    EntryIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        code: root.entry.icon;
+        selected: root.selected;
+    }
+}
+
 export component Sidebar inherits Rectangle {
     in property <[SidebarEntry]> entries;
     in-out property <int> selected: 0;
@@ -232,6 +260,32 @@ export component Sidebar inherits Rectangle {
         label: root.collapsed ? "Show sidebar" : "Hide sidebar";
         hint: "⌘\\";
         clicked => { root.toggle(); }
+    }
+
+    // Collapsed: "All items", "Favorites" and, under a divider, the item types stay one click
+    // away.
+    if root.collapsed: VerticalLayout {
+        x: (Theme.rail-width - Theme.control-height) / 2;
+        y: Theme.control-height + Theme.s2;
+        width: Theme.control-height;
+        spacing: Theme.s1;
+        alignment: start;
+        for entry[i] in root.entries: VerticalLayout {
+            spacing: Theme.s1;
+            if entry.kind == 1 && entry.icon == 2: Rectangle {
+                height: 1px;
+                background: Theme.border;
+            }
+            if entry.kind == 1 && entry.icon <= 6: RailEntry {
+                entry: entry;
+                selected: i == root.selected;
+                clicked => {
+                    root.cancel-editing();
+                    root.selected = i;
+                    root.select(i);
+                }
+            }
+        }
     }
 
     content := ScrollView {

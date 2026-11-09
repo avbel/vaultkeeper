@@ -9,12 +9,12 @@ import { AccountRow, AccountSwitcher } from "accounts.slint";
 
 component NewMenu inherits Rectangle {
     callback new-item(int);
-    width: 136px;
+    // Plus and chevron only: 6 + 16 + 8 + 12 + 6 px of content.
+    width: 52px;
     height: Theme.control-height;
     Btn {
         width: 100%;
         height: root.height;
-        text: "New";
         hint: "⌘N";
         has-icon: true;
         icon: @image-url("icons/plus.svg");
