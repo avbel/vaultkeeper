@@ -2,11 +2,11 @@
 
 use crate::settings::ThemeChoice;
 
-pub const USAGE: &str = "usage: bw-lite [--daemon | --tray | --quick]
-       bw-lite --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
+pub const USAGE: &str = "usage: vaultkeeper [--daemon | --tray | --quick]
+       vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
                [--size WxH] [--select QUERY] [--quick]
 
-  (no flag)    start bw-lite (or ask the running one) and open the vault window
+  (no flag)    start vaultkeeper (or ask the running one) and open the vault window
   --daemon     run in the menu bar only; windows open on demand
   --tray       same as --daemon (what start at login uses)
   --quick      open the Quick Panel

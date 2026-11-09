@@ -1,34 +1,34 @@
-# bw-lite on macOS (Apple silicon)
+# Vaultkeeper on macOS (Apple silicon)
 
 ## Build and install
 
 ```sh
-cd ~/Projects/bw-lite-desktop
+cd ~/Projects/vaultkeeper
 scripts/make-signing-cert.sh   # once; asks for your login password to trust the certificate
-scripts/bundle-macos.sh        # -> target/bundle/bw-lite.app
-ditto target/bundle/bw-lite.app /Applications/bw-lite.app
-open /Applications/bw-lite.app
+scripts/bundle-macos.sh        # -> target/bundle/Vaultkeeper.app
+ditto target/bundle/Vaultkeeper.app /Applications/Vaultkeeper.app
+open /Applications/Vaultkeeper.app
 ```
 
-`make-signing-cert.sh` is optional, but recommended. It creates a self-signed "bw-lite local"
+`make-signing-cert.sh` is optional, but recommended. It creates a self-signed "vaultkeeper local"
 code-signing certificate, so every rebuild has the same code identity. Without it the bundle is
-ad-hoc signed. macOS then asks again "bw-lite wants to use your confidential information" for the
+ad-hoc signed. macOS then asks again "vaultkeeper wants to use your confidential information" for the
 keychain item (the refresh token) after each rebuild.
 
 **Signing prompt.** `bundle-macos.sh` shows a keychain prompt ("codesign wants to sign using key
-…") on every build. Click **Allow**, not *Always Allow*. The prompt is the protection: bw-lite's
-keychain items trust anything signed as "bw-lite local", so a key that signs without asking
-would let any process sign its own binary as bw-lite and read the refresh token silently.
+…") on every build. Click **Allow**, not *Always Allow*. The prompt is the protection: Vaultkeeper's
+keychain items trust anything signed as "vaultkeeper local", so a key that signs without asking
+would let any process sign its own binary as Vaultkeeper and read the refresh token silently.
 *Always Allow* re-creates exactly that. While creating the certificate the script also asks once
 for your login keychain password (`security set-key-partition-list`); without that step the
 codesign prompt rejects even the correct password. If your certificate was made by an older version of the
 script (which trusted `codesign` without a prompt), run `scripts/make-signing-cert.sh --recreate`
-once; bw-lite then asks one more time for its keychain items after the next build.
+once; Vaultkeeper then asks one more time for its keychain items after the next build.
 
 The app has no Dock icon. It lives in the menu bar; a Dock icon appears only while the vault
 window is open.
 
-Update: quit bw-lite from the tray menu **first**, then rebuild, `ditto` it again and open it.
+Update: quit Vaultkeeper from the tray menu **first**, then rebuild, `ditto` it again and open it.
 The background process only accepts a window process with exactly its own code signature, so
 a running old version refuses the new one's windows until it is quit.
 
@@ -83,30 +83,30 @@ clipboard if it holds a copied secret.
   sleep or screen lock while *Lock on sleep or screen lock* is on (the default), or from the tray.
   A settings file from an older version with *On sleep / screen lock* becomes *Never* plus that
   switch.
-- **Broken settings file:** if `settings.json` cannot be read, bw-lite starts with the defaults,
+- **Broken settings file:** if `settings.json` cannot be read, Vaultkeeper starts with the defaults,
   keeps the old file as `settings.json.broken` and says so once in a window toast.
 
 ## Auto-type
 
 Open the Quick Panel with the hotkey (or the tray) while the login form is in front, pick the
 login and press ⌘⇧Enter or its *Auto-type* button. The panel closes, the previous app comes back
-to the front and bw-lite types `username`, Tab, `password` as key presses (only the password when
+to the front and Vaultkeeper types `username`, Tab, `password` as key presses (only the password when
 the username is empty). Nothing goes through the clipboard. It works for logins with a password.
 
 - Items with *Ask for master password* need it first: open them in the Manager (⌘O) and confirm,
   then *Auto-type* works until the vault locks.
 - Typing starts once you let go of ⌘ and ⇧. It stops, and the next window says why, when the app
-  does not come back to the front within a second, when another app (or bw-lite) comes to the
+  does not come back to the front within a second, when another app (or Vaultkeeper) comes to the
   front while typing, when a modifier key is held down, or when the vault locks.
 - Opened with ⌘K from the Manager there is no other app to type into; in the Manager ⌘⇧Enter
   opens the item's URI.
 
 **Accessibility permission.** macOS lets an app send key presses to other apps only with the
-Accessibility permission. The first *Auto-type* shows the system's request; allow bw-lite in
+Accessibility permission. The first *Auto-type* shows the system's request; allow Vaultkeeper in
 System Settings → Privacy & Security → Accessibility, then try again. Nothing is typed until it is
 allowed. macOS ties the permission to the app's code signature: a build signed with the
-"bw-lite local" certificate (`scripts/make-signing-cert.sh`) keeps it across rebuilds; an
-ad-hoc signed build is a new app to macOS after each rebuild, so remove the old bw-lite entry
+"vaultkeeper local" certificate (`scripts/make-signing-cert.sh`) keeps it across rebuilds; an
+ad-hoc signed build is a new app to macOS after each rebuild, so remove the old Vaultkeeper entry
 from the list and allow it again.
 
 ## Touch ID
@@ -130,19 +130,19 @@ Settings → Security → Touch ID → *Enrol* (while unlocked).
 ## SSH agent
 
 Settings → SSH agent → turn on *SSH agent* (the socket path has a copy button there). The keys come from the vault's SSH-key items. The socket is
-`~/Library/Application Support/bw-lite/ssh-agent.sock`.
+`~/Library/Application Support/vaultkeeper/ssh-agent.sock`.
 
 Your `~/.ssh/config` currently points every host at the App Store Bitwarden agent:
 
 ```
 Host *
-    IdentityAgent /Users/avbel/Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock
+    IdentityAgent ~/Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock
 ```
 
-To switch to bw-lite, change that line to:
+To switch to Vaultkeeper, change that line to:
 
 ```
-    IdentityAgent "~/Library/Application Support/bw-lite/ssh-agent.sock"
+    IdentityAgent "~/Library/Application Support/vaultkeeper/ssh-agent.sock"
 ```
 
 Rollback: restore the old line.
@@ -150,8 +150,8 @@ Rollback: restore the old line.
 To try it without editing the config:
 
 ```sh
-SSH_AUTH_SOCK="$HOME/Library/Application Support/bw-lite/ssh-agent.sock" ssh-add -l
-ssh -o 'IdentityAgent "~/Library/Application Support/bw-lite/ssh-agent.sock"' -T git@github.com
+SSH_AUTH_SOCK="$HOME/Library/Application Support/vaultkeeper/ssh-agent.sock" ssh-add -l
+ssh -o 'IdentityAgent "~/Library/Application Support/vaultkeeper/ssh-agent.sock"' -T git@github.com
 ```
 
 Each sign request opens an approval window (process and key fingerprint, auto-deny after 30 s).
@@ -164,13 +164,13 @@ Each sign request opens an approval window (process and key fingerprint, auto-de
 
 ## Start at login
 
-Settings → Security → *Start at login*. This installs `~/Library/LaunchAgents/bw-lite.plist`, which
-starts `bw-lite --tray`, so only the menu bar icon shows. *Ask to unlock on start* opens the unlock
+Settings → Security → *Start at login*. This installs `~/Library/LaunchAgents/vaultkeeper.plist`, which
+starts `vaultkeeper --tray`, so only the menu bar icon shows. *Ask to unlock on start* opens the unlock
 window at launch.
 - Enable it from the copy in `/Applications`, because the agent stores the path of the executable
   that enabled it.
-- To remove it: turn the setting off, or `rm ~/Library/LaunchAgents/bw-lite.plist`.
-- After a crash macOS starts bw-lite again (`KeepAlive` on a failed exit); *Quit* from the tray
+- To remove it: turn the setting off, or `rm ~/Library/LaunchAgents/vaultkeeper.plist`.
+- After a crash macOS starts Vaultkeeper again (`KeepAlive` on a failed exit); *Quit* from the tray
   stays quit. An agent written by an older version is updated on its next start at login.
 
 ## Themes
@@ -184,7 +184,7 @@ not on its own) plus a letter, digit, Space, F1–F12, Return, Tab, an arrow or 
 clicking elsewhere cancels; Delete or Backspace removes the Generator hotkey (the Quick Panel always
 keeps one). The two can't be the same shortcut. Keys are recorded by their position on the
 keyboard, as macOS matches global shortcuts, so ⌥ letters and non-Latin layouts record the key
-itself. While a recorder waits, bw-lite's own global hotkeys are off, so pressing the current
+itself. While a recorder waits, Vaultkeeper's own global hotkeys are off, so pressing the current
 Quick Panel hotkey records it instead of opening the panel. They come back when recording ends,
 when Settings closes, if the window process goes away, and in any case after 30 s. A combination
 another app or macOS holds as a global shortcut still never reaches the recorder.
@@ -193,22 +193,22 @@ another app or macOS holds as a global shortcut still never reaches the recorder
 
 | Path | Content |
 |---|---|
-| `~/Library/Application Support/bw-lite/` | settings, encrypted vault cache per account, sockets (mode 0600) |
-| login keychain, items prefixed `bw-lite` | refresh tokens |
-| `~/Library/LaunchAgents/bw-lite.plist` | only with *Start at login* |
-| `~/Library/Logs/bw-lite/daemon.log`, `ui.log` | logs of the two processes, at most 1 MiB each plus one older `.1` file; not meant to hold secrets |
+| `~/Library/Application Support/vaultkeeper/` | settings, encrypted vault cache per account, sockets (mode 0600) |
+| login keychain, items prefixed `vaultkeeper` | refresh tokens |
+| `~/Library/LaunchAgents/vaultkeeper.plist` | only with *Start at login* |
+| `~/Library/Logs/vaultkeeper/daemon.log`, `ui.log` | logs of the two processes, at most 1 MiB each plus one older `.1` file; not meant to hold secrets |
 
 To uninstall:
 1. Log out of each account in the app, then quit it.
-2. `rm -rf /Applications/bw-lite.app "$HOME/Library/Application Support/bw-lite" ~/Library/LaunchAgents/bw-lite.plist ~/Library/Logs/bw-lite`.
+2. `rm -rf /Applications/Vaultkeeper.app "$HOME/Library/Application Support/vaultkeeper" ~/Library/LaunchAgents/vaultkeeper.plist ~/Library/Logs/vaultkeeper`.
 
 ## Command line
 
 ```
-bw-lite            start (or ask the running instance) and open the vault window
-bw-lite --tray     menu bar only
-bw-lite --quick    open the Quick Panel
-bw-lite --mock     run on a built-in demo vault (master password: mock), touches no real data
+vaultkeeper            start (or ask the running instance) and open the vault window
+vaultkeeper --tray     menu bar only
+vaultkeeper --quick    open the Quick Panel
+vaultkeeper --mock     run on a built-in demo vault (master password: mock), touches no real data
 ```
 
 ## Development

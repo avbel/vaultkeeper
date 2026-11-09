@@ -1,4 +1,4 @@
-//! Where both processes keep their files under the data dir (`~/Library/Application Support/bw-lite`).
+//! Where both processes keep their files under the data dir (`~/Library/Application Support/vaultkeeper`).
 
 #[cfg(feature = "vw-it")]
 use std::os::unix::fs::DirBuilderExt;
@@ -14,11 +14,11 @@ const TOUCH_ID_FILE: &str = "touchid.bin";
 const MAX_ACCOUNT_ID_LEN: usize = 64;
 
 /// The data dir of both processes. Builds with the `vw-it` feature honour
-/// `BW_LITE_TEST_DATA_DIR`, so an e2e run keeps the real HOME (the login keychain does not work
+/// `VAULTKEEPER_TEST_DATA_DIR`, so an e2e run keeps the real HOME (the login keychain does not work
 /// under a fake one: it shows a dialog) but none of the real files.
-pub fn data_dir() -> bwl_platform::Result<PathBuf> {
+pub fn data_dir() -> vk_platform::Result<PathBuf> {
     #[cfg(feature = "vw-it")]
-    if let Some(dir) = std::env::var_os("BW_LITE_TEST_DATA_DIR") {
+    if let Some(dir) = std::env::var_os("VAULTKEEPER_TEST_DATA_DIR") {
         let dir = PathBuf::from(dir);
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -26,7 +26,7 @@ pub fn data_dir() -> bwl_platform::Result<PathBuf> {
             .create(&dir)?;
         return Ok(dir);
     }
-    bwl_platform::paths::data_dir()
+    vk_platform::paths::data_dir()
 }
 
 /// `accounts/<account_id>/touchid.bin`, inside the account directory that log out deletes.

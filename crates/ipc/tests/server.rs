@@ -10,7 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bwl_ipc::{
+use common::{
+    Daemon, FakeVault, RawClient, SLOW_PASSWORD, SLOW_SAVE, SocketDir, draft, locked, secret,
+    unlocked,
+};
+use tokio::sync::{mpsc, oneshot};
+use vk_ipc::{
     DaemonEvent, IpcError, PROTOCOL_VERSION, PeerCredentials, RemoteVault, ServeOptions,
     SshApprovalKind, SshDecision, SshPrompt, TypingTarget, UiCommand, UiEvent, UiNotice,
     dto::{SessionStateDto, WireError},
@@ -19,16 +24,11 @@ use bwl_ipc::{
     protocol::{DaemonMessage, Event, Refusal, Snapshot, UiMessage, Welcome},
     serve,
 };
-use bwl_vault::{VaultService, model::CopyField, model::ItemId};
-use common::{
-    Daemon, FakeVault, RawClient, SLOW_PASSWORD, SLOW_SAVE, SocketDir, draft, locked, secret,
-    unlocked,
-};
-use tokio::sync::{mpsc, oneshot};
+use vk_vault::{VaultService, model::CopyField, model::ItemId};
 
 const EVENT_WAIT: Duration = Duration::from_secs(5);
 
-async fn next_event(events: &mut bwl_ipc::EventStream) -> Option<UiEvent> {
+async fn next_event(events: &mut vk_ipc::EventStream) -> Option<UiEvent> {
     tokio::time::timeout(EVENT_WAIT, events.next())
         .await
         .expect("event within 5 s")
@@ -821,7 +821,7 @@ async fn notices_without_a_daemon_channel_are_ignored() {
     vault.notify(UiNotice::Activity).expect("notify");
     assert_eq!(
         vault
-            .search("", &bwl_vault::model::Filter::default())
+            .search("", &vk_vault::model::Filter::default())
             .map(|items| items.len())
             .ok(),
         Some(0)

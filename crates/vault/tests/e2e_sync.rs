@@ -8,12 +8,12 @@ mod support;
 
 use std::time::Duration;
 
-use bwl_vault::{
-    BackgroundStatus, OFFLINE_MESSAGE, Timings, VaultService,
-    model::{CopyField, ItemId, SessionState},
-};
 use support::{
     KdfChoice, TestVault, drafts, env, names, proxy::Proxy, raw_session, register, wait_until,
+};
+use vk_vault::{
+    BackgroundStatus, OFFLINE_MESSAGE, Timings, VaultService,
+    model::{CopyField, ItemId, SessionState},
 };
 use zeroize::Zeroizing;
 

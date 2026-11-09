@@ -86,16 +86,16 @@ private func copy(_ data: Data, to out: UnsafeMutablePointer<UInt8>, cap: UInt) 
   return true
 }
 
-@_cdecl("bwl_se_is_available")
-public func bwlSeIsAvailable() -> Bool {
+@_cdecl("vk_se_is_available")
+public func vkSeIsAvailable() -> Bool {
   SecureEnclave.isAvailable
     && LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
 }
 
 /// Creates a Secure Enclave P-256 key-agreement key usable only after a Touch ID match against
 /// the currently enrolled fingers. Creation itself never prompts.
-@_cdecl("bwl_se_generate")
-public func bwlSeGenerate(
+@_cdecl("vk_se_generate")
+public func vkSeGenerate(
   _ blobOut: UnsafeMutablePointer<UInt8>, _ blobCap: UInt, _ blobLen: UnsafeMutablePointer<UInt>,
   _ publicKeyOut: UnsafeMutablePointer<UInt8>,
   _ stateOut: UnsafeMutablePointer<UInt8>, _ stateCap: UInt, _ stateLen: UnsafeMutablePointer<UInt>,
@@ -159,8 +159,8 @@ private func keyInitFailureStatus(_ error: Error, enrolledChanged: Bool) -> Int3
 
 /// [keyInitFailureStatus] for an error of `domain`/`code`, optionally wrapping an underlying
 /// `underlyingDomain`/`underlyingCode` (empty domain: none). Dead-stripped from apps.
-@_cdecl("bwl_se_key_init_status_for_test")
-public func bwlSeKeyInitStatusForTest(
+@_cdecl("vk_se_key_init_status_for_test")
+public func vkSeKeyInitStatusForTest(
   _ domain: UnsafePointer<CChar>, _ code: Int,
   _ underlyingDomain: UnsafePointer<CChar>, _ underlyingCode: Int,
   _ enrolledChanged: Bool
@@ -175,8 +175,8 @@ public func bwlSeKeyInitStatusForTest(
 
 /// ECDH between the Secure Enclave key in `blob` and `peer` (x9.63). Shows the Touch ID prompt
 /// with `reason` and blocks until it is answered, so never call it on the UI thread.
-@_cdecl("bwl_se_ecdh")
-public func bwlSeEcdh(
+@_cdecl("vk_se_ecdh")
+public func vkSeEcdh(
   _ blob: UnsafePointer<UInt8>, _ blobLen: UInt,
   _ enrolledState: UnsafePointer<UInt8>, _ enrolledStateLen: UInt,
   _ peer: UnsafePointer<UInt8>, _ peerLen: UInt,
@@ -237,8 +237,8 @@ public func bwlSeEcdh(
 }
 
 /// Plain Touch ID check without a key. Blocks until the prompt is answered.
-@_cdecl("bwl_la_authenticate")
-public func bwlLaAuthenticate(
+@_cdecl("vk_la_authenticate")
+public func vkLaAuthenticate(
   _ reason: UnsafePointer<CChar>, _ diag: UnsafeMutablePointer<CChar>, _ diagCap: UInt
 ) -> Int32 {
   let context = LAContext()

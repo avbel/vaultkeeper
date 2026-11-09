@@ -1,7 +1,7 @@
 //! Commands the daemon sends to the UI process, and the "last window closed" signal that drives
 //! the UI process's linger timer.
 
-use bwl_vault::{VaultService, model::SessionState};
+use vk_vault::{VaultService, model::SessionState};
 
 use super::{App, SshApprovalRequest, Target};
 use crate::hooks::TypingTarget;
@@ -44,15 +44,15 @@ pub enum UiCommand {
 impl<S: VaultService> App<S> {
     pub fn handle(&self, command: UiCommand) {
         // Any other window request drops the target, so a panel opened later from inside
-        // bw-lite (⌘K) never types into an app that was in front long ago. An open panel keeps
+        // vaultkeeper (⌘K) never types into an app that was in front long ago. An open panel keeps
         // its own copy.
         // The hotkey on an open panel closes it and hands the front back; activating first
-        // would only flash bw-lite forward.
+        // would only flash vaultkeeper forward.
         let closes_panel =
             matches!(command, UiCommand::ToggleQuickPanel { .. }) && self.quick.borrow().is_some();
         if command.shows_a_window() && !closes_panel {
             self.typing_target
-                .replace(command.typing_target().and_then(not_bw_lite));
+                .replace(command.typing_target().and_then(not_vaultkeeper));
             self.hooks.dock.activate();
         }
         match command {
@@ -110,7 +110,7 @@ impl<S: VaultService> App<S> {
     fn show_item(&self, query: &str) {
         let first = self
             .vault
-            .search(query, &bwl_vault::model::Filter::default())
+            .search(query, &vk_vault::model::Filter::default())
             .ok()
             .and_then(|items| items.first().map(|item| item.id.clone()));
         match first {
@@ -162,8 +162,8 @@ impl<S: VaultService> App<S> {
     }
 }
 
-/// Typing into bw-lite itself would type the password into its own search field.
-fn not_bw_lite(target: TypingTarget) -> Option<TypingTarget> {
+/// Typing into vaultkeeper itself would type the password into its own search field.
+fn not_vaultkeeper(target: TypingTarget) -> Option<TypingTarget> {
     let own = i32::try_from(std::process::id()).ok();
     (target.pid > 0 && Some(target.pid) != own).then_some(target)
 }

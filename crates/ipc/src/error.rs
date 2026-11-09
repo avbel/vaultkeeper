@@ -21,9 +21,9 @@ pub enum IpcError {
     Busy,
     #[error("IPC protocol violation: {0}")]
     Protocol(&'static str),
-    #[error("lost the connection to the bw-lite daemon")]
+    #[error("lost the connection to the Vaultkeeper daemon")]
     Disconnected,
-    #[error("the bw-lite daemon did not answer within {0:?}")]
+    #[error("the Vaultkeeper daemon did not answer within {0:?}")]
     Timeout(Duration),
     #[error("invalid data over IPC: {0}")]
     Convert(#[from] ConvertError),
@@ -59,7 +59,7 @@ impl IpcError {
 
 /// `VaultService` methods can only return the vault's error type, so IPC failures travel as
 /// `Error::Io` with the [`IpcError`] as source; [`ipc_error`] gets it back.
-impl From<IpcError> for bwl_vault::Error {
+impl From<IpcError> for vk_vault::Error {
     fn from(error: IpcError) -> Self {
         Self::Io(io::Error::new(error.io_kind(), error))
     }
@@ -67,9 +67,9 @@ impl From<IpcError> for bwl_vault::Error {
 
 /// The IPC failure behind a vault error returned by [`crate::RemoteVault`], if it was one.
 #[must_use]
-pub fn ipc_error(error: &bwl_vault::Error) -> Option<&IpcError> {
+pub fn ipc_error(error: &vk_vault::Error) -> Option<&IpcError> {
     match error {
-        bwl_vault::Error::Io(io) => io.get_ref()?.downcast_ref::<IpcError>(),
+        vk_vault::Error::Io(io) => io.get_ref()?.downcast_ref::<IpcError>(),
         _ => None,
     }
 }
@@ -80,8 +80,8 @@ mod tests {
 
     #[test]
     fn disconnect_becomes_a_connection_aborted_io_error_that_downcasts_back() {
-        let error = bwl_vault::Error::from(IpcError::Disconnected);
-        let bwl_vault::Error::Io(io) = &error else {
+        let error = vk_vault::Error::from(IpcError::Disconnected);
+        let vk_vault::Error::Io(io) = &error else {
             panic!("expected an I/O error, got {error:?}");
         };
         assert_eq!(io.kind(), io::ErrorKind::ConnectionAborted);
@@ -89,27 +89,27 @@ mod tests {
         assert!(matches!(ipc_error(&error), Some(IpcError::Disconnected)));
         assert_eq!(
             error.to_string(),
-            "storage error: lost the connection to the bw-lite daemon"
+            "storage error: lost the connection to the Vaultkeeper daemon"
         );
     }
 
     #[test]
     fn timeout_keeps_its_kind_and_duration() {
-        let error = bwl_vault::Error::from(IpcError::Timeout(Duration::from_secs(30)));
-        let bwl_vault::Error::Io(io) = &error else {
+        let error = vk_vault::Error::from(IpcError::Timeout(Duration::from_secs(30)));
+        let vk_vault::Error::Io(io) = &error else {
             panic!("expected an I/O error");
         };
         assert_eq!(io.kind(), io::ErrorKind::TimedOut);
         assert_eq!(
             error.to_string(),
-            "storage error: the bw-lite daemon did not answer within 30s"
+            "storage error: the Vaultkeeper daemon did not answer within 30s"
         );
     }
 
     #[test]
     fn vault_errors_are_not_ipc_errors() {
-        assert!(ipc_error(&bwl_vault::Error::Locked).is_none());
-        let plain_io = bwl_vault::Error::Io(io::Error::other("disk full"));
+        assert!(ipc_error(&vk_vault::Error::Locked).is_none());
+        let plain_io = vk_vault::Error::Io(io::Error::other("disk full"));
         assert!(ipc_error(&plain_io).is_none());
     }
 }

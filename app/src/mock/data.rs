@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use bwl_vault::model::{
+use vk_vault::model::{
     AttachmentView, CollectionView, CustomField, FolderView, IdentityData, ItemData, ItemDraft,
     ItemId, ItemKind, ItemSummary, OrganizationView,
 };
@@ -521,7 +521,7 @@ fn push_specials(data: &mut AccountData, ids: &mut Ids) {
     data.items
         .push(MockItem::new(&ids.next(), trashed, true, true));
     let mut unsupported = empty_draft("Passkey placeholder", ItemData::SecureNote);
-    unsupported.notes = secret("Item type not supported by bw-lite");
+    unsupported.notes = secret("Item type not supported by Vaultkeeper");
     let mut item = MockItem::new(&ids.next(), unsupported, false, false);
     item.summary.kind = ItemKind::Unsupported(6);
     data.items.push(item);

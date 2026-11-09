@@ -3,9 +3,9 @@
 
 use std::{io, path::Path};
 
-use bwl_vault::DeviceInfo;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use vk_vault::DeviceInfo;
 
 use crate::os::{fs::write_private, layout::DEVICE_FILE};
 

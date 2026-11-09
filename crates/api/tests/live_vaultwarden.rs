@@ -3,7 +3,7 @@
 //! ```text
 //! docker run -d --rm --name vw -p 8099:80 -e SIGNUPS_ALLOWED=true \
 //!     -e I_REALLY_WANT_VOLATILE_STORAGE=true vaultwarden/server:latest
-//! VW_URL=http://localhost:8099 cargo test -p bwl-api --test live_vaultwarden
+//! VW_URL=http://localhost:8099 cargo test -p vk-api --test live_vaultwarden
 //! ```
 //!
 //! The server only checks that encrypted fields look like EncStrings, so random-looking
@@ -16,15 +16,15 @@ mod common;
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use bwl_api::{
-    Client, Error, LoginOutcome,
-    models::{CipherRequest, Login, SshKey, TokenResponse},
-    notifications::{ListenOptions, Notification, listen_with},
-};
 use serde_json::{Value, json};
 use tokio::{sync::mpsc, time::timeout};
 use url::Url;
 use uuid::Uuid;
+use vk_api::{
+    Client, Error, LoginOutcome,
+    models::{CipherRequest, Login, SshKey, TokenResponse},
+    notifications::{ListenOptions, Notification, listen_with},
+};
 
 const WAIT: Duration = Duration::from_secs(10);
 

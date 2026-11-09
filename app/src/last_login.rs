@@ -4,8 +4,8 @@
 //! the email out of plain text in the file and in backups; anyone holding the binary can still
 //! decrypt it, so nothing secret goes in here.
 
-use bwl_crypto::{EncString, SymmetricKey};
 use serde::{Deserialize, Serialize};
+use vk_crypto::{EncString, SymmetricKey};
 
 const KEY: [u8; 64] = [
     0xa4, 0xbe, 0xe3, 0x5b, 0x9f, 0x0a, 0x7b, 0x80, 0x87, 0x8d, 0x07, 0xa2, 0x51, 0xc1, 0x16, 0x83,

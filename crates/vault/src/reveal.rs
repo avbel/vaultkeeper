@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use bwl_api::models::{Cipher, cipher_type};
-use bwl_crypto::SymmetricKey;
-use bwl_gen::totp::{Totp, TotpCode};
+use vk_api::models::{Cipher, cipher_type};
+use vk_crypto::SymmetricKey;
+use vk_gen::totp::{Totp, TotpCode};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -87,7 +87,7 @@ fn totp_code(cipher: &Cipher, key: &SymmetricKey, unix_time: u64) -> Result<Totp
 fn login_field(
     cipher: &Cipher,
     key: &SymmetricKey,
-    pick: impl Fn(&bwl_api::models::Login) -> Option<&str>,
+    pick: impl Fn(&vk_api::models::Login) -> Option<&str>,
 ) -> Result<Zeroizing<String>> {
     let login = cipher.login.as_ref().ok_or(Error::NoSuchField)?;
     decrypt_text(pick(login), key)
@@ -96,7 +96,7 @@ fn login_field(
 fn card_field(
     cipher: &Cipher,
     key: &SymmetricKey,
-    pick: impl Fn(&bwl_api::models::Card) -> Option<&str>,
+    pick: impl Fn(&vk_api::models::Card) -> Option<&str>,
 ) -> Result<Zeroizing<String>> {
     let card = cipher.card.as_ref().ok_or(Error::NoSuchField)?;
     decrypt_text(pick(card), key)
@@ -105,7 +105,7 @@ fn card_field(
 fn identity_field(
     cipher: &Cipher,
     key: &SymmetricKey,
-    pick: impl Fn(&bwl_api::models::Identity) -> Option<&str>,
+    pick: impl Fn(&vk_api::models::Identity) -> Option<&str>,
 ) -> Result<Zeroizing<String>> {
     let identity = cipher.identity.as_ref().ok_or(Error::NoSuchField)?;
     decrypt_text(pick(identity), key)
@@ -114,7 +114,7 @@ fn identity_field(
 fn ssh_field(
     cipher: &Cipher,
     key: &SymmetricKey,
-    pick: impl Fn(&bwl_api::models::SshKey) -> Option<&str>,
+    pick: impl Fn(&vk_api::models::SshKey) -> Option<&str>,
 ) -> Result<Zeroizing<String>> {
     let ssh = cipher.ssh_key.as_ref().ok_or(Error::NoSuchField)?;
     decrypt_text(pick(ssh), key)
@@ -371,9 +371,9 @@ mod tests {
         assert_eq!(code.remaining, 1);
 
         let (mut bad, item) = crate::testutil::keyed("l2", 1, "Bad", &keys);
-        bad.login = Some(bwl_api::models::Login {
+        bad.login = Some(vk_api::models::Login {
             totp: crate::testutil::enc("not base32 !", &item),
-            ..bwl_api::models::Login::default()
+            ..vk_api::models::Login::default()
         });
         assert!(matches!(totp(&bad, &keys, 59), Err(Error::Gen(_))));
     }

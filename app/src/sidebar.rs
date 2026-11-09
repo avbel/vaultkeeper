@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use bwl_vault::model::{
+use vk_vault::model::{
     CollectionView, Filter, FolderView, ItemKind, ItemSummary, OrganizationView,
 };
 
@@ -248,7 +248,7 @@ pub fn filter_for(key: &SidebarKey) -> Option<Filter> {
 
 #[cfg(test)]
 mod tests {
-    use bwl_vault::model::ItemId;
+    use vk_vault::model::ItemId;
 
     use super::*;
 

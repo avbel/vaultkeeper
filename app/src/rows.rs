@@ -3,8 +3,8 @@
 
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 
-use bwl_vault::model::{ItemId, ItemSummary};
 use slint::{Model, ModelNotify, ModelTracker};
+use vk_vault::model::{ItemId, ItemSummary};
 
 use crate::{
     ui::RowData,
@@ -136,7 +136,7 @@ impl Model for RowsModel {
 
 #[cfg(test)]
 mod tests {
-    use bwl_vault::model::ItemKind;
+    use vk_vault::model::ItemKind;
 
     use super::*;
 

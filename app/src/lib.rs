@@ -1,4 +1,4 @@
-//! bw-lite desktop app: a Slint UI shell over `bwl_vault::VaultService`.
+//! vaultkeeper desktop app: a Slint UI shell over `vk_vault::VaultService`.
 //!
 //! One binary, two processes: [`daemon`] (`--daemon`/`--tray`) owns the vault, SSH agent, tray
 //! and hotkey; [`ui_process`] (`--ui`) shows the windows over IPC and exits when idle. `--mock`

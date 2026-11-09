@@ -5,16 +5,16 @@ mod common;
 
 use std::{path::PathBuf, sync::PoisonError, time::Duration};
 
-use bw_lite::{mock::MockCall, ui::ManagerWindow};
-use bwl_vault::{
-    VaultService,
-    model::{CopyField, Filter, ItemData, ItemKind},
-};
 use common::{
     CMD, Harness, Setup, block_on, click, control_exists, elapse, enabled, find, harness, key,
     pump, set_size, special, type_into, value_of,
 };
 use slint::{ComponentHandle, Model, platform::Key};
+use vaultkeeper::{mock::MockCall, ui::ManagerWindow};
+use vk_vault::{
+    VaultService,
+    model::{CopyField, Filter, ItemData, ItemKind},
+};
 
 fn open() -> (Harness, ManagerWindow) {
     let h = harness(Setup::default());
@@ -336,14 +336,14 @@ fn picking_an_account_in_the_account_menu_switches_to_it() {
             format!(
                 "{} @ {}",
                 account.email,
-                bw_lite::viewmodel::host(&account.server)
+                vaultkeeper::viewmodel::host(&account.server)
             )
         })
         .expect("bob");
     click(&manager, &label);
     pump();
     assert!(
-        matches!(h.vault.state(), bwl_vault::model::SessionState::Locked { ref email, .. } if email == "bob@work.example.org")
+        matches!(h.vault.state(), vk_vault::model::SessionState::Locked { ref email, .. } if email == "bob@work.example.org")
     );
 }
 
@@ -357,7 +357,7 @@ fn the_password_generate_button_opens_the_generator_whose_use_fills_the_field() 
     click(&manager, "Generate Password");
     pump();
     assert_eq!(manager.get_detail_mode(), 3, "the generator slide-over");
-    let state = manager.global::<bw_lite::ui::GeneratorState>();
+    let state = manager.global::<vaultkeeper::ui::GeneratorState>();
     assert!(state.get_can_use());
     let generated = state.get_result().to_string();
     assert_ne!(generated, "");
@@ -670,7 +670,7 @@ fn reprompt_items_need_the_master_password_before_secrets_are_copied() {
     type_into(
         &manager,
         "Reprompt master password",
-        bw_lite::mock::MOCK_MASTER_PASSWORD,
+        vaultkeeper::mock::MOCK_MASTER_PASSWORD,
     );
     click(&manager, "Confirm master password");
     assert!(!manager.get_reprompt_visible());
@@ -708,7 +708,7 @@ fn reprompt_also_guards_reveal_in_the_detail_pane() {
     type_into(
         &manager,
         "Reprompt master password",
-        bw_lite::mock::MOCK_MASTER_PASSWORD,
+        vaultkeeper::mock::MOCK_MASTER_PASSWORD,
     );
     click(&manager, "Confirm master password");
     let fields = manager.get_detail_fields();
@@ -757,13 +757,13 @@ fn a_collection_lists_only_its_items_not_the_whole_organization() {
 #[test]
 fn a_pasted_private_key_is_stored_as_openssh_with_its_public_key() {
     let h = harness(Setup {
-        ssh_keys: Some(std::sync::Arc::new(bw_lite::os::SshKeys)),
+        ssh_keys: Some(std::sync::Arc::new(vaultkeeper::os::SshKeys)),
         ..Setup::default()
     });
     h.app.start(false);
     let manager = h.app.manager_window().expect("manager");
     set_size(&manager, 1120.0, 1600.0);
-    let (pasted, public_key, fingerprint) = bwl_ssh::generate_ed25519().expect("key");
+    let (pasted, public_key, fingerprint) = vk_ssh::generate_ed25519().expect("key");
     manager.invoke_new_item(4);
     pump();
     type_into(&manager, "Name", "pasted key");
@@ -795,13 +795,13 @@ fn a_pasted_private_key_is_stored_as_openssh_with_its_public_key() {
 #[test]
 fn editing_the_private_key_recomputes_its_public_key_and_fingerprint_at_once() {
     let h = harness(Setup {
-        ssh_keys: Some(std::sync::Arc::new(bw_lite::os::SshKeys)),
+        ssh_keys: Some(std::sync::Arc::new(vaultkeeper::os::SshKeys)),
         ..Setup::default()
     });
     h.app.start(false);
     let manager = h.app.manager_window().expect("manager");
     set_size(&manager, 1120.0, 1600.0);
-    let (pasted, public_key, fingerprint) = bwl_ssh::generate_ed25519().expect("key");
+    let (pasted, public_key, fingerprint) = vk_ssh::generate_ed25519().expect("key");
     manager.invoke_new_item(4);
     pump();
     click(&manager, "Show Private key");
@@ -830,7 +830,7 @@ fn editing_the_private_key_recomputes_its_public_key_and_fingerprint_at_once() {
     );
 }
 
-fn item_id(h: &Harness, name: &str) -> bwl_vault::model::ItemId {
+fn item_id(h: &Harness, name: &str) -> vk_vault::model::ItemId {
     h.vault
         .search(name, &Filter::default())
         .expect("search")
@@ -863,7 +863,7 @@ fn confirm_reprompt(manager: &ManagerWindow) {
     type_into(
         manager,
         "Reprompt master password",
-        bw_lite::mock::MOCK_MASTER_PASSWORD,
+        vaultkeeper::mock::MOCK_MASTER_PASSWORD,
     );
     click(manager, "Confirm master password");
 }
@@ -978,7 +978,7 @@ fn a_save_after_the_item_changed_elsewhere_is_refused_and_keeps_the_form() {
     click(&manager, "Save");
     assert_eq!(manager.get_detail_mode(), 2, "the form stays open");
     assert!(
-        value_of(&manager, "Edit error").starts_with(bwl_vault::CONFLICT_MESSAGE),
+        value_of(&manager, "Edit error").starts_with(vk_vault::CONFLICT_MESSAGE),
         "{}",
         value_of(&manager, "Edit error")
     );
@@ -1048,7 +1048,7 @@ fn the_edit_form_keeps_the_picked_folder_when_the_folder_list_changes() {
 #[test]
 fn a_hidden_custom_field_without_a_visible_value_has_no_reveal_or_copy() {
     let (h, manager) = open();
-    let draft = bwl_vault::model::ItemDraft {
+    let draft = vk_vault::model::ItemDraft {
         name: "Shared note".to_owned(),
         notes: zeroize::Zeroizing::new(String::new()),
         folder_id: None,
@@ -1056,7 +1056,7 @@ fn a_hidden_custom_field_without_a_visible_value_has_no_reveal_or_copy() {
         collection_ids: Vec::new(),
         favorite: false,
         reprompt: false,
-        fields: vec![bwl_vault::model::CustomField {
+        fields: vec![vk_vault::model::CustomField {
             name: "Locked PIN".to_owned(),
             value: zeroize::Zeroizing::new(String::new()),
             hidden: true,

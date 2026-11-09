@@ -1,6 +1,6 @@
 //! Prints sleep/wake and screen lock/unlock events until Ctrl-C.
 //!
-//! `cargo run -p bwl-platform --example power_watch`, then lock the screen (Ctrl-Cmd-Q), unlock,
+//! `cargo run -p vk-platform --example power_watch`, then lock the screen (Ctrl-Cmd-Q), unlock,
 //! and sleep/wake the Mac.
 
 // Printing the events is the whole point of this example.
@@ -15,7 +15,7 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let _watcher = bwl_platform::power::subscribe(tx)?;
+    let _watcher = vk_platform::power::subscribe(tx)?;
     std::thread::spawn(move || {
         for event in rx {
             println!("{event:?}");

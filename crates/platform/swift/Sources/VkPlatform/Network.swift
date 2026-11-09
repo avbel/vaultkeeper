@@ -22,7 +22,7 @@ private final class NetworkObserver {
     monitor.pathUpdateHandler = { [weak self] path in
       self?.emit(path.status == .satisfied ? pathSatisfied : pathUnsatisfied)
     }
-    monitor.start(queue: DispatchQueue(label: "bw-lite.network"))
+    monitor.start(queue: DispatchQueue(label: "vaultkeeper.network"))
   }
 
   // Holding the lock while calling out lets stop() guarantee no callback still runs once it
@@ -41,14 +41,14 @@ private final class NetworkObserver {
   }
 }
 
-@_cdecl("bwl_network_subscribe")
-public func bwlNetworkSubscribe(_ callback: NetworkCallback, _ context: UnsafeMutableRawPointer?)
+@_cdecl("vk_network_subscribe")
+public func vkNetworkSubscribe(_ callback: NetworkCallback, _ context: UnsafeMutableRawPointer?)
   -> UnsafeMutableRawPointer
 {
   Unmanaged.passRetained(NetworkObserver(callback: callback, context: context)).toOpaque()
 }
 
-@_cdecl("bwl_network_unsubscribe")
-public func bwlNetworkUnsubscribe(_ token: UnsafeMutableRawPointer) {
+@_cdecl("vk_network_unsubscribe")
+public func vkNetworkUnsubscribe(_ token: UnsafeMutableRawPointer) {
   Unmanaged<NetworkObserver>.fromOpaque(token).takeRetainedValue().stop()
 }

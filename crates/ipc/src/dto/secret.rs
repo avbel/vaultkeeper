@@ -6,15 +6,15 @@
 
 use std::{mem, sync::Arc};
 
-use bwl_vault::{
+use serde::{Deserialize, Serialize};
+use url::Url;
+use vk_vault::{
     TotpCode,
     model::{
         CustomField, IdentityData, ItemData, ItemDraft, LoginRequest, SshKeyMaterial,
         TwoFactorAnswer,
     },
 };
-use serde::{Deserialize, Serialize};
-use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{ConvertError, dto::view::provider_from_id};
@@ -396,7 +396,7 @@ impl From<SshKeyMaterial> for SshKeyDto {
 impl From<SshKeyDto> for SshKeyMaterial {
     fn from(key: SshKeyDto) -> Self {
         Self {
-            cipher_id: bwl_vault::model::ItemId(key.cipher_id),
+            cipher_id: vk_vault::model::ItemId(key.cipher_id),
             name: key.name,
             private_key: key.private_key,
         }
@@ -405,8 +405,8 @@ impl From<SshKeyDto> for SshKeyMaterial {
 
 #[cfg(test)]
 mod tests {
-    use bwl_vault::TwoFactorProvider;
     use serde::de::DeserializeOwned;
+    use vk_vault::TwoFactorProvider;
 
     use super::*;
     use crate::frame::{HEADER_LEN, decode, encode};
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn ssh_key_material_round_trips() {
         let key = SshKeyMaterial {
-            cipher_id: bwl_vault::model::ItemId("k1".into()),
+            cipher_id: vk_vault::model::ItemId("k1".into()),
             name: "deploy".to_owned(),
             private_key: secret("-----BEGIN OPENSSH PRIVATE KEY-----\nBBBB\n"),
         };

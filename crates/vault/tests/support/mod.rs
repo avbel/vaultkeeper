@@ -15,17 +15,15 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bwl_api::{
-    Client, DeviceInfo, LoginOutcome, TwoFactorProvider, TwoFactorToken, models::Cipher,
-};
-use bwl_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
-use bwl_vault::{
-    MemorySecretStore, SecretStore, Timings, Vault, VaultConfig, VaultService,
-    model::{LoginRequest, LoginStep},
-};
 use serde_json::{Value, json};
 use url::Url;
 use uuid::Uuid;
+use vk_api::{Client, DeviceInfo, LoginOutcome, TwoFactorProvider, TwoFactorToken, models::Cipher};
+use vk_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
+use vk_vault::{
+    MemorySecretStore, SecretStore, Timings, Vault, VaultConfig, VaultService,
+    model::{LoginRequest, LoginStep},
+};
 use zeroize::Zeroizing;
 
 pub const RSA_PRIVATE_DER: &[u8] = include_bytes!("../fixtures/rsa_private.der");
@@ -188,7 +186,7 @@ pub struct TestVault {
 
 impl TestVault {
     pub fn new() -> Self {
-        let data_dir = std::env::temp_dir().join(format!("bwl-e2e-{}", Uuid::new_v4().simple()));
+        let data_dir = std::env::temp_dir().join(format!("vk-e2e-{}", Uuid::new_v4().simple()));
         Self::open_at(data_dir, device())
     }
 
@@ -207,7 +205,7 @@ impl TestVault {
     }
 
     pub fn with_timings(timings: Timings) -> Self {
-        let data_dir = std::env::temp_dir().join(format!("bwl-e2e-{}", Uuid::new_v4().simple()));
+        let data_dir = std::env::temp_dir().join(format!("vk-e2e-{}", Uuid::new_v4().simple()));
         Self::open_custom(
             data_dir,
             device(),
@@ -474,7 +472,7 @@ pub async fn enable_authenticator(
 }
 
 pub fn totp(secret: &str, unix_time: u64) -> String {
-    bwl_gen::totp::Totp::parse(secret)
+    vk_gen::totp::Totp::parse(secret)
         .unwrap()
         .generate(unix_time)
         .code
@@ -550,8 +548,8 @@ pub async fn wait_until(mut check: impl FnMut() -> bool) {
     .await;
 }
 
-pub fn email_factor(code: &str, remember: bool) -> bwl_vault::model::TwoFactorAnswer {
-    bwl_vault::model::TwoFactorAnswer {
+pub fn email_factor(code: &str, remember: bool) -> vk_vault::model::TwoFactorAnswer {
+    vk_vault::model::TwoFactorAnswer {
         provider: TwoFactorProvider::Email,
         code: code.to_owned(),
         remember,
@@ -560,7 +558,7 @@ pub fn email_factor(code: &str, remember: bool) -> bwl_vault::model::TwoFactorAn
 
 pub fn names(vault: &Vault) -> Vec<String> {
     vault
-        .search("", &bwl_vault::model::Filter::default())
+        .search("", &vk_vault::model::Filter::default())
         .unwrap()
         .iter()
         .map(|item| item.name.to_string())
@@ -568,7 +566,7 @@ pub fn names(vault: &Vault) -> Vec<String> {
 }
 
 pub mod drafts {
-    use bwl_vault::model::{CustomField, IdentityData, ItemData, ItemDraft};
+    use vk_vault::model::{CustomField, IdentityData, ItemData, ItemDraft};
     use zeroize::Zeroizing;
 
     /// RFC 6238 appendix B secret "12345678901234567890" in base32.
@@ -672,7 +670,7 @@ impl RawSession {
     /// Creates a personal login from this (other) device, encrypted the way official clients do.
     pub async fn create_login(&self, account: &TestAccount, name: &str) -> Cipher {
         let item_key = SymmetricKey::generate();
-        let request = bwl_api::models::CipherRequest {
+        let request = vk_api::models::CipherRequest {
             r#type: 1,
             name: enc(name, &item_key),
             key: Some(
@@ -680,12 +678,12 @@ impl RawSession {
                     .unwrap()
                     .to_string(),
             ),
-            login: Some(bwl_api::models::Login {
+            login: Some(vk_api::models::Login {
                 username: Some(enc("someone", &item_key)),
                 password: Some(enc("from-elsewhere", &item_key)),
-                ..bwl_api::models::Login::default()
+                ..vk_api::models::Login::default()
             }),
-            ..bwl_api::models::CipherRequest::default()
+            ..vk_api::models::CipherRequest::default()
         };
         self.client
             .create_cipher(&self.token, &request, &[])

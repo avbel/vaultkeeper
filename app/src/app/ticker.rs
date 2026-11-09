@@ -3,8 +3,8 @@
 
 use std::{ops::Range, time::Duration};
 
-use bwl_vault::VaultService;
 use slint::{ComponentHandle, Timer, TimerMode};
+use vk_vault::VaultService;
 
 use super::{App, handler, quick::QUICK_ROWS};
 use crate::{

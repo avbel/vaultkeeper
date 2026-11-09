@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use bwl_vault::VaultService;
 use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, VecModel};
+use vk_vault::VaultService;
 
 use super::{App, handler, hide, retire, show};
 use crate::{
@@ -90,7 +90,7 @@ impl<S: VaultService> App<S> {
         );
         window.set_unlocked(matches!(
             self.vault.state(),
-            bwl_vault::model::SessionState::Unlocked { .. }
+            vk_vault::model::SessionState::Unlocked { .. }
         ));
         window.set_ssh_agent(settings.ssh_agent);
         let socket = self.hooks.ssh_agent.socket_path();
@@ -227,7 +227,7 @@ impl<S: VaultService> App<S> {
             .find(|account| account.active);
         let unlocked = matches!(
             self.vault.state(),
-            bwl_vault::model::SessionState::Unlocked { .. }
+            vk_vault::model::SessionState::Unlocked { .. }
         );
         let (Some(account), true) = (account, unlocked) else {
             self.report(Err(crate::hooks::HookError::Failed(
@@ -285,8 +285,8 @@ mod tests {
     #[test]
     fn ssh_config_lines_quote_the_socket_path() {
         assert_eq!(
-            ssh_config_lines("/Users/me/Library/Application Support/bw-lite/ssh-agent.sock"),
-            "Host *\n    IdentityAgent \"/Users/me/Library/Application Support/bw-lite/ssh-agent.sock\""
+            ssh_config_lines("/Users/me/Library/Application Support/vaultkeeper/ssh-agent.sock"),
+            "Host *\n    IdentityAgent \"/Users/me/Library/Application Support/vaultkeeper/ssh-agent.sock\""
         );
     }
 }

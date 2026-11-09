@@ -1,5 +1,5 @@
 [package]
-name = "bwl-ssh"
+name = "vk-ssh"
 description = "SSH agent adapter over the vendored Bitwarden ssh_agent"
 version.workspace = true
 edition.workspace = true

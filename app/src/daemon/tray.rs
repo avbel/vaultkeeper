@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use bwl_vault::{VaultService, model::SessionState};
 use slint::{ModelRc, SharedString, VecModel, language::ColorScheme};
+use vk_vault::{VaultService, model::SessionState};
 
 use super::{
     Daemon,
@@ -74,7 +74,7 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         tray_sync_label(
             last_sync.map(local_time),
             chrono::Local::now().naive_local(),
-            sync.failure(last_sync),
+            sync.failure(vault.active_account_id().as_deref(), last_sync),
         )
         .into(),
     );

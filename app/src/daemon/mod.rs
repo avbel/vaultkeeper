@@ -1,4 +1,4 @@
-//! `bw-lite --daemon` (also `--tray`, which autostart uses): owns the vault, the IPC server, the
+//! `vaultkeeper --daemon` (also `--tray`, which autostart uses): owns the vault, the IPC server, the
 //! SSH agent, the lock timer, power events, the tray and the global hotkey. It runs the Slint
 //! event loop on the main thread for the tray alone; windows live in the `--ui` process.
 
@@ -18,7 +18,7 @@ pub mod tray_sync;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
-use bwl_platform::single_instance;
+use vk_platform::single_instance;
 
 pub use self::core::{Daemon, DaemonConfig, Peers};
 use self::routing::Launch;
@@ -28,7 +28,7 @@ use crate::run::{Backend, select_backend};
 /// data dir override lives in [`crate::os::layout::data_dir`]).
 #[derive(Debug, Default)]
 struct TestOverrides {
-    /// No tray, no hotkey (no menu bar icon, no clash with a running bw-lite).
+    /// No tray, no hotkey (no menu bar icon, no clash with a running vaultkeeper).
     headless: bool,
     /// Any process of this user may connect as the UI (the test binary drives the daemon).
     any_peer: bool,
@@ -43,10 +43,10 @@ impl TestOverrides {
     fn from_env() -> Self {
         let set = |name: &str| std::env::var_os(name).is_some_and(|value| value == "1");
         Self {
-            headless: set("BW_LITE_TEST_HEADLESS"),
-            any_peer: set("BW_LITE_TEST_ANY_PEER"),
-            no_ui: set("BW_LITE_TEST_NO_UI"),
-            keychain_prefix: std::env::var("BW_LITE_TEST_KEYCHAIN_PREFIX").ok(),
+            headless: set("VAULTKEEPER_TEST_HEADLESS"),
+            any_peer: set("VAULTKEEPER_TEST_ANY_PEER"),
+            no_ui: set("VAULTKEEPER_TEST_NO_UI"),
+            keychain_prefix: std::env::var("VAULTKEEPER_TEST_KEYCHAIN_PREFIX").ok(),
         }
     }
 
@@ -69,16 +69,16 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         }
     }) {
         Ok(instance) => instance,
-        Err(bwl_platform::Error::AlreadyRunning) => {
-            tracing::info!("bw-lite is already running; asked it to show a window");
+        Err(vk_platform::Error::AlreadyRunning) => {
+            tracing::info!("vaultkeeper is already running; asked it to show a window");
             return Ok(());
         }
-        Err(error) => return Err(error).context("check for a running bw-lite"),
+        Err(error) => return Err(error).context("check for a running Vaultkeeper"),
     };
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .thread_name("bw-lite-daemon")
+        .thread_name("vaultkeeper-daemon")
         .enable_all()
         .build()
         .context("start the async runtime")?;
@@ -94,13 +94,13 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         config.peers = Peers::AnyOfThisUser;
     }
     if !overrides.no_ui {
-        config.ui_exe = Some(std::env::current_exe().context("locate the bw-lite binary")?);
+        config.ui_exe = Some(std::env::current_exe().context("locate the vaultkeeper binary")?);
     }
     let daemon = runtime.block_on(Daemon::start(config))?;
     let forwarder = {
         let daemon = Arc::clone(&daemon);
         std::thread::Builder::new()
-            .name("bw-lite-instance".to_owned())
+            .name("vaultkeeper-instance".to_owned())
             .spawn(move || {
                 for command in forward_rx {
                     daemon.apply(routing::second_launch(command));
@@ -116,12 +116,12 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     let signals = runtime.spawn(quit_on_signal());
     if let Some(effect) = routing::startup(
         launch,
-        &bwl_vault::VaultService::state(daemon.vault().as_ref()),
+        &vk_vault::VaultService::state(daemon.vault().as_ref()),
         daemon.settings().ask_unlock_on_start,
     ) {
         daemon.apply(effect);
     }
-    tracing::info!(socket = %daemon.data_dir().display(), "bw-lite daemon running");
+    tracing::info!(socket = %daemon.data_dir().display(), "vaultkeeper daemon running");
     let ran = slint::run_event_loop_until_quit().context("run the event loop");
     runtime.block_on(daemon.shutdown());
     signals.abort();
@@ -136,7 +136,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
 
 /// Gives a login agent written by an older version the restart-after-crash setting.
 fn refresh_login_agent() {
-    match bwl_platform::autostart::refresh() {
+    match vk_platform::autostart::refresh() {
         Ok(true) => tracing::info!("login item updated to restart after a crash"),
         Ok(false) => {}
         Err(error) => tracing::warn!(%error, "cannot check the login item"),
@@ -197,9 +197,9 @@ fn follow_hotkey_setting(
 }
 
 /// Sleep, wake and screen lock; delivered on the main run loop, handled on a small thread.
-fn watch_power(daemon: &Arc<Daemon>) -> Option<bwl_platform::power::PowerWatcher> {
+fn watch_power(daemon: &Arc<Daemon>) -> Option<vk_platform::power::PowerWatcher> {
     let (events_tx, events) = std::sync::mpsc::channel();
-    let watcher = match bwl_platform::power::subscribe(events_tx) {
+    let watcher = match vk_platform::power::subscribe(events_tx) {
         Ok(watcher) => watcher,
         Err(error) => {
             tracing::warn!(%error, "no sleep/wake events; lock on sleep is off");
@@ -208,7 +208,7 @@ fn watch_power(daemon: &Arc<Daemon>) -> Option<bwl_platform::power::PowerWatcher
     };
     let daemon = Arc::clone(daemon);
     let spawned = std::thread::Builder::new()
-        .name("bw-lite-power".to_owned())
+        .name("vaultkeeper-power".to_owned())
         .spawn(move || {
             for event in events {
                 tracing::debug!(?event, "power event");
@@ -223,9 +223,9 @@ fn watch_power(daemon: &Arc<Daemon>) -> Option<bwl_platform::power::PowerWatcher
 
 /// Network path changes, on a small thread: an offline vault probes the server as soon as a
 /// network is usable again instead of waiting for its next retry.
-fn watch_network(daemon: &Arc<Daemon>) -> Option<bwl_platform::network::NetworkWatcher> {
+fn watch_network(daemon: &Arc<Daemon>) -> Option<vk_platform::network::NetworkWatcher> {
     let (events_tx, events) = std::sync::mpsc::channel();
-    let watcher = match bwl_platform::network::subscribe(events_tx) {
+    let watcher = match vk_platform::network::subscribe(events_tx) {
         Ok(watcher) => watcher,
         Err(error) => {
             tracing::warn!(%error, "no network change events");
@@ -234,7 +234,7 @@ fn watch_network(daemon: &Arc<Daemon>) -> Option<bwl_platform::network::NetworkW
     };
     let daemon = Arc::clone(daemon);
     let spawned = std::thread::Builder::new()
-        .name("bw-lite-network".to_owned())
+        .name("vaultkeeper-network".to_owned())
         .spawn(move || {
             for event in events {
                 tracing::debug!(?event, "network event");

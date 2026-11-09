@@ -16,13 +16,15 @@ use std::{
     time::Duration,
 };
 
-use bwl_ipc::{
+use tokio::sync::{mpsc, watch};
+use url::Url;
+use vk_ipc::{
     DaemonEvent, RemoteVault, ServeOptions, ServerHandle, TouchIdBackend, TouchIdFailure,
     frame::{HEADER_LEN, decode, encode},
     protocol::{DaemonMessage, PROTOCOL_VERSION, UiMessage, Welcome},
     serve, serve_with,
 };
-use bwl_vault::{
+use vk_vault::{
     Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, CustomField, Filter, FolderView,
@@ -30,8 +32,6 @@ use bwl_vault::{
         OrganizationView, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
-use tokio::sync::{mpsc, watch};
-use url::Url;
 use zeroize::Zeroizing;
 
 pub const SERVER: &str = "https://vault.example.com/";
@@ -407,7 +407,7 @@ impl VaultService for FakeVault {
         }
         self.record("sync".to_owned());
         if self.offline.load(Ordering::SeqCst) {
-            return Err(Error::Api(bwl_api::Error::Http(transport_failure().await)));
+            return Err(Error::Api(vk_api::Error::Http(transport_failure().await)));
         }
         Ok(())
     }
@@ -424,7 +424,7 @@ impl VaultService for FakeVault {
     async fn probe_server(&self, server: &Url) -> Result<ServerProbe> {
         self.record(format!("probe_server {server}"));
         if self.offline.load(Ordering::SeqCst) {
-            return Err(Error::Api(bwl_api::Error::Http(transport_failure().await)));
+            return Err(Error::Api(vk_api::Error::Http(transport_failure().await)));
         }
         Ok(ServerProbe {
             version: Some(PROBE_VERSION.to_owned()),
@@ -471,7 +471,7 @@ impl VaultService for FakeVault {
     fn totp(&self, id: &ItemId, unix_time: u64) -> Result<TotpCode> {
         self.require_unlocked()?;
         if id.0.as_ref() == "bad-totp" {
-            return Err(Error::Gen(bwl_gen::Error::InvalidTotp(
+            return Err(Error::Gen(vk_gen::Error::InvalidTotp(
                 "secret is not valid base32",
             )));
         }
@@ -664,7 +664,7 @@ impl SocketDir {
     pub fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let unique = NEXT.fetch_add(1, Ordering::SeqCst);
-        let dir = PathBuf::from(format!("/tmp/bwlipc-{}-{unique}", std::process::id()));
+        let dir = PathBuf::from(format!("/tmp/vkipc-{}-{unique}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Self(dir)
     }
@@ -724,7 +724,7 @@ impl Daemon {
         self.dir.socket()
     }
 
-    pub async fn connect(&self) -> (RemoteVault, bwl_ipc::EventStream) {
+    pub async fn connect(&self) -> (RemoteVault, vk_ipc::EventStream) {
         RemoteVault::connect(self.socket()).await.expect("connect")
     }
 }

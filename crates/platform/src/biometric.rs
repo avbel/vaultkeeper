@@ -240,7 +240,7 @@ mod tests {
 
     /// Creates a real Secure Enclave key; creation never prompts but fails with
     /// errSecInteractionNotAllowed (-25308) while the session is locked, so it is opt-in:
-    /// `cargo test -p bwl-platform -- --ignored`.
+    /// `cargo test -p vk-platform -- --ignored`.
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "needs an unlocked interactive macOS session with a Secure Enclave"]

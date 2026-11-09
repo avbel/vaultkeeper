@@ -2,8 +2,8 @@
 
 use std::{future::Future, sync::Arc, sync::atomic::Ordering, time::SystemTime};
 
-use bwl_api::{Client, models::SyncResponse};
 use tokio::time::Instant;
+use vk_api::{Client, models::SyncResponse};
 use zeroize::Zeroizing;
 
 use super::{AccessToken, Ctx, Inner, lock, secret_error, session::token_expiry};
@@ -86,7 +86,7 @@ impl Inner {
         };
         drop(previous);
         // Before the bump, so whoever reacts to it (the UI's status line) reads the new time.
-        *lock(&self.last_sync) = Some(SystemTime::now());
+        lock(&self.last_sync).insert(Arc::clone(&ctx.account_id), SystemTime::now());
         self.bump();
         if ssh_changed {
             self.bump_ssh();
@@ -126,7 +126,7 @@ impl Inner {
     pub(crate) async fn call<T, F, Fut>(self: &Arc<Self>, ctx: &Ctx, op: F) -> Result<T>
     where
         F: Fn(Arc<Client>, Zeroizing<String>) -> Fut,
-        Fut: Future<Output = bwl_api::Result<T>>,
+        Fut: Future<Output = vk_api::Result<T>>,
     {
         let result = self.call_once_refreshed(ctx, op).await;
         if let Err(error) = &result
@@ -140,11 +140,11 @@ impl Inner {
     async fn call_once_refreshed<T, F, Fut>(&self, ctx: &Ctx, op: F) -> Result<T>
     where
         F: Fn(Arc<Client>, Zeroizing<String>) -> Fut,
-        Fut: Future<Output = bwl_api::Result<T>>,
+        Fut: Future<Output = vk_api::Result<T>>,
     {
         let token = self.access_token(ctx, None).await?;
         match op(Arc::clone(&ctx.client), token.clone()).await {
-            Err(bwl_api::Error::Unauthorized) => {
+            Err(vk_api::Error::Unauthorized) => {
                 let fresh = self.access_token(ctx, Some(&token)).await?;
                 Ok(op(Arc::clone(&ctx.client), fresh).await?)
             }
@@ -187,14 +187,14 @@ impl Inner {
             .secrets
             .get(&key)
             .map_err(secret_error)?
-            .ok_or(Error::Api(bwl_api::Error::Unauthorized))?;
+            .ok_or(Error::Api(vk_api::Error::Unauthorized))?;
         let refresh = std::str::from_utf8(&stored)
             .map_err(|_| Error::protocol("the stored refresh token is not text"))?;
         let response = match ctx.client.refresh(refresh).await {
             Ok(response) => response,
-            Err(bwl_api::Error::Unauthorized) => {
+            Err(vk_api::Error::Unauthorized) => {
                 self.secrets.delete(&key).map_err(secret_error)?;
-                return Err(Error::Api(bwl_api::Error::Unauthorized));
+                return Err(Error::Api(vk_api::Error::Unauthorized));
             }
             Err(error) => return Err(error.into()),
         };

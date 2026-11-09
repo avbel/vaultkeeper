@@ -5,21 +5,21 @@ mod common;
 
 use std::{path::PathBuf, sync::Arc};
 
-use bwl_ipc::{
-    ServeOptions, TouchIdBackend, TouchIdFailure,
-    dto::{AccountDto, FolderDto, SessionStateDto, WireError},
-    protocol::{Call, DaemonMessage, Event, Reply, UiMessage},
-};
-use bwl_vault::{
-    Error, TotpCode, TwoFactorProvider, VaultService,
-    model::{
-        CopyField, Filter, ItemData, ItemId, LoginRequest, LoginStep, SessionState, TwoFactorAnswer,
-    },
-};
 use common::{
     Daemon, EMAIL, FakeTouchId, FakeVault, OTHER_EMAIL, OTHER_SERVER, PASSWORD, RawClient, SERVER,
     USER_KEY, accounts, attachment, collections, draft, folders, locked, organizations, secret,
     unlocked, url,
+};
+use vk_ipc::{
+    ServeOptions, TouchIdBackend, TouchIdFailure,
+    dto::{AccountDto, FolderDto, SessionStateDto, WireError},
+    protocol::{Call, DaemonMessage, Event, Reply, UiMessage},
+};
+use vk_vault::{
+    Error, TotpCode, TwoFactorProvider, VaultService,
+    model::{
+        CopyField, Filter, ItemData, ItemId, LoginRequest, LoginStep, SessionState, TwoFactorAnswer,
+    },
 };
 use zeroize::Zeroizing;
 
@@ -27,7 +27,7 @@ fn id(text: &str) -> ItemId {
     ItemId(text.into())
 }
 
-async fn unlocked_pair() -> (Daemon, bwl_ipc::RemoteVault) {
+async fn unlocked_pair() -> (Daemon, vk_ipc::RemoteVault) {
     let daemon = Daemon::start(FakeVault::new(unlocked(), 20)).await;
     let (vault, _events) = daemon.connect().await;
     (daemon, vault)
@@ -112,8 +112,8 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
 
     // Key material never crosses the socket: these fail in the client and reach no daemon.
     let refused = vault.unlock_with_user_key(Zeroizing::new(USER_KEY.to_vec()));
-    assert!(bwl_ipc::ipc_error(&refused.expect_err("no key unlock")).is_some());
-    assert!(bwl_ipc::ipc_error(&vault.user_key().expect_err("no user key")).is_some());
+    assert!(vk_ipc::ipc_error(&refused.expect_err("no key unlock")).is_some());
+    assert!(vk_ipc::ipc_error(&vault.user_key().expect_err("no user key")).is_some());
 
     // Touch ID runs in the daemon: it reads the key from its own vault and seals it.
     assert!(matches!(
@@ -220,14 +220,14 @@ async fn master_password_check_and_sync() {
     daemon.fake.set_offline(true);
     // The fake fails with a real reqwest transport error, which cannot cross the socket as is.
     let error = vault.sync().await.expect_err("offline");
-    assert!(matches!(error, bwl_vault::Error::Offline), "{error:?}");
+    assert!(matches!(error, vk_vault::Error::Offline), "{error:?}");
     assert!(error.is_offline());
     assert!(vault.is_offline());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_probe_round_trips_in_any_state() {
-    let daemon = Daemon::start(FakeVault::new(bwl_vault::model::SessionState::LoggedOut, 0)).await;
+    let daemon = Daemon::start(FakeVault::new(vk_vault::model::SessionState::LoggedOut, 0)).await;
     let (vault, _events) = daemon.connect().await;
     let server = common::url("https://vw.lan:8443/vw");
     let probe = vault.probe_server(&server).await.expect("probe");
@@ -256,7 +256,7 @@ async fn search_reveal_totp_and_draft_round_trip() {
         .expect("search");
     assert_eq!(one.len(), 1);
     assert_eq!(one[0].id, id("item-013"));
-    assert_eq!(one[0].kind, bwl_vault::model::ItemKind::Login);
+    assert_eq!(one[0].kind, vk_vault::model::ItemKind::Login);
     let favorites = Filter {
         favorites_only: true,
         ..Filter::default()
@@ -357,7 +357,7 @@ async fn writes_attachments_folders_and_ssh_keys_round_trip() {
         panic!("SSH keys stay in the daemon");
     };
     assert!(
-        bwl_ipc::ipc_error(&refused).is_some(),
+        vk_ipc::ipc_error(&refused).is_some(),
         "the client never asks the daemon for private keys"
     );
 
@@ -445,7 +445,7 @@ async fn requests_that_do_not_map_onto_the_model_get_an_error_reply() {
     raw.send(&UiMessage::Request {
         id: 5,
         call: Call::Login {
-            request: bwl_ipc::dto::LoginRequestDto {
+            request: vk_ipc::dto::LoginRequestDto {
                 server: "vault.example.com".to_owned(),
                 email: EMAIL.to_owned(),
                 password: secret(PASSWORD),
@@ -461,7 +461,7 @@ async fn requests_that_do_not_map_onto_the_model_get_an_error_reply() {
                     panic!("expected an API error");
                 };
                 let error = Error::Api(api.into());
-                assert!(matches!(error, Error::Api(bwl_api::Error::Url(_))));
+                assert!(matches!(error, Error::Api(vk_api::Error::Url(_))));
                 break;
             }
             DaemonMessage::Event(_) => {}
@@ -495,7 +495,7 @@ impl FakeClipboard {
     }
 }
 
-impl bwl_ipc::ClipboardHost for FakeClipboard {
+impl vk_ipc::ClipboardHost for FakeClipboard {
     fn copy(
         &self,
         text: &str,
@@ -521,7 +521,7 @@ async fn copies_and_clears_run_in_the_daemon_clipboard() {
     let clipboard = Arc::new(FakeClipboard::default());
     let options = ServeOptions::new()
         .expect("options")
-        .with_clipboard(Arc::clone(&clipboard) as Arc<dyn bwl_ipc::ClipboardHost>);
+        .with_clipboard(Arc::clone(&clipboard) as Arc<dyn vk_ipc::ClipboardHost>);
     let daemon = Daemon::start_with(FakeVault::new(locked(), 0), options).await;
     let (vault, _events) = daemon.connect().await;
     vault

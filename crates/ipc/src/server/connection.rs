@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use bwl_vault::VaultService;
 use tokio::{
     io::AsyncWriteExt,
     net::{
@@ -16,6 +15,7 @@ use tokio::{
     sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
     task::JoinSet,
 };
+use vk_vault::VaultService;
 use zeroize::Zeroizing;
 
 use super::{Backends, DaemonEvent, Shared, TaskGuard, dispatch::dispatch, log_join, stopped};
@@ -465,7 +465,7 @@ fn snapshot<S: VaultService>(service: &S) -> Snapshot {
     }
 }
 
-fn wire_list<T, D: From<T>>(list: bwl_vault::Result<Vec<T>>) -> Result<Vec<D>, WireError> {
+fn wire_list<T, D: From<T>>(list: vk_vault::Result<Vec<T>>) -> Result<Vec<D>, WireError> {
     list.map(|items| items.into_iter().map(D::from).collect())
         .map_err(|error| WireError::from(&error))
 }

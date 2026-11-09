@@ -1,5 +1,5 @@
 [package]
-name = "bwl-api"
+name = "vk-api"
 description = "HTTP client and wire models for the Bitwarden/Vaultwarden API"
 version.workspace = true
 edition.workspace = true

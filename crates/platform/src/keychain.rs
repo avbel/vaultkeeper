@@ -1,4 +1,4 @@
-//! Generic-password items under service `bw-lite`.
+//! Generic-password items under service `vaultkeeper`.
 //!
 //! Items live in the login keychain. Its ACL trusts the binary that created an item, so a
 //! rebuilt binary with a different code signature gets an "allow access" prompt on read.
@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 use crate::Result;
 
 #[cfg(target_os = "macos")]
-const SERVICE: &str = "bw-lite";
+const SERVICE: &str = "vaultkeeper";
 
 /// Creates or replaces the item for `account`.
 pub fn set(account: &str, secret: &[u8]) -> Result<()> {
@@ -166,7 +166,7 @@ mod tests {
     /// make the keychain prompt) is never touched.
     fn test_prefix() -> String {
         format!(
-            "bwl-platform-test.{}.{:x}.",
+            "vk-platform-test.{}.{:x}.",
             std::process::id(),
             rand::random::<u64>()
         )

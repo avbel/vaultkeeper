@@ -146,7 +146,7 @@ mod unix {
         let stop = Arc::new(AtomicBool::new(false));
         let serve_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
-            .name("bwl-single-instance".into())
+            .name("vk-single-instance".into())
             .spawn(move || serve(&listener, &serve_stop, &on_command))?;
         Ok(Guard {
             socket,

@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-  name: "BwlPlatform",
+  name: "VkPlatform",
   platforms: [.macOS(.v13)],
   products: [
-    .library(name: "BwlPlatform", type: .static, targets: ["BwlPlatform"])
+    .library(name: "VkPlatform", type: .static, targets: ["VkPlatform"])
   ],
   targets: [
-    .target(name: "BwlPlatform", path: "Sources/BwlPlatform")
+    .target(name: "VkPlatform", path: "Sources/VkPlatform")
   ]
 )

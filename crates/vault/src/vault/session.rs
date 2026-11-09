@@ -1,14 +1,17 @@
 //! Login, unlock, lock and account switching: the LoggedOut → Locked → Unlocked machine.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
-use bwl_api::{
+use tokio::time::Instant;
+use url::Url;
+use vk_api::{
     Client, LoginOutcome, TwoFactorProvider, TwoFactorToken,
     models::{Profile, SyncResponse, TokenResponse},
 };
-use bwl_crypto::{MasterKey, SymmetricKey};
-use tokio::time::Instant;
-use url::Url;
+use vk_crypto::{MasterKey, SymmetricKey};
 use zeroize::Zeroizing;
 
 use super::{AccessToken, Active, Inner, Unlocked, lock, locked_active, secret_error};
@@ -331,6 +334,8 @@ impl Inner {
             value: tokens.access,
             expires_at: token_expiry(tokens.expires_in),
         };
+        // The login's own sync counts; set before the activation's bump, which the UI reacts to.
+        lock(&self.last_sync).insert(Arc::from(id.as_str()), SystemTime::now());
         self.activate_logged_in(
             record,
             Arc::clone(&pending.client),
@@ -632,9 +637,9 @@ fn empty_profile(record: &AccountRecord) -> Profile {
     }
 }
 
-fn login_error(error: bwl_api::Error) -> Error {
+fn login_error(error: vk_api::Error) -> Error {
     match &error {
-        bwl_api::Error::Server {
+        vk_api::Error::Server {
             status: 400,
             message,
         } if message
@@ -665,19 +670,19 @@ mod tests {
 
     #[test]
     fn wrong_password_message_maps_to_invalid_password() {
-        let wrong = bwl_api::Error::Server {
+        let wrong = vk_api::Error::Server {
             status: 400,
             message: "Username or password is incorrect. Try again".into(),
         };
         assert!(matches!(login_error(wrong), Error::InvalidPassword));
-        let other = bwl_api::Error::Server {
+        let other = vk_api::Error::Server {
             status: 400,
             message: "Invalid TOTP code!".into(),
         };
         assert!(matches!(login_error(other), Error::Api(_)));
         assert!(matches!(
-            login_error(bwl_api::Error::Unauthorized),
-            Error::Api(bwl_api::Error::Unauthorized)
+            login_error(vk_api::Error::Unauthorized),
+            Error::Api(vk_api::Error::Unauthorized)
         ));
     }
 }

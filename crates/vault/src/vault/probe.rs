@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use bwl_api::Prober;
 use url::Url;
+use vk_api::Prober;
 
 use crate::{Result, model::ServerProbe};
 

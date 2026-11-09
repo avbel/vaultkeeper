@@ -238,7 +238,7 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
         });
         let worker = Arc::clone(&shared);
         let clearer = std::thread::Builder::new()
-            .name("bwl-clipboard".into())
+            .name("vk-clipboard".into())
             .spawn(move || run_clearer(&worker))?;
         Ok(Self {
             shared,
@@ -397,12 +397,12 @@ mod tests {
 
     /// The daemon copies from a blocking-pool thread, not a main thread. Touches the real
     /// pasteboard, so it only runs on request:
-    /// `cargo test -p bwl-platform real_pasteboard -- --ignored` (save your clipboard first).
+    /// `cargo test -p vk-platform real_pasteboard -- --ignored` (save your clipboard first).
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "uses the real pasteboard"]
     fn real_pasteboard_copy_and_clear_from_worker_threads() {
-        let probe = "bw-lite clipboard probe";
+        let probe = "vaultkeeper clipboard probe";
         let clipboard = std::thread::spawn(move || {
             let clipboard = SecretClipboard::new().expect("pasteboard");
             clipboard

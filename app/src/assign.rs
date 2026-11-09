@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use bwl_vault::model::{CollectionView, OrganizationView};
+use vk_vault::model::{CollectionView, OrganizationView};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {

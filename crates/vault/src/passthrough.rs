@@ -6,10 +6,10 @@
 //! it on would leave the item readable only in part.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use bwl_api::models::Extra;
-use bwl_crypto::{EncString, SymmetricKey};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
+use vk_api::models::Extra;
+use vk_crypto::{EncString, SymmetricKey};
 
 use crate::{Error, Result, keys::encrypt_text};
 
@@ -98,8 +98,8 @@ pub(crate) fn uri_checksum(uri: &str, key: &SymmetricKey) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use bwl_api::models::{Cipher, CipherRequest};
     use serde_json::json;
+    use vk_api::models::{Cipher, CipherRequest};
 
     use super::*;
     use crate::{
@@ -348,7 +348,7 @@ mod tests {
     fn refused_as_undecryptable(result: Result<CipherRequest>) -> bool {
         matches!(
             result,
-            Err(Error::Api(bwl_api::Error::Server { message, .. }))
+            Err(Error::Api(vk_api::Error::Server { message, .. }))
                 if message == UNDECRYPTABLE_PASSTHROUGH
         )
     }
@@ -526,7 +526,7 @@ mod tests {
             let extra = Extra::from_iter([("v".to_owned(), value)]);
             let error = carry(Some(&extra), Some(rekey)).unwrap_err();
             assert!(
-                matches!(&error, Error::Api(bwl_api::Error::Server { message, .. }) if message == UNDECRYPTABLE_PASSTHROUGH),
+                matches!(&error, Error::Api(vk_api::Error::Server { message, .. }) if message == UNDECRYPTABLE_PASSTHROUGH),
                 "{error:?}"
             );
         }

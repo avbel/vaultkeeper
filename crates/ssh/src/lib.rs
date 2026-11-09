@@ -5,7 +5,7 @@
 //! Unix only: the agent listens on a Unix domain socket.
 
 #[cfg(not(unix))]
-compile_error!("bwl-ssh serves a Unix domain socket and supports only Unix targets");
+compile_error!("vk-ssh serves a Unix domain socket and supports only Unix targets");
 
 mod approver;
 mod error;

@@ -2,7 +2,7 @@
 
 use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc, time::Duration};
 
-use bwl_vault::{
+use vk_vault::{
     VaultService,
     model::{ItemId, LoginRequest, TwoFactorAnswer},
 };
@@ -266,13 +266,13 @@ async fn probe<S: VaultService>(service: &S, server: &str) -> Result<Reply, Wire
 }
 
 fn reply<T>(
-    result: bwl_vault::Result<T>,
+    result: vk_vault::Result<T>,
     wrap: impl FnOnce(T) -> Reply,
 ) -> Result<Reply, WireError> {
     result.map(wrap).map_err(|error| WireError::from(&error))
 }
 
-fn unit(result: bwl_vault::Result<()>) -> Result<Reply, WireError> {
+fn unit(result: vk_vault::Result<()>) -> Result<Reply, WireError> {
     reply(result, |()| Reply::Unit)
 }
 

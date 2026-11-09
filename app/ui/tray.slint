@@ -15,7 +15,7 @@ export component TrayIcon inherits SystemTrayIcon {
     icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
         : @image-url("icons/tray-neutral.svg");
-    tooltip: "bw-lite";
+    tooltip: "Vaultkeeper";
 
     callback quick-search();
     callback open-vault();

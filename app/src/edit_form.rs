@@ -1,6 +1,6 @@
 //! Edit form: one generic field list per item kind, mapped back onto the draft on save.
 
-use bwl_vault::model::{IdentityData, ItemData, ItemDraft, ItemKind};
+use vk_vault::model::{IdentityData, ItemData, ItemDraft, ItemKind};
 use zeroize::Zeroizing;
 
 use crate::ui::EditField;
@@ -364,7 +364,7 @@ pub fn new_draft(
 
 #[cfg(test)]
 mod tests {
-    use bwl_vault::model::CustomField;
+    use vk_vault::model::CustomField;
 
     use super::*;
 

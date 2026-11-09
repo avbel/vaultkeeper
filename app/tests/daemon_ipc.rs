@@ -9,7 +9,9 @@ use std::{
     time::Duration,
 };
 
-use bw_lite::{
+use tokio::{sync::oneshot, task::JoinHandle};
+use url::Url;
+use vaultkeeper::{
     daemon::{
         Daemon, DaemonConfig, Peers,
         routing::{self, Effect, HotkeySlot, TrayAction},
@@ -23,16 +25,12 @@ use bw_lite::{
     settings::Settings,
     ui_process::answer,
 };
-use bwl_ipc::{
-    ClipboardHost, EventStream, RemoteVault, TypingTarget, UiCommand, UiEvent, UiNotice,
-};
-use bwl_ssh::{ApprovalKind, ApprovalRequest};
-use bwl_vault::{
+use vk_ipc::{ClipboardHost, EventStream, RemoteVault, TypingTarget, UiCommand, UiEvent, UiNotice};
+use vk_ssh::{ApprovalKind, ApprovalRequest};
+use vk_vault::{
     MemorySecretStore, VaultService,
     model::{Filter, LoginRequest, SessionState},
 };
-use tokio::{sync::oneshot, task::JoinHandle};
-use url::Url;
 use zeroize::Zeroizing;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -43,7 +41,7 @@ struct DataDir(PathBuf);
 impl DataDir {
     fn new() -> Self {
         let dir = PathBuf::from(format!(
-            "/tmp/bwl-app-{}",
+            "/tmp/vk-app-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..12]
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -136,7 +134,7 @@ async fn a_ui_client_sees_the_daemon_vault_and_unreachable_servers_stay_offline(
     assert_eq!(vault.state(), SessionState::LoggedOut);
     assert!(matches!(
         vault.search("", &Filter::default()),
-        Err(bwl_vault::Error::LoggedOut)
+        Err(vk_vault::Error::LoggedOut)
     ));
 
     // Nothing listens on the discard port: a transport failure inside the daemon's real vault.
@@ -236,7 +234,7 @@ async fn the_hotkey_and_quick_search_send_the_app_that_was_in_front() {
         daemon.apply(effect);
     }
     // The UI that reads them later is in front by then; that no longer matters.
-    frontmost.set(i32::try_from(std::process::id()).unwrap(), "bw-lite");
+    frontmost.set(i32::try_from(std::process::id()).unwrap(), "vaultkeeper");
     let (_vault, mut events) = connect(&dir).await;
     let UiEvent::Command {
         command: toggle, ..
@@ -275,12 +273,12 @@ async fn the_daemon_and_its_ui_process_in_front_are_no_typing_target() {
     config.frontmost = Arc::clone(&frontmost) as Arc<dyn FrontmostApp>;
     let daemon = Daemon::start(config).await.unwrap();
     assert_eq!(daemon.typing_target(), None, "nothing in front");
-    frontmost.set(i32::try_from(std::process::id()).unwrap(), "bw-lite");
+    frontmost.set(i32::try_from(std::process::id()).unwrap(), "vaultkeeper");
     assert_eq!(daemon.typing_target(), None, "the daemon itself");
     daemon.apply(Effect::Show(UiCommand::ShowManager));
     eventually(|| starts(&log) >= 1).await;
     let child: i32 = pids(&log)[0].parse().unwrap();
-    frontmost.set(child, "bw-lite");
+    frontmost.set(child, "vaultkeeper");
     assert_eq!(daemon.typing_target(), None, "the UI process it started");
     frontmost.set(812, "Safari");
     assert_eq!(daemon.typing_target(), Some(safari()));
@@ -432,7 +430,7 @@ fn hanging_ui(dir: &DataDir) -> (PathBuf, PathBuf) {
 
     static SCRIPT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let script = SCRIPT.get_or_init(|| {
-        let script = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bwl-hanging-ui.sh");
+        let script = Path::new(env!("CARGO_TARGET_TMPDIR")).join("vk-hanging-ui.sh");
         if !script.exists() {
             std::fs::write(&script, "#!/bin/sh\necho $$ >> \"$0.log\"\nexec sleep 30\n").unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -663,7 +661,7 @@ async fn the_tray_sync_reports_to_a_running_ui_and_starts_none() {
     daemon.apply(Effect::Sync);
     eventually(|| !daemon.tray_sync().running).await;
     assert_eq!(
-        daemon.tray_sync().failure(None),
+        daemon.tray_sync().failure(None, None),
         Some("Not logged in"),
         "the tray menu shows why"
     );

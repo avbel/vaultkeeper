@@ -1,5 +1,5 @@
 //! Side effects the UI needs from the OS, behind small traits. [`crate::os`] wires them to
-//! `bwl-platform`, `bwl-ssh`, AppKit and the daemon; `--mock` and the UI tests use the logging
+//! `vk-platform`, `vk-ssh`, AppKit and the daemon; `--mock` and the UI tests use the logging
 //! stubs below.
 
 use std::{
@@ -9,10 +9,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
+use vk_gen::generator::{PassphraseOptions, PasswordOptions};
 use zeroize::Zeroizing;
 
-use bwl_vault::VaultService;
+use vk_vault::VaultService;
 
 use crate::{autotype::Stroke, mock::MockVault, settings::Settings};
 
@@ -94,7 +94,7 @@ pub trait DockIcon: Send + Sync {
     fn set_visible(&self, visible: bool);
     /// Brings the app to the front, so a window shown for a hotkey or tray click gets the keys.
     fn activate(&self) {}
-    /// The last window closed: give up the front, so a windowless bw-lite is never the active
+    /// The last window closed: give up the front, so a windowless vaultkeeper is never the active
     /// app (the next Quick Panel hotkey would find nothing to type into).
     fn hide(&self) {}
 }
@@ -126,14 +126,14 @@ pub trait Clock: Send + Sync {
 }
 
 /// The daemon reads it and sends it with the Quick Panel commands, so one type serves both sides.
-pub use bwl_ipc::TypingTarget;
+pub use vk_ipc::TypingTarget;
 
 /// Runs on the UI thread once typing finished or stopped.
 pub type AutoTypeDone = Box<dyn FnOnce(HookResult<()>)>;
 
 /// Synthesized keystrokes into another app (Quick Panel ⌘⇧↩).
 pub trait AutoType: Send + Sync {
-    /// The frontmost app, `None` when it is bw-lite itself or unknown. Only `--mock` asks: the
+    /// The frontmost app, `None` when it is vaultkeeper itself or unknown. Only `--mock` asks: the
     /// UI process activates itself before it sees a command, so the daemon reads the target
     /// there and sends it along.
     fn frontmost(&self) -> Option<TypingTarget>;
@@ -260,7 +260,7 @@ impl LogBiometrics {
     }
 }
 
-fn vault_error(error: &bwl_vault::Error) -> HookError {
+fn vault_error(error: &vk_vault::Error) -> HookError {
     HookError::Failed(crate::viewmodel::error_text(error))
 }
 
@@ -385,7 +385,7 @@ impl SshAgentControl for LogSshAgent {
     }
 
     fn socket_path(&self) -> String {
-        "~/Library/Application Support/bw-lite/ssh-agent.sock".to_owned()
+        "~/Library/Application Support/vaultkeeper/ssh-agent.sock".to_owned()
     }
 }
 
@@ -458,7 +458,7 @@ mod tests {
             .expect("Touch ID unlock");
         assert!(matches!(
             vault.state(),
-            bwl_vault::model::SessionState::Unlocked { .. }
+            vk_vault::model::SessionState::Unlocked { .. }
         ));
     }
 

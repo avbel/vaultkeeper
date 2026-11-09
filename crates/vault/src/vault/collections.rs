@@ -5,7 +5,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use bwl_api::models::{CipherRequest, OptionalCipher};
+use vk_api::models::{CipherRequest, OptionalCipher};
 
 use super::{Inner, writes::stale_revision_as_conflict};
 use crate::{
@@ -203,7 +203,7 @@ mod tests {
         ));
         assert!(matches!(
             check_writable(&views, "org", &[]),
-            Err(Error::Api(bwl_api::Error::Server { status: 400, .. }))
+            Err(Error::Api(vk_api::Error::Server { status: 400, .. }))
         ));
     }
 

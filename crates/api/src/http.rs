@@ -73,7 +73,7 @@ pub(crate) struct Reply {
 pub(crate) fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .tls_backend_rustls()
-        .user_agent(concat!("bw-lite/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("vaultkeeper/", env!("CARGO_PKG_VERSION")))
         // Credentials and tokens must only ever go to the address the user configured.
         .redirect(redirect::Policy::none())
 }

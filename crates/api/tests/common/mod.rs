@@ -3,10 +3,10 @@
 pub mod hub;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use bwl_api::{Client, DeviceInfo};
 use serde_json::Value;
 use url::Url;
 use uuid::Uuid;
+use vk_api::{Client, DeviceInfo};
 use wiremock::{Match, MockServer, Request, ResponseTemplate};
 
 pub const EMAIL: &str = "vault@example.com";

@@ -5,15 +5,15 @@
 
 use std::sync::Arc;
 
-use bwl_vault::{
+use serde::{Deserialize, Serialize};
+use url::Url;
+use vk_vault::{
     TwoFactorProvider,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemKind,
         ItemSummary, LoginStep, OrganizationView, SessionState,
     },
 };
-use serde::{Deserialize, Serialize};
-use url::Url;
 
 use crate::ConvertError;
 
@@ -169,7 +169,7 @@ impl From<&ItemSummary> for ItemSummaryDto {
 impl From<ItemSummaryDto> for ItemSummary {
     fn from(item: ItemSummaryDto) -> Self {
         Self {
-            id: bwl_vault::model::ItemId(item.id),
+            id: vk_vault::model::ItemId(item.id),
             kind: item.kind.into(),
             name: item.name,
             subtitle: item.subtitle,
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn item_summary_round_trips_with_every_field_set() {
         let item = ItemSummary {
-            id: bwl_vault::model::ItemId("c1".into()),
+            id: vk_vault::model::ItemId("c1".into()),
             kind: ItemKind::Card,
             name: "Visa".into(),
             subtitle: "Visa, *4242".into(),

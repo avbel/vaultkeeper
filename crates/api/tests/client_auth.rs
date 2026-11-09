@@ -2,12 +2,12 @@
 
 mod common;
 
-use bwl_api::{Client, Error, LoginOutcome, TwoFactorProvider, TwoFactorToken};
 use common::{
     EMAIL, PASSWORD_HASH, client, client_for, client_version_shows_ssh_keys, fixture_json,
     html_response, json_response, login_form_with,
 };
 use serde_json::json;
+use vk_api::{Client, Error, LoginOutcome, TwoFactorProvider, TwoFactorToken};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_json, header, method, path},

@@ -2,11 +2,11 @@
 
 use std::rc::Rc;
 
-use bwl_vault::{
+use slint::{Model, ModelRc, SharedString, VecModel};
+use vk_vault::{
     VaultService,
     model::{ItemData, ItemDraft, ItemId, ItemKind},
 };
-use slint::{Model, ModelRc, SharedString, VecModel};
 
 use super::{App, handler};
 use crate::{
@@ -311,7 +311,7 @@ impl<S: VaultService> App<S> {
         self.save_item(id, draft, Self::edit_saved);
     }
 
-    fn edit_saved(&self, result: &bwl_vault::Result<ItemId>) {
+    fn edit_saved(&self, result: &vk_vault::Result<ItemId>) {
         let mut guard = self.manager.borrow_mut();
         let Some(manager) = guard.as_mut() else {
             return;
@@ -329,12 +329,12 @@ impl<S: VaultService> App<S> {
             }
             // The form stays open with the user's values so nothing typed is lost; saving it
             // again is refused the same way, and Cancel shows the version from elsewhere.
-            Err(bwl_vault::Error::Conflict) => {
+            Err(vk_vault::Error::Conflict) => {
                 manager.switch_to = None;
                 manager.window.set_edit_error(
                     format!(
                         "{} · Cancel to load the latest version",
-                        bwl_vault::CONFLICT_MESSAGE
+                        vk_vault::CONFLICT_MESSAGE
                     )
                     .into(),
                 );

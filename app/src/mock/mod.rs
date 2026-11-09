@@ -19,9 +19,9 @@ use std::{
     time::Duration,
 };
 
-use bwl_vault::model::{ItemDraft, ItemId};
 use tokio::sync::watch;
 use url::Url;
+use vk_vault::model::{ItemDraft, ItemId};
 
 pub use fake::{MockGenerator, MockSshKeys, Prng};
 
@@ -217,7 +217,7 @@ impl MockVault {
 
     /// Another device renames `id`: its revision moves on and the change is announced like a
     /// websocket sync, so a draft read before is now stale.
-    pub fn edit_elsewhere(&self, id: &ItemId, name: &str) -> bwl_vault::Result<()> {
+    pub fn edit_elsewhere(&self, id: &ItemId, name: &str) -> vk_vault::Result<()> {
         {
             let mut inner = self.guard();
             let revision = format!("mock-rev-{}", inner.tick());

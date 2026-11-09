@@ -2,15 +2,15 @@
 
 mod common;
 
-use bw_lite::hooks::SettingsStore;
-use bw_lite::{
+use common::{Harness, Setup, click, harness, pump, type_into};
+use slint::ComponentHandle;
+use vaultkeeper::hooks::SettingsStore;
+use vaultkeeper::{
     settings::{Settings, TextScale, ThemeChoice},
     ui::{GeneratorState, Theme, ThemeMode},
 };
-use common::{Harness, Setup, click, harness, pump, type_into};
-use slint::ComponentHandle;
 
-fn open_generator() -> (Harness, bw_lite::ui::GeneratorWindow) {
+fn open_generator() -> (Harness, vaultkeeper::ui::GeneratorWindow) {
     let h = harness(Setup::default());
     h.app.open_generator_window();
     let window = h.app.generator_window().expect("generator");
@@ -39,7 +39,9 @@ fn opening_generates_and_option_changes_regenerate() {
     assert_eq!(state.get_result().chars().count(), 32);
 }
 
-fn find_slider(window: &bw_lite::ui::GeneratorWindow) -> i_slint_backend_testing::ElementHandle {
+fn find_slider(
+    window: &vaultkeeper::ui::GeneratorWindow,
+) -> i_slint_backend_testing::ElementHandle {
     i_slint_backend_testing::ElementHandle::find_by_accessible_label(window, "Length")
         .find(|element| {
             element.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Slider)
@@ -66,7 +68,7 @@ fn copying_the_generated_value_uses_the_clipboard() {
     assert_eq!(h.clipboard.last(), Some(value));
 }
 
-fn open_settings(h: &Harness) -> bw_lite::ui::SettingsWindow {
+fn open_settings(h: &Harness) -> vaultkeeper::ui::SettingsWindow {
     h.app.open_settings();
     let window = h.app.settings_window().expect("settings");
     window
@@ -152,19 +154,19 @@ fn settings_toggles_persist_through_the_store() {
     settings.invoke_clipboard_selected(0);
     assert_eq!(
         h.settings.load().clipboard_clear,
-        bw_lite::settings::ClipboardClear::Seconds(10)
+        vaultkeeper::settings::ClipboardClear::Seconds(10)
     );
     settings.invoke_lock_selected(5);
     assert_eq!(
         h.settings.load().lock_timeout,
-        bw_lite::settings::LockTimeout::Never
+        vaultkeeper::settings::LockTimeout::Never
     );
     assert!(settings.get_lock_on_sleep(), "on by default");
     click(&settings, "Lock on sleep or screen lock");
     assert!(!h.settings.load().lock_on_sleep);
     assert_eq!(
         h.settings.load().lock_timeout,
-        bw_lite::settings::LockTimeout::Never,
+        vaultkeeper::settings::LockTimeout::Never,
         "independent of the timeout"
     );
 }
@@ -223,13 +225,13 @@ fn a_reset_of_unreadable_settings_is_shown_once_when_a_window_opens() {
             .load(std::sync::atomic::Ordering::SeqCst),
         "kept until a window can show it"
     );
-    h.app.handle(bw_lite::UiCommand::ShowManager);
+    h.app.handle(vaultkeeper::UiCommand::ShowManager);
     h.app.show_pending_notices();
     let manager = h.app.manager_window().expect("manager");
     assert!(manager.get_toast_shown());
     assert_eq!(
         manager.get_toast_text(),
-        bw_lite::app::SETTINGS_RESET_NOTICE
+        vaultkeeper::app::SETTINGS_RESET_NOTICE
     );
     assert!(
         !h.settings
@@ -238,7 +240,7 @@ fn a_reset_of_unreadable_settings_is_shown_once_when_a_window_opens() {
     );
 }
 
-fn settings_window(h: &Harness) -> bw_lite::ui::SettingsWindow {
+fn settings_window(h: &Harness) -> vaultkeeper::ui::SettingsWindow {
     h.app.open_settings();
     pump();
     h.app.settings_window().expect("settings window")

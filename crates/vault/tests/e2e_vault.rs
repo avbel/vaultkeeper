@@ -8,16 +8,16 @@ mod support;
 
 use std::time::Duration;
 
-use bwl_api::models::{Cipher, CipherRequest, Login, LoginUri};
-use bwl_crypto::{EncString, SymmetricKey};
-use bwl_vault::{
-    Error, VaultService,
-    model::{CopyField, Filter, ItemData, ItemDraft, ItemId, ItemKind},
-};
 use serde_json::{Value, json};
 use support::{
     KdfChoice, TestVault, create_org, decrypt, drafts, enc, env, org_key, raw_session, register,
     server_cipher_key,
+};
+use vk_api::models::{Cipher, CipherRequest, Login, LoginUri};
+use vk_crypto::{EncString, SymmetricKey};
+use vk_vault::{
+    Error, VaultService,
+    model::{CopyField, Filter, ItemData, ItemDraft, ItemId, ItemKind},
 };
 use zeroize::Zeroizing;
 

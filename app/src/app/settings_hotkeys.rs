@@ -1,7 +1,6 @@
 //! Settings → Shortcuts: the two shortcut recorders. Every path (a recorded key, an accessibility
 //! set-value, Delete) ends in `accept_hotkey`, which validates, saves and re-shows both values.
 
-use bwl_vault::VaultService;
 use slint::{
     ComponentHandle,
     winit_030::{
@@ -12,6 +11,7 @@ use slint::{
         },
     },
 };
+use vk_vault::VaultService;
 
 use super::{App, handler};
 use crate::{

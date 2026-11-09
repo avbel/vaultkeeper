@@ -1,6 +1,7 @@
 use std::{os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc, time::Duration};
 
-use bwl_vault::{
+use tokio::sync::watch;
+use vk_vault::{
     Error, Result, TotpCode, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
@@ -8,7 +9,6 @@ use bwl_vault::{
         SshKeyMaterial, TwoFactorAnswer,
     },
 };
-use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::RemoteVault;

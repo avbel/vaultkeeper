@@ -5,11 +5,11 @@
 
 mod support;
 
-use bwl_vault::{
+use support::{KdfChoice, TestVault, drafts, env, names, register};
+use vk_vault::{
     Error, SecretStore, VaultService,
     model::{CopyField, Filter, SessionState},
 };
-use support::{KdfChoice, TestVault, drafts, env, names, register};
 use zeroize::Zeroizing;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -46,7 +46,14 @@ async fn switching_accounts_locks_and_shows_only_the_target_account() {
     );
     assert!(accounts[0].active && !accounts[1].active);
 
+    let bob_synced = vault.last_sync().expect("bob synced on login");
+
     vault.switch_account(&alice_id).unwrap();
+    let alice_synced = vault.last_sync().expect("alice synced at her login");
+    assert!(
+        alice_synced < bob_synced,
+        "the time shown after a switch is the active account's own"
+    );
     assert_eq!(
         vault.state(),
         SessionState::Locked {
@@ -135,7 +142,7 @@ async fn logout_wipes_everything_of_the_account() {
         "the agent is told to drop the keys"
     );
     assert_eq!(vault.accounts(), Vec::new());
-    assert_eq!(vault.background(), bwl_vault::BackgroundStatus::default());
+    assert_eq!(vault.background(), vk_vault::BackgroundStatus::default());
     assert!(matches!(vault.logout().await, Err(Error::LoggedOut)));
 
     test.login(&env.vw, &bob).await;

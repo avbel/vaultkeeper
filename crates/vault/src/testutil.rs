@@ -1,11 +1,11 @@
-//! Builders for encrypted server data in unit tests. Ciphertext comes straight from bwl-crypto,
+//! Builders for encrypted server data in unit tests. Ciphertext comes straight from vk-crypto,
 //! never from this crate's encrypt module, so decrypt paths are checked independently.
 
-use bwl_api::models::{
+use vk_api::models::{
     Attachment, Card, Cipher, Field, Folder, Identity, Login, LoginUri, PasswordHistory, Profile,
     SecureNote, SshKey, SyncResponse,
 };
-use bwl_crypto::{EncString, SymmetricKey};
+use vk_crypto::{EncString, SymmetricKey};
 
 use crate::keys::KeyRing;
 

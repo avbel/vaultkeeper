@@ -1,10 +1,10 @@
 //! Manual Touch ID check against the real Secure Enclave.
 //!
 //! ```text
-//! cargo run -p bwl-platform --example touchid_check            # enroll, unlock, compare
-//! cargo run -p bwl-platform --example touchid_check -- --keep  # same, but keep the file
-//! cargo run -p bwl-platform --example touchid_check -- --reuse # unlock the kept file only
-//! cargo run -p bwl-platform --example touchid_check -- --auth  # plain Touch ID check
+//! cargo run -p vk-platform --example touchid_check            # enroll, unlock, compare
+//! cargo run -p vk-platform --example touchid_check -- --keep  # same, but keep the file
+//! cargo run -p vk-platform --example touchid_check -- --reuse # unlock the kept file only
+//! cargo run -p vk-platform --example touchid_check -- --auth  # plain Touch ID check
 //! ```
 //!
 //! `--keep`, then add or remove a fingerprint, then `--reuse` must report "invalidated".
@@ -14,14 +14,14 @@
 
 #[cfg(target_os = "macos")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use bwl_platform::{Error, biometric};
+    use vk_platform::{Error, biometric};
     use zeroize::Zeroizing;
 
     tracing_subscriber::fmt()
-        .with_env_filter("bwl_platform=debug")
+        .with_env_filter("vk_platform=debug")
         .init();
     let mode = std::env::args().nth(1).unwrap_or_default();
-    let path = std::env::temp_dir().join("bw-lite-touchid-check.bin");
+    let path = std::env::temp_dir().join("vaultkeeper-touchid-check.bin");
     println!(
         "Secure Enclave + Touch ID available: {}",
         biometric::is_available()
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("touch the sensor when prompted...");
     match (
-        biometric::unlock(&path, "test bw-lite Touch ID unlock"),
+        biometric::unlock(&path, "test vaultkeeper Touch ID unlock"),
         expected,
     ) {
         (Ok(key), Some(expected)) if key.as_slice() == expected.as_slice() => println!("MATCH"),

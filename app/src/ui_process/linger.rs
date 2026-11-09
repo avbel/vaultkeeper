@@ -23,7 +23,7 @@ pub const fn decide(open_windows: usize) -> Linger {
     }
 }
 
-/// `BW_LITE_UI_LINGER_SECS` shortens the linger for manual checks.
+/// `VAULTKEEPER_UI_LINGER_SECS` shortens the linger for manual checks.
 #[must_use]
 pub fn linger_from_env(value: Option<&str>) -> Duration {
     value

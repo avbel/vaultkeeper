@@ -1,4 +1,4 @@
-# bw-lite — lightweight Rust desktop client for Vaultwarden
+# vaultkeeper — lightweight Rust desktop client for Vaultwarden
 
 ## Context
 The official Bitwarden desktop app (`../clients/apps/desktop`) is Electron + Angular. It uses a lot of RAM, hides
@@ -10,8 +10,8 @@ Goal: a small GPL-3.0 Rust app for a self-hosted Vaultwarden that covers:
 - low RAM use;
 - a new UI with one-click copy and light/dark themes.
 
-The repo `bw-lite-desktop` is empty (no commits yet). Step 1 copies this document to
-`docs/solutions/bw-lite-architecture.md`.
+The repo `vaultkeeper` is empty (no commits yet). Step 1 copies this document to
+`docs/solutions/vaultkeeper-architecture.md`.
 
 ## Decisions (agreed)
 - **License:** GPL-3.0.
@@ -84,7 +84,7 @@ crates/platform  keychain (security-framework), Touch ID: a small Swift shim (Cr
                  autostart (auto-launch,
                  LaunchAgent), clipboard (arboard + exclude_from_history + auto-clear), single instance (interprocess),
                  hardening (PT_DENY_ATTACH, RLIMIT_CORE=0), sleep/screen-lock events
-app/             bw-lite binary: Slint ≥1.17 UI (built-in SystemTrayIcon, no tray-icon crate) + global-hotkey; owns the tokio runtime on a background thread,
+app/             vaultkeeper binary: Slint ≥1.17 UI (built-in SystemTrayIcon, no tray-icon crate) + global-hotkey; owns the tokio runtime on a background thread,
                  calls back to the UI with slint::invoke_from_event_loop
 vendor/ssh_agent, vendor/secure_memory   copied from ../clients with the upstream commit recorded; any patch is minimal and documented
 ```
@@ -94,7 +94,7 @@ vendor/ssh_agent, vendor/secure_memory   copied from ../clients with the upstrea
   - Lock happens on: a timeout, system sleep or screen lock, or manually.
   - Locking zeroizes the user key, org keys and the decrypted list fields.
 - **Disk cache.** The sync response is stored as received, so the fields stay EncStrings.
-  - Location: `~/Library/Application Support/bw-lite/`, mode 0600, written atomically.
+  - Location: `~/Library/Application Support/vaultkeeper/`, mode 0600, written atomically.
   - The protected user key and the KDF settings are stored too, so unlocking works offline.
   - The refresh token and the Touch ID user key go in the keychain.
 - **Decrypt on demand.** Unlock decrypts only names, usernames, URIs and folder names, which is what the list and search need.
@@ -128,7 +128,7 @@ vendor/ssh_agent, vendor/secure_memory   copied from ../clients with the upstrea
 - **Tray and autostart.**
   - Tray menu: Quick search, Open vault, Generator, Lock/Unlock, Sync now, Quit.
   - No Dock icon unless the Manager window is open (activation policy Accessory or Regular).
-  - Autostart installs a LaunchAgent that runs `bw-lite --tray`.
+  - Autostart installs a LaunchAgent that runs `vaultkeeper --tray`.
   - The "Ask to unlock on start" setting shows the lock window at launch.
 - **Clipboard.** Content is marked concealed (`org.nspasteboard.ConcealedType`). It is cleared after N seconds
   (default 30), but only if the clipboard still holds our value.
@@ -152,7 +152,7 @@ Commits go through a Haiku agent, with no co-author lines and no new branches.
    - Build: a tray icon plus a window with a 400-row list.
    - Measure `footprint`/RSS in four states: tray only; window open; window hidden; window component dropped.
    - Try both renderers (femtovg and software).
-   - Done when: the numbers are recorded in `docs/solutions/bw-lite-architecture.md` and the process model is decided.
+   - Done when: the numbers are recorded in `docs/solutions/vaultkeeper-architecture.md` and the process model is decided.
 0b. **Spike: Secure Enclave + Touch ID without an account** (`experiments/se-touchid/`). Parallel with steps 0 and 1.
    - Build a Rust binary with the swift-rs shim, ad-hoc signed inside a minimal `.app`.
    - It generates a Secure Enclave key with `.biometryCurrentSet`, wraps 64 random bytes, then unwraps them after a Touch ID prompt.
@@ -171,24 +171,24 @@ Commits go through a Haiku agent, with no co-author lines and no new branches.
    - Port from rbw.
    - Tests use upstream test vectors (rbw and sdk-internal tests), never values computed by our own code.
    - Includes tampered-MAC and wrong-key failure cases.
-   - parallel-ok. Done when: `cargo test -p bwl-core crypto` passes.
+   - parallel-ok. Done when: `cargo test -p vk-core crypto` passes.
 3. **`core::totp` + `core::generator`.**
    - TOTP: RFC 6238 test vectors (SHA1, SHA256, SHA512), a steam vector, otpauth parsing.
    - Generator: length and charset rules, minimum-count rules, a 7776-word list, OsRng.
-   - parallel-ok. Done when: `cargo test -p bwl-core totp generator` passes.
+   - parallel-ok. Done when: `cargo test -p vk-core totp generator` passes.
 4. **`core::api`.**
    - Models, plus endpoints: prelogin, token (password grant, 2FA 0/1/5/8, optional `newDeviceOtp`), refresh, sync,
      cipher create/update/soft-delete/restore/delete, folder CRUD.
    - Contract tests use wiremock with JSON fixtures captured from a real Vaultwarden (docker `vaultwarden/server`).
    - Uses only the crypto signatures from step 1. parallel-ok.
-   - Done when: `cargo test -p bwl-core api` passes.
+   - Done when: `cargo test -p vk-core api` passes.
 5. **`crates/ssh`.**
    - Adapter over the vendored agent:
-     - socket at `~/Library/Application Support/bw-lite/ssh-agent.sock`, using a minimal vendored patch or the env var;
+     - socket at `~/Library/Application Support/vaultkeeper/ssh-agent.sock`, using a minimal vendored patch or the env var;
      - an ApprovalRequester backed by a channel;
      - key import and conversion.
    - Integration test: start the agent with an auto-approve stub, then `ssh-add -l` and `ssh-keygen -Y sign` against the socket.
-   - parallel-ok. Done when: `cargo test -p bwl-ssh` passes.
+   - parallel-ok. Done when: `cargo test -p vk-ssh` passes.
 6. **`crates/platform`.**
    - Keychain, Touch ID, autostart, clipboard with auto-clear, single instance, hardening, sleep/lock events.
    - Touch ID: the Secure Enclave shim from step 0b, enroll/unlock/invalidate, and the `LAContext` check for SSH approvals.
@@ -196,20 +196,20 @@ Commits go through a Haiku agent, with no co-author lines and no new branches.
    - Unit-test the user-key wrapping round-trip, using a software P-256 key in place of the Secure Enclave.
    - Touch ID and autostart are checked by hand.
    - Depends on: 0b.
-   - parallel-ok. Done when: `cargo test -p bwl-platform` passes.
+   - parallel-ok. Done when: `cargo test -p vk-platform` passes.
 7. **`core::vault`.**
    - Session state machine, disk cache, offline unlock, decrypt-on-demand, search, CRUD (new items get a per-item key),
      lock with zeroize.
    - Integration test (`--features vw-it`) against docker Vaultwarden. Register via the API, then login → create →
      sync → decrypt → edit → delete.
    - Round-trip with the official web vault: an item created here must be readable there, and the reverse.
-   - Depends on: 2, 4. Done when: `cargo test -p bwl-core --features vw-it vault` passes.
+   - Depends on: 2, 4. Done when: `cargo test -p vk-core --features vw-it vault` passes.
 8. **UI shell (Slint) on mock data.**
    - Theme tokens, lock screen, Manager window, row component with one-click copy and the TOTP ring, Quick Panel,
      generator view, SSH approval window, settings.
    - Built against `VaultService` with a mock implementation.
    - A few interaction tests with Slint's testing backend.
-   - parallel-ok. Done when: `cargo test -p bw-lite`, plus `cargo run -p bw-lite -- --mock` and screenshots in both themes.
+   - parallel-ok. Done when: `cargo test -p vaultkeeper`, plus `cargo run -p vaultkeeper -- --mock` and screenshots in both themes.
 9. **Integration.**
    - Wire the UI to `vault`, `ssh` and `platform`.
    - Login and 2FA screens, tray menu, global hotkey, autostart and unlock-on-start settings, lock timeout, sync timer.
@@ -236,10 +236,10 @@ Linux/Windows (Linux: desktop_native `biometric` with polkit; Windows: Windows H
 ## Verification (end-to-end, manual script for step 9/10)
 1. Start Vaultwarden with `docker run -e SIGNUPS_ALLOWED=true vaultwarden/server`. Register in the web vault, enable
    TOTP 2FA, and add a login with TOTP, a card, a note and an SSH key.
-2. In bw-lite, log in with the 2FA code. Check that the list shows every item type.
+2. In vaultkeeper, log in with the 2FA code. Check that the list shows every item type.
 3. One-click copy password and copy TOTP from a list row. Paste, and check that the clipboard clears after 30 s.
 4. Open the Quick Panel with ⌘⇧Space: type, press Enter, paste. Check that it hides.
-5. Create and edit an item in bw-lite, then check it in the web vault. Edit it in the web vault, sync bw-lite, check again.
+5. Create and edit an item in vaultkeeper, then check it in the web vault. Edit it in the web vault, sync vaultkeeper, check again.
 6. `SSH_AUTH_SOCK=… ssh-add -l` lists the key. `ssh -T git@github.com` (or `ssh-keygen -Y sign`) opens the approval
    window. Deny makes it fail; approve makes it succeed.
 7. Lock (manually and by timeout), then unlock with the master password while offline, then with Touch ID.
@@ -248,7 +248,7 @@ Linux/Windows (Linux: desktop_native `biometric` with polkit; Windows: Windows H
 8. Switch themes (system, light, dark).
 9. Enable autostart and "ask to unlock on start", log out of macOS and back in. Only the tray icon appears and the
    lock window shows.
-10. Check RAM with `footprint bw-lite` in four states: tray-only locked, tray-only unlocked, Manager window open,
+10. Check RAM with `footprint vaultkeeper` in four states: tray-only locked, tray-only unlocked, Manager window open,
     after the window closes.
 
 ## Risks
@@ -268,9 +268,9 @@ Linux/Windows (Linux: desktop_native `biometric` with polkit; Windows: Windows H
 
 ## Additional requirements (agreed during implementation)
 - **Latest stable Rust (1.99.1) and latest crate versions.** The vendored `ssh_agent` keeps its upstream pins
-  (`ssh-key =0.6.7`, `rsa =0.9.6`), and `bwl-ssh` uses the same `ssh-key` so parsed keys are interchangeable.
-- **Crate split.** The planned `core` crate is split into `bwl-crypto`, `bwl-api`, `bwl-gen` (TOTP and generator) and
-  `bwl-vault`. The boundaries are cleaner, and parallel work can't break another crate's build.
+  (`ssh-key =0.6.7`, `rsa =0.9.6`), and `vk-ssh` uses the same `ssh-key` so parsed keys are interchangeable.
+- **Crate split.** The planned `core` crate is split into `vk-crypto`, `vk-api`, `vk-gen` (TOTP and generator) and
+  `vk-vault`. The boundaries are cleaner, and parallel work can't break another crate's build.
 - **RAM and performance first:**
   - decrypt on demand;
   - `Arc<str>` in list rows, shared rather than copied;
@@ -363,11 +363,11 @@ Measured by the `experiments/slint-ram` spike with Slint 1.18.1, release builds,
 The decision rule was D ≤ A + 15 MB. Every renderer fails it (the best, software, leaves +28 MB), so the app is
 **split into two processes**. The window memory plateaus, so it is not a leak.
 
-- **`bw-lite --daemon`** starts at login.
+- **`vaultkeeper --daemon`** starts at login.
   - It owns the tray (Slint `SystemTrayIcon`, no windows, no renderer), the Vault, sync and websocket, the SSH agent,
     the clipboard timer, power events and the global hotkey.
   - Activation policy is Accessory, so it has no Dock icon.
-- **`bw-lite --ui`** is the same binary, spawned by the daemon when needed.
+- **`vaultkeeper --ui`** is the same binary, spawned by the daemon when needed.
   - It shows the Manager, the Quick Panel, the lock/login screens, the SSH approval prompt and settings.
   - It uses the software renderer only (`renderer-software`, without skia or femtovg).
   - It lingers 120 s after its last window closes, so the Quick Panel opens instantly on repeated use, then exits.
@@ -381,7 +381,7 @@ The decision rule was D ≤ A + 15 MB. Every renderer fails it (the best, softwa
       valid. This works the same for ad-hoc, linker-signed and certificate-signed builds.
     - A designated requirement was not used: with the local certificate it would admit anything signed with that
       certificate, and its private key sits in the user's keychain.
-    - `vw-it` test builds can still admit any process of the user (`BW_LITE_TEST_ANY_PEER`).
+    - `vw-it` test builds can still admit any process of the user (`VAULTKEEPER_TEST_ANY_PEER`).
   - No key material crosses the socket.
     - Touch ID enrolment and unlock run in the daemon (`EnrollTouchId` / `UnlockWithTouchId`): it reads the user key
       from its own vault, seals or unseals it, and shows the prompt with its own text.

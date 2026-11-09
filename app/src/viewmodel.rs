@@ -2,13 +2,13 @@
 
 use std::time::SystemTime;
 
-use bwl_vault::{
-    Error,
-    model::{AccountView, CopyField, ItemKind, ItemSummary, SessionState},
-};
 use chrono::{DateTime, Local, NaiveDateTime};
 use slint::SharedString;
 use url::Url;
+use vk_vault::{
+    Error,
+    model::{AccountView, CopyField, ItemKind, ItemSummary, SessionState},
+};
 
 use crate::ui::{AccountRow, RowData};
 
@@ -274,9 +274,9 @@ pub fn error_text(error: &Error) -> String {
         Error::Gen(error) => error.to_string(),
         Error::Io(error) => format!("Storage error: {error}"),
         Error::Cache(_) => "The local cache is damaged; sync again".to_owned(),
-        Error::Offline => bwl_vault::OFFLINE_MESSAGE.to_owned(),
-        Error::Conflict => bwl_vault::CONFLICT_MESSAGE.to_owned(),
-        Error::KdfDowngrade => bwl_vault::KDF_DOWNGRADE_MESSAGE.to_owned(),
+        Error::Offline => vk_vault::OFFLINE_MESSAGE.to_owned(),
+        Error::Conflict => vk_vault::CONFLICT_MESSAGE.to_owned(),
+        Error::KdfDowngrade => vk_vault::KDF_DOWNGRADE_MESSAGE.to_owned(),
         Error::Logout(errors) => match errors.0.as_slice() {
             [only] => format!("Logged out, but one step failed: {}", error_text(only)),
             steps => format!("Logged out, but {} steps failed", steps.len()),
@@ -284,19 +284,19 @@ pub fn error_text(error: &Error) -> String {
     }
 }
 
-fn api_error_text(error: &bwl_api::Error) -> String {
-    if error.is_offline() && !matches!(error, bwl_api::Error::Server { .. }) {
+fn api_error_text(error: &vk_api::Error) -> String {
+    if error.is_offline() && !matches!(error, vk_api::Error::Server { .. }) {
         return CANT_REACH.to_owned();
     }
     match error {
-        bwl_api::Error::Http(_) | bwl_api::Error::Io(_) => CANT_REACH.to_owned(),
-        bwl_api::Error::UntrustedUrl(host) => format!("Blocked a request to untrusted host {host}"),
-        bwl_api::Error::Tls(detail) => tls_text(detail),
-        bwl_api::Error::Decode(_) => NOT_COMPATIBLE.to_owned(),
-        bwl_api::Error::Url(_) => "Not a valid server URL".to_owned(),
-        bwl_api::Error::InvalidServerUrl(reason) => format!("Server URL refused: {reason}"),
-        bwl_api::Error::Server { message, .. } => message.clone(),
-        bwl_api::Error::Unauthorized => "Session expired; log in again".to_owned(),
+        vk_api::Error::Http(_) | vk_api::Error::Io(_) => CANT_REACH.to_owned(),
+        vk_api::Error::UntrustedUrl(host) => format!("Blocked a request to untrusted host {host}"),
+        vk_api::Error::Tls(detail) => tls_text(detail),
+        vk_api::Error::Decode(_) => NOT_COMPATIBLE.to_owned(),
+        vk_api::Error::Url(_) => "Not a valid server URL".to_owned(),
+        vk_api::Error::InvalidServerUrl(reason) => format!("Server URL refused: {reason}"),
+        vk_api::Error::Server { message, .. } => message.clone(),
+        vk_api::Error::Unauthorized => "Session expired; log in again".to_owned(),
     }
 }
 
@@ -320,17 +320,17 @@ pub fn login_error(error: &Error) -> LoginError {
         return LoginError::Server(CANT_REACH.to_owned());
     }
     match error {
-        Error::Api(bwl_api::Error::Http(_) | bwl_api::Error::Io(_)) => {
+        Error::Api(vk_api::Error::Http(_) | vk_api::Error::Io(_)) => {
             LoginError::Server(CANT_REACH.to_owned())
         }
         Error::Api(
-            bwl_api::Error::Decode(_)
-            | bwl_api::Error::Server {
+            vk_api::Error::Decode(_)
+            | vk_api::Error::Server {
                 status: 404 | 405, ..
             },
         ) => LoginError::Server(NOT_COMPATIBLE.to_owned()),
-        Error::Api(bwl_api::Error::Url(_)) => LoginError::Server("Not a valid URL".to_owned()),
-        Error::Api(bwl_api::Error::Tls(detail)) => LoginError::Server(tls_text(detail)),
+        Error::Api(vk_api::Error::Url(_)) => LoginError::Server("Not a valid URL".to_owned()),
+        Error::Api(vk_api::Error::Tls(detail)) => LoginError::Server(tls_text(detail)),
         Error::InvalidPassword => LoginError::General("Wrong email or master password".to_owned()),
         other => LoginError::General(error_text(other)),
     }
@@ -338,7 +338,7 @@ pub fn login_error(error: &Error) -> LoginError {
 
 /// The login screen's line under the server URL, and whether it is good news.
 #[must_use]
-pub fn probe_text(result: &bwl_vault::Result<bwl_vault::model::ServerProbe>) -> (String, bool) {
+pub fn probe_text(result: &vk_vault::Result<vk_vault::model::ServerProbe>) -> (String, bool) {
     match result {
         Ok(probe) => match &probe.version {
             Some(version) => (format!("Reachable · Vaultwarden {version}"), true),
@@ -418,7 +418,7 @@ pub fn account_rows(accounts: &[AccountView], state: &SessionState) -> Vec<Accou
 mod tests {
     use std::sync::Arc;
 
-    use bwl_vault::model::ItemId;
+    use vk_vault::model::ItemId;
 
     use super::*;
 
@@ -591,12 +591,12 @@ mod tests {
     fn error_messages() {
         assert_eq!(error_text(&Error::InvalidPassword), "Wrong master password");
         assert_eq!(error_text(&Error::ReadOnly), "This item is read-only");
-        let server = Error::Api(bwl_api::Error::Server {
+        let server = Error::Api(vk_api::Error::Server {
             status: 400,
             message: "Two-step token is invalid".to_owned(),
         });
         assert_eq!(error_text(&server), "Two-step token is invalid");
-        let tls = Error::Api(bwl_api::Error::Tls(
+        let tls = Error::Api(vk_api::Error::Tls(
             "the server's certificate has expired".to_owned(),
         ));
         let expected = "Secure connection failed: the server's certificate has expired";
@@ -606,7 +606,7 @@ mod tests {
             login_error(&server),
             LoginError::General("Two-step token is invalid".into())
         );
-        let not_found = Error::Api(bwl_api::Error::Server {
+        let not_found = Error::Api(vk_api::Error::Server {
             status: 404,
             message: "Not Found".to_owned(),
         });
@@ -618,7 +618,7 @@ mod tests {
             login_error(&Error::InvalidPassword),
             LoginError::General("Wrong email or master password".into())
         );
-        let gateway = Error::Api(bwl_api::Error::Server {
+        let gateway = Error::Api(vk_api::Error::Server {
             status: 503,
             message: "Service Unavailable".to_owned(),
         });
@@ -628,25 +628,25 @@ mod tests {
             login_error(&Error::Offline),
             LoginError::Server(CANT_REACH.into())
         );
-        assert_eq!(error_text(&Error::Offline), bwl_vault::OFFLINE_MESSAGE);
+        assert_eq!(error_text(&Error::Offline), vk_vault::OFFLINE_MESSAGE);
     }
 
     #[test]
     fn probe_lines() {
-        let found = Ok(bwl_vault::model::ServerProbe {
+        let found = Ok(vk_vault::model::ServerProbe {
             version: Some("1.37.5".to_owned()),
         });
         assert_eq!(
             probe_text(&found),
             ("Reachable · Vaultwarden 1.37.5".to_owned(), true)
         );
-        let bare = Ok(bwl_vault::model::ServerProbe { version: None });
+        let bare = Ok(vk_vault::model::ServerProbe { version: None });
         assert_eq!(probe_text(&bare), ("Reachable".to_owned(), true));
         assert_eq!(
             probe_text(&Err(Error::Offline)),
             (CANT_REACH.to_owned(), false)
         );
-        let not_found = Err(Error::Api(bwl_api::Error::Server {
+        let not_found = Err(Error::Api(vk_api::Error::Server {
             status: 404,
             message: "Not Found".to_owned(),
         }));
@@ -655,17 +655,14 @@ mod tests {
 
     #[test]
     fn log_out_failures_are_summarised() {
-        let one = Error::Logout(bwl_vault::LogoutErrors(vec![Error::Io(
+        let one = Error::Logout(vk_vault::LogoutErrors(vec![Error::Io(
             std::io::Error::other("keychain locked"),
         )]));
         assert_eq!(
             error_text(&one),
             "Logged out, but one step failed: Storage error: keychain locked"
         );
-        let two = Error::Logout(bwl_vault::LogoutErrors(vec![
-            Error::NotFound,
-            Error::Locked,
-        ]));
+        let two = Error::Logout(vk_vault::LogoutErrors(vec![Error::NotFound, Error::Locked]));
         assert_eq!(error_text(&two), "Logged out, but 2 steps failed");
     }
 

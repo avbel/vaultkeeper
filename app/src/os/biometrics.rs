@@ -7,8 +7,8 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use bwl_ipc::{RemoteVault, TouchIdBackend, TouchIdFailure};
-use bwl_platform::{Error as PlatformError, biometric};
+use vk_ipc::{RemoteVault, TouchIdBackend, TouchIdFailure};
+use vk_platform::{Error as PlatformError, biometric};
 use zeroize::Zeroizing;
 
 use super::layout::touch_id_file;
@@ -138,7 +138,7 @@ fn hook_error(failure: TouchIdFailure) -> HookError {
     }
 }
 
-fn settle(outcome: bwl_vault::Result<Result<(), TouchIdFailure>>) -> HookResult<()> {
+fn settle(outcome: vk_vault::Result<Result<(), TouchIdFailure>>) -> HookResult<()> {
     match outcome {
         Ok(result) => result.map_err(hook_error),
         Err(error) => Err(HookError::Failed(crate::viewmodel::error_text(&error))),
@@ -250,7 +250,7 @@ mod tests {
         );
         assert!(
             matches!(
-                settle(Err(bwl_vault::Error::Locked)),
+                settle(Err(vk_vault::Error::Locked)),
                 Err(HookError::Failed(_))
             ),
             "vault errors reach the user as text"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates a self-signed code-signing certificate "bw-lite local" in the login keychain, once.
+# Creates a self-signed code-signing certificate "vaultkeeper local" in the login keychain, once.
 # No Apple Developer account is involved; the certificate only gives local builds a stable code
 # identity. macOS asks for your login password when the certificate is marked trusted.
 #
@@ -9,13 +9,13 @@
 # The private key trusts no application (`-T ""`; without any -T the importing /usr/bin/security
 # would stay trusted for signing): every use of it, i.e. each `codesign` run in bundle-macos.sh,
 # shows a keychain prompt. Older versions trusted
-# /usr/bin/codesign, so any process could sign any binary as "bw-lite local" without a prompt,
-# and that binary would then read bw-lite's keychain items (the refresh token) without a prompt
+# /usr/bin/codesign, so any process could sign any binary as "vaultkeeper local" without a prompt,
+# and that binary would then read vaultkeeper's keychain items (the refresh token) without a prompt
 # too, because they trust this identity. Answer the prompt with "Allow", never "Always Allow":
 # that would put codesign back on the key's access list.
 set -euo pipefail
 
-NAME="${BW_LITE_SIGN_IDENTITY:-bw-lite local}"
+NAME="${VAULTKEEPER_SIGN_IDENTITY:-vaultkeeper local}"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 if [ "${1:-}" = "--recreate" ]; then
@@ -23,7 +23,7 @@ if [ "${1:-}" = "--recreate" ]; then
     security delete-identity -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1 \
       || security delete-certificate -c "$NAME" "$KEYCHAIN"
   done
-  echo "removed \"$NAME\"; bw-lite asks once for its keychain items after the next build"
+  echo "removed \"$NAME\"; vaultkeeper asks once for its keychain items after the next build"
 elif security find-identity -v -p codesigning | grep -q "\"$NAME\""; then
   echo "\"$NAME\" already exists (use --recreate if an older version of this script made it)"
   exit 0

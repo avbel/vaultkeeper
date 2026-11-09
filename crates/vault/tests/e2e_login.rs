@@ -5,14 +5,14 @@
 
 mod support;
 
-use bwl_api::TwoFactorProvider;
-use bwl_vault::{
-    Error, VaultService,
-    model::{Filter, LoginStep, SessionState, TwoFactorAnswer},
-};
 use support::{
     KdfChoice, TestVault, email_factor, enable_authenticator, enable_email_two_factor, env,
     mail_count, raw_session, register, totp, unix_now, wait_for_code,
+};
+use vk_api::TwoFactorProvider;
+use vk_vault::{
+    Error, VaultService,
+    model::{Filter, LoginStep, SessionState, TwoFactorAnswer},
 };
 use zeroize::Zeroizing;
 

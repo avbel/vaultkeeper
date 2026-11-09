@@ -1,4 +1,4 @@
-//! Calls into the Swift shim (`swift/Sources/BwlPlatform/SecureEnclave.swift`).
+//! Calls into the Swift shim (`swift/Sources/VkPlatform/SecureEnclave.swift`).
 
 use std::ffi::{CStr, CString, c_char};
 
@@ -15,8 +15,8 @@ const STATE_CAP: usize = 255;
 const DIAG_CAP: usize = 512;
 
 unsafe extern "C" {
-    safe fn bwl_se_is_available() -> bool;
-    fn bwl_se_generate(
+    safe fn vk_se_is_available() -> bool;
+    fn vk_se_generate(
         blob_out: *mut u8,
         blob_cap: usize,
         blob_len: *mut usize,
@@ -27,7 +27,7 @@ unsafe extern "C" {
         diag: *mut c_char,
         diag_cap: usize,
     ) -> i32;
-    fn bwl_se_ecdh(
+    fn vk_se_ecdh(
         blob: *const u8,
         blob_len: usize,
         enrolled_state: *const u8,
@@ -39,11 +39,11 @@ unsafe extern "C" {
         diag: *mut c_char,
         diag_cap: usize,
     ) -> i32;
-    fn bwl_la_authenticate(reason: *const c_char, diag: *mut c_char, diag_cap: usize) -> i32;
+    fn vk_la_authenticate(reason: *const c_char, diag: *mut c_char, diag_cap: usize) -> i32;
 }
 
 pub(super) fn is_available() -> bool {
-    bwl_se_is_available()
+    vk_se_is_available()
 }
 
 pub(super) struct GeneratedKey {
@@ -62,7 +62,7 @@ pub(super) fn generate() -> Result<GeneratedKey> {
     // SAFETY: every out pointer is valid for the capacity passed next to it, `public` holds the
     // 65 bytes the shim writes, and all buffers outlive the synchronous call.
     let status = unsafe {
-        bwl_se_generate(
+        vk_se_generate(
             blob.as_mut_ptr(),
             blob.len(),
             &raw mut blob_len,
@@ -94,7 +94,7 @@ pub(super) fn authenticate(reason: &str) -> Result<()> {
     let mut diag = Diag::new();
     // SAFETY: `reason` is NUL-terminated and `diag` is valid for DIAG_CAP bytes; both outlive
     // the call, which blocks until the prompt is answered.
-    let status = unsafe { bwl_la_authenticate(reason.as_ptr(), diag.as_mut_ptr(), DIAG_CAP) };
+    let status = unsafe { vk_la_authenticate(reason.as_ptr(), diag.as_mut_ptr(), DIAG_CAP) };
     diag.log(status, "Touch ID check");
     status_result(status, Operation::Authenticate, &diag.text())
 }
@@ -129,7 +129,7 @@ impl KeyAgreement for SecureEnclave<'_> {
         // `secret` holds the 32 bytes the shim writes and `diag` DIAG_CAP bytes; all outlive
         // the call, which blocks until the prompt is answered.
         let status = unsafe {
-            bwl_se_ecdh(
+            vk_se_ecdh(
                 key.blob.as_ptr(),
                 key.blob.len(),
                 key.biometry_state.as_ptr(),
@@ -179,7 +179,7 @@ mod tests {
     use crate::Error;
 
     unsafe extern "C" {
-        fn bwl_se_key_init_status_for_test(
+        fn vk_se_key_init_status_for_test(
             domain: *const c_char,
             code: isize,
             underlying_domain: *const c_char,
@@ -203,7 +203,7 @@ mod tests {
         let under_domain = CString::new(under_domain).expect("domain");
         // SAFETY: both strings are NUL-terminated and outlive the call, which only reads them.
         let status = unsafe {
-            bwl_se_key_init_status_for_test(
+            vk_se_key_init_status_for_test(
                 domain.as_ptr(),
                 error.1,
                 under_domain.as_ptr(),

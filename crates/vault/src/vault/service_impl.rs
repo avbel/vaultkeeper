@@ -83,7 +83,7 @@ impl VaultService for Vault {
     }
 
     fn last_sync(&self) -> Option<std::time::SystemTime> {
-        *lock(&self.inner.last_sync)
+        self.inner.last_sync()
     }
 
     async fn probe_server(&self, server: &url::Url) -> Result<ServerProbe> {

@@ -3,8 +3,8 @@
 
 use std::{rc::Rc, sync::Arc};
 
-use bwl_vault::VaultService;
 use slint::{ModelRc, SharedString, VecModel};
+use vk_vault::VaultService;
 
 use super::{App, handler};
 use crate::{

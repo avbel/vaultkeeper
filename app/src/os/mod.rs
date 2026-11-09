@@ -1,5 +1,5 @@
-//! The real side effects behind [`crate::hooks`] for the `--ui` process: bwl-platform, bwl-ssh,
-//! bwl-gen, AppKit and rfd. Settings and SSH agent changes reach the daemon as IPC notices.
+//! The real side effects behind [`crate::hooks`] for the `--ui` process: vk-platform, vk-ssh,
+//! vk-gen, AppKit and rfd. Settings and SSH agent changes reach the daemon as IPC notices.
 
 pub mod appkit;
 pub mod autotype;
@@ -13,7 +13,7 @@ pub mod settings_file;
 
 use std::{path::Path, sync::Arc};
 
-use bwl_ipc::{RemoteVault, UiNotice};
+use vk_ipc::{RemoteVault, UiNotice};
 
 pub use biometrics::{
     DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED, TouchId,

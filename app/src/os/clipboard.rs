@@ -5,8 +5,8 @@
 
 use std::{sync::Arc, time::Duration};
 
-use bwl_ipc::{ClipboardHost, RemoteVault};
-use bwl_platform::clipboard::{ClipboardBackend, SecretClipboard, SystemClipboard as Pasteboard};
+use vk_ipc::{ClipboardHost, RemoteVault};
+use vk_platform::clipboard::{ClipboardBackend, SecretClipboard, SystemClipboard as Pasteboard};
 
 use crate::hooks::{Clipboard, HookError, HookResult};
 
@@ -119,16 +119,16 @@ mod tests {
     }
 
     impl ClipboardBackend for Fake {
-        fn set_secret(&mut self, text: &str) -> bwl_platform::Result<()> {
+        fn set_secret(&mut self, text: &str) -> vk_platform::Result<()> {
             *self.0.lock().expect("lock") = Some(text.to_owned());
             Ok(())
         }
 
-        fn text(&mut self) -> bwl_platform::Result<Option<Zeroizing<String>>> {
+        fn text(&mut self) -> vk_platform::Result<Option<Zeroizing<String>>> {
             Ok(self.content().map(Zeroizing::new))
         }
 
-        fn clear(&mut self) -> bwl_platform::Result<()> {
+        fn clear(&mut self) -> vk_platform::Result<()> {
             *self.0.lock().expect("lock") = None;
             Ok(())
         }

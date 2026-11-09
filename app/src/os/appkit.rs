@@ -210,7 +210,7 @@ mod macos {
     }
 
     /// Only while active: hiding an app in the background would do nothing useful, and macOS
-    /// activates the app that was in front before bw-lite.
+    /// activates the app that was in front before vaultkeeper.
     pub(super) fn hide() {
         let Some(mtm) = main_thread() else {
             return;

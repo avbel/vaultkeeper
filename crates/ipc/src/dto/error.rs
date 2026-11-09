@@ -1,4 +1,4 @@
-//! Wire mirror of `bwl_vault::Error`.
+//! Wire mirror of `vk_vault::Error`.
 //!
 //! The UI matches on vault and API error variants and calls `is_offline()`, so the tree is
 //! rebuilt on the client side variant for variant. Where an inner value cannot be rebuilt the
@@ -12,8 +12,8 @@
 
 use std::io;
 
-use bwl_vault::Error;
 use serde::{Deserialize, Serialize, de::Error as _};
+use vk_vault::Error;
 
 use crate::ConvertError;
 
@@ -151,10 +151,10 @@ impl From<&Error> for WireError {
             Error::ReadOnly => Self::ReadOnly,
             Error::Api(api) => Self::Api(api.into()),
             Error::Crypto(crypto) => Self::Crypto(crypto.into()),
-            Error::Gen(bwl_gen::Error::InvalidTotp(detail)) => {
+            Error::Gen(vk_gen::Error::InvalidTotp(detail)) => {
                 Self::Gen(GenErrorDto::InvalidTotp((*detail).to_owned()))
             }
-            Error::Gen(bwl_gen::Error::InvalidOptions(detail)) => {
+            Error::Gen(vk_gen::Error::InvalidOptions(detail)) => {
                 Self::Gen(GenErrorDto::InvalidOptions((*detail).to_owned()))
             }
             Error::Io(io) => Self::Io(io.into()),
@@ -184,14 +184,14 @@ impl From<WireError> for Error {
             WireError::Api(api) => Self::Api(api.into()),
             WireError::Crypto(crypto) => Self::Crypto(crypto.into()),
             WireError::Gen(GenErrorDto::InvalidTotp(detail)) => {
-                Self::Gen(bwl_gen::Error::InvalidTotp(lookup(GEN_MESSAGES, &detail)))
+                Self::Gen(vk_gen::Error::InvalidTotp(lookup(GEN_MESSAGES, &detail)))
             }
-            WireError::Gen(GenErrorDto::InvalidOptions(detail)) => Self::Gen(
-                bwl_gen::Error::InvalidOptions(lookup(GEN_MESSAGES, &detail)),
-            ),
+            WireError::Gen(GenErrorDto::InvalidOptions(detail)) => {
+                Self::Gen(vk_gen::Error::InvalidOptions(lookup(GEN_MESSAGES, &detail)))
+            }
             WireError::Io(io) => Self::Io(io.into()),
             WireError::Cache(message) => Self::Cache(serde_json::Error::custom(message)),
-            WireError::Logout(errors) => Self::Logout(bwl_vault::LogoutErrors(
+            WireError::Logout(errors) => Self::Logout(vk_vault::LogoutErrors(
                 errors.into_iter().map(Self::from).collect(),
             )),
         }
@@ -221,24 +221,24 @@ impl WireError {
     }
 }
 
-impl From<&bwl_api::Error> for ApiErrorDto {
-    fn from(error: &bwl_api::Error) -> Self {
+impl From<&vk_api::Error> for ApiErrorDto {
+    fn from(error: &vk_api::Error) -> Self {
         match error {
-            bwl_api::Error::Http(_) => Self::Http {
+            vk_api::Error::Http(_) => Self::Http {
                 message: error.to_string(),
                 offline: error.is_offline(),
             },
-            bwl_api::Error::Url(url) => Self::Url(url.to_string()),
-            bwl_api::Error::Decode(json) => Self::Decode(json.to_string()),
-            bwl_api::Error::Server { status, message } => Self::Server {
+            vk_api::Error::Url(url) => Self::Url(url.to_string()),
+            vk_api::Error::Decode(json) => Self::Decode(json.to_string()),
+            vk_api::Error::Server { status, message } => Self::Server {
                 status: *status,
                 message: message.clone(),
             },
-            bwl_api::Error::Unauthorized => Self::Unauthorized,
-            bwl_api::Error::Io(io) => Self::Io(io.into()),
-            bwl_api::Error::UntrustedUrl(host) => Self::UntrustedUrl(host.clone()),
-            bwl_api::Error::Tls(detail) => Self::Tls(detail.clone()),
-            bwl_api::Error::InvalidServerUrl(_) => Self::Server {
+            vk_api::Error::Unauthorized => Self::Unauthorized,
+            vk_api::Error::Io(io) => Self::Io(io.into()),
+            vk_api::Error::UntrustedUrl(host) => Self::UntrustedUrl(host.clone()),
+            vk_api::Error::Tls(detail) => Self::Tls(detail.clone()),
+            vk_api::Error::InvalidServerUrl(_) => Self::Server {
                 status: 400,
                 message: error.to_string(),
             },
@@ -246,7 +246,7 @@ impl From<&bwl_api::Error> for ApiErrorDto {
     }
 }
 
-impl From<ApiErrorDto> for bwl_api::Error {
+impl From<ApiErrorDto> for vk_api::Error {
     fn from(error: ApiErrorDto) -> Self {
         match error {
             ApiErrorDto::Http { message, offline } => {
@@ -274,9 +274,9 @@ impl From<ApiErrorDto> for bwl_api::Error {
     }
 }
 
-impl From<&bwl_crypto::Error> for CryptoErrorDto {
-    fn from(error: &bwl_crypto::Error) -> Self {
-        use bwl_crypto::Error as E;
+impl From<&vk_crypto::Error> for CryptoErrorDto {
+    fn from(error: &vk_crypto::Error) -> Self {
+        use vk_crypto::Error as E;
         match error {
             E::KdfTooWeak(detail) => Self::KdfTooWeak((*detail).to_owned()),
             E::KdfOutOfRange(detail) => Self::KdfOutOfRange((*detail).to_owned()),
@@ -298,7 +298,7 @@ impl From<&bwl_crypto::Error> for CryptoErrorDto {
     }
 }
 
-impl From<CryptoErrorDto> for bwl_crypto::Error {
+impl From<CryptoErrorDto> for vk_crypto::Error {
     fn from(error: CryptoErrorDto) -> Self {
         match error {
             CryptoErrorDto::KdfTooWeak(_) => Self::KdfTooWeak(UNKNOWN_DETAIL),
@@ -429,7 +429,7 @@ mod tests {
     fn edit_conflict_round_trips_with_its_message() {
         let back = proxied(&Error::Conflict);
         assert!(matches!(back, Error::Conflict), "{back:?}");
-        assert_eq!(back.to_string(), bwl_vault::CONFLICT_MESSAGE);
+        assert_eq!(back.to_string(), vk_vault::CONFLICT_MESSAGE);
     }
 
     #[test]
@@ -437,19 +437,19 @@ mod tests {
         let back = proxied(&Error::Offline);
         assert!(matches!(back, Error::Offline), "{back:?}");
         assert!(back.is_offline());
-        assert_eq!(back.to_string(), bwl_vault::OFFLINE_MESSAGE);
+        assert_eq!(back.to_string(), vk_vault::OFFLINE_MESSAGE);
     }
 
     #[test]
     fn gateway_status_keeps_status_message_and_offline_flag() {
-        let back = proxied(&Error::Api(bwl_api::Error::Server {
+        let back = proxied(&Error::Api(vk_api::Error::Server {
             status: 502,
             message: "Bad Gateway".to_owned(),
         }));
         assert!(back.is_offline());
         assert!(matches!(
             &back,
-            Error::Api(bwl_api::Error::Server { status: 502, message }) if message == "Bad Gateway"
+            Error::Api(vk_api::Error::Server { status: 502, message }) if message == "Bad Gateway"
         ));
     }
 
@@ -461,7 +461,7 @@ mod tests {
             .send()
             .await
             .expect_err("nothing listens on port 9");
-        let error = Error::Api(bwl_api::Error::Http(failure));
+        let error = Error::Api(vk_api::Error::Http(failure));
         assert!(error.is_offline(), "precondition: {error:?}");
         let back = proxied(&error);
         assert!(matches!(back, Error::Offline), "{back:?}");
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn logout_errors_keep_every_step() {
-        let error = Error::Logout(bwl_vault::LogoutErrors(vec![
+        let error = Error::Logout(vk_vault::LogoutErrors(vec![
             Error::Io(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "keychain locked",
@@ -478,7 +478,7 @@ mod tests {
             Error::NotFound,
         ]));
         let back = proxied(&error);
-        let Error::Logout(bwl_vault::LogoutErrors(steps)) = &back else {
+        let Error::Logout(vk_vault::LogoutErrors(steps)) = &back else {
             panic!("expected Logout, got {back:?}");
         };
         assert_eq!(steps.len(), 2);
@@ -489,37 +489,37 @@ mod tests {
 
     #[test]
     fn server_unauthorized_untrusted_and_api_io_errors_round_trip() {
-        let back = proxied(&Error::Api(bwl_api::Error::Server {
+        let back = proxied(&Error::Api(vk_api::Error::Server {
             status: 400,
             message: "Username or password is incorrect".to_owned(),
         }));
         assert!(matches!(
             &back,
-            Error::Api(bwl_api::Error::Server { status: 400, message })
+            Error::Api(vk_api::Error::Server { status: 400, message })
                 if message == "Username or password is incorrect"
         ));
         assert!(!back.is_offline());
         assert!(matches!(
-            proxied(&Error::Api(bwl_api::Error::Unauthorized)),
-            Error::Api(bwl_api::Error::Unauthorized)
+            proxied(&Error::Api(vk_api::Error::Unauthorized)),
+            Error::Api(vk_api::Error::Unauthorized)
         ));
         assert!(matches!(
-            proxied(&Error::Api(bwl_api::Error::UntrustedUrl("evil.example".to_owned()))),
-            Error::Api(bwl_api::Error::UntrustedUrl(host)) if host == "evil.example"
+            proxied(&Error::Api(vk_api::Error::UntrustedUrl("evil.example".to_owned()))),
+            Error::Api(vk_api::Error::UntrustedUrl(host)) if host == "evil.example"
         ));
-        let tls = proxied(&Error::Api(bwl_api::Error::Tls(
+        let tls = proxied(&Error::Api(vk_api::Error::Tls(
             "certificate expired".to_owned(),
         )));
         assert!(
-            matches!(&tls, Error::Api(bwl_api::Error::Tls(detail)) if detail == "certificate expired"),
+            matches!(&tls, Error::Api(vk_api::Error::Tls(detail)) if detail == "certificate expired"),
             "{tls:?}"
         );
         assert!(!tls.is_offline(), "a bad certificate is not offline mode");
-        let back = proxied(&Error::Api(bwl_api::Error::Io(io::Error::new(
+        let back = proxied(&Error::Api(vk_api::Error::Io(io::Error::new(
             io::ErrorKind::ConnectionReset,
             "reset by peer",
         ))));
-        let Error::Api(bwl_api::Error::Io(io)) = &back else {
+        let Error::Api(vk_api::Error::Io(io)) = &back else {
             panic!("expected Api(Io), got {back:?}");
         };
         assert_eq!(io.kind(), io::ErrorKind::ConnectionReset);
@@ -540,7 +540,7 @@ mod tests {
             offline: false,
         });
         let back = Error::from(builder);
-        let Error::Api(bwl_api::Error::Io(io)) = &back else {
+        let Error::Api(vk_api::Error::Io(io)) = &back else {
             panic!("expected Api(Io), got {back:?}");
         };
         assert_eq!(io.kind(), io::ErrorKind::Other);
@@ -550,16 +550,16 @@ mod tests {
 
     #[test]
     fn url_decode_and_cache_errors_keep_their_variant_and_text() {
-        let back = proxied(&Error::Api(bwl_api::Error::Url(
+        let back = proxied(&Error::Api(vk_api::Error::Url(
             url::ParseError::InvalidPort,
         )));
         assert!(matches!(
             back,
-            Error::Api(bwl_api::Error::Url(url::ParseError::InvalidPort))
+            Error::Api(vk_api::Error::Url(url::ParseError::InvalidPort))
         ));
         let json = serde_json::from_str::<u8>("x").expect_err("invalid JSON");
         let text = json.to_string();
-        let back = proxied(&Error::Api(bwl_api::Error::Decode(json)));
+        let back = proxied(&Error::Api(vk_api::Error::Decode(json)));
         assert_eq!(back.to_string(), format!("unexpected response: {text}"));
         let json = serde_json::from_str::<u8>("[").expect_err("invalid JSON");
         let text = json.to_string();
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn crypto_errors_round_trip() {
-        use bwl_crypto::Error as C;
+        use vk_crypto::Error as C;
         let cases = [
             C::Kdf,
             C::UnsupportedKdf(9),
@@ -602,37 +602,37 @@ mod tests {
 
     #[test]
     fn unknown_static_details_fall_back_to_a_generic_text() {
-        let back = proxied(&Error::Crypto(bwl_crypto::Error::KdfTooWeak(
+        let back = proxied(&Error::Crypto(vk_crypto::Error::KdfTooWeak(
             "PBKDF2 iterations below 600000",
         )));
         assert!(matches!(
             back,
-            Error::Crypto(bwl_crypto::Error::KdfTooWeak(UNKNOWN_DETAIL))
+            Error::Crypto(vk_crypto::Error::KdfTooWeak(UNKNOWN_DETAIL))
         ));
-        let back = proxied(&Error::Crypto(bwl_crypto::Error::MalformedEncString(
+        let back = proxied(&Error::Crypto(vk_crypto::Error::MalformedEncString(
             "a message added later",
         )));
         assert!(matches!(
             back,
-            Error::Crypto(bwl_crypto::Error::MalformedEncString(UNKNOWN_DETAIL))
+            Error::Crypto(vk_crypto::Error::MalformedEncString(UNKNOWN_DETAIL))
         ));
     }
 
     #[test]
     fn generator_errors_keep_known_messages() {
-        let back = proxied(&Error::Gen(bwl_gen::Error::InvalidTotp(
+        let back = proxied(&Error::Gen(vk_gen::Error::InvalidTotp(
             "secret is not valid base32",
         )));
         assert_eq!(
             back.to_string(),
             "invalid TOTP secret or URI: secret is not valid base32"
         );
-        let back = proxied(&Error::Gen(bwl_gen::Error::InvalidOptions(
+        let back = proxied(&Error::Gen(vk_gen::Error::InvalidOptions(
             "passphrase must have 3..=20 words",
         )));
         assert!(matches!(
             back,
-            Error::Gen(bwl_gen::Error::InvalidOptions(
+            Error::Gen(vk_gen::Error::InvalidOptions(
                 "passphrase must have 3..=20 words"
             ))
         ));
@@ -640,14 +640,14 @@ mod tests {
 
     #[test]
     fn totp_messages_from_the_generator_crate_are_all_known() {
-        // Each of these inputs hits a different InvalidTotp message in bwl-gen.
+        // Each of these inputs hits a different InvalidTotp message in vk-gen.
         for input in [
             "",
             "otpauth://hotp/x?secret=JBSWY3DP",
             "otpauth://totp/x",
             "!!!",
         ] {
-            let error = bwl_gen::totp::Totp::parse(input).expect_err("invalid secret");
+            let error = vk_gen::totp::Totp::parse(input).expect_err("invalid secret");
             let wire = WireError::from(&Error::Gen(error));
             let back = Error::from(wire);
             assert!(

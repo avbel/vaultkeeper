@@ -1,6 +1,6 @@
 //! Daemon <-> UI process IPC.
 //!
-//! `bw-lite --daemon` owns the real vault and calls [`serve`]; the on-demand `bw-lite --ui`
+//! `vaultkeeper --daemon` owns the real vault and calls [`serve`]; the on-demand `vaultkeeper --ui`
 //! process calls [`RemoteVault::connect`] and hands the [`RemoteVault`] to the Slint UI as its
 //! `VaultService`.
 //!
@@ -29,7 +29,7 @@
 //!   Well inside one 60 Hz frame, so the UI thread calls them directly.
 
 #[cfg(not(unix))]
-compile_error!("bwl-ipc talks over a unix domain socket; only unix targets are supported");
+compile_error!("vk-ipc talks over a unix domain socket; only unix targets are supported");
 
 mod client;
 mod clipboard;

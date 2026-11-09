@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
+use vk_gen::generator::{PassphraseOptions, PasswordOptions};
 use zeroize::Zeroizing;
 
 use crate::hooks::{HookError, HookResult, PasswordGenerator, SshKeyTool};
@@ -168,7 +168,7 @@ pub struct MockSshKeys;
 impl SshKeyTool for MockSshKeys {
     fn generate(&self) -> HookResult<(Zeroizing<String>, String, String)> {
         let seed = MockGenerator::default().prng().next_u64();
-        Ok(fake_ssh_key(seed, "bw-lite"))
+        Ok(fake_ssh_key(seed, "vaultkeeper"))
     }
 }
 

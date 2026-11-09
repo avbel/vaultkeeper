@@ -8,8 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bwl_vault::{VaultService, model::Filter};
 use common::{Daemon, FakeVault, unlocked};
+use vk_vault::{VaultService, model::Filter};
 
 const ITEMS: usize = 400;
 const CALLS: usize = 1000;
@@ -19,7 +19,7 @@ struct Percentiles {
     p99: Duration,
 }
 
-fn measure(vault: &Arc<bwl_ipc::RemoteVault>, query: &str, expected_rows: usize) -> Percentiles {
+fn measure(vault: &Arc<vk_ipc::RemoteVault>, query: &str, expected_rows: usize) -> Percentiles {
     let filter = Filter::default();
     let mut samples: Vec<Duration> = (0..CALLS)
         .map(|_| {

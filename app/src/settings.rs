@@ -181,8 +181,8 @@ pub struct GeneratorPrefs {
 
 impl Default for GeneratorPrefs {
     fn default() -> Self {
-        let password = bwl_gen::generator::PasswordOptions::default();
-        let passphrase = bwl_gen::generator::PassphraseOptions::default();
+        let password = vk_gen::generator::PasswordOptions::default();
+        let passphrase = vk_gen::generator::PassphraseOptions::default();
         Self {
             passphrase_mode: false,
             length: password.length,

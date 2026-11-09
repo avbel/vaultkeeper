@@ -6,11 +6,11 @@
 
 mod support;
 
-use bwl_crypto::{SymmetricKey, enc_buffer};
-use bwl_vault::{Error, VaultService};
 use support::{
     KdfChoice, TestVault, decrypt, drafts, env, raw_session, register, server_cipher_key,
 };
+use vk_crypto::{SymmetricKey, enc_buffer};
+use vk_vault::{Error, VaultService};
 
 /// Deterministic, incompressible-looking bytes (xorshift64*), so no fixture file is needed.
 fn sample_bytes(len: usize) -> Vec<u8> {
@@ -66,7 +66,7 @@ async fn attachments_round_trip_without_leftover_temp_files() {
         .key
         .as_deref()
         .unwrap()
-        .parse::<bwl_crypto::EncString>()
+        .parse::<vk_crypto::EncString>()
         .unwrap()
         .decrypt(&item_key)
         .unwrap();

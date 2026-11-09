@@ -10,7 +10,7 @@ fn main() {
 mod swift {
     use std::{env, path::PathBuf};
 
-    const PACKAGE: &str = "BwlPlatform";
+    const PACKAGE: &str = "VkPlatform";
     const MIN_MACOS: &str = "13.0";
 
     pub fn link() {

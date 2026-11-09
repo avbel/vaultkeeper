@@ -27,6 +27,7 @@ impl Inner {
         drop(previous);
         self.clear_pending();
         self.set_offline(false);
+        lock(&self.last_sync).remove(&id);
 
         let mut errors = Vec::new();
         // 3. Every secret stored under the user id: refresh token, remember-device token, and

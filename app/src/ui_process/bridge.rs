@@ -1,6 +1,6 @@
 //! Daemon events → the app's `UiCommand`s.
 
-use bwl_ipc::{SshApprovalKind, UiEvent};
+use vk_ipc::{SshApprovalKind, UiEvent};
 
 use crate::app::{SshApprovalRequest, UiCommand};
 
@@ -39,25 +39,25 @@ pub fn bridge(event: UiEvent) -> Bridged {
 }
 
 #[must_use]
-pub fn command_for(command: bwl_ipc::UiCommand) -> UiCommand {
+pub fn command_for(command: vk_ipc::UiCommand) -> UiCommand {
     match command {
-        bwl_ipc::UiCommand::ShowManager => UiCommand::ShowManager,
-        bwl_ipc::UiCommand::ShowQuickPanel { target } => UiCommand::ShowQuickPanel { target },
-        bwl_ipc::UiCommand::ToggleQuickPanel { target } => UiCommand::ToggleQuickPanel { target },
-        bwl_ipc::UiCommand::ShowUnlock => UiCommand::ShowUnlock,
-        bwl_ipc::UiCommand::ShowLogin => UiCommand::ShowLogin,
-        bwl_ipc::UiCommand::ShowSettings => UiCommand::ShowSettings,
-        bwl_ipc::UiCommand::ShowGenerator => UiCommand::ShowGenerator,
-        bwl_ipc::UiCommand::UnlockInTray => UiCommand::UnlockInTray,
-        bwl_ipc::UiCommand::ReloadSettings => UiCommand::ReloadSettings,
-        bwl_ipc::UiCommand::SyncFinished { error } => UiCommand::SyncFinished(error),
+        vk_ipc::UiCommand::ShowManager => UiCommand::ShowManager,
+        vk_ipc::UiCommand::ShowQuickPanel { target } => UiCommand::ShowQuickPanel { target },
+        vk_ipc::UiCommand::ToggleQuickPanel { target } => UiCommand::ToggleQuickPanel { target },
+        vk_ipc::UiCommand::ShowUnlock => UiCommand::ShowUnlock,
+        vk_ipc::UiCommand::ShowLogin => UiCommand::ShowLogin,
+        vk_ipc::UiCommand::ShowSettings => UiCommand::ShowSettings,
+        vk_ipc::UiCommand::ShowGenerator => UiCommand::ShowGenerator,
+        vk_ipc::UiCommand::UnlockInTray => UiCommand::UnlockInTray,
+        vk_ipc::UiCommand::ReloadSettings => UiCommand::ReloadSettings,
+        vk_ipc::UiCommand::SyncFinished { error } => UiCommand::SyncFinished(error),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bwl_ipc::{SshApproval, SshDecision, SshPrompt};
     use tokio::sync::oneshot;
+    use vk_ipc::{SshApproval, SshDecision, SshPrompt};
 
     use super::*;
 
@@ -69,7 +69,7 @@ mod tests {
             key_name: "deploy".to_owned(),
             fingerprint: "SHA256:abc".to_owned(),
             purpose: Some("git commit signing".to_owned()),
-            return_to: Some(bwl_ipc::TypingTarget {
+            return_to: Some(vk_ipc::TypingTarget {
                 pid: 377,
                 name: "Terminal".to_owned(),
             }),
@@ -79,28 +79,28 @@ mod tests {
     #[test]
     fn every_daemon_command_has_its_app_command() {
         let pairs = [
-            (bwl_ipc::UiCommand::ShowManager, "ShowManager"),
+            (vk_ipc::UiCommand::ShowManager, "ShowManager"),
             (
-                bwl_ipc::UiCommand::ShowQuickPanel { target: None },
+                vk_ipc::UiCommand::ShowQuickPanel { target: None },
                 "ShowQuickPanel { target: None }",
             ),
             (
-                bwl_ipc::UiCommand::ToggleQuickPanel {
-                    target: Some(bwl_ipc::TypingTarget {
+                vk_ipc::UiCommand::ToggleQuickPanel {
+                    target: Some(vk_ipc::TypingTarget {
                         pid: 812,
                         name: "Safari".to_owned(),
                     }),
                 },
                 r#"ToggleQuickPanel { target: Some(TypingTarget { pid: 812, name: "Safari" }) }"#,
             ),
-            (bwl_ipc::UiCommand::ShowUnlock, "ShowUnlock"),
-            (bwl_ipc::UiCommand::ShowLogin, "ShowLogin"),
-            (bwl_ipc::UiCommand::ShowSettings, "ShowSettings"),
-            (bwl_ipc::UiCommand::ShowGenerator, "ShowGenerator"),
-            (bwl_ipc::UiCommand::UnlockInTray, "UnlockInTray"),
-            (bwl_ipc::UiCommand::ReloadSettings, "ReloadSettings"),
+            (vk_ipc::UiCommand::ShowUnlock, "ShowUnlock"),
+            (vk_ipc::UiCommand::ShowLogin, "ShowLogin"),
+            (vk_ipc::UiCommand::ShowSettings, "ShowSettings"),
+            (vk_ipc::UiCommand::ShowGenerator, "ShowGenerator"),
+            (vk_ipc::UiCommand::UnlockInTray, "UnlockInTray"),
+            (vk_ipc::UiCommand::ReloadSettings, "ReloadSettings"),
             (
-                bwl_ipc::UiCommand::SyncFinished {
+                vk_ipc::UiCommand::SyncFinished {
                     error: Some("offline".to_owned()),
                 },
                 r#"SyncFinished(Some("offline"))"#,

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
-use bwl_api::{DeviceInfo, HttpTimeouts, notifications::ReconnectOptions};
 use tokio::runtime::Handle;
+use vk_api::{DeviceInfo, HttpTimeouts, notifications::ReconnectOptions};
 
 /// Everything the vault needs from its host; nothing here is platform specific.
 pub struct VaultConfig {

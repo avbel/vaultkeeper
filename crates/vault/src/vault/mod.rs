@@ -17,7 +17,7 @@ mod sync;
 mod writes;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -25,8 +25,8 @@ use std::{
     time::SystemTime,
 };
 
-use bwl_api::Client;
 use tokio::{sync::Notify, time::Instant};
+use vk_api::Client;
 use zeroize::Zeroizing;
 
 pub use self::background::BackgroundStatus;
@@ -70,7 +70,8 @@ pub(crate) struct Inner {
     asleep: AtomicBool,
     syncs: AtomicU64,
     websocket_connected: AtomicBool,
-    last_sync: Mutex<Option<SystemTime>>,
+    /// Per account, so a switch never shows another account's time.
+    last_sync: Mutex<HashMap<Arc<str>, SystemTime>>,
 }
 
 pub(crate) struct State {
@@ -153,7 +154,7 @@ impl Vault {
             asleep: AtomicBool::new(false),
             syncs: AtomicU64::new(0),
             websocket_connected: AtomicBool::new(false),
-            last_sync: Mutex::new(None),
+            last_sync: Mutex::new(HashMap::new()),
             config,
         };
         Ok(Self {
@@ -206,7 +207,7 @@ impl Vault {
 
     #[must_use]
     pub fn last_sync(&self) -> Option<SystemTime> {
-        *lock(&self.inner.last_sync)
+        self.inner.last_sync()
     }
 
     /// The user id of the active account, which also prefixes its secret-store keys.
@@ -288,6 +289,16 @@ impl Inner {
     fn is_current(&self, epoch: u64) -> bool {
         let state = self.read_state();
         state.epoch == epoch && state.active.as_ref().is_some_and(|a| a.unlocked.is_some())
+    }
+
+    /// The last full sync of the active account, if one ran since start.
+    pub(crate) fn last_sync(&self) -> Option<SystemTime> {
+        let active = self
+            .read_state()
+            .active
+            .as_ref()
+            .map(|active| Arc::clone(&active.id))?;
+        lock(&self.last_sync).get(&active).copied()
     }
 
     fn read_unlocked<T>(&self, read: impl FnOnce(&Active, &Unlocked) -> Result<T>) -> Result<T> {

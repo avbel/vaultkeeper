@@ -10,10 +10,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bwl_api::notifications::{
-    ListenError, ListenOptions, Notification, ReconnectOptions, listen, listen_with,
-    run_with_reconnect,
-};
 use common::hub::{self, Hub, Socket, close_message, complete_handshake, drain, frame, invocation};
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -23,6 +19,10 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
+use vk_api::notifications::{
+    ListenError, ListenOptions, Notification, ReconnectOptions, listen, listen_with,
+    run_with_reconnect,
+};
 use zeroize::Zeroizing;
 
 const WAIT: Duration = Duration::from_secs(5);

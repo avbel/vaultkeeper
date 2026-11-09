@@ -2,10 +2,10 @@
 
 mod common;
 
-use bwl_api::{Error, models::Attachment};
 use common::{access_token, client, fixture_json, json_response};
 use serde_json::json;
 use tokio::io::AsyncWrite;
+use vk_api::{Error, models::Attachment};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{body_json, header, method, path, query_param},

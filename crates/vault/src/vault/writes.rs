@@ -14,7 +14,7 @@ use crate::{
 /// "The client copy of this cipher is out of date. Resync the client and try again.").
 pub(super) fn stale_revision_as_conflict(error: Error) -> Error {
     match &error {
-        Error::Api(bwl_api::Error::Server {
+        Error::Api(vk_api::Error::Server {
             status: 400,
             message,
         }) if message.contains("out of date") => Error::Conflict,
@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     fn server(status: u16, message: &str) -> Error {
-        Error::Api(bwl_api::Error::Server {
+        Error::Api(vk_api::Error::Server {
             status,
             message: message.to_owned(),
         })
@@ -254,7 +254,7 @@ mod tests {
         let other = stale_revision_as_conflict(server(400, "Invalid folder"));
         assert!(matches!(
             other,
-            Error::Api(bwl_api::Error::Server { status: 400, .. })
+            Error::Api(vk_api::Error::Server { status: 400, .. })
         ));
         let gone = stale_revision_as_conflict(server(404, "out of date"));
         assert!(matches!(gone, Error::Api(_)));

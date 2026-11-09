@@ -44,13 +44,13 @@ pub fn normalize(input: &str) -> Result<ServerUrl, ServerUrlError> {
         .ok_or(ServerUrlError::Invalid)?;
     let warning = match url.scheme() {
         "https" => None,
-        "http" if bwl_api::is_local_host(&host) => Some(HTTP_WARNING),
+        "http" if vk_api::is_local_host(&host) => Some(HTTP_WARNING),
         "http" => return Err(ServerUrlError::InsecurePublic),
         _ => return Err(ServerUrlError::UnsupportedScheme),
     };
     url.set_fragment(None);
     url.set_query(None);
-    if bwl_api::validate_server_url(&url).is_err() {
+    if vk_api::validate_server_url(&url).is_err() {
         return Err(ServerUrlError::Invalid);
     }
     let path = url.path().trim_end_matches('/').to_owned();

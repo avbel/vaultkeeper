@@ -63,22 +63,22 @@ private final class PowerObserver: NSObject {
   }
 }
 
-@_cdecl("bwl_power_subscribe")
-public func bwlPowerSubscribe(_ callback: PowerCallback, _ context: UnsafeMutableRawPointer?)
+@_cdecl("vk_power_subscribe")
+public func vkPowerSubscribe(_ callback: PowerCallback, _ context: UnsafeMutableRawPointer?)
   -> UnsafeMutableRawPointer
 {
   Unmanaged.passRetained(PowerObserver(callback: callback, context: context)).toOpaque()
 }
 
-@_cdecl("bwl_power_unsubscribe")
-public func bwlPowerUnsubscribe(_ token: UnsafeMutableRawPointer) {
+@_cdecl("vk_power_unsubscribe")
+public func vkPowerUnsubscribe(_ token: UnsafeMutableRawPointer) {
   Unmanaged<PowerObserver>.fromOpaque(token).takeRetainedValue().stop()
 }
 
 /// Posts a sleep (`sleep == true`) or wake notification on this process's workspace center only,
 /// so tests can drive the observer without sleeping the machine. Dead-stripped from apps.
-@_cdecl("bwl_power_post_workspace_for_test")
-public func bwlPowerPostWorkspaceForTest(_ sleep: Bool) {
+@_cdecl("vk_power_post_workspace_for_test")
+public func vkPowerPostWorkspaceForTest(_ sleep: Bool) {
   let name = sleep ? NSWorkspace.willSleepNotification : NSWorkspace.didWakeNotification
   NSWorkspace.shared.notificationCenter.post(name: name, object: nil)
 }

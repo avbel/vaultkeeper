@@ -18,7 +18,7 @@ pub enum PowerEvent {
 }
 
 impl PowerEvent {
-    /// Codes sent by the Swift shim (`swift/Sources/BwlPlatform/Power.swift`).
+    /// Codes sent by the Swift shim (`swift/Sources/VkPlatform/Power.swift`).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     const fn from_code(code: i32) -> Option<Self> {
         match code {
@@ -63,13 +63,13 @@ mod macos {
     type Callback = extern "C" fn(*mut c_void, i32);
 
     unsafe extern "C" {
-        fn bwl_power_subscribe(callback: Callback, context: *mut c_void) -> *mut c_void;
-        fn bwl_power_unsubscribe(token: *mut c_void);
+        fn vk_power_subscribe(callback: Callback, context: *mut c_void) -> *mut c_void;
+        fn vk_power_unsubscribe(token: *mut c_void);
     }
 
     #[cfg(test)]
     unsafe extern "C" {
-        pub(super) safe fn bwl_power_post_workspace_for_test(sleep: bool);
+        pub(super) safe fn vk_power_post_workspace_for_test(sleep: bool);
     }
 
     pub(super) struct Subscription {
@@ -77,7 +77,7 @@ mod macos {
         sender: NonNull<Sender<PowerEvent>>,
     }
 
-    // SAFETY: the Swift observer is only touched through bwl_power_unsubscribe, which is
+    // SAFETY: the Swift observer is only touched through vk_power_unsubscribe, which is
     // thread-safe (NSLock plus thread-safe NotificationCenter removal), and the boxed Sender is
     // Send. Nothing here is shared, so Sync is not claimed.
     unsafe impl Send for Subscription {}
@@ -86,8 +86,8 @@ mod macos {
         pub(super) fn new(tx: Sender<PowerEvent>) -> Self {
             let sender = NonNull::from(Box::leak(Box::new(tx)));
             // SAFETY: `on_event` matches the C callback type; `sender` stays valid until
-            // bwl_power_unsubscribe has returned in Drop, after which Swift never calls it.
-            let token = unsafe { bwl_power_subscribe(on_event, sender.as_ptr().cast()) };
+            // vk_power_unsubscribe has returned in Drop, after which Swift never calls it.
+            let token = unsafe { vk_power_subscribe(on_event, sender.as_ptr().cast()) };
             let token = NonNull::new(token).expect("Swift returns a retained observer");
             Self { token, sender }
         }
@@ -95,10 +95,10 @@ mod macos {
 
     impl Drop for Subscription {
         fn drop(&mut self) {
-            // SAFETY: `token` came from bwl_power_subscribe and is released exactly once here.
+            // SAFETY: `token` came from vk_power_subscribe and is released exactly once here.
             // Once it returns no callback is running or will run, so the Sender can be freed.
             unsafe {
-                bwl_power_unsubscribe(self.token.as_ptr());
+                vk_power_unsubscribe(self.token.as_ptr());
                 drop(Box::from_raw(self.sender.as_ptr()));
             }
         }
@@ -143,13 +143,13 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let watcher = subscribe(tx).expect("subscribe");
-        macos::bwl_power_post_workspace_for_test(true);
-        macos::bwl_power_post_workspace_for_test(false);
+        macos::vk_power_post_workspace_for_test(true);
+        macos::vk_power_post_workspace_for_test(false);
         assert_eq!(rx.try_recv(), Ok(PowerEvent::WillSleep));
         assert_eq!(rx.try_recv(), Ok(PowerEvent::DidWake));
 
         drop(watcher);
-        macos::bwl_power_post_workspace_for_test(true);
+        macos::vk_power_post_workspace_for_test(true);
         assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
     }
 }

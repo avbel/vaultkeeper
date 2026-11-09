@@ -1,7 +1,7 @@
 //! Launch at login (a LaunchAgent on macOS) with `--tray`.
 //!
-//! The agent file is `~/Library/LaunchAgents/bw-lite.plist`, written here rather than through a
-//! library so it can carry `KeepAlive { SuccessfulExit = false }`: launchd restarts bw-lite after
+//! The agent file is `~/Library/LaunchAgents/vaultkeeper.plist`, written here rather than through a
+//! library so it can carry `KeepAlive { SuccessfulExit = false }`: launchd restarts vaultkeeper after
 //! a crash or an abort (non-zero exit or a signal) but not after Quit, which exits with 0. It points
 //! at the current executable, so enabling again after the app moved updates the path, and
 //! [`refresh`] brings an agent written by an older version of this executable up to date.
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Result;
 
-const LABEL: &str = "bw-lite";
+const LABEL: &str = "vaultkeeper";
 const TRAY_ARG: &str = "--tray";
 
 pub fn set_enabled(enabled: bool) -> Result<()> {
@@ -128,19 +128,19 @@ mod tests {
     #[test]
     fn markup_characters_in_the_path_are_escaped() {
         assert_eq!(
-            xml_escape(r#"/Apps/A&B <x> "q" 'a'/bw-lite"#),
-            "/Apps/A&amp;B &lt;x&gt; &quot;q&quot; &apos;a&apos;/bw-lite"
+            xml_escape(r#"/Apps/A&B <x> "q" 'a'/vaultkeeper"#),
+            "/Apps/A&amp;B &lt;x&gt; &quot;q&quot; &apos;a&apos;/vaultkeeper"
         );
     }
 
     #[test]
     fn the_agent_runs_the_given_exe_in_the_tray_and_restarts_only_after_a_failure() {
         let plist = agent_plist(Path::new(
-            "/Applications/bw-lite.app/Contents/MacOS/bw-lite",
+            "/Applications/Vaultkeeper.app/Contents/MacOS/vaultkeeper",
         ))
         .expect("plist");
         assert!(plist.contains(
-            "<array>\n    <string>/Applications/bw-lite.app/Contents/MacOS/bw-lite</string>\n    \
+            "<array>\n    <string>/Applications/Vaultkeeper.app/Contents/MacOS/vaultkeeper</string>\n    \
              <string>--tray</string>\n  </array>"
         ));
         assert!(plist.contains(

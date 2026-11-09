@@ -30,8 +30,8 @@ use std::{
     time::Duration,
 };
 
-use bwl_vault::{VaultService, model::SessionState};
 use slint::{ComponentHandle, Global, SharedString};
+use vk_vault::{VaultService, model::SessionState};
 
 pub use commands::UiCommand;
 pub use ssh::SshApprovalRequest;
@@ -144,8 +144,8 @@ pub struct App<S: VaultService> {
     syncing: Cell<bool>,
     on_last_window_closed: RefCell<Option<Box<dyn Fn()>>>,
     /// Re-prompt items whose master password was confirmed since the last lock.
-    reprompt_verified: RefCell<std::collections::HashSet<bwl_vault::model::ItemId>>,
-    reprompt_pending: RefCell<Option<(bwl_vault::model::ItemId, reprompt::Pending)>>,
+    reprompt_verified: RefCell<std::collections::HashSet<vk_vault::model::ItemId>>,
+    reprompt_pending: RefCell<Option<(vk_vault::model::ItemId, reprompt::Pending)>>,
     /// The app in front when the daemon last asked for the Quick Panel, until the panel takes it.
     typing_target: RefCell<Option<crate::hooks::TypingTarget>>,
     /// Keystrokes are being typed into another app; counted like a window so the UI process
@@ -363,7 +363,7 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    fn on_synced(&self, result: bwl_vault::Result<()>) {
+    fn on_synced(&self, result: vk_vault::Result<()>) {
         self.syncing.set(false);
         match result {
             Ok(()) => self.last_sync.set(Some(self.hooks.clock.unix_now())),

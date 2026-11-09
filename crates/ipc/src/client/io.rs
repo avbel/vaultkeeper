@@ -37,7 +37,7 @@ impl IoThread {
     ) -> std::io::Result<Self> {
         let (stop, stopped) = oneshot::channel();
         let thread = thread::Builder::new()
-            .name("bwl-ipc".to_owned())
+            .name("vk-ipc".to_owned())
             .spawn(move || run(stream, events, ready, stopped))?;
         Ok(Self {
             stop: Some(stop),

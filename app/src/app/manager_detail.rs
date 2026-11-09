@@ -3,11 +3,11 @@
 
 use std::{rc::Rc, sync::Arc};
 
-use bwl_vault::{
+use slint::{Model, ModelRc, VecModel};
+use vk_vault::{
     VaultService,
     model::{AttachmentView, ItemDraft, ItemId, ItemSummary, OrganizationView},
 };
-use slint::{Model, ModelRc, VecModel};
 
 use super::{App, handler, manager_assign::render_assign};
 use crate::{
@@ -52,7 +52,7 @@ impl Detail {
 
 /// Where a detail field's copy comes from.
 enum Source {
-    Vault(ItemSummary, bwl_vault::model::CopyField),
+    Vault(ItemSummary, vk_vault::model::CopyField),
     Plain(String, zeroize::Zeroizing<String>),
 }
 
@@ -419,7 +419,7 @@ impl<S: VaultService> App<S> {
         self.save_item(Some(id), draft, Self::toast_on_error);
     }
 
-    fn toast_on_error(&self, result: &bwl_vault::Result<ItemId>) {
+    fn toast_on_error(&self, result: &vk_vault::Result<ItemId>) {
         if let Err(error) = result {
             self.toast(&viewmodel::error_text(error), true);
         }
@@ -452,7 +452,7 @@ impl<S: VaultService> App<S> {
         &self,
         id: Option<ItemId>,
         draft: ItemDraft,
-        done: impl FnOnce(&Self, &bwl_vault::Result<ItemId>) + 'static,
+        done: impl FnOnce(&Self, &vk_vault::Result<ItemId>) + 'static,
     ) {
         let vault = Arc::clone(&self.vault);
         self.exec.spawn(
@@ -503,7 +503,7 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    pub(super) fn after_write(&self, result: bwl_vault::Result<()>) {
+    pub(super) fn after_write(&self, result: vk_vault::Result<()>) {
         if let Err(error) = result {
             self.toast(&viewmodel::error_text(&error), true);
         }
@@ -589,7 +589,7 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    fn attachment_done(&self, result: bwl_vault::Result<()>) {
+    fn attachment_done(&self, result: vk_vault::Result<()>) {
         self.set_attach_busy(None);
         if let Err(error) = result {
             self.toast(&viewmodel::error_text(&error), true);

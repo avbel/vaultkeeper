@@ -1,11 +1,11 @@
 //! Quick Panel auto-type (⌘⇧↩ and the row button): types `<username> Tab <password>` of the
 //! selected login into the app that was in front when the panel opened. Never via the clipboard.
 
-use bwl_vault::{
+use slint::ComponentHandle;
+use vk_vault::{
     VaultService,
     model::{CopyField, ItemSummary, SessionState},
 };
-use slint::ComponentHandle;
 use zeroize::Zeroizing;
 
 use super::{App, handler};
@@ -16,7 +16,7 @@ use crate::{
 };
 
 pub const ACCESSIBILITY_NEEDED: &str =
-    "Allow bw-lite in System Settings → Privacy & Security → Accessibility, then try again";
+    "Allow Vaultkeeper in System Settings → Privacy & Security → Accessibility, then try again";
 pub const NO_TARGET: &str = "No app to type into: open the Quick Panel from that app";
 pub const NO_PASSWORD: &str = "This login has no password to type";
 pub const LOCKED_WHILE_TYPING: &str = "Auto-type stopped: the vault locked";
@@ -66,7 +66,7 @@ impl<S: VaultService> App<S> {
         // An empty field is reported as missing; for auto-type that is just nothing to type.
         let reveal = |field| match self.vault.reveal(&item.id, field) {
             Ok(value) => Some(value),
-            Err(bwl_vault::Error::NoSuchField) => Some(Zeroizing::new(String::new())),
+            Err(vk_vault::Error::NoSuchField) => Some(Zeroizing::new(String::new())),
             Err(error) => {
                 self.panel_toast(&viewmodel::error_text(&error));
                 None

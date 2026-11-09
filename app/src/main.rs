@@ -1,18 +1,18 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
-use bw_lite::os::log_file::{BoundedLog, LOG_CAP, log_dir};
-use bw_lite::{
+use tokio::sync::{mpsc, oneshot};
+use vaultkeeper::os::log_file::{BoundedLog, LOG_CAP, log_dir};
+use vaultkeeper::{
     SshApprovalRequest, UiCommand,
     cli::{self, Mode},
     hooks::Hooks,
     mock::{MOCK_MASTER_PASSWORD, MockConfig, MockVault},
     run::{Backend, UiOptions, run_ui, select_backend},
 };
-use tokio::sync::{mpsc, oneshot};
 
 fn main() -> anyhow::Result<()> {
-    bwl_platform::hardening::harden_process();
+    vk_platform::hardening::harden_process();
     let args = cli::parse(std::env::args().skip(1));
     let log_name = match args.as_ref().map(cli::Args::mode) {
         Ok(Mode::Daemon(_)) => Some("daemon"),
@@ -27,8 +27,8 @@ fn main() -> anyhow::Result<()> {
     }
     match args.mode() {
         Mode::Mock => run_mock(args),
-        Mode::Ui { first_unlock } => bw_lite::ui_process::run(first_unlock),
-        Mode::Daemon(launch) => bw_lite::daemon::run(launch),
+        Mode::Ui { first_unlock } => vaultkeeper::ui_process::run(first_unlock),
+        Mode::Daemon(launch) => vaultkeeper::daemon::run(launch),
     }
 }
 
@@ -46,7 +46,7 @@ fn init_logging(file_name: Option<&str>) {
                 // No subscriber yet, and this is the only way left to say it.
                 #[allow(clippy::print_stderr)]
                 {
-                    eprintln!("bw-lite: no log file in {}: {error}", dir.display());
+                    eprintln!("vaultkeeper: no log file in {}: {error}", dir.display());
                 }
                 None
             }
@@ -77,7 +77,7 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .thread_name("bw-lite-rt")
+        .thread_name("vaultkeeper-rt")
         .enable_all()
         .build()
         .context("start the async runtime")?;
@@ -95,7 +95,7 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
         settings.theme = theme;
     }
     if let Some((width, height)) = args.size {
-        settings.manager_geometry = Some(bw_lite::settings::WindowGeometry {
+        settings.manager_geometry = Some(vaultkeeper::settings::WindowGeometry {
             x: 120,
             y: 120,
             width,
@@ -159,7 +159,7 @@ fn send_demo_ssh_request(
         if commands.send(UiCommand::ShowSshApproval(request)).is_err() {
             return;
         }
-        let decision = answer.await.unwrap_or(bwl_ipc::SshDecision::DENY);
+        let decision = answer.await.unwrap_or(vk_ipc::SshDecision::DENY);
         tracing::info!(?decision, "demo SSH request answered");
     });
 }

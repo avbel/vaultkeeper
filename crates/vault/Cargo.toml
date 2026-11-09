@@ -1,5 +1,5 @@
 [package]
-name = "bwl-vault"
+name = "vk-vault"
 description = "Session state, encrypted cache, decrypted views and vault operations"
 version.workspace = true
 edition.workspace = true
@@ -12,15 +12,15 @@ publish.workspace = true
 vw-it = []
 
 [dependencies]
-# `uriChecksum` (base64 of SHA-256); both already in the build through bwl-crypto.
+# `uriChecksum` (base64 of SHA-256); both already in the build through vk-crypto.
 base64.workspace = true
-bwl-api.workspace = true
-bwl-crypto.workspace = true
-bwl-gen.workspace = true
+vk-api.workspace = true
+vk-crypto.workspace = true
+vk-gen.workspace = true
 # Fuzzy search fallback (the matcher Helix uses): fzf-style scoring, no other dependencies.
 nucleo-matcher = "0.3.1"
 # `Body` for streaming attachment uploads and the offline probe's `GET /alive`; same version and
-# TLS backend as bwl-api, so no new crates enter the build.
+# TLS backend as vk-api, so no new crates enter the build.
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -4,7 +4,8 @@ use std::{
     sync::{Arc, PoisonError, atomic::Ordering},
 };
 
-use bwl_vault::{
+use tokio::sync::watch;
+use vk_vault::{
     Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemData,
@@ -12,7 +13,6 @@ use bwl_vault::{
         SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
-use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::{
@@ -99,7 +99,7 @@ impl MockVault {
                     ])));
                 }
                 Some(answer) if answer.code.trim() != MOCK_2FA_CODE => {
-                    return Err(Error::Api(bwl_api::Error::Server {
+                    return Err(Error::Api(vk_api::Error::Server {
                         status: 400,
                         message: "Two-step token is invalid. Try again.".to_owned(),
                     }));
@@ -111,7 +111,7 @@ impl MockVault {
             match new_device_otp {
                 None => return Ok(Some(LoginStep::NewDeviceOtpRequired)),
                 Some(code) if code.trim() != MOCK_DEVICE_CODE => {
-                    return Err(Error::Api(bwl_api::Error::Server {
+                    return Err(Error::Api(vk_api::Error::Server {
                         status: 400,
                         message: "Invalid new device OTP.".to_owned(),
                     }));

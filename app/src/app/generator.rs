@@ -1,8 +1,8 @@
 //! Password generator shared by the Manager slide-over and the standalone window.
 
-use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
-use bwl_vault::VaultService;
 use slint::{CloseRequestResponse, ComponentHandle, SharedString};
+use vk_gen::generator::{PassphraseOptions, PasswordOptions};
+use vk_vault::VaultService;
 use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};

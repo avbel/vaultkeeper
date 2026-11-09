@@ -1,4 +1,4 @@
-//! The log file of the daemon and the UI process, `~/Library/Logs/bw-lite/<process>.log`. Under
+//! The log file of the daemon and the UI process, `~/Library/Logs/vaultkeeper/<process>.log`. Under
 //! the LaunchAgent stderr goes nowhere, so without it an abort leaves no trace.
 //!
 //! Size-bounded: past [`LOG_CAP`] the file is renamed to `<process>.log.1` (replacing the older
@@ -18,16 +18,16 @@ pub const LOG_CAP: u64 = 1024 * 1024;
 const FILE_MODE: u32 = 0o600;
 const DIR_MODE: u32 = 0o700;
 
-/// `~/Library/Logs/bw-lite`. Builds with the `vw-it` feature log into
-/// `$BW_LITE_TEST_DATA_DIR/logs` instead, so test runs leave the real logs alone.
+/// `~/Library/Logs/vaultkeeper`. Builds with the `vw-it` feature log into
+/// `$VAULTKEEPER_TEST_DATA_DIR/logs` instead, so test runs leave the real logs alone.
 #[must_use]
 pub fn log_dir() -> Option<PathBuf> {
     #[cfg(feature = "vw-it")]
-    if let Some(dir) = std::env::var_os("BW_LITE_TEST_DATA_DIR") {
+    if let Some(dir) = std::env::var_os("VAULTKEEPER_TEST_DATA_DIR") {
         return Some(PathBuf::from(dir).join("logs"));
     }
     let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
-    Some(PathBuf::from(home).join("Library/Logs/bw-lite"))
+    Some(PathBuf::from(home).join("Library/Logs/vaultkeeper"))
 }
 
 /// A log file that rotates once it would grow past its cap.

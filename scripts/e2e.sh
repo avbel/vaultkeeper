@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs the end-to-end scenarios against a disposable Vaultwarden + Mailpit: the bwl-vault ones,
-# then the app's, which start a real `bw-lite --daemon` process (headless, own data dir and
+# Runs the end-to-end scenarios against a disposable Vaultwarden + Mailpit: the vk-vault ones,
+# then the app's, which start a real `vaultkeeper --daemon` process (headless, own data dir and
 # keychain item prefix) and drive it over IPC.
 #
 #   scripts/e2e.sh                 # all scenarios
@@ -12,7 +12,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="$ROOT/tests/e2e/compose.yaml"
-PROJECT="bwl-e2e-$$"
+PROJECT="vk-e2e-$$"
 
 port_is_free() {
     python3 -I -c 'import socket,sys
@@ -75,5 +75,5 @@ cd "$ROOT"
 export VW_URL="http://localhost:$VW_PORT"
 export MAILPIT_URL="http://localhost:$MAILPIT_PORT"
 export VW_ADMIN_TOKEN
-cargo test -p bwl-vault --features vw-it "$@"
-cargo test -p bw-lite --features vw-it --test e2e_daemon "$@"
+cargo test -p vk-vault --features vw-it "$@"
+cargo test -p vaultkeeper --features vw-it --test e2e_daemon "$@"

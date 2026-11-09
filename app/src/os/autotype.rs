@@ -80,7 +80,7 @@ pub fn stopped(target: &TypingTarget, reason: &str) -> HookError {
     }
 }
 
-/// The frontmost app, bw-lite's own processes included; `None` off the main thread, where
+/// The frontmost app, vaultkeeper's own processes included; `None` off the main thread, where
 /// `NSWorkspace` is not kept current (its updates arrive on the main run loop).
 #[must_use]
 pub fn frontmost_any() -> Option<TypingTarget> {
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn bw_lite_or_another_app_in_front_aborts_after_activation() {
+    fn vaultkeeper_or_another_app_in_front_aborts_after_activation() {
         for phase in [Phase::Releasing, Phase::Typing(0), Phase::Typing(2)] {
             let (_, action) = step(phase, APP, 3, seen(Some(OTHER), false, 100));
             assert_eq!(action, Step::Abort(FRONT_CHANGED), "{phase:?}");

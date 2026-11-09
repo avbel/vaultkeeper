@@ -1,5 +1,5 @@
 [package]
-name = "bwl-platform"
+name = "vk-platform"
 description = "OS integration: keychain, Touch ID, autostart, clipboard, single instance, hardening"
 version.workspace = true
 edition.workspace = true

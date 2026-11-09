@@ -1,7 +1,7 @@
 //! Tray icon (Slint `SystemTrayIcon`) and its menu.
 
-use bwl_vault::{VaultService, model::SessionState};
 use slint::{ModelRc, SharedString, VecModel};
+use vk_vault::{VaultService, model::SessionState};
 
 use super::{App, handler};
 use crate::{

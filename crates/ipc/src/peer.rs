@@ -41,7 +41,7 @@ where
 }
 
 /// Accepts peers running the same code as a given binary: by default our own, so only another
-/// `bw-lite` process (or, in tests, the test binary itself) gets in.
+/// `vaultkeeper` process (or, in tests, the test binary itself) gets in.
 ///
 /// macOS compares code signatures (cdhash) through the audit token; other unix targets compare
 /// the executable path.
@@ -351,7 +351,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     fn tempfile_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bwl-peer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vk-peer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
     }

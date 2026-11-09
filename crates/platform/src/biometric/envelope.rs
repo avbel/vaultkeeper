@@ -18,7 +18,7 @@
 //!
 //! Everything before the ciphertext is the AES-GCM associated data, so no field can be swapped
 //! without failing decryption. Wrapping key = HKDF-SHA256(ikm = ECDH x-coordinate,
-//! salt = ephemeral public ‖ device public, info = "bw-lite touchid v1").
+//! salt = ephemeral public ‖ device public, info = "vaultkeeper touchid v1").
 
 use aes_gcm::{
     Aes256Gcm, KeyInit,
@@ -43,7 +43,7 @@ pub(super) const SHARED_SECRET_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
-const KDF_INFO: &[u8] = b"bw-lite touchid v1";
+const KDF_INFO: &[u8] = b"vaultkeeper touchid v1";
 const FIXED_HEADER_LEN: usize = MAGIC.len() + 1 + 2 * POINT_LEN + NONCE_LEN;
 
 pub(super) type SharedSecret = Zeroizing<[u8; SHARED_SECRET_LEN]>;
@@ -64,7 +64,7 @@ pub(super) trait KeyAgreement {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(super) enum EnvelopeError {
-    #[error("not a bw-lite Touch ID file")]
+    #[error("not a vaultkeeper Touch ID file")]
     BadMagic,
     #[error("unsupported Touch ID file version {0}")]
     UnsupportedVersion(u8),
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn wrapping_key_matches_independent_hkdf() {
         // Expected value computed with Python's hmac/hashlib HKDF over the RFC 5903 points
-        // (salt = g^i ‖ g^r, ikm = g^ir x-coordinate, info = "bw-lite touchid v1").
+        // (salt = g^i ‖ g^r, ikm = g^ir x-coordinate, info = "vaultkeeper touchid v1").
         let ephemeral = rfc5903_point(
             "DAD0B65394221CF9B051E1FECA5787D098DFE637FC90B9EF945D0C3772581180",
             "5271A0461CDB8252D61F1C456FA3E59AB1F45B33ACCF5F58389E0577B8990BB3",
@@ -553,7 +553,7 @@ mod tests {
         let key = wrapping_key(&shared, &ephemeral, &device);
         assert_eq!(
             key.as_slice(),
-            hex("88914eaa98cdd74c00cfa10e1547d55eb2ab65916b148513a944d8665a1079ad")
+            hex("fb61f56f9bdefc0f32f391037da4f731f965395f9a62ce1c04b11c6b237283e8")
         );
     }
 }

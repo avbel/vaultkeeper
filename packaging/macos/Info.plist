@@ -5,17 +5,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>bw-lite</string>
+	<string>vaultkeeper</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.bw-lite.desktop</string>
+	<string>org.vaultkeeper.desktop</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>bw-lite</string>
+	<string>Vaultkeeper</string>
 	<key>CFBundleDisplayName</key>
-	<string>bw-lite</string>
+	<string>Vaultkeeper</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

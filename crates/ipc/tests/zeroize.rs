@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use bwl_ipc::{
+use vk_ipc::{
     dto::{
         CustomFieldDto, IdentityDto, ItemDataDto, ItemDraftDto, LoginRequestDto, SshKeyDto,
         TotpCodeDto,

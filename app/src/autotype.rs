@@ -2,7 +2,7 @@
 //! <password>`, as a list of keystrokes the OS layer posts one by one. Platform-free, so the
 //! splitting is tested everywhere; posting lives in [`crate::os::autotype`].
 
-use bwl_vault::model::{ItemKind, ItemSummary};
+use vk_vault::model::{ItemKind, ItemSummary};
 use zeroize::Zeroizing;
 
 /// One character per key event, so at most a surrogate pair. An event may carry up to 20 units
@@ -119,7 +119,7 @@ mod tests {
 
     fn item(kind: ItemKind, has_password: bool) -> ItemSummary {
         ItemSummary {
-            id: bwl_vault::model::ItemId(std::sync::Arc::from("id")),
+            id: vk_vault::model::ItemId(std::sync::Arc::from("id")),
             kind,
             name: "n".into(),
             subtitle: "".into(),

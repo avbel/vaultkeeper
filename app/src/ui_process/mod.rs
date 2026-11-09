@@ -1,4 +1,4 @@
-//! `bw-lite --ui`: the windows. Started by the daemon on demand, it proxies `VaultService` to the
+//! `vaultkeeper --ui`: the windows. Started by the daemon on demand, it proxies `VaultService` to the
 //! daemon over `ui.sock`, shows what the daemon asks for, and exits 120 s after its last window
 //! closed, at once when the daemon goes away. Copies go to the daemon, which clears them.
 
@@ -12,8 +12,8 @@ use std::{
 };
 
 use anyhow::Context;
-use bwl_ipc::{EventStream, IpcError, RemoteVault, UiEvent, UiNotice};
 use tokio::sync::mpsc;
+use vk_ipc::{EventStream, IpcError, RemoteVault, UiEvent, UiNotice};
 
 use self::{
     bridge::{Bridged, bridge},
@@ -34,7 +34,7 @@ pub fn run(first_unlock: bool) -> anyhow::Result<()> {
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
-        .thread_name("bw-lite-ui")
+        .thread_name("vaultkeeper-ui")
         .enable_all()
         .build()
         .context("start the async runtime")?;
@@ -44,7 +44,7 @@ pub fn run(first_unlock: bool) -> anyhow::Result<()> {
             tracing::info!("another UI process is connected to the daemon");
             return Ok(());
         }
-        Err(error) => return Err(error).context("connect to the bw-lite daemon"),
+        Err(error) => return Err(error).context("connect to the Vaultkeeper daemon"),
     };
     let remote = Arc::new(remote);
     let notify = notifier(&remote);
@@ -54,7 +54,7 @@ pub fn run(first_unlock: bool) -> anyhow::Result<()> {
     let hooks = Hooks::system(&data_dir, &notify, &remote);
     let linger = Rc::new(LingerTimer {
         timer: slint::Timer::default(),
-        linger: linger_from_env(std::env::var("BW_LITE_UI_LINGER_SECS").ok().as_deref()),
+        linger: linger_from_env(std::env::var("VAULTKEEPER_UI_LINGER_SECS").ok().as_deref()),
     });
     let (commands, received) = mpsc::unbounded_channel();
     let forwarder = runtime.spawn(forward_events(events, commands, Arc::clone(&notify)));
@@ -177,8 +177,8 @@ fn linger_ended(app: &Weak<App<RemoteVault>>) {
 
 #[cfg(test)]
 mod tests {
-    use bwl_ipc::{SshApproval, SshApprovalKind, SshPrompt, UiCommand};
     use tokio::sync::oneshot;
+    use vk_ipc::{SshApproval, SshApprovalKind, SshPrompt, UiCommand};
 
     use super::*;
 

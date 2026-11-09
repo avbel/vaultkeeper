@@ -1,6 +1,6 @@
 //! Detail pane: which fields an item shows, masked until revealed.
 
-use bwl_vault::model::{CopyField, IdentityData, ItemData, ItemDraft};
+use vk_vault::model::{CopyField, IdentityData, ItemData, ItemDraft};
 
 use crate::{ui::DetailField, viewmodel::copy_code};
 
@@ -344,7 +344,7 @@ pub fn location(folder: Option<&str>, organization: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use bwl_vault::model::CustomField;
+    use vk_vault::model::CustomField;
     use zeroize::Zeroizing;
 
     use super::*;

@@ -18,12 +18,12 @@ use std::{
     time::Duration,
 };
 
-use bwl_vault::VaultService;
 use tokio::{
     net::UnixListener,
     sync::{Mutex, Semaphore, mpsc, oneshot, watch},
     task::{JoinError, JoinHandle, JoinSet},
 };
+use vk_vault::VaultService;
 
 use crate::{
     ClipboardHost, IpcError, PeerVerifier, SameExecutable, TouchIdBackend,

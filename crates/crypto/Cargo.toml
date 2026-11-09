@@ -1,5 +1,5 @@
 [package]
-name = "bwl-crypto"
+name = "vk-crypto"
 description = "Bitwarden-compatible key derivation and EncString crypto"
 version.workspace = true
 edition.workspace = true

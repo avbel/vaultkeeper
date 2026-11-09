@@ -5,8 +5,6 @@ mod common;
 
 use std::{cell::Cell, rc::Rc};
 
-use bw_lite::{SshApprovalRequest, UiCommand, mock::MOCK_MASTER_PASSWORD, settings::Settings};
-use bwl_vault::{VaultService, model::SessionState};
 use common::{
     CMD_SHIFT, Harness, Setup, TouchIdOutcome, click, during_next_prompt, enabled, harness, key,
     pump, safari, special, type_into, value_of,
@@ -14,6 +12,8 @@ use common::{
 use slint::ComponentHandle;
 use slint::platform::Key;
 use tokio::sync::oneshot;
+use vaultkeeper::{SshApprovalRequest, UiCommand, mock::MOCK_MASTER_PASSWORD, settings::Settings};
+use vk_vault::{VaultService, model::SessionState};
 
 fn locked_with(settings: Settings) -> Harness {
     harness(Setup {
@@ -326,6 +326,6 @@ fn the_setting_is_offered_only_with_touch_id_enrolled() {
     click(&settings, "Enrol Touch ID");
     assert!(enabled(&settings, "Unlock with Touch ID right away"));
     click(&settings, "Unlock with Touch ID right away");
-    let saved = bw_lite::hooks::SettingsStore::load(&*h.settings);
+    let saved = vaultkeeper::hooks::SettingsStore::load(&*h.settings);
     assert!(saved.touch_id_right_away);
 }

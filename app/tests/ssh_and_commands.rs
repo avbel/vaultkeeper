@@ -4,17 +4,17 @@ mod common;
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-use bw_lite::{
+use common::{Mods, Setup, click, control_exists, elapse, harness, key, pump, special, type_into};
+use slint::{ComponentHandle, platform::Key};
+use tokio::sync::oneshot;
+use vaultkeeper::{
     SshApprovalRequest, UiCommand,
     hooks::TypingTarget,
     mock::MOCK_MASTER_PASSWORD,
     settings::{Settings, SshApproval},
 };
-use bwl_ipc::SshDecision;
-use bwl_vault::{VaultService, model::SessionState};
-use common::{Mods, Setup, click, control_exists, elapse, harness, key, pump, special, type_into};
-use slint::{ComponentHandle, platform::Key};
-use tokio::sync::oneshot;
+use vk_ipc::SshDecision;
+use vk_vault::{VaultService, model::SessionState};
 
 fn request(fingerprint: &str) -> (SshApprovalRequest, oneshot::Receiver<SshDecision>) {
     let (reply, answer) = oneshot::channel();
@@ -210,7 +210,7 @@ fn commands_open_windows_and_the_last_close_is_reported() {
     h.app.handle(UiCommand::ShowQuickPanel { target: None });
     let panel = h.app.quick_panel().expect("panel");
     assert!(panel.get_locked());
-    panel.invoke_unlock(bw_lite::mock::MOCK_MASTER_PASSWORD.into());
+    panel.invoke_unlock(vaultkeeper::mock::MOCK_MASTER_PASSWORD.into());
     h.app.handle(UiCommand::VaultChanged);
     pump();
     assert!(matches!(h.vault.state(), SessionState::Unlocked { .. }));
@@ -335,13 +335,13 @@ fn reload_settings_applies_what_the_daemon_saved() {
         .lock()
         .expect("settings")
         .replace(Settings {
-            theme: bw_lite::settings::ThemeChoice::Dark,
+            theme: vaultkeeper::settings::ThemeChoice::Dark,
             ..Settings::default()
         });
     h.app.handle(UiCommand::ReloadSettings);
     assert_eq!(
-        manager.global::<bw_lite::ui::Theme>().get_mode(),
-        bw_lite::ui::ThemeMode::Dark
+        manager.global::<vaultkeeper::ui::Theme>().get_mode(),
+        vaultkeeper::ui::ThemeMode::Dark
     );
 }
 
@@ -370,7 +370,7 @@ fn given_back(h: &common::Harness) -> Vec<TypingTarget> {
     h.autotype.given_back.lock().expect("given back").clone()
 }
 
-type AnswerWith = fn(&bw_lite::ui::SshPrompt);
+type AnswerWith = fn(&vaultkeeper::ui::SshPrompt);
 
 #[test]
 fn every_answer_hands_the_front_back_and_opens_no_manager() {
@@ -390,7 +390,11 @@ fn every_answer_hands_the_front_back_and_opens_no_manager() {
         assert!(h.app.ssh_prompt().is_none(), "{name}");
         assert!(h.app.manager_window().is_none(), "{name}: no Manager");
         assert_eq!(given_back(&h), [terminal()], "{name}");
-        assert_eq!(h.dock.hides(), 1, "{name}: no windowless bw-lite in front");
+        assert_eq!(
+            h.dock.hides(),
+            1,
+            "{name}: no windowless vaultkeeper in front"
+        );
     }
 }
 

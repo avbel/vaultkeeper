@@ -1,4 +1,4 @@
-# bw-lite UI refinements (modern and comfortable)
+# vaultkeeper UI refinements (modern and comfortable)
 
 This comes from a design consult (Fable, medium effort) and takes priority over `ui-design.md` wherever the two conflict.
 

@@ -1,11 +1,11 @@
-# Disposable Vaultwarden + Mailpit for the bwl-vault end-to-end scenarios. Started by scripts/e2e.sh.
+# Disposable Vaultwarden + Mailpit for the vk-vault end-to-end scenarios. Started by scripts/e2e.sh.
 #
 # DOMAIN has to be the exact origin the tests use: attachment download URLs are built from it, and
 # the client refuses to fetch from any other origin.
 #
 # Images are pinned so a new upstream release cannot change the results unnoticed. To bump:
 # pull the new tag, change it below, and run scripts/e2e.sh; keep the change only if it passes.
-name: bwl-e2e
+name: vk-e2e
 
 services:
   vaultwarden:

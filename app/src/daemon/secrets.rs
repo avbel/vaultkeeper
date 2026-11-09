@@ -1,7 +1,7 @@
-//! `SecretStore` over the login keychain (service `bw-lite`). The vault's key names start with
+//! `SecretStore` over the login keychain (service `vaultkeeper`). The vault's key names start with
 //! the user id, so `delete_all_for(user_id)` removes every item of that account on log out.
 
-use bwl_vault::{SecretStore, SecretStoreError};
+use vk_vault::{SecretStore, SecretStoreError};
 use zeroize::Zeroizing;
 
 /// `prefix` namespaces the item names; production uses none, tests a unique one per run.
@@ -34,25 +34,25 @@ impl Default for KeychainStore {
 }
 
 #[allow(clippy::needless_pass_by_value)] // shaped for `map_err`
-fn store_error(error: bwl_platform::Error) -> SecretStoreError {
+fn store_error(error: vk_platform::Error) -> SecretStoreError {
     SecretStoreError(error.to_string())
 }
 
 impl SecretStore for KeychainStore {
     fn get(&self, key: &str) -> Result<Option<Zeroizing<Vec<u8>>>, SecretStoreError> {
-        bwl_platform::keychain::get(&self.account(key)).map_err(store_error)
+        vk_platform::keychain::get(&self.account(key)).map_err(store_error)
     }
 
     fn set(&self, key: &str, secret: &[u8]) -> Result<(), SecretStoreError> {
-        bwl_platform::keychain::set(&self.account(key), secret).map_err(store_error)
+        vk_platform::keychain::set(&self.account(key), secret).map_err(store_error)
     }
 
     fn delete(&self, key: &str) -> Result<(), SecretStoreError> {
-        bwl_platform::keychain::delete(&self.account(key)).map_err(store_error)
+        vk_platform::keychain::delete(&self.account(key)).map_err(store_error)
     }
 
     fn delete_all_for(&self, prefix: &str) -> Result<usize, SecretStoreError> {
-        bwl_platform::keychain::delete_all_for(&self.account(prefix)).map_err(store_error)
+        vk_platform::keychain::delete_all_for(&self.account(prefix)).map_err(store_error)
     }
 }
 
@@ -65,7 +65,7 @@ mod tests {
     /// not prompt while the login keychain is unlocked.
     fn store() -> KeychainStore {
         KeychainStore::with_prefix(format!(
-            "bw-lite-app-test.{}.{}.",
+            "vaultkeeper-app-test.{}.{}.",
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ))

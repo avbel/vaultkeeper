@@ -1,5 +1,5 @@
 [package]
-name = "bwl-gen"
+name = "vk-gen"
 description = "TOTP codes and password/passphrase generation"
 version.workspace = true
 edition.workspace = true

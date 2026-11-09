@@ -1,6 +1,6 @@
 //! UI side: [`RemoteVault`] proxies `VaultService` to the daemon.
 //!
-//! The socket belongs to a dedicated `bwl-ipc` thread running its own current-thread runtime,
+//! The socket belongs to a dedicated `vk-ipc` thread running its own current-thread runtime,
 //! so callers need no particular runtime and a blocked caller never stalls the I/O.
 //! - State, accounts, offline flag, folders, organizations and collections are served from a
 //!   cache that the daemon refreshes before every `Changed` and before answering any
@@ -25,8 +25,8 @@ use std::{
     },
 };
 
-use bwl_vault::model::{AccountView, CollectionView, FolderView, OrganizationView, SessionState};
 use tokio::sync::{mpsc, oneshot, watch};
+use vk_vault::model::{AccountView, CollectionView, FolderView, OrganizationView, SessionState};
 use zeroize::Zeroizing;
 
 pub use events::{EventStream, SshApproval, UiEvent};
@@ -86,7 +86,7 @@ impl RemoteVault {
             .map_err(|_| IpcError::Disconnected)
     }
 
-    async fn call(&self, call: Call) -> bwl_vault::Result<Reply> {
+    async fn call(&self, call: Call) -> vk_vault::Result<Reply> {
         let timeout = call.timeout();
         let (tx, rx) = oneshot::channel();
         let _pending = self.shared.begin(call, Waiter::Async(tx))?;
@@ -98,7 +98,7 @@ impl RemoteVault {
         settle(outcome)
     }
 
-    fn call_blocking(&self, call: Call) -> bwl_vault::Result<Reply> {
+    fn call_blocking(&self, call: Call) -> vk_vault::Result<Reply> {
         let timeout = call.timeout();
         let (tx, rx) = std_mpsc::sync_channel(1);
         let _pending = self.shared.begin(call, Waiter::Blocking(tx))?;
@@ -114,7 +114,7 @@ impl RemoteVault {
 type Outcome = Result<Result<Reply, WireError>, IpcError>;
 type Frame = Zeroizing<Vec<u8>>;
 
-fn settle(outcome: Outcome) -> bwl_vault::Result<Reply> {
+fn settle(outcome: Outcome) -> vk_vault::Result<Reply> {
     match outcome {
         Ok(Ok(reply)) => Ok(reply),
         Ok(Err(error)) => Err(error.into()),

@@ -1,4 +1,4 @@
-//! A real `bw-lite --daemon` process against the e2e Vaultwarden (scripts/e2e.sh), driven by a
+//! A real `vaultkeeper --daemon` process against the e2e Vaultwarden (scripts/e2e.sh), driven by a
 //! `RemoteVault` client that plays the UI and approves SSH requests on its own.
 //!
 //! The daemon keeps the real HOME (the login keychain shows a dialog under a fake one) but gets
@@ -19,23 +19,23 @@ use std::{
     time::Duration,
 };
 
-use bw_lite::{
+use serde_json::json;
+use tokio::process::{Child, Command};
+use url::Url;
+use vaultkeeper::{
     os::{DaemonBiometrics, settings_file::SettingsFile},
     settings::{Settings, SshApproval},
 };
-use bwl_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
-use bwl_ipc::{
+use vk_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
+use vk_ipc::{
     EventStream, RemoteVault, SshDecision, TouchIdBackend, TouchIdFailure, UiCommand, UiEvent,
 };
-use bwl_vault::{
+use vk_vault::{
     VaultService,
     model::{
         CopyField, Filter, ItemData, ItemDraft, ItemKind, LoginRequest, LoginStep, SessionState,
     },
 };
-use serde_json::json;
-use tokio::process::{Child, Command};
-use url::Url;
 use zeroize::Zeroizing;
 
 const RSA_PRIVATE_DER: &[u8] = include_bytes!("../../crates/vault/tests/fixtures/rsa_private.der");
@@ -53,7 +53,7 @@ struct Account {
     password: String,
 }
 
-/// Registers through the API with the client's own crypto, like the bwl-vault scenarios.
+/// Registers through the API with the client's own crypto, like the vk-vault scenarios.
 async fn register(server: &Url) -> Account {
     let email = format!("app-e2e-{}@example.com", uuid::Uuid::new_v4().simple());
     let password = format!("pw-{}", uuid::Uuid::new_v4().simple());
@@ -110,10 +110,10 @@ struct Sandbox {
 impl Sandbox {
     fn new() -> Self {
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let dir = PathBuf::from(format!("/tmp/bwl-e2e-{}", &id[..12]));
+        let dir = PathBuf::from(format!("/tmp/vk-e2e-{}", &id[..12]));
         std::fs::create_dir_all(&dir).unwrap();
         let sandbox = Self {
-            keychain_prefix: format!("bw-lite-e2e.{id}."),
+            keychain_prefix: format!("vaultkeeper-e2e.{id}."),
             dir,
         };
         assert!(sandbox.agent_socket().as_os_str().len() < 104);
@@ -132,10 +132,10 @@ impl Sandbox {
         let mut command = Command::new(binary);
         command
             .args(args)
-            .env("BW_LITE_TEST_DATA_DIR", &self.dir)
-            .env("BW_LITE_TEST_KEYCHAIN_PREFIX", &self.keychain_prefix)
-            .env("BW_LITE_TEST_ANY_PEER", "1")
-            .env("RUST_LOG", "info,bwl_ssh=debug")
+            .env("VAULTKEEPER_TEST_DATA_DIR", &self.dir)
+            .env("VAULTKEEPER_TEST_KEYCHAIN_PREFIX", &self.keychain_prefix)
+            .env("VAULTKEEPER_TEST_ANY_PEER", "1")
+            .env("RUST_LOG", "info,vk_ssh=debug")
             .stdin(Stdio::null())
             .kill_on_drop(true);
         command
@@ -143,9 +143,9 @@ impl Sandbox {
 
     /// Headless, and the test process is the UI.
     fn daemon(&self) -> Child {
-        self.command(Path::new(env!("CARGO_BIN_EXE_bw-lite")), &["--daemon"])
-            .env("BW_LITE_TEST_HEADLESS", "1")
-            .env("BW_LITE_TEST_NO_UI", "1")
+        self.command(Path::new(env!("CARGO_BIN_EXE_vaultkeeper")), &["--daemon"])
+            .env("VAULTKEEPER_TEST_HEADLESS", "1")
+            .env("VAULTKEEPER_TEST_NO_UI", "1")
             .spawn()
             .unwrap()
     }
@@ -256,7 +256,7 @@ async fn sign_with_agent(socket: &Path, dir: &Path, public_key: &str) -> bool {
     let key_file = dir.join("signing.pub");
     let message = dir.join("message.txt");
     std::fs::write(&key_file, format!("{public_key}\n")).unwrap();
-    std::fs::write(&message, b"signed by bw-lite e2e\n").unwrap();
+    std::fs::write(&message, b"signed by vaultkeeper e2e\n").unwrap();
     let _ = std::fs::remove_file(dir.join("message.txt.sig"));
     let status = Command::new("ssh-keygen")
         .args(["-Y", "sign", "-n", "git", "-f"])
@@ -293,7 +293,7 @@ fn login_draft(name: &str, password: &str) -> ItemDraft {
 }
 
 fn ssh_draft(name: &str) -> (ItemDraft, String, String) {
-    let (private_key, public_key, fingerprint) = bwl_ssh::generate_ed25519().unwrap();
+    let (private_key, public_key, fingerprint) = vk_ssh::generate_ed25519().unwrap();
     let draft = ItemDraft {
         data: ItemData::SshKey {
             private_key,
@@ -385,7 +385,7 @@ async fn daemon_login_sync_search_reveal_lock_unlock_ssh_and_logout_wipe() {
     assert!(matches!(vault.state(), SessionState::Locked { .. }));
     assert!(matches!(
         vault.search("github", &Filter::default()),
-        Err(bwl_vault::Error::Locked)
+        Err(vk_vault::Error::Locked)
     ));
     vault
         .unlock_with_password(Zeroizing::new(account.password.clone()))
@@ -443,7 +443,7 @@ async fn daemon_login_sync_search_reveal_lock_unlock_ssh_and_logout_wipe() {
     assert!(!account_dir.exists(), "accounts/<user_id>/ is gone");
     let refresh = format!("{}{user_id}.refresh_token", sandbox.keychain_prefix);
     assert!(
-        bwl_platform::keychain::get(&refresh).unwrap().is_none(),
+        vk_platform::keychain::get(&refresh).unwrap().is_none(),
         "the refresh token left the keychain"
     );
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -456,7 +456,7 @@ async fn daemon_login_sync_search_reveal_lock_unlock_ssh_and_logout_wipe() {
     }
     assert!(matches!(
         vault.search("", &Filter::default()),
-        Err(bwl_vault::Error::LoggedOut)
+        Err(vk_vault::Error::LoggedOut)
     ));
 
     // SIGTERM is a graceful quit: both sockets go.
@@ -514,8 +514,8 @@ async fn remember_until_lock_is_kept_by_the_daemon_and_forgotten_on_lock() {
 /// The daemon core in-process, so power events can be fed in directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn sleep_and_screen_lock_lock_only_when_the_setting_says_so() {
-    use bw_lite::daemon::{Daemon, DaemonConfig, Peers};
-    use bwl_platform::power::PowerEvent;
+    use vaultkeeper::daemon::{Daemon, DaemonConfig, Peers};
+    use vk_platform::power::PowerEvent;
 
     let server = server();
     let account = register(&server).await;
@@ -525,7 +525,7 @@ async fn sleep_and_screen_lock_lock_only_when_the_setting_says_so() {
     SettingsFile::write(&settings_file, &Settings::default()).unwrap();
     let mut config = DaemonConfig::new(
         sandbox.dir.clone(),
-        Arc::new(bwl_vault::MemorySecretStore::new()),
+        Arc::new(vk_vault::MemorySecretStore::new()),
     );
     config.peers = Peers::AnyOfThisUser;
     let daemon = Daemon::start(config).await.unwrap();
@@ -563,7 +563,7 @@ async fn sleep_and_screen_lock_lock_only_when_the_setting_says_so() {
     )
     .unwrap();
     let (client, _events) = sandbox.connect().await;
-    client.notify(bwl_ipc::UiNotice::SettingsChanged).unwrap();
+    client.notify(vk_ipc::UiNotice::SettingsChanged).unwrap();
     let deadline = tokio::time::Instant::now() + WAIT;
     while daemon.settings().lock_on_sleep {
         assert!(tokio::time::Instant::now() < deadline, "settings re-read");
@@ -583,7 +583,7 @@ async fn sleep_and_screen_lock_lock_only_when_the_setting_says_so() {
 #[derive(Default)]
 struct FakeClipboard(std::sync::Mutex<Option<String>>);
 
-impl bwl_ipc::ClipboardHost for FakeClipboard {
+impl vk_ipc::ClipboardHost for FakeClipboard {
     fn copy(&self, text: &str, _clear_after: Option<Duration>) -> Result<(), String> {
         *self.0.lock().unwrap() = Some(text.to_owned());
         Ok(())
@@ -594,7 +594,7 @@ impl bwl_ipc::ClipboardHost for FakeClipboard {
     }
 }
 
-impl bw_lite::os::ClipboardKeeper for FakeClipboard {
+impl vaultkeeper::os::ClipboardKeeper for FakeClipboard {
     fn recheck(&self) {}
 }
 
@@ -609,7 +609,7 @@ async fn copy_and_leave(sandbox: &Sandbox, text: &str) {
 /// connected any more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn the_daemon_clears_a_copy_on_lock_and_logout() {
-    use bw_lite::daemon::{Daemon, DaemonConfig, Peers};
+    use vaultkeeper::daemon::{Daemon, DaemonConfig, Peers};
 
     let server = server();
     let account = register(&server).await;
@@ -617,10 +617,10 @@ async fn the_daemon_clears_a_copy_on_lock_and_logout() {
     let clipboard = Arc::new(FakeClipboard::default());
     let mut config = DaemonConfig::new(
         sandbox.dir.clone(),
-        Arc::new(bwl_vault::MemorySecretStore::new()),
+        Arc::new(vk_vault::MemorySecretStore::new()),
     );
     config.peers = Peers::AnyOfThisUser;
-    config.clipboard = Arc::clone(&clipboard) as Arc<dyn bw_lite::os::ClipboardKeeper>;
+    config.clipboard = Arc::clone(&clipboard) as Arc<dyn vaultkeeper::os::ClipboardKeeper>;
     let daemon = Daemon::start(config).await.unwrap();
     let vault = Arc::clone(daemon.vault());
     log_in(vault.as_ref(), &server, &account).await;
@@ -691,7 +691,7 @@ impl DaemonBiometrics for FakeTouchId {
 /// the UI approved, so an approval alone cannot sign.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn touch_id_unlock_and_ssh_presence_are_checked_by_the_daemon() {
-    use bw_lite::daemon::{Daemon, DaemonConfig, Peers};
+    use vaultkeeper::daemon::{Daemon, DaemonConfig, Peers};
 
     let server = server();
     let account = register(&server).await;
@@ -708,7 +708,7 @@ async fn touch_id_unlock_and_ssh_presence_are_checked_by_the_daemon() {
     let touch_id = Arc::new(FakeTouchId::default());
     let mut config = DaemonConfig::new(
         sandbox.dir.clone(),
-        Arc::new(bwl_vault::MemorySecretStore::new()),
+        Arc::new(vk_vault::MemorySecretStore::new()),
     );
     config.peers = Peers::AnyOfThisUser;
     config.touch_id = Arc::clone(&touch_id) as Arc<dyn DaemonBiometrics>;
@@ -783,7 +783,7 @@ async fn a_second_launch_forwards_to_the_running_daemon() {
     let daemon = sandbox.daemon();
     let (_vault, mut events) = sandbox.connect().await;
     let second = sandbox
-        .command(Path::new(env!("CARGO_BIN_EXE_bw-lite")), &["--quick"])
+        .command(Path::new(env!("CARGO_BIN_EXE_vaultkeeper")), &["--quick"])
         .status()
         .await
         .unwrap();
@@ -804,7 +804,7 @@ async fn a_second_launch_forwards_to_the_running_daemon() {
 
 /// `footprint` of `pid` in MiB.
 async fn footprint_mib(pid: u32) -> f64 {
-    if std::env::var_os("BW_LITE_RAM_VERBOSE").is_some() {
+    if std::env::var_os("VAULTKEEPER_RAM_VERBOSE").is_some() {
         let detail = Command::new("/usr/bin/heap")
             .args(["-s", &pid.to_string()])
             .output()
@@ -910,22 +910,22 @@ fn seeded_draft(index: usize) -> ItemDraft {
 }
 
 /// RAM of the release daemon and UI process in the four documented states, with 400 items.
-/// `BW_LITE_RAM_BIN` is a release `bw-lite` built with `--features vw-it` (for the test peer).
+/// `VAULTKEEPER_RAM_BIN` is a release `vaultkeeper` built with `--features vw-it` (for the test peer).
 /// Nothing here can click, so the UI process is SIGTERMed for "after UI exit"; afterwards an SSH
 /// prompt nobody answers closes itself (30 s auto-deny), which checks the linger exit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-#[ignore = "measurement: needs BW_LITE_RAM_BIN and shows the Manager window"]
+#[ignore = "measurement: needs VAULTKEEPER_RAM_BIN and shows the Manager window"]
 async fn ram_profile() {
     const ITEMS: usize = 400;
     const SETTLE: Duration = Duration::from_secs(6);
-    let binary = PathBuf::from(std::env::var("BW_LITE_RAM_BIN").expect("BW_LITE_RAM_BIN"));
+    let binary = PathBuf::from(std::env::var("VAULTKEEPER_RAM_BIN").expect("VAULTKEEPER_RAM_BIN"));
     let server = server();
     let account = register(&server).await;
     let sandbox = Sandbox::new();
     let start = || {
         sandbox
             .command(&binary, &["--daemon"])
-            .env("BW_LITE_UI_LINGER_SECS", "5")
+            .env("VAULTKEEPER_UI_LINGER_SECS", "5")
             .spawn()
             .unwrap()
     };

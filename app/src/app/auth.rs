@@ -2,12 +2,12 @@
 
 use std::{sync::Arc, time::Duration};
 
-use bwl_vault::{
+use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, VecModel};
+use url::Url;
+use vk_vault::{
     TwoFactorProvider, VaultService,
     model::{AccountView, LoginRequest, LoginStep, SessionState, TwoFactorAnswer},
 };
-use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, VecModel};
-use url::Url;
 use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};
@@ -197,13 +197,13 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    fn unlocked(&self, result: bwl_vault::Result<()>) {
+    fn unlocked(&self, result: vk_vault::Result<()>) {
         self.set_lock_busy(false);
         if let Err(error) = result {
             let attempts = self.failed_unlocks.get() + 1;
             self.failed_unlocks.set(attempts);
             let text = match error {
-                bwl_vault::Error::InvalidPassword => {
+                vk_vault::Error::InvalidPassword => {
                     format!(
                         "Wrong master password (attempt {attempts}) · check Caps Lock and try again"
                     )
@@ -409,7 +409,7 @@ impl<S: VaultService> App<S> {
     }
 
     /// Ignores the answer when the field moved on to another URL meanwhile.
-    fn server_probed(&self, url: &Url, result: &bwl_vault::Result<bwl_vault::model::ServerProbe>) {
+    fn server_probed(&self, url: &Url, result: &vk_vault::Result<vk_vault::model::ServerProbe>) {
         let Some(window) = self.login_window() else {
             return;
         };
@@ -543,7 +543,7 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    fn login_result(&self, result: bwl_vault::Result<LoginStep>) {
+    fn login_result(&self, result: vk_vault::Result<LoginStep>) {
         let Some(window) = self.login_window() else {
             return;
         };
@@ -566,7 +566,7 @@ impl<S: VaultService> App<S> {
                     LoginError::Server(text) => window.set_server_error(text.into()),
                     LoginError::General(text) => window.set_error_text(text.into()),
                 }
-                if !matches!(error, bwl_vault::Error::Api(_)) || window.get_step() == 0 {
+                if !matches!(error, vk_vault::Error::Api(_)) || window.get_step() == 0 {
                     window.set_step(0);
                     if let Some(login) = self.login.borrow_mut().as_mut() {
                         login.pending = None;
@@ -583,7 +583,7 @@ impl<S: VaultService> App<S> {
             .collect();
         if supported.is_empty() {
             window.set_error_text(
-                "This account needs a two-step method bw-lite does not support yet".into(),
+                "This account needs a two-step method Vaultkeeper does not support yet".into(),
             );
             window.set_step(0);
             return;

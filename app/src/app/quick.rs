@@ -2,11 +2,11 @@
 
 use std::rc::Rc;
 
-use bwl_vault::{
+use slint::{ComponentHandle, ModelRc, SharedString};
+use vk_vault::{
     VaultService,
     model::{CopyField, Filter},
 };
-use slint::{ComponentHandle, ModelRc, SharedString};
 
 use super::{App, OFFLINE_TOAST, handler, hide, retire, show};
 use crate::{
@@ -34,7 +34,7 @@ impl<S: VaultService> App<S> {
     pub(super) fn open_quick_panel(&self) {
         let locked = !matches!(
             self.vault.state(),
-            bwl_vault::model::SessionState::Unlocked { .. }
+            vk_vault::model::SessionState::Unlocked { .. }
         );
         // Clone the handle: showing a window can run its change handlers, which call back in.
         let existing = self
@@ -100,7 +100,7 @@ impl<S: VaultService> App<S> {
     }
 
     /// Closes the panel without typing (Esc, the hotkey again, a copy, focus lost): the app it
-    /// was opened from gets the front back, unless another bw-lite window stays open.
+    /// was opened from gets the front back, unless another vaultkeeper window stays open.
     pub(super) fn dismiss_quick_panel(&self) {
         let target = self
             .quick
@@ -211,7 +211,7 @@ impl<S: VaultService> App<S> {
         self.refresh_totp();
     }
 
-    pub(super) fn quick_item(&self, row: Option<i32>) -> Option<bwl_vault::model::ItemSummary> {
+    pub(super) fn quick_item(&self, row: Option<i32>) -> Option<vk_vault::model::ItemSummary> {
         self.quick.borrow().as_ref().and_then(|quick| {
             let row = row.unwrap_or_else(|| quick.window.get_selected());
             usize::try_from(row)

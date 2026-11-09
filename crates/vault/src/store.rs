@@ -9,10 +9,10 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use bwl_api::models::{PreloginResponse, SyncResponse};
-use bwl_crypto::Kdf;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use vk_api::models::{PreloginResponse, SyncResponse};
+use vk_crypto::Kdf;
 
 use crate::{Error, Result};
 
@@ -335,7 +335,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn temp_root() -> PathBuf {
-        std::env::temp_dir().join(format!("bwl-vault-test-{}", uuid::Uuid::new_v4().simple()))
+        std::env::temp_dir().join(format!("vk-vault-test-{}", uuid::Uuid::new_v4().simple()))
     }
 
     const ID: &str = "3bef05d6-9070-48b4-b320-a5d425eec9fd";

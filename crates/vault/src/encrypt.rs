@@ -5,11 +5,11 @@
 //! (passkeys, `archivedDate`, properties this client doesn't model) is carried over through
 //! [`crate::passthrough`], re-encrypted when the item key changes.
 
-use bwl_api::models::{
+use vk_api::models::{
     Card, Cipher, CipherRequest, Extra, Field, Identity, Login, LoginUri, PasswordHistory,
     SecureNote, SshKey, cipher_type,
 };
-use bwl_crypto::SymmetricKey;
+use vk_crypto::SymmetricKey;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -141,7 +141,7 @@ impl ItemKeys {
 }
 
 fn encrypt_text_bytes(bytes: &[u8], key: &SymmetricKey) -> Result<String> {
-    Ok(bwl_crypto::EncString::encrypt(bytes, key)?.to_string())
+    Ok(vk_crypto::EncString::encrypt(bytes, key)?.to_string())
 }
 
 fn check_update(draft: &ItemDraft, base: &Cipher, kind: u8) -> Result<()> {
@@ -553,7 +553,7 @@ fn identity_request(identity: &IdentityData, key: &SymmetricKey, extra: Extra) -
 mod tests {
     use std::sync::Arc;
 
-    use bwl_api::models::Cipher;
+    use vk_api::models::Cipher;
 
     use super::*;
     use crate::{

@@ -5,17 +5,17 @@
 
 use std::{path::Path, sync::Arc};
 
-use bwl_vault::{
-    DeviceInfo, Error, MemorySecretStore, Vault, VaultConfig, VaultService, model::LoginRequest,
-};
 use serde_json::json;
 use url::Url;
 use uuid::Uuid;
+use vk_vault::{
+    DeviceInfo, Error, MemorySecretStore, Vault, VaultConfig, VaultService, model::LoginRequest,
+};
 use zeroize::Zeroizing;
 
 const USER_ID: &str = "3bef05d6-9070-48b4-b320-a5d425eec9fd";
 
-fn open(dir: &Path) -> bwl_vault::Result<Vault> {
+fn open(dir: &Path) -> vk_vault::Result<Vault> {
     let device = DeviceInfo {
         identifier: Uuid::new_v4(),
         name: "test".into(),
@@ -26,11 +26,11 @@ fn open(dir: &Path) -> bwl_vault::Result<Vault> {
 }
 
 fn temp_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("bwl-url-policy-{}", Uuid::new_v4().simple()))
+    std::env::temp_dir().join(format!("vk-url-policy-{}", Uuid::new_v4().simple()))
 }
 
 fn rejected(error: &Error) -> bool {
-    matches!(error, Error::Api(bwl_api::Error::InvalidServerUrl(_)))
+    matches!(error, Error::Api(vk_api::Error::InvalidServerUrl(_)))
 }
 
 const BAD_SERVERS: [&str; 5] = [

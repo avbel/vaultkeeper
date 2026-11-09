@@ -1,24 +1,24 @@
 //! Vault logic against a wiremock server: login rounds, token refresh, offline mode and its
 //! recovery, debounce, sleep and the log-out error collection. Server data is encrypted with
-//! bwl-crypto directly; the vault decrypts it independently.
+//! vk-crypto directly; the vault decrypts it independently.
 
 #![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use bwl_api::{
+use serde_json::{Value, json};
+use url::Url;
+use uuid::Uuid;
+use vk_api::{
     DeviceInfo, TwoFactorProvider,
     models::{Cipher, Login, Profile, SshKey, SyncResponse},
 };
-use bwl_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
-use bwl_vault::{
+use vk_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
+use vk_vault::{
     BackgroundStatus, Error, LogoutErrors, MemorySecretStore, SecretStore, SecretStoreError,
     Timings, Vault, VaultConfig, VaultService,
     model::{Filter, ItemData, ItemDraft, LoginRequest, LoginStep, SessionState, TwoFactorAnswer},
 };
-use serde_json::{Value, json};
-use url::Url;
-use uuid::Uuid;
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{body_string_contains, method, path},
@@ -240,7 +240,7 @@ impl Drop for Harness {
 }
 
 fn harness_with(timings: Timings, secrets: Option<Arc<dyn SecretStore>>) -> Harness {
-    let dir = std::env::temp_dir().join(format!("bwl-mock-{}", Uuid::new_v4().simple()));
+    let dir = std::env::temp_dir().join(format!("vk-mock-{}", Uuid::new_v4().simple()));
     let device = DeviceInfo {
         identifier: Uuid::new_v4(),
         name: "test".into(),
@@ -730,7 +730,7 @@ async fn a_rejected_refresh_token_means_logging_in_again() {
 
     let error = vault.sync().await.unwrap_err();
     assert!(
-        matches!(error, Error::Api(bwl_api::Error::Unauthorized)),
+        matches!(error, Error::Api(vk_api::Error::Unauthorized)),
         "{error:?}"
     );
     assert!(!vault.is_offline());
@@ -740,7 +740,7 @@ async fn a_rejected_refresh_token_means_logging_in_again() {
     );
     let again = vault.sync().await.unwrap_err();
     assert!(
-        matches!(again, Error::Api(bwl_api::Error::Unauthorized)),
+        matches!(again, Error::Api(vk_api::Error::Unauthorized)),
         "{again:?}"
     );
 }
@@ -953,7 +953,7 @@ async fn an_edit_from_a_cache_written_before_lossless_ciphers_syncs_first() {
         .unwrap();
 
     let syncs = fake.requests_to("/api/sync").await.len();
-    let id = bwl_vault::model::ItemId("c1".into());
+    let id = vk_vault::model::ItemId("c1".into());
     let mut draft = vault.draft(&id).unwrap();
     draft.name = "Renamed".into();
     vault.save(Some(id.clone()), draft.clone()).await.unwrap();
@@ -1016,7 +1016,7 @@ async fn locked_and_logged_out_calls_report_their_state() {
     let harness = harness();
     let vault = &harness.vault;
     assert_eq!(vault.state(), SessionState::LoggedOut);
-    let id = bwl_vault::model::ItemId("x".into());
+    let id = vk_vault::model::ItemId("x".into());
     assert!(matches!(
         vault.search("", &Filter::default()),
         Err(Error::LoggedOut)
@@ -1043,14 +1043,14 @@ async fn locked_and_logged_out_calls_report_their_state() {
     let fake = Fake::start().await;
     let harness = logged_in(&fake, vec![fake.login("c1", "One", "pw")]).await;
     let vault = &harness.vault;
-    let id = bwl_vault::model::ItemId("c1".into());
+    let id = vk_vault::model::ItemId("c1".into());
     vault.lock();
     assert!(matches!(
         vault.search("", &Filter::default()),
         Err(Error::Locked)
     ));
     assert!(matches!(
-        vault.reveal(&id, bwl_vault::model::CopyField::Password),
+        vault.reveal(&id, vk_vault::model::CopyField::Password),
         Err(Error::Locked)
     ));
     assert!(matches!(vault.trash(&id).await, Err(Error::Locked)));
@@ -1108,10 +1108,7 @@ async fn probe_of_a_dead_or_failing_server_is_an_error() {
         .await
         .unwrap_err();
     assert!(
-        matches!(
-            error,
-            Error::Api(bwl_api::Error::Server { status: 404, .. })
-        ),
+        matches!(error, Error::Api(vk_api::Error::Server { status: 404, .. })),
         "{error:?}"
     );
     assert!(!error.is_offline());
@@ -1127,7 +1124,7 @@ async fn saving_a_draft_after_a_sync_brought_a_remote_edit_is_a_conflict() {
     let original = fake.login("c1", "GitHub", "pw");
     let harness = logged_in(&fake, vec![original.clone()]).await;
     let vault = &harness.vault;
-    let id = bwl_vault::model::ItemId("c1".into());
+    let id = vk_vault::model::ItemId("c1".into());
     let mut draft = vault.draft(&id).unwrap();
     assert_eq!(
         draft.revision_date.as_deref(),
@@ -1148,7 +1145,7 @@ async fn saving_a_draft_after_a_sync_brought_a_remote_edit_is_a_conflict() {
     draft.name = "GitHub (desktop)".into();
     let refused = vault.save(Some(id.clone()), draft).await.unwrap_err();
     assert!(matches!(refused, Error::Conflict), "{refused:?}");
-    assert_eq!(refused.to_string(), bwl_vault::CONFLICT_MESSAGE);
+    assert_eq!(refused.to_string(), vk_vault::CONFLICT_MESSAGE);
     assert!(
         fake.requests_to("/api/ciphers/c1").await.is_empty(),
         "nothing was sent"
@@ -1177,7 +1174,7 @@ async fn the_servers_out_of_date_refusal_is_a_conflict_and_asks_for_a_sync() {
         .mount(&fake.server)
         .await;
     let syncs = fake.requests_to("/api/sync").await.len();
-    let id = bwl_vault::model::ItemId("c1".into());
+    let id = vk_vault::model::ItemId("c1".into());
     let mut draft = vault.draft(&id).unwrap();
     draft.name = "Renamed".into();
     let refused = vault.save(Some(id), draft).await.unwrap_err();
@@ -1271,10 +1268,10 @@ async fn a_slow_attachment_upload_does_not_hold_back_a_sync() {
     let vault = &harness.vault;
     // Vaultwarden saves the attachment row before its data arrives, so the sync below sees it.
     let mut with_row = item;
-    with_row.attachments = Some(vec![bwl_api::models::Attachment {
+    with_row.attachments = Some(vec![vk_api::models::Attachment {
         id: "att1".into(),
         size: Some("15".into()),
-        ..bwl_api::models::Attachment::default()
+        ..vk_api::models::Attachment::default()
     }]);
     fake.server.reset().await;
     fake.mount_sync(vec![with_row]).await;
@@ -1295,7 +1292,7 @@ async fn a_slow_attachment_upload_does_not_hold_back_a_sync() {
     let source = harness.dir.join("report.txt");
     std::fs::write(&source, b"attachment body").unwrap();
 
-    let id = bwl_vault::model::ItemId(Arc::from("c1"));
+    let id = vk_vault::model::ItemId(Arc::from("c1"));
     let upload = vault.upload_attachment(&id, source);
     let sync_meanwhile = async {
         let deadline = tokio::time::Instant::now() + WAIT;
@@ -1332,10 +1329,7 @@ async fn a_401_from_a_proxy_during_refresh_keeps_the_refresh_token() {
 
     let error = vault.sync().await.unwrap_err();
     assert!(
-        matches!(
-            error,
-            Error::Api(bwl_api::Error::Server { status: 401, .. })
-        ),
+        matches!(error, Error::Api(vk_api::Error::Server { status: 401, .. })),
         "{error:?}"
     );
     assert!(
@@ -1404,7 +1398,7 @@ async fn syncs_and_uploads_outlast_the_read_timeout_of_ordinary_requests() {
     vault.sync().await.unwrap();
     let source = harness.dir.join("slow.bin");
     std::fs::write(&source, b"attachment body").unwrap();
-    let id = bwl_vault::model::ItemId(Arc::from("c1"));
+    let id = vk_vault::model::ItemId(Arc::from("c1"));
     vault.upload_attachment(&id, source).await.unwrap();
     // The short limits are in force for everything else.
     let error = vault.create_folder("Slow").await.unwrap_err();

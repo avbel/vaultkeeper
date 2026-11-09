@@ -2,11 +2,11 @@
 
 use std::{rc::Rc, sync::Arc};
 
-use bwl_vault::{
+use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use vk_vault::{
     VaultService,
     model::{Filter, FolderView, ItemId, ItemKind},
 };
-use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use super::{
     App, OFFLINE_TOAST, handler, hide, manager_detail::Detail, manager_edit::Edit, retire, show,
@@ -335,7 +335,7 @@ impl<S: VaultService> App<S> {
         }
     }
 
-    fn copy_selected(&self, field: bwl_vault::model::CopyField) -> bool {
+    fn copy_selected(&self, field: vk_vault::model::CopyField) -> bool {
         let item = self.manager.borrow().as_ref().and_then(|manager| {
             manager
                 .selected_row()
@@ -355,7 +355,7 @@ impl<S: VaultService> App<S> {
     }
 
     fn manager_command(&self, command: Command) -> bool {
-        use bwl_vault::model::CopyField;
+        use vk_vault::model::CopyField;
         if self.editing() {
             return match command {
                 Command::Escape => {

@@ -10,7 +10,14 @@ use std::{
     time::Duration,
 };
 
-use bw_lite::{
+use i_slint_backend_testing::{
+    AccessibleRole, ElementHandle, ElementRoot, TestingBackend, TestingBackendOptions,
+};
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowEvent},
+};
+use vaultkeeper::{
     App,
     autotype::{Stroke, typed_text},
     exec::Exec,
@@ -20,13 +27,6 @@ use bw_lite::{
     },
     mock::{MockConfig, MockVault},
     settings::Settings,
-};
-use i_slint_backend_testing::{
-    AccessibleRole, ElementHandle, ElementRoot, TestingBackend, TestingBackendOptions,
-};
-use slint::{
-    ComponentHandle,
-    platform::{Key, WindowEvent},
 };
 
 /// 1_700_000_010 is a multiple of 30, so this is 10 s into a TOTP window (20 s remaining).
@@ -233,9 +233,9 @@ impl Biometrics for ScriptedTouchId {
             .pop_front()
             .expect("a scripted Touch ID answer");
         match outcome {
-            TouchIdOutcome::Unlock => bwl_vault::VaultService::unlock_with_user_key(
+            TouchIdOutcome::Unlock => vk_vault::VaultService::unlock_with_user_key(
                 &*self.vault,
-                bw_lite::mock::mock_user_key(account_id),
+                vaultkeeper::mock::mock_user_key(account_id),
             )
             .map_err(|error| HookError::Failed(error.to_string())),
             TouchIdOutcome::Cancel => Err(HookError::Cancelled),

@@ -269,7 +269,7 @@ pub(super) fn detect_namespace(data: &[u8]) -> Option<SIGNamespace> {
         return None;
     }
 
-    // bwl patch: skip only the magic (upstream also skipped a version uint32 that is not there,
+    // vk patch: skip only the magic (upstream also skipped a version uint32 that is not there,
     // so real ssh-keygen -Y sign data was always classified as Unsupported).
     let offset = SSHSIG_MAGIC.len();
     if data.len() < offset + 4 {

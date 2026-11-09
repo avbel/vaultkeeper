@@ -14,18 +14,18 @@ use std::{
 };
 
 use anyhow::Context;
-use bwl_ipc::{
-    ClipboardHost, DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind,
-    SshDecision, SshPrompt, TouchIdBackend, TypingTarget, UiCommand, UiNotice,
-};
-use bwl_platform::{network::NetworkEvent, power::PowerEvent};
-use bwl_ssh::{ApprovalKind, ApprovalRequest};
-use bwl_vault::{SecretStore, Timings, Vault, VaultConfig, VaultService, model::SessionState};
 use tokio::{
     runtime::Handle,
     sync::{Notify, mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
+use vk_ipc::{
+    ClipboardHost, DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind,
+    SshDecision, SshPrompt, TouchIdBackend, TypingTarget, UiCommand, UiNotice,
+};
+use vk_platform::{network::NetworkEvent, power::PowerEvent};
+use vk_ssh::{ApprovalKind, ApprovalRequest};
+use vk_vault::{SecretStore, Timings, Vault, VaultConfig, VaultService, model::SessionState};
 
 use super::{
     device,
@@ -158,7 +158,7 @@ impl Daemon {
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
         .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>);
         let server =
-            bwl_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
+            vk_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
                 .await
                 .context("listen on the UI socket")?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
@@ -265,7 +265,7 @@ impl Daemon {
         self.ssh.socket()
     }
 
-    /// The app in front now, for auto-type from the Quick Panel; `None` when it is bw-lite
+    /// The app in front now, for auto-type from the Quick Panel; `None` when it is vaultkeeper
     /// (this daemon or its UI process) or unknown. Call it before the effect that starts or
     /// shows the UI, which comes forward.
     #[must_use]
@@ -312,8 +312,9 @@ impl Daemon {
         }
         let daemon = Arc::clone(self);
         drop(self.runtime.spawn(async move {
+            let account = daemon.vault.active_account_id();
             let result = daemon.vault.sync().await;
-            let error = tray_sync::finish(&daemon.tray_sync, &result);
+            let error = tray_sync::finish(&daemon.tray_sync, account, &result);
             if daemon.ui_connected() {
                 daemon.send_command(UiCommand::SyncFinished { error });
             }

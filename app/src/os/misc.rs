@@ -3,10 +3,10 @@
 
 use std::{path::PathBuf, process::Command, str::FromStr};
 
-use bwl_gen::generator::{
+use vk_gen::generator::{
     PassphraseOptions, PasswordOptions, generate_passphrase, generate_password,
 };
-use bwl_ipc::UiNotice;
+use vk_ipc::UiNotice;
 use zeroize::Zeroizing;
 
 use super::Notifier;
@@ -19,7 +19,7 @@ pub struct LaunchAgent;
 
 impl Autostart for LaunchAgent {
     fn set_enabled(&self, enabled: bool) -> HookResult<()> {
-        bwl_platform::autostart::set_enabled(enabled)
+        vk_platform::autostart::set_enabled(enabled)
             .map_err(|error| HookError::Failed(error.to_string()))
     }
 }
@@ -40,11 +40,11 @@ pub struct SshKeys;
 
 impl SshKeyTool for SshKeys {
     fn generate(&self) -> HookResult<(Zeroizing<String>, String, String)> {
-        bwl_ssh::generate_ed25519().map_err(|error| HookError::Failed(error.to_string()))
+        vk_ssh::generate_ed25519().map_err(|error| HookError::Failed(error.to_string()))
     }
 
     fn import(&self, private_key: &str) -> HookResult<Option<(Zeroizing<String>, String, String)>> {
-        bwl_ssh::import_key(private_key, None)
+        vk_ssh::import_key(private_key, None)
             .map(Some)
             .map_err(|error| HookError::Failed(format!("Not a usable private key: {error}")))
     }

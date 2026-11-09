@@ -7,8 +7,8 @@ use std::{
 };
 
 use anyhow::Context;
-use bwl_vault::VaultService;
 use tokio::{runtime::Handle, sync::mpsc};
+use vk_vault::VaultService;
 
 use crate::{
     app::{App, UiCommand},

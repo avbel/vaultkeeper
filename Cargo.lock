@@ -782,183 +782,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "bw-lite"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bwl-api",
- "bwl-crypto",
- "bwl-gen",
- "bwl-ipc",
- "bwl-platform",
- "bwl-ssh",
- "bwl-vault",
- "chrono",
- "global-hotkey",
- "i-slint-backend-testing",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation 0.3.2",
- "reqwest",
- "rfd",
- "serde",
- "serde_json",
- "slint",
- "slint-build",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-api"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "futures-util",
- "reqwest",
- "rmpv",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
- "uuid",
- "wiremock",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-crypto"
-version = "0.1.0"
-dependencies = [
- "aes 0.9.4",
- "argon2",
- "base64 0.23.1",
- "cbc 0.2.1",
- "hkdf 0.13.0",
- "hmac 0.13.0",
- "pbkdf2 0.13.0",
- "rand 0.10.3",
- "rsa 0.10.0-rc.22",
- "sha1",
- "sha2 0.11.1",
- "subtle",
- "thiserror 2.0.21",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-gen"
-version = "0.1.0"
-dependencies = [
- "data-encoding",
- "hmac 0.13.0",
- "rand 0.10.3",
- "sha1",
- "sha2 0.11.1",
- "thiserror 2.0.21",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-ipc"
-version = "0.1.0"
-dependencies = [
- "bwl-api",
- "bwl-crypto",
- "bwl-gen",
- "bwl-vault",
- "core-foundation 0.10.1",
- "libc",
- "postcard",
- "reqwest",
- "security-framework",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-platform"
-version = "0.1.0"
-dependencies = [
- "aes-gcm 0.11.1",
- "arboard",
- "directories",
- "hkdf 0.13.0",
- "interprocess",
- "libc",
- "p256 0.14.0",
- "rand 0.10.3",
- "security-framework",
- "sha2 0.11.1",
- "swift-rs",
- "tempfile",
- "thiserror 2.0.21",
- "tracing",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-ssh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "p256 0.13.2",
- "p384",
- "pkcs8 0.10.2",
- "rsa 0.9.6",
- "ssh-key",
- "ssh_agent",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "bwl-vault"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "bwl-api",
- "bwl-crypto",
- "bwl-gen",
- "nucleo-matcher",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "wiremock",
- "zeroize",
-]
-
-[[package]]
 name = "by_address"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7430,10 +7253,187 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
+name = "vaultkeeper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "global-hotkey",
+ "i-slint-backend-testing",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "reqwest",
+ "rfd",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "vk-api",
+ "vk-crypto",
+ "vk-gen",
+ "vk-ipc",
+ "vk-platform",
+ "vk-ssh",
+ "vk-vault",
+ "zeroize",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vk-api"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "futures-util",
+ "reqwest",
+ "rmpv",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "uuid",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
+name = "vk-crypto"
+version = "0.1.0"
+dependencies = [
+ "aes 0.9.4",
+ "argon2",
+ "base64 0.23.1",
+ "cbc 0.2.1",
+ "hkdf 0.13.0",
+ "hmac 0.13.0",
+ "pbkdf2 0.13.0",
+ "rand 0.10.3",
+ "rsa 0.10.0-rc.22",
+ "sha1",
+ "sha2 0.11.1",
+ "subtle",
+ "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
+name = "vk-gen"
+version = "0.1.0"
+dependencies = [
+ "data-encoding",
+ "hmac 0.13.0",
+ "rand 0.10.3",
+ "sha1",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "vk-ipc"
+version = "0.1.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "postcard",
+ "reqwest",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "vk-api",
+ "vk-crypto",
+ "vk-gen",
+ "vk-vault",
+ "zeroize",
+]
+
+[[package]]
+name = "vk-platform"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm 0.11.1",
+ "arboard",
+ "directories",
+ "hkdf 0.13.0",
+ "interprocess",
+ "libc",
+ "p256 0.14.0",
+ "rand 0.10.3",
+ "security-framework",
+ "sha2 0.11.1",
+ "swift-rs",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
+name = "vk-ssh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "p256 0.13.2",
+ "p384",
+ "pkcs8 0.10.2",
+ "rsa 0.9.6",
+ "ssh-key",
+ "ssh_agent",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "vk-vault"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "nucleo-matcher",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "vk-api",
+ "vk-crypto",
+ "vk-gen",
+ "wiremock",
+ "zeroize",
+]
 
 [[package]]
 name = "vtable"

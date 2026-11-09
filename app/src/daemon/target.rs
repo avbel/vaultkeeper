@@ -10,7 +10,7 @@ use crate::{hooks::TypingTarget, os::autotype};
 /// only runs the tray and hotkey, so it answers within a frame; the margin covers a busy machine.
 const MAIN_THREAD_WAIT: Duration = Duration::from_millis(500);
 
-/// The frontmost app as macOS reports it, bw-lite's own processes included. Callable from any
+/// The frontmost app as macOS reports it, vaultkeeper's own processes included. Callable from any
 /// thread; off the main thread it may block briefly.
 pub trait FrontmostApp: Send + Sync {
     fn frontmost(&self) -> Option<TypingTarget>;
@@ -65,11 +65,15 @@ mod tests {
     }
 
     #[test]
-    fn bw_lite_processes_and_bogus_pids_are_no_target() {
+    fn vaultkeeper_processes_and_bogus_pids_are_no_target() {
         let own = [DAEMON, UI];
-        assert_eq!(outside(Some(app(500, "bw-lite")), &own), None, "the daemon");
         assert_eq!(
-            outside(Some(app(501, "bw-lite")), &own),
+            outside(Some(app(500, "vaultkeeper")), &own),
+            None,
+            "the daemon"
+        );
+        assert_eq!(
+            outside(Some(app(501, "vaultkeeper")), &own),
             None,
             "its UI child"
         );

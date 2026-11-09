@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use bwl_vault::{VaultService, model::Filter};
 use slint::{Model, ModelRc, VecModel};
+use vk_vault::{VaultService, model::Filter};
 
 use super::{App, handler};
 use crate::{
@@ -186,7 +186,7 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    fn folder_done(&self, result: &bwl_vault::Result<()>) {
+    fn folder_done(&self, result: &vk_vault::Result<()>) {
         if let Err(error) = result {
             self.toast(&viewmodel::error_text(error), true);
         }

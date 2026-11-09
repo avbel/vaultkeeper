@@ -8,8 +8,8 @@ use std::{
     time::Duration,
 };
 
-use bwl_ipc::UiNotice;
 use tokio::{sync::watch, task::JoinHandle};
+use vk_ipc::UiNotice;
 
 use super::routing::HotkeySlot;
 use crate::settings::Settings;

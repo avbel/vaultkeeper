@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bwl_platform::power::PowerEvent;
+use vk_platform::power::PowerEvent;
 
 use crate::settings::LockTimeout;
 

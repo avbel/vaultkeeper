@@ -7,16 +7,16 @@ use std::{
     time::Duration,
 };
 
-use bwl_api::{
-    Prober,
-    notifications::{Notification, run_with_reconnect},
-};
 use tokio::{
     sync::mpsc,
     task::JoinHandle,
     time::{self, Instant, MissedTickBehavior},
 };
 use url::Url;
+use vk_api::{
+    Prober,
+    notifications::{Notification, run_with_reconnect},
+};
 use zeroize::Zeroizing;
 
 use super::{Inner, lock};
@@ -208,7 +208,7 @@ impl Inner {
         let ctx = self.unlocked_ctx().ok().filter(|ctx| ctx.epoch == epoch)?;
         match self.access_token(&ctx, rejected.as_ref()).await {
             Ok(token) => Some(token),
-            Err(Error::Api(bwl_api::Error::Unauthorized)) => None,
+            Err(Error::Api(vk_api::Error::Unauthorized)) => None,
             Err(error) => {
                 tracing::debug!(%error, "no access token for the notifications hub");
                 if error.is_offline() {
@@ -343,7 +343,7 @@ async fn is_alive(prober: &Prober) -> bool {
     match prober.alive().await {
         // A bad certificate means the server answered: let the sync fail with that error instead
         // of showing "offline" while waiting for a server that is already up.
-        Ok(()) | Err(bwl_api::Error::Tls(_)) => true,
+        Ok(()) | Err(vk_api::Error::Tls(_)) => true,
         Err(error) => {
             tracing::debug!(%error, "offline probe failed");
             false

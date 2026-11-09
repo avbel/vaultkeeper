@@ -6,7 +6,7 @@
 
 use std::{path::Path, process::Command};
 
-use bwl_platform::autostart;
+use vk_platform::autostart;
 
 fn plutil_value(plist: &Path, key_path: &str) -> String {
     let output = Command::new("/usr/bin/plutil")
@@ -27,7 +27,7 @@ fn enable_writes_agent_for_current_exe_refresh_updates_it_and_disable_removes_it
     // SAFETY: this binary runs exactly one test, so no other thread reads the environment.
     unsafe { std::env::set_var("HOME", home.path()) };
     std::fs::create_dir(home.path().join("Library")).expect("Library dir");
-    let plist = home.path().join("Library/LaunchAgents/bw-lite.plist");
+    let plist = home.path().join("Library/LaunchAgents/vaultkeeper.plist");
 
     assert!(!autostart::is_enabled().expect("is_enabled"));
     assert!(
@@ -48,7 +48,7 @@ fn enable_writes_agent_for_current_exe_refresh_updates_it_and_disable_removes_it
         .expect("exe")
         .canonicalize()
         .expect("canonical exe");
-    assert_eq!(plutil_value(&plist, "Label"), "bw-lite");
+    assert_eq!(plutil_value(&plist, "Label"), "vaultkeeper");
     assert_eq!(
         plutil_value(&plist, "ProgramArguments.0"),
         exe.to_str().expect("utf-8")
@@ -68,12 +68,12 @@ fn enable_writes_agent_for_current_exe_refresh_updates_it_and_disable_removes_it
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST \
              1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n\
-             <dict>\n  <key>Label</key>\n  <string>bw-lite</string>\n  <key>ProgramArguments</key>\n  \
+             <dict>\n  <key>Label</key>\n  <string>vaultkeeper</string>\n  <key>ProgramArguments</key>\n  \
              <array><string>{exe}</string><string>--tray</string></array>\n  <key>RunAtLoad</key>\n  \
              <true/>\n</dict>\n</plist>"
         )
     };
-    let installed = old_agent("/Applications/bw-lite.app/Contents/MacOS/bw-lite");
+    let installed = old_agent("/Applications/Vaultkeeper.app/Contents/MacOS/vaultkeeper");
     std::fs::write(&plist, &installed).expect("other agent");
     assert!(!autostart::refresh().expect("refresh"));
     assert_eq!(std::fs::read_to_string(&plist).expect("plist"), installed);

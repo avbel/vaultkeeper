@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use bwl_vault::{
+use slint::{ComponentHandle, SharedString};
+use vk_vault::{
     VaultService,
     model::{CopyField, ItemId, ItemSummary},
 };
-use slint::{ComponentHandle, SharedString};
 use zeroize::Zeroizing;
 
 use super::{App, handler};
@@ -96,7 +96,7 @@ impl<S: VaultService> App<S> {
         );
     }
 
-    fn reprompt_verified(&self, result: bwl_vault::Result<bool>) {
+    fn reprompt_verified(&self, result: vk_vault::Result<bool>) {
         let window = self
             .manager
             .borrow()

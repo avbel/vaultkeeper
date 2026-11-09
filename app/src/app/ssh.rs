@@ -11,17 +11,17 @@
 
 use std::{collections::VecDeque, time::Duration};
 
-use bwl_ipc::SshDecision;
-use bwl_vault::{VaultService, model::SessionState};
 use slint::Timer;
 use tokio::sync::oneshot;
+use vk_ipc::SshDecision;
+use vk_vault::{VaultService, model::SessionState};
 
 use super::{App, handler, hide, retire, show};
 use crate::{hooks::TypingTarget, settings::SshApproval, ui::SshPrompt};
 
 pub const SSH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What the integration step builds from a `bwl_ssh::ApprovalRequest` plus the vault's key data.
+/// What the integration step builds from a `vk_ssh::ApprovalRequest` plus the vault's key data.
 #[derive(Debug)]
 pub struct SshApprovalRequest {
     pub process: String,
@@ -185,7 +185,7 @@ impl<S: VaultService> App<S> {
             self.window_closed();
         }
         self.show_next_ssh_prompt();
-        // Showing the prompt brought every bw-lite window forward, a Manager left open behind
+        // Showing the prompt brought every vaultkeeper window forward, a Manager left open behind
         // the terminal included; the terminal gets the front back, and the Manager stays behind.
         if self.ssh_prompt.borrow().is_none()
             && let Some(app) = return_to

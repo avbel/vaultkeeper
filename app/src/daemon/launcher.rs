@@ -1,4 +1,4 @@
-//! Starts `bw-lite --ui` on demand, reaps it and kills it when it hangs. At most one UI process
+//! Starts `vaultkeeper --ui` on demand, reaps it and kills it when it hangs. At most one UI process
 //! runs: none is started while one is connected or still starting, and commands wait in the IPC
 //! event queue until it connects.
 

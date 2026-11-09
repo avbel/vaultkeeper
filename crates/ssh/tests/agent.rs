@@ -13,14 +13,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bwl_ssh::{
-    AgentError, AgentKey, ApprovalKind, ApprovalRequest, ImportError, SshAgent, import_key,
-};
 use tempfile::TempDir;
 use tokio::{
     sync::{mpsc, oneshot},
     task::spawn_blocking,
     time::timeout,
+};
+use vk_ssh::{
+    AgentError, AgentKey, ApprovalKind, ApprovalRequest, ImportError, SshAgent, import_key,
 };
 use zeroize::Zeroizing;
 
@@ -167,7 +167,7 @@ struct Harness {
 
 impl Harness {
     fn start(verdict: Verdict) -> Self {
-        Self::start_with_timeout(verdict, bwl_ssh::APPROVAL_TIMEOUT)
+        Self::start_with_timeout(verdict, vk_ssh::APPROVAL_TIMEOUT)
     }
 
     fn start_with_timeout(verdict: Verdict, approval_timeout: Duration) -> Self {
@@ -210,7 +210,7 @@ impl Harness {
 
 async fn sign_message(dir: &Path, socket: &Path, key: &FixtureKey, namespace: &str) -> Signing {
     let message = dir.join(format!("{}.msg", key.file));
-    fs::write(&message, "message signed through the bw-lite agent\n").expect("message");
+    fs::write(&message, "message signed through the vaultkeeper agent\n").expect("message");
     let mut command = tool("ssh-keygen", socket);
     command
         .args(["-Y", "sign", "-n", namespace, "-f"])
@@ -710,7 +710,7 @@ async fn ssh_keygen_accepts_every_imported_format_and_agrees_on_the_fingerprint(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn generated_key_has_the_fingerprint_ssh_keygen_computes() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let (pem, public, fingerprint) = bwl_ssh::generate_ed25519().expect("generate");
+    let (pem, public, fingerprint) = vk_ssh::generate_ed25519().expect("generate");
     let path = dir.path().join("generated");
     fs::write(&path, pem.as_bytes()).expect("write");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");

@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use bwl_ipc::{TypingTarget, UiCommand};
-use bwl_vault::model::{AccountView, SessionState};
+use vk_ipc::{TypingTarget, UiCommand};
+use vk_vault::model::{AccountView, SessionState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -36,7 +36,7 @@ pub enum Launch {
     QuickPanel,
 }
 
-/// `frontmost` reads the app in front (bw-lite excluded); only "Quick search" asks for it.
+/// `frontmost` reads the app in front (vaultkeeper excluded); only "Quick search" asks for it.
 #[must_use]
 pub fn tray(
     action: TrayAction,
@@ -105,10 +105,10 @@ pub fn hotkey(slot: HotkeySlot, frontmost: impl FnOnce() -> Option<TypingTarget>
 /// arrives off the main thread, where the frontmost app cannot be read, so a panel opened this
 /// way has no auto-type target.
 #[must_use]
-pub const fn second_launch(command: bwl_platform::single_instance::Command) -> Effect {
+pub const fn second_launch(command: vk_platform::single_instance::Command) -> Effect {
     match command {
-        bwl_platform::single_instance::Command::ShowManager => Effect::Show(UiCommand::ShowManager),
-        bwl_platform::single_instance::Command::ShowQuickPanel => {
+        vk_platform::single_instance::Command::ShowManager => Effect::Show(UiCommand::ShowManager),
+        vk_platform::single_instance::Command::ShowQuickPanel => {
             Effect::Show(UiCommand::ShowQuickPanel { target: None })
         }
     }
@@ -128,17 +128,17 @@ pub fn startup(launch: Launch, state: &SessionState, ask_unlock_on_start: bool) 
 
 /// The command a second launch forwards, by its flags.
 #[must_use]
-pub const fn forwarded(launch: Launch) -> bwl_platform::single_instance::Command {
+pub const fn forwarded(launch: Launch) -> vk_platform::single_instance::Command {
     match launch {
-        Launch::QuickPanel => bwl_platform::single_instance::Command::ShowQuickPanel,
-        Launch::Tray | Launch::Manager => bwl_platform::single_instance::Command::ShowManager,
+        Launch::QuickPanel => vk_platform::single_instance::Command::ShowQuickPanel,
+        Launch::Tray | Launch::Manager => vk_platform::single_instance::Command::ShowManager,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bwl_platform::single_instance::Command;
     use url::Url;
+    use vk_platform::single_instance::Command;
 
     use super::*;
 
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(
             hotkey(HotkeySlot::QuickPanel, || None),
             Effect::Show(UiCommand::ToggleQuickPanel { target: None }),
-            "bw-lite or nothing in front"
+            "Vaultkeeper or nothing in front"
         );
         assert_eq!(
             hotkey(HotkeySlot::Generator, no_read),

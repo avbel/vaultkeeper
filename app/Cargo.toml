@@ -1,5 +1,5 @@
 [package]
-name = "bw-lite"
+name = "vaultkeeper"
 description = "Lightweight desktop client for Vaultwarden"
 version.workspace = true
 edition.workspace = true
@@ -8,11 +8,11 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-name = "bw_lite"
+name = "vaultkeeper"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bw-lite"
+name = "vaultkeeper"
 path = "src/main.rs"
 
 [features]
@@ -23,20 +23,20 @@ vw-it = []
 
 [dependencies]
 anyhow.workspace = true
-bwl-api.workspace = true
-bwl-crypto.workspace = true
-bwl-gen.workspace = true
-bwl-ipc.workspace = true
-bwl-platform.workspace = true
-bwl-ssh.workspace = true
-bwl-vault.workspace = true
+vk-api.workspace = true
+vk-crypto.workspace = true
+vk-gen.workspace = true
+vk-ipc.workspace = true
+vk-platform.workspace = true
+vk-ssh.workspace = true
+vk-vault.workspace = true
 # Local wall-clock time of the last sync in the tray menu.
 chrono.workspace = true
 global-hotkey.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Software renderer only: the window process measured +28 MB resident after a window is dropped
-# with it, against +45 MB with femtovg (docs/solutions/bw-lite-architecture.md, step 0).
+# with it, against +45 MB with femtovg (docs/solutions/vaultkeeper-architecture.md, step 0).
 slint = { workspace = true, default-features = false, features = [
     "std",
     "accessibility",
@@ -99,8 +99,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 rfd = { version = "0.18.0", default-features = false }
 
 [dev-dependencies]
-# Registers e2e accounts with the client's own crypto, as the bwl-vault scenarios do.
-bwl-crypto.workspace = true
+# Registers e2e accounts with the client's own crypto, as the vk-vault scenarios do.
+vk-crypto.workspace = true
 # Internal Slint crate without semver guarantees; must match the slint version exactly.
 i-slint-backend-testing = "=1.18.1"
 reqwest.workspace = true

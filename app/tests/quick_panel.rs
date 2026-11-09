@@ -2,15 +2,15 @@
 
 mod common;
 
-use bw_lite::mock::MOCK_MASTER_PASSWORD;
-use bwl_vault::{
+use common::{CMD, Harness, Mods, SHIFT, Setup, harness, key, pump, special, type_into};
+use slint::{ComponentHandle, Model, platform::Key};
+use vaultkeeper::mock::MOCK_MASTER_PASSWORD;
+use vk_vault::{
     VaultService,
     model::{CopyField, Filter},
 };
-use common::{CMD, Harness, Mods, SHIFT, Setup, harness, key, pump, special, type_into};
-use slint::{ComponentHandle, Model, platform::Key};
 
-fn open(unlocked: bool) -> (Harness, bw_lite::ui::QuickPanel) {
+fn open(unlocked: bool) -> (Harness, vaultkeeper::ui::QuickPanel) {
     let h = harness(Setup {
         unlocked,
         ..Setup::default()
@@ -193,7 +193,7 @@ fn reprompt_items_are_refused_in_the_quick_panel() {
     drop(panel);
 }
 
-fn selected_name(panel: &bw_lite::ui::QuickPanel) -> String {
+fn selected_name(panel: &vaultkeeper::ui::QuickPanel) -> String {
     let row = usize::try_from(panel.get_selected()).expect("row");
     panel
         .get_rows()

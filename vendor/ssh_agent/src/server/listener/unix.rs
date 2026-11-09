@@ -37,7 +37,7 @@ impl UnixListener {
         Self::bind(get_socket_path()?)
     }
 
-    /// bwl patch: same as [`UnixListener::new`] but for a caller-chosen path, so the embedding
+    /// vk patch: same as [`UnixListener::new`] but for a caller-chosen path, so the embedding
     /// app does not have to set `BITWARDEN_SSH_AUTH_SOCK` process-wide.
     pub(crate) fn bind(socket_path: PathBuf) -> Result<Self> {
         remove_stale_socket(&socket_path)?;

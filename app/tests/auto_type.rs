@@ -5,29 +5,29 @@ mod common;
 
 use std::sync::atomic::Ordering;
 
-use bw_lite::{UiCommand, hooks::TypingTarget, mock::MOCK_MASTER_PASSWORD};
-use bwl_vault::{
-    VaultService,
-    model::{CopyField, Filter, ItemData, ItemDraft},
-};
 use common::{
     CMD, CMD_SHIFT, Harness, Mods, Setup, block_on, click, enabled, exists, harness, key, pump,
     safari, special, type_into,
 };
 use slint::platform::Key;
+use vaultkeeper::{UiCommand, hooks::TypingTarget, mock::MOCK_MASTER_PASSWORD};
+use vk_vault::{
+    VaultService,
+    model::{CopyField, Filter, ItemData, ItemDraft},
+};
 use zeroize::Zeroizing;
 
 const NO_TARGET: &str = "No app to type into: open the Quick Panel from that app";
 const ACCESSIBILITY: &str =
-    "Allow bw-lite in System Settings → Privacy & Security → Accessibility, then try again";
+    "Allow Vaultkeeper in System Settings → Privacy & Security → Accessibility, then try again";
 
 /// Opens the panel the way the global hotkey does, with Safari in front.
-fn hotkey(h: &Harness) -> bw_lite::ui::QuickPanel {
+fn hotkey(h: &Harness) -> vaultkeeper::ui::QuickPanel {
     hotkey_from(h, Some(safari()))
 }
 
 /// The global hotkey with `target` as the app the daemon saw in front.
-fn hotkey_from(h: &Harness, target: Option<TypingTarget>) -> bw_lite::ui::QuickPanel {
+fn hotkey_from(h: &Harness, target: Option<TypingTarget>) -> vaultkeeper::ui::QuickPanel {
     h.app.handle(UiCommand::ToggleQuickPanel { target });
     // As the daemon command loop does after every command.
     h.app.show_pending_notices();
@@ -39,7 +39,7 @@ fn secret(h: &Harness, name: &str, field: CopyField) -> String {
     h.vault.reveal(&item.id, field).expect("reveal").to_string()
 }
 
-fn auto_type(panel: &bw_lite::ui::QuickPanel) {
+fn auto_type(panel: &vaultkeeper::ui::QuickPanel) {
     key(panel, &special(Key::Return), CMD_SHIFT);
 }
 
@@ -219,9 +219,9 @@ fn a_typing_failure_is_shown_when_a_window_shows_next() {
 }
 
 #[test]
-fn with_bw_lite_in_front_there_is_nothing_to_type_into() {
+fn with_vaultkeeper_in_front_there_is_nothing_to_type_into() {
     let h = harness(Setup::default());
-    // The daemon sends no target when bw-lite itself was in front.
+    // The daemon sends no target when vaultkeeper itself was in front.
     let panel = hotkey_from(&h, None);
     type_into(&panel, "Quick search", "tailscale");
     auto_type(&panel);
@@ -247,7 +247,7 @@ fn no_target_is_said_on_the_panel_even_with_the_manager_open() {
 }
 
 #[test]
-fn the_target_from_the_daemon_is_typed_into_although_bw_lite_is_in_front_now() {
+fn the_target_from_the_daemon_is_typed_into_although_vaultkeeper_is_in_front_now() {
     let h = harness(Setup::default());
     // A UI process started on demand, or left active by the last panel, sees only itself.
     *h.autotype.frontmost.lock().expect("frontmost") = None;
@@ -264,7 +264,7 @@ fn a_target_naming_this_process_is_dropped() {
     let h = harness(Setup::default());
     let own = TypingTarget {
         pid: i32::try_from(std::process::id()).expect("pid"),
-        name: "bw-lite".to_owned(),
+        name: "vaultkeeper".to_owned(),
     };
     let panel = hotkey_from(&h, Some(own));
     type_into(&panel, "Quick search", "tailscale");
@@ -320,7 +320,7 @@ fn esc_hands_the_front_back_and_the_windowless_app_steps_aside() {
         [safari()]
     );
     pump();
-    assert_eq!(h.dock.hides(), 1, "no windowless bw-lite left in front");
+    assert_eq!(h.dock.hides(), 1, "no windowless vaultkeeper left in front");
     // So the daemon sees Safari again for the next hotkey, and typing goes there.
     let panel = hotkey(&h);
     type_into(&panel, "Quick search", "tailscale");
@@ -329,7 +329,7 @@ fn esc_hands_the_front_back_and_the_windowless_app_steps_aside() {
 }
 
 #[test]
-fn the_hotkey_on_an_open_panel_closes_it_without_activating_bw_lite() {
+fn the_hotkey_on_an_open_panel_closes_it_without_activating_vaultkeeper() {
     let h = harness(Setup::default());
     hotkey(&h);
     let activations = h.dock.activations.load(Ordering::SeqCst);
@@ -379,7 +379,7 @@ fn opening_the_manager_or_typing_keeps_the_front_and_nothing_hides_under_the_man
 }
 
 #[test]
-fn typing_activates_the_target_itself_and_bw_lite_steps_aside_after() {
+fn typing_activates_the_target_itself_and_vaultkeeper_steps_aside_after() {
     let h = harness(Setup::default());
     let panel = hotkey(&h);
     type_into(&panel, "Quick search", "tailscale");

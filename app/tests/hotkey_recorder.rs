@@ -3,18 +3,18 @@
 
 mod common;
 
-use bw_lite::{hooks::SettingsStore, settings::Settings};
 use common::{Harness, Setup, click, harness, pump, special};
 use i_slint_backend_testing::{AccessibleRole, ElementHandle};
 use slint::{
     ComponentHandle, SharedString,
     platform::{Key, WindowEvent},
 };
+use vaultkeeper::{hooks::SettingsStore, settings::Settings};
 
 const QUICK: &str = "Quick Panel hotkey";
 const GENERATOR: &str = "Generator hotkey";
 
-fn open(setup: Setup) -> (Harness, bw_lite::ui::SettingsWindow) {
+fn open(setup: Setup) -> (Harness, vaultkeeper::ui::SettingsWindow) {
     let h = harness(setup);
     h.app.open_settings();
     let window = h.app.settings_window().expect("settings");
@@ -25,7 +25,7 @@ fn open(setup: Setup) -> (Harness, bw_lite::ui::SettingsWindow) {
     (h, window)
 }
 
-fn send(window: &bw_lite::ui::SettingsWindow, text: &str, pressed: bool) {
+fn send(window: &vaultkeeper::ui::SettingsWindow, text: &str, pressed: bool) {
     let text = SharedString::from(text);
     window.window().dispatch_event(if pressed {
         WindowEvent::KeyPressed { text }
@@ -35,7 +35,7 @@ fn send(window: &bw_lite::ui::SettingsWindow, text: &str, pressed: bool) {
 }
 
 /// Holds `modifiers` (Slint keys: `Control` is ⌘, `Meta` is ⌃ on macOS) and taps `key`.
-fn press(window: &bw_lite::ui::SettingsWindow, modifiers: &[Key], key: &str) {
+fn press(window: &vaultkeeper::ui::SettingsWindow, modifiers: &[Key], key: &str) {
     let held: Vec<String> = modifiers.iter().map(|m| special(*m)).collect();
     for modifier in &held {
         send(window, modifier, true);
@@ -49,13 +49,13 @@ fn press(window: &bw_lite::ui::SettingsWindow, modifiers: &[Key], key: &str) {
 }
 
 /// The recorder itself, not the row's caption of the same text.
-fn recorder(window: &bw_lite::ui::SettingsWindow, label: &str) -> ElementHandle {
+fn recorder(window: &vaultkeeper::ui::SettingsWindow, label: &str) -> ElementHandle {
     ElementHandle::find_by_accessible_label(window, label)
         .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
         .unwrap_or_else(|| panic!("no recorder {label:?}"))
 }
 
-fn value_of(window: &bw_lite::ui::SettingsWindow, label: &str) -> String {
+fn value_of(window: &vaultkeeper::ui::SettingsWindow, label: &str) -> String {
     recorder(window, label)
         .accessible_value()
         .map(|value| value.to_string())

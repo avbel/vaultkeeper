@@ -1,10 +1,10 @@
 //! One-click copy: reveal on demand, hand to the clipboard hook, show footer feedback.
 
-use bwl_vault::{
+use slint::SharedString;
+use vk_vault::{
     VaultService,
     model::{CopyField, ItemKind, ItemSummary},
 };
-use slint::SharedString;
 use zeroize::Zeroizing;
 
 use slint::ComponentHandle;

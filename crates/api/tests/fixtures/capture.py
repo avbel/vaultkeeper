@@ -164,7 +164,7 @@ print("no encryptedFor", s, t); save("cipher_update_missing_encrypted_for.txt", 
 
 # --- attachments (v2 flow)
 def multipart(field, filename, data):
-    boundary = "----bwlboundary" + uuid.uuid4().hex
+    boundary = "----vkboundary" + uuid.uuid4().hex
     head = f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
     return f"multipart/form-data; boundary={boundary}", head + data + f"\r\n--{boundary}--\r\n".encode()
 

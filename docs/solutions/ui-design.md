@@ -1,4 +1,4 @@
-# bw-lite UI design
+# vaultkeeper UI design
 
 The UI has two surfaces that share one vault core:
 

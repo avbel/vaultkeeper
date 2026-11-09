@@ -2,8 +2,8 @@
 
 use std::{collections::HashMap, ops::Deref, str::FromStr};
 
-use bwl_api::models::{Cipher, ProfileOrganization};
-use bwl_crypto::{EncString, PrivateKey, SymmetricKey};
+use vk_api::models::{Cipher, ProfileOrganization};
+use vk_crypto::{EncString, PrivateKey, SymmetricKey};
 use zeroize::Zeroizing;
 
 use crate::{Error, Result};
@@ -87,7 +87,7 @@ impl KeyRing {
             Some(id) => self
                 .orgs
                 .get(id)
-                .ok_or(Error::Crypto(bwl_crypto::Error::Decrypt)),
+                .ok_or(Error::Crypto(vk_crypto::Error::Decrypt)),
         }
     }
 
@@ -203,7 +203,7 @@ pub(crate) mod tests {
         .err();
         assert!(matches!(
             error,
-            Some(Error::Crypto(bwl_crypto::Error::MacMismatch))
+            Some(Error::Crypto(vk_crypto::Error::MacMismatch))
         ));
     }
 

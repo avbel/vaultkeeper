@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use bwl_vault::{
+use vk_vault::{
     Error, Result, TotpCode,
     model::{CopyField, Filter, ItemData, ItemId},
 };
@@ -20,7 +20,7 @@ pub(super) const fn unreachable() -> Error {
 }
 
 pub(super) fn not_bitwarden() -> Error {
-    Error::Api(bwl_api::Error::Server {
+    Error::Api(vk_api::Error::Server {
         status: 404,
         message: "Not Found".to_owned(),
     })

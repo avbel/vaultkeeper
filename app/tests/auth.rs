@@ -2,12 +2,12 @@
 
 mod common;
 
-use bw_lite::last_login::{self, LastLogin};
-use bw_lite::mock::{MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MockCall};
-use bw_lite::settings::Settings;
-use bwl_vault::{VaultService, model::SessionState};
 use common::{Setup, click, exists, harness, pump, type_into, value_of};
 use slint::Model;
+use vaultkeeper::last_login::{self, LastLogin};
+use vaultkeeper::mock::{MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MockCall};
+use vaultkeeper::settings::Settings;
+use vk_vault::{VaultService, model::SessionState};
 
 fn locked() -> common::Harness {
     harness(Setup {
@@ -92,7 +92,7 @@ fn touch_id_unlock_after_enrolment() {
     assert!(matches!(h.vault.state(), SessionState::Unlocked { .. }));
 }
 
-fn open_login_for_new_account(h: &common::Harness) -> bw_lite::ui::LoginWindow {
+fn open_login_for_new_account(h: &common::Harness) -> vaultkeeper::ui::LoginWindow {
     h.app.start(false);
     let manager = h.app.manager_window().expect("manager");
     manager.invoke_add_account();
@@ -327,7 +327,7 @@ fn the_login_shown_after_the_last_logout_is_filled_from_the_remembered_entry() {
         .into_iter()
         .find(|account| &*account.email == "bob@work.example.org")
         .expect("bob");
-    let server = bw_lite::server_url::display(&bob.server);
+    let server = vaultkeeper::server_url::display(&bob.server);
     let sealed = last_login::seal(&LastLogin {
         server: server.clone(),
         email: "bob@work.example.org".to_owned(),
@@ -416,9 +416,9 @@ fn enter_on_an_empty_field_uses_touch_id_when_enrolled() {
 fn ask_to_unlock_on_start_offers_touch_id_once_and_stays_in_the_tray() {
     let h = harness(Setup {
         unlocked: true,
-        settings: bw_lite::settings::Settings {
+        settings: vaultkeeper::settings::Settings {
             ask_unlock_on_start: true,
-            ..bw_lite::settings::Settings::default()
+            ..vaultkeeper::settings::Settings::default()
         },
         ..Setup::default()
     });
@@ -444,10 +444,10 @@ fn ask_to_unlock_on_start_offers_touch_id_once_and_stays_in_the_tray() {
 fn ask_to_unlock_on_start_waits_for_the_password_when_it_is_required() {
     let h = harness(Setup {
         unlocked: true,
-        settings: bw_lite::settings::Settings {
+        settings: vaultkeeper::settings::Settings {
             ask_unlock_on_start: true,
             require_master_password_on_start: true,
-            ..bw_lite::settings::Settings::default()
+            ..vaultkeeper::settings::Settings::default()
         },
         ..Setup::default()
     });
@@ -473,7 +473,7 @@ fn the_server_line_names_the_server_once_typing_pauses() {
         value_of(&login, "Server status"),
         format!(
             "Reachable · Vaultwarden {}",
-            bw_lite::mock::MOCK_SERVER_VERSION
+            vaultkeeper::mock::MOCK_SERVER_VERSION
         ),
         "the prefilled server is probed right away"
     );
@@ -493,9 +493,9 @@ fn the_server_line_names_the_server_once_typing_pauses() {
 #[test]
 fn require_master_password_hides_touch_id_until_the_first_unlock() {
     let h = harness(Setup {
-        settings: bw_lite::settings::Settings {
+        settings: vaultkeeper::settings::Settings {
             require_master_password_on_start: true,
-            ..bw_lite::settings::Settings::default()
+            ..vaultkeeper::settings::Settings::default()
         },
         ..Setup::default()
     });
@@ -522,9 +522,9 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
 
     // A UI process the daemon starts after an unlock already happened (no `--first-unlock`).
     let later = harness(Setup {
-        settings: bw_lite::settings::Settings {
+        settings: vaultkeeper::settings::Settings {
             require_master_password_on_start: true,
-            ..bw_lite::settings::Settings::default()
+            ..vaultkeeper::settings::Settings::default()
         },
         ..Setup::default()
     });

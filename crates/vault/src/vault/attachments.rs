@@ -9,8 +9,8 @@ use std::{
     sync::Arc,
 };
 
-use bwl_api::models::Attachment;
-use bwl_crypto::{EncString, SymmetricKey, enc_buffer};
+use vk_api::models::Attachment;
+use vk_crypto::{EncString, SymmetricKey, enc_buffer};
 
 use super::Inner;
 use crate::{
@@ -315,7 +315,7 @@ mod tests {
         let dest = dir.join("dest.bin");
         let error = decrypt_file(&key, &encrypted, &dest).unwrap_err();
         assert!(
-            matches!(error, Error::Crypto(bwl_crypto::Error::MacMismatch)),
+            matches!(error, Error::Crypto(vk_crypto::Error::MacMismatch)),
             "{error:?}"
         );
         assert!(!dest.exists());
@@ -323,7 +323,7 @@ mod tests {
         let wrong = decrypt_file(&SymmetricKey::generate(), &encrypted, &dest).unwrap_err();
         assert!(matches!(
             wrong,
-            Error::Crypto(bwl_crypto::Error::MacMismatch)
+            Error::Crypto(vk_crypto::Error::MacMismatch)
         ));
         let names: Vec<_> = fs::read_dir(&dir)
             .unwrap()

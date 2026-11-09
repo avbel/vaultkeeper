@@ -66,7 +66,7 @@ where
         self.start(listeners)
     }
 
-    /// bwl patch: starts the server on an explicit Unix socket path.
+    /// vk patch: starts the server on an explicit Unix socket path.
     #[cfg(unix)]
     pub(crate) fn start_at_socket_path(&mut self, socket_path: std::path::PathBuf) -> Result<()> {
         let listeners = listener::create_listeners_at(socket_path)?;

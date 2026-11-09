@@ -12,12 +12,12 @@ use std::{
     time::Duration,
 };
 
-use bwl_ssh::{AgentKey, ApprovalRequest, SshAgent};
-use bwl_vault::{
+use tokio::sync::mpsc;
+use vk_ssh::{AgentKey, ApprovalRequest, SshAgent};
+use vk_vault::{
     Vault, VaultService,
     model::{Filter, ItemKind, SessionState},
 };
-use tokio::sync::mpsc;
 
 /// Covers queueing, an unlock (KDF included) and the 30 s prompt; the UI auto-denies its prompt
 /// on its own after 30 s.
@@ -188,7 +188,7 @@ impl SshControl {
 
 /// The agent's key list plus a name and fingerprint per cipher, for the approval prompt.
 /// The fingerprint is the SSH item's list subtitle, so no key is parsed here.
-fn load_keys(vault: &Vault) -> bwl_vault::Result<(Vec<AgentKey>, HashMap<String, KeyLabel>)> {
+fn load_keys(vault: &Vault) -> vk_vault::Result<(Vec<AgentKey>, HashMap<String, KeyLabel>)> {
     let filter = Filter {
         kind: Some(ItemKind::SshKey),
         ..Filter::default()

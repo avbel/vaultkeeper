@@ -8,15 +8,15 @@ mod support;
 
 use std::sync::Arc;
 
-use bwl_api::models::{CipherRequest, Login};
-use bwl_vault::{
-    VaultService,
-    model::{CopyField, ItemId},
-};
 use serde_json::json;
 use support::{
     KdfChoice, TestVault, create_org, decrypt, drafts, enc, env, org_key, raw_session, register,
     server_cipher_key,
+};
+use vk_api::models::{CipherRequest, Login};
+use vk_vault::{
+    VaultService,
+    model::{CopyField, ItemId},
 };
 
 #[tokio::test(flavor = "multi_thread")]

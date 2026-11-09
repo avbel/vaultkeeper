@@ -3,7 +3,7 @@
 //! lock window. Only a cancel or failure shows the window the request would have shown, and while
 //! that window stays open no request prompts again: after a "no" the user decides.
 
-use bwl_vault::VaultService;
+use vk_vault::VaultService;
 
 use super::App;
 use crate::hooks::{HookError, HookResult};
@@ -78,7 +78,7 @@ impl<S: VaultService> App<S> {
                 tracing::info!(%error, "Touch ID right away did not unlock");
                 if !matches!(
                     self.vault.state(),
-                    bwl_vault::model::SessionState::Locked { .. }
+                    vk_vault::model::SessionState::Locked { .. }
                 ) {
                     self.on_vault_changed();
                     self.window_closed();

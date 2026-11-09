@@ -8,12 +8,12 @@ use std::{
     sync::Arc,
 };
 
-use bwl_api::models::{Cipher, Collection, Folder, Profile, SyncResponse, cipher_type};
 use nucleo_matcher::{
     Config, Matcher, Utf32Str,
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 use serde::{Serialize, Serializer};
+use vk_api::models::{Cipher, Collection, Folder, Profile, SyncResponse, cipher_type};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
@@ -600,7 +600,7 @@ fn folder_view(folder: &Folder, keys: &KeyRing, ids: &mut Interner) -> FolderVie
 fn collection_view(collection: &Collection, keys: &KeyRing, ids: &mut Interner) -> CollectionView {
     let name = keys
         .org(&collection.organization_id)
-        .ok_or(crate::Error::Crypto(bwl_crypto::Error::Decrypt))
+        .ok_or(crate::Error::Crypto(vk_crypto::Error::Decrypt))
         .and_then(|key| decrypt_text(Some(&collection.name), key))
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "could not decrypt a collection name");
@@ -648,7 +648,7 @@ pub(crate) fn record_recent(mru: &mut VecDeque<ItemId>, id: &ItemId) {
 
 #[cfg(test)]
 mod tests {
-    use bwl_api::models::Cipher;
+    use vk_api::models::Cipher;
 
     use super::*;
     use crate::testutil::{self, card, folder, identity, legacy_login, login, note, ring, ssh};

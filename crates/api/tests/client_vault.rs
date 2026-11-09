@@ -2,15 +2,15 @@
 
 mod common;
 
-use bwl_api::{
-    Error,
-    models::{CipherRequest, Extra, Login, LoginUri, cipher_type},
-};
 use common::{
     USER_ID, access_token, client, client_version_shows_ssh_keys, fixture_json, html_response,
     json_response,
 };
 use serde_json::{Value, json};
+use vk_api::{
+    Error,
+    models::{CipherRequest, Extra, Login, LoginUri, cipher_type},
+};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_json, body_partial_json, header, method, path, query_param},
@@ -197,7 +197,7 @@ fn pascal_case(value: Value) -> Value {
     }
 }
 
-async fn sync_of(body: Value) -> bwl_api::models::SyncResponse {
+async fn sync_of(body: Value) -> vk_api::models::SyncResponse {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/sync"))

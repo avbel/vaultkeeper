@@ -1,4 +1,4 @@
-//! `~/Library/Application Support/bw-lite` on macOS (platform data dir elsewhere).
+//! `~/Library/Application Support/vaultkeeper` on macOS (platform data dir elsewhere).
 
 use std::path::PathBuf;
 
@@ -6,7 +6,7 @@ use directories::ProjectDirs;
 
 use crate::Result;
 
-const APP_DIR: &str = "bw-lite";
+const APP_DIR: &str = "vaultkeeper";
 
 /// Creates the directory (mode 0700) if missing, and tightens its mode if it exists.
 pub fn data_dir() -> Result<PathBuf> {
@@ -31,9 +31,9 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn data_dir_is_application_support_bw_lite() {
+    fn data_dir_is_application_support_vaultkeeper() {
         let home = std::env::var_os("HOME").expect("HOME is set");
-        let expected = PathBuf::from(home).join("Library/Application Support/bw-lite");
+        let expected = PathBuf::from(home).join("Library/Application Support/vaultkeeper");
         assert_eq!(project_data_dir().expect("data dir"), expected);
     }
 
