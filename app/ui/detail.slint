@@ -66,7 +66,9 @@ component DetailFieldRow inherits Rectangle {
             font-size: Theme.font-body;
             font-family: root.field.mono || (root.field.secret && !root.field.revealed) ? Theme.mono : "";
             vertical-alignment: root.field.kind == 3 ? top : center;
-            wrap: root.field.kind == 3 ? word-wrap : no-wrap;
+            // Long mono values (SSH public keys, fingerprints) wrap anywhere instead of widening the
+            // pane; other single-line values elide.
+            wrap: root.field.kind == 3 ? word-wrap : root.field.mono && !root.field.secret ? char-wrap : no-wrap;
             overflow: elide;
             horizontal-stretch: 1;
             accessible-role: AccessibleRole.text;
@@ -306,6 +308,8 @@ export component DetailView inherits Rectangle {
     background: Theme.surface;
 
     ScrollView {
+        // Vertical scrolling only: content is laid out to the visible width.
+        content-width: self.visible-width;
         VerticalLayout {
             padding: Theme.s4;
             spacing: Theme.s2;
@@ -451,6 +455,8 @@ export component EditForm inherits Rectangle {
     callback leave-discard();
     callback leave-cancel();
     callback generate(int);
+    // A multi-line field changed (the SSH private key: its public key and fingerprint follow).
+    callback field-edited(int, string);
     callback add-uri();
     callback save();
     callback cancel();
@@ -459,6 +465,8 @@ export component EditForm inherits Rectangle {
     background: Theme.surface;
 
     ScrollView {
+        // Vertical scrolling only: content is laid out to the visible width.
+        content-width: self.visible-width;
         VerticalLayout {
             padding: Theme.s4;
             spacing: Theme.s2;
@@ -536,6 +544,7 @@ export component EditForm inherits Rectangle {
                     text <=> field.value;
                     mono: field.mono;
                     password: field.secret;
+                    edited(text) => { root.field-edited(i, text); }
                 }
             }
             if root.can-add-uri: HorizontalLayout {

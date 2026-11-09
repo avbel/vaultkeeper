@@ -198,7 +198,11 @@ fn data_fields(data: &ItemData, out: &mut Vec<EditField>) {
                 ..SECRET
             };
             out.push(field("private_key", "Private key", private_key, private));
-            out.push(field("public_key", "Public key", public_key, MONO));
+            let wrapped = Spec {
+                multiline: true,
+                ..MONO
+            };
+            out.push(field("public_key", "Public key", public_key, wrapped));
             out.push(field("fingerprint", "Fingerprint", fingerprint, MONO));
         }
         ItemData::SecureNote => {}

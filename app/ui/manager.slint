@@ -214,6 +214,7 @@ export component ManagerWindow inherits Window {
     callback attachment-delete(int);
     callback attach-file();
     callback edit-generate(int);
+    callback edit-field-edited(int, string);
     callback edit-add-uri();
     callback edit-save();
     callback edit-cancel();
@@ -444,6 +445,7 @@ export component ManagerWindow inherits Window {
                         leave-discard => { root.leave-discard(); }
                         leave-cancel => { root.leave-cancel(); }
                         generate(i) => { root.edit-generate(i); }
+                        field-edited(i, text) => { root.edit-field-edited(i, text); }
                         add-uri => { root.edit-add-uri(); }
                         save => { root.edit-save(); }
                         cancel => { root.edit-cancel(); }

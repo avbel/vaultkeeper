@@ -792,6 +792,44 @@ fn a_pasted_private_key_is_stored_as_openssh_with_its_public_key() {
     assert!(value_of(&manager, "Edit error").contains("Not a usable private key"));
 }
 
+#[test]
+fn editing_the_private_key_recomputes_its_public_key_and_fingerprint_at_once() {
+    let h = harness(Setup {
+        ssh_keys: Some(std::sync::Arc::new(bw_lite::os::SshKeys)),
+        ..Setup::default()
+    });
+    h.app.start(false);
+    let manager = h.app.manager_window().expect("manager");
+    set_size(&manager, 1120.0, 1600.0);
+    let (pasted, public_key, fingerprint) = bwl_ssh::generate_ed25519().expect("key");
+    manager.invoke_new_item(4);
+    pump();
+    click(&manager, "Show Private key");
+    let field = |key: &str| {
+        let fields = manager.get_edit_fields();
+        (0..fields.row_count())
+            .filter_map(|row| fields.row_data(row))
+            .find(|field| field.key == key)
+            .map(|field| field.value.to_string())
+            .expect("field")
+    };
+    let generated_public = field("public_key");
+    type_into(&manager, "Private key", "-----BEGIN OPENSSH PRIVATE");
+    assert_eq!(
+        field("public_key"),
+        generated_public,
+        "kept while unreadable"
+    );
+    type_into(&manager, "Private key", &pasted);
+    assert_eq!(field("public_key"), public_key);
+    assert_eq!(field("fingerprint"), fingerprint);
+    assert_eq!(
+        field("private_key"),
+        pasted.as_str(),
+        "the typed text is left as is"
+    );
+}
+
 fn item_id(h: &Harness, name: &str) -> bwl_vault::model::ItemId {
     h.vault
         .search(name, &Filter::default())

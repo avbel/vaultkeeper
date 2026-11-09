@@ -120,6 +120,8 @@ export component MultiField inherits Rectangle {
 
     forward-focus: input;
     min-height: 72px * Theme.scale;
+    // Grows with wrapped content, so a long key is never cut off or pushes the pane wider.
+    preferred-height: max(72px * Theme.scale, input.preferred-height + 2 * Theme.s2);
     border-radius: Theme.radius-control;
     background: Theme.surface;
     border-width: 1px;
@@ -138,7 +140,8 @@ export component MultiField inherits Rectangle {
         text <=> root.text;
         enabled: root.enabled && !root.masked;
         single-line: false;
-        wrap: word-wrap;
+        // Keys and codes have no spaces to break at.
+        wrap: root.mono ? char-wrap : word-wrap;
         color: Theme.text;
         font-size: Theme.font-body;
         font-family: root.mono ? Theme.mono : "";

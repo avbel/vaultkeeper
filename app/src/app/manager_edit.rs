@@ -41,6 +41,9 @@ impl<S: VaultService> App<S> {
     pub(super) fn bind_manager_edit(&self, window: &ManagerWindow) {
         window.on_new_item(handler!(self, |app, kind| app.new_item(kind)));
         window.on_edit_generate(handler!(self, |app, index| app.open_generator_for(index)));
+        window.on_edit_field_edited(handler!(self, |app, index, text| {
+            app.edit_field_edited(index, &text);
+        }));
         window.on_edit_add_uri(handler!(self, |app| app.add_uri_field()));
         window.on_edit_save(handler!(self, |app| app.save_edit()));
         window.on_edit_cancel(handler!(self, |app| app.cancel_edit()));
@@ -357,6 +360,45 @@ impl<S: VaultService> App<S> {
             .and_then(|manager| manager.rows.position(id));
         if let Some(row) = row {
             self.select_row(i32::try_from(row).unwrap_or(i32::MAX));
+        }
+    }
+
+    /// Editing an SSH private key refreshes its public key and fingerprint as soon as the text
+    /// is a key the tool can read; while it isn't (half pasted, wrong passphrase-less format)
+    /// they keep their last values. The private key text itself stays as typed until save.
+    fn edit_field_edited(&self, index: i32, text: &str) {
+        let is_private_key = {
+            let guard = self.manager.borrow();
+            guard
+                .as_ref()
+                .and_then(|manager| manager.edit.as_ref())
+                .and_then(|edit| {
+                    usize::try_from(index)
+                        .ok()
+                        .and_then(|i| edit.fields.row_data(i))
+                })
+                .is_some_and(|field| field.key == "private_key")
+        };
+        if !is_private_key || text.trim().is_empty() {
+            return;
+        }
+        let Ok(Some((_, public_key, fingerprint))) = self.hooks.ssh_keys.import(text) else {
+            return;
+        };
+        let guard = self.manager.borrow();
+        let Some(edit) = guard.as_ref().and_then(|manager| manager.edit.as_ref()) else {
+            return;
+        };
+        for row in 0..edit.fields.row_count() {
+            if let Some(mut field) = edit.fields.row_data(row) {
+                let value = match field.key.as_str() {
+                    "public_key" => &public_key,
+                    "fingerprint" => &fingerprint,
+                    _ => continue,
+                };
+                field.value = value.as_str().into();
+                edit.fields.set_row_data(row, field);
+            }
         }
     }
 
