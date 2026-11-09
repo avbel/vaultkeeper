@@ -91,7 +91,9 @@ impl<S: VaultService> App<S> {
             bwl_vault::model::SessionState::Unlocked { .. }
         ));
         window.set_ssh_agent(settings.ssh_agent);
-        window.set_ssh_socket(self.hooks.ssh_agent.socket_path().into());
+        let socket = self.hooks.ssh_agent.socket_path();
+        window.set_ssh_config(ssh_config_lines(&socket).into());
+        window.set_ssh_socket(socket.into());
         window.set_ssh_approval_index(i32::from(
             settings.ssh_approval == SshApproval::RememberUntilLock,
         ));
@@ -100,6 +102,34 @@ impl<S: VaultService> App<S> {
         window.set_show_shortcuts(settings.show_shortcuts);
         window.set_hotkey(settings.hotkey.as_str().into());
         window.set_generator_hotkey(settings.generator_hotkey.as_str().into());
+    }
+
+    fn bind_ssh_settings(&self, window: &SettingsWindow) {
+        window.on_ssh_agent_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.ssh_agent = enabled);
+            app.report(app.hooks.ssh_agent.set_enabled(enabled));
+            app.refresh_status();
+        }));
+        window.on_copy_ssh_config(handler!(self, false, |app| {
+            let lines =
+                zeroize::Zeroizing::new(ssh_config_lines(&app.hooks.ssh_agent.socket_path()));
+            app.copy_text("SSH config lines", &lines)
+        }));
+        window.on_copy_socket(handler!(self, false, |app| {
+            let path = zeroize::Zeroizing::new(app.hooks.ssh_agent.socket_path());
+            app.copy_text("socket path", &path)
+        }));
+        window.on_ssh_approval_selected(handler!(self, |app, index| {
+            let approval = if index == 1 {
+                SshApproval::RememberUntilLock
+            } else {
+                SshApproval::Always
+            };
+            app.update_settings(|settings| settings.ssh_approval = approval);
+        }));
+        window.on_ssh_touch_id_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.ssh_touch_id = enabled);
+        }));
     }
 
     fn bind_settings(&self, window: &SettingsWindow) {
@@ -147,26 +177,7 @@ impl<S: VaultService> App<S> {
         }));
         window.on_touch_id_enroll(handler!(self, |app| app.enroll_touch_id()));
         window.on_touch_id_remove(handler!(self, |app| app.remove_touch_id()));
-        window.on_ssh_agent_toggled(handler!(self, |app, enabled| {
-            app.update_settings(|settings| settings.ssh_agent = enabled);
-            app.report(app.hooks.ssh_agent.set_enabled(enabled));
-            app.refresh_status();
-        }));
-        window.on_copy_socket(handler!(self, false, |app| {
-            let path = zeroize::Zeroizing::new(app.hooks.ssh_agent.socket_path());
-            app.copy_text("socket path", &path)
-        }));
-        window.on_ssh_approval_selected(handler!(self, |app, index| {
-            let approval = if index == 1 {
-                SshApproval::RememberUntilLock
-            } else {
-                SshApproval::Always
-            };
-            app.update_settings(|settings| settings.ssh_approval = approval);
-        }));
-        window.on_ssh_touch_id_toggled(handler!(self, |app, enabled| {
-            app.update_settings(|settings| settings.ssh_touch_id = enabled);
-        }));
+        self.bind_ssh_settings(window);
         window.on_touch_id_right_away_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.touch_id_right_away = enabled);
         }));
@@ -294,4 +305,23 @@ impl<S: VaultService> App<S> {
 fn same_shortcut(a: &str, b: &str) -> bool {
     crate::settings::hotkey_symbols(a).to_lowercase()
         == crate::settings::hotkey_symbols(b).to_lowercase()
+}
+
+/// `~/.ssh/config` lines that send every host's key requests to the agent. The path is quoted
+/// because "Application Support" has a space; ssh expands a leading `~` inside the quotes.
+fn ssh_config_lines(socket: &str) -> String {
+    format!("Host *\n    IdentityAgent \"{socket}\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_config_lines_quote_the_socket_path() {
+        assert_eq!(
+            ssh_config_lines("/Users/me/Library/Application Support/bw-lite/ssh-agent.sock"),
+            "Host *\n    IdentityAgent \"/Users/me/Library/Application Support/bw-lite/ssh-agent.sock\""
+        );
+    }
 }

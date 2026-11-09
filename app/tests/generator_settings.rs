@@ -270,3 +270,15 @@ fn the_quick_panel_shortcut_is_refused_as_the_generator_hotkey() {
     assert_eq!(saved_generator_hotkey(&h), "");
     assert!(window.get_error_text().contains("Quick Panel"));
 }
+
+#[test]
+fn the_ssh_config_lines_are_shown_and_copied() {
+    let h = harness(Setup::default());
+    let window = settings_window(&h);
+    let lines = window.get_ssh_config().to_string();
+    assert!(lines.starts_with("Host *\n    IdentityAgent \""), "{lines}");
+    assert!(lines.contains(window.get_ssh_socket().as_str()));
+    // Below the fold of the test window, so the copy action is invoked directly.
+    assert!(window.invoke_copy_ssh_config());
+    assert_eq!(h.clipboard.last().as_deref(), Some(lines.as_str()));
+}

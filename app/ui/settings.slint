@@ -44,6 +44,8 @@ export component SettingsWindow inherits Window {
     in property <bool> unlocked;
     in-out property <bool> ssh-agent;
     in property <string> ssh-socket;
+    // The ~/.ssh/config lines that point ssh at the agent.
+    in property <string> ssh-config;
     in-out property <int> ssh-approval-index;
     in-out property <bool> ssh-touch-id;
     in-out property <bool> touch-id-right-away;
@@ -64,6 +66,7 @@ export component SettingsWindow inherits Window {
     callback touch-id-remove();
     callback ssh-agent-toggled(bool);
     callback copy-socket() -> bool;
+    callback copy-ssh-config() -> bool;
     callback ssh-approval-selected(int);
     callback ssh-touch-id-toggled(bool);
     callback touch-id-right-away-toggled(bool);
@@ -199,6 +202,42 @@ export component SettingsWindow inherits Window {
                         label: "Copy socket path";
                         emphasized: true;
                         copy => { return root.copy-socket(); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: Theme.s1;
+                    Text {
+                        text: "To use it, add to ~/.ssh/config:";
+                        color: Theme.text-muted;
+                        font-size: Theme.font-hint;
+                    }
+                    Rectangle {
+                        background: Theme.surface-raised;
+                        border-radius: Theme.radius-control;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        HorizontalLayout {
+                            padding: Theme.s2;
+                            spacing: Theme.s2;
+                            Text {
+                                text: root.ssh-config;
+                                font-family: Theme.mono;
+                                font-size: Theme.font-meta;
+                                color: Theme.text;
+                                horizontal-stretch: 1;
+                                wrap: word-wrap;
+                                accessible-role: AccessibleRole.text;
+                                accessible-label: "SSH config lines";
+                                accessible-value: self.text;
+                            }
+                            CopyBtn {
+                                y: 0px;
+                                code: 3;
+                                label: "Copy SSH config lines";
+                                emphasized: true;
+                                copy => { return root.copy-ssh-config(); }
+                            }
+                        }
                     }
                 }
                 SettingRow {
