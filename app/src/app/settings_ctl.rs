@@ -69,6 +69,7 @@ impl<S: VaultService> App<S> {
             .collect();
         window.set_lock_options(ModelRc::new(VecModel::from(lock_labels)));
         window.set_lock_index(option_index(&LOCK_OPTIONS, &settings.lock_timeout));
+        window.set_lock_on_sleep(settings.lock_on_sleep);
         let clip_labels: Vec<SharedString> = CLIPBOARD_OPTIONS
             .iter()
             .map(|option| option.label().into())
@@ -122,6 +123,9 @@ impl<S: VaultService> App<S> {
             if let Some(timeout) = option_at(&LOCK_OPTIONS, index) {
                 app.update_settings(|settings| settings.lock_timeout = timeout);
             }
+        }));
+        window.on_lock_on_sleep_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.lock_on_sleep = enabled);
         }));
         window.on_clipboard_selected(handler!(self, |app, index| {
             if let Some(clear) = option_at(&CLIPBOARD_OPTIONS, index) {

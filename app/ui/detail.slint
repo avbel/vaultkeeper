@@ -446,6 +446,10 @@ export component EditForm inherits Rectangle {
     in-out property <int> folder-index;
     in property <bool> saving;
     in property <bool> can-add-uri;
+    in property <bool> confirm-leave;
+    callback leave-save();
+    callback leave-discard();
+    callback leave-cancel();
     callback generate(int);
     callback add-uri();
     callback save();
@@ -464,6 +468,44 @@ export component EditForm inherits Rectangle {
                 font-size: Theme.font-title;
                 font-weight: 600;
                 letter-spacing: -0.2px;
+            }
+            if root.confirm-leave: Rectangle {
+                min-height: Theme.control-height + 8px;
+                border-radius: Theme.radius-control;
+                background: Theme.danger.with-alpha(0.06);
+                HorizontalLayout {
+                    padding: Theme.s1;
+                    padding-left: Theme.s2;
+                    spacing: Theme.s2;
+                    Text {
+                        text: "Unsaved changes";
+                        color: Theme.danger;
+                        font-size: Theme.font-body;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Save";
+                        label: "Save changes and switch";
+                        kind: BtnKind.primary;
+                        clicked => { root.leave-save(); }
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Discard";
+                        label: "Discard changes and switch";
+                        kind: BtnKind.danger-filled;
+                        clicked => { root.leave-discard(); }
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Cancel";
+                        label: "Keep editing";
+                        clicked => { root.leave-cancel(); }
+                    }
+                }
             }
             for field[i] in root.fields: VerticalLayout {
                 spacing: Theme.s1;

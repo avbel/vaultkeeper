@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
@@ -34,10 +34,6 @@ pub trait Clipboard: Send + Sync {
     fn copy(&self, text: &str, clear_after: Option<Duration>) -> HookResult<()>;
     /// Clears the clipboard now if it still holds the last value we copied.
     fn clear_if_ours(&self);
-    /// When the pending clear runs; the UI process must not exit before that.
-    fn pending_clear(&self) -> Option<Instant> {
-        None
-    }
 }
 
 /// Touch ID, keyed by account so each account has its own Secure Enclave wrap. The user key never
@@ -81,6 +77,11 @@ pub trait PasswordGenerator: Send + Sync {
 pub trait SettingsStore: Send + Sync {
     fn load(&self) -> Settings;
     fn save(&self, settings: &Settings) -> HookResult<()>;
+    /// True once after an unreadable settings file was reset to defaults (and kept aside), so the
+    /// user is told about it a single time.
+    fn take_reset_notice(&self) -> bool {
+        false
+    }
 }
 
 /// macOS activation policy: a Dock icon only while the Manager window is open.

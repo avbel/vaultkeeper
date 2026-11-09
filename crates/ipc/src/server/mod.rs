@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::{
-    IpcError, PeerVerifier, SameExecutable, TouchIdBackend,
+    ClipboardHost, IpcError, PeerVerifier, SameExecutable, TouchIdBackend,
     peer::own_uid,
     protocol::{SshDecision, SshPrompt, UiCommand, UiNotice},
 };
@@ -66,6 +66,15 @@ pub struct ServeOptions {
     /// Serves `EnrollTouchId` / `UnlockWithTouchId`; without it they answer
     /// [`crate::TouchIdFailure::Unavailable`].
     pub touch_id: Option<Arc<dyn TouchIdBackend>>,
+    /// Serves `CopyToClipboard` / `ClearClipboard`; without it a copy fails.
+    pub clipboard: Option<Arc<dyn ClipboardHost>>,
+}
+
+/// The daemon-side services a call may need besides the vault.
+#[derive(Clone)]
+pub(crate) struct Backends {
+    pub(crate) touch_id: Option<Arc<dyn TouchIdBackend>>,
+    pub(crate) clipboard: Option<Arc<dyn ClipboardHost>>,
 }
 
 impl ServeOptions {
@@ -81,6 +90,7 @@ impl ServeOptions {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             notices: None,
             touch_id: None,
+            clipboard: None,
         }
     }
 
@@ -88,6 +98,14 @@ impl ServeOptions {
     pub fn with_touch_id(self, backend: Arc<dyn TouchIdBackend>) -> Self {
         Self {
             touch_id: Some(backend),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_clipboard(self, clipboard: Arc<dyn ClipboardHost>) -> Self {
+        Self {
+            clipboard: Some(clipboard),
             ..self
         }
     }
@@ -153,7 +171,7 @@ struct Shared<S> {
     max_concurrent_calls: usize,
     handshake_timeout: Duration,
     notices: Option<mpsc::Sender<UiNotice>>,
-    touch_id: Option<Arc<dyn TouchIdBackend>>,
+    backends: Backends,
     /// One permit: the connected UI process.
     slot: Arc<Semaphore>,
 }
@@ -189,7 +207,10 @@ pub async fn serve_with<S: VaultService>(
         max_concurrent_calls: options.max_concurrent_calls.max(1),
         handshake_timeout: options.handshake_timeout,
         notices: options.notices,
-        touch_id: options.touch_id,
+        backends: Backends {
+            touch_id: options.touch_id,
+            clipboard: options.clipboard,
+        },
         slot: Arc::clone(&slot),
     });
     let task = tokio::spawn(accept_loop(listener, shared, stop_rx));

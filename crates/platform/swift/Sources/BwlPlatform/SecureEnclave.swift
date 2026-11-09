@@ -140,6 +140,39 @@ public func bwlSeGenerate(
   }
 }
 
+private func enrolmentChanged(_ enrolled: Data, _ current: Data) -> Bool {
+  !enrolled.isEmpty && !current.isEmpty && enrolled != current
+}
+
+/// Restoring the key from its blob failed. Only a definitive cause (fingers changed, key gone or
+/// corrupt) invalidates, because the app then deletes the enrolment; anything else (Secure
+/// Enclave busy, screen locked, an unknown error) is a plain failure that falls back to the
+/// password and keeps the file for next time.
+private func keyInitFailureStatus(_ error: Error, enrolledChanged: Bool) -> Int32 {
+  if enrolledChanged { return statusInvalidated }
+  switch classify(error) {
+  case .invalidated: return statusInvalidated
+  case .user: return statusFailed
+  case .other: return statusError
+  }
+}
+
+/// [keyInitFailureStatus] for an error of `domain`/`code`, optionally wrapping an underlying
+/// `underlyingDomain`/`underlyingCode` (empty domain: none). Dead-stripped from apps.
+@_cdecl("bwl_se_key_init_status_for_test")
+public func bwlSeKeyInitStatusForTest(
+  _ domain: UnsafePointer<CChar>, _ code: Int,
+  _ underlyingDomain: UnsafePointer<CChar>, _ underlyingCode: Int,
+  _ enrolledChanged: Bool
+) -> Int32 {
+  let underlying = String(cString: underlyingDomain)
+  let userInfo: [String: Any] =
+    underlying.isEmpty
+    ? [:] : [NSUnderlyingErrorKey: NSError(domain: underlying, code: underlyingCode)]
+  let error = NSError(domain: String(cString: domain), code: code, userInfo: userInfo)
+  return keyInitFailureStatus(error, enrolledChanged: enrolledChanged)
+}
+
 /// ECDH between the Secure Enclave key in `blob` and `peer` (x9.63). Shows the Touch ID prompt
 /// with `reason` and blocks until it is answered, so never call it on the UI thread.
 @_cdecl("bwl_se_ecdh")
@@ -177,7 +210,7 @@ public func bwlSeEcdh(
       dataRepresentation: Data(bytes: blob, count: Int(blobLen)), authenticationContext: context)
   } catch {
     writeDiag(error, diag, diagCap)
-    return statusInvalidated
+    return keyInitFailureStatus(error, enrolledChanged: enrolmentChanged(enrolled, current))
   }
   do {
     let secret = try key.sharedSecretFromKeyAgreement(with: peerKey)
@@ -192,7 +225,7 @@ public func bwlSeEcdh(
   } catch {
     writeDiag(error, diag, diagCap)
     // A changed enrolment is definitive; error codes alone are not documented for this case.
-    if !enrolled.isEmpty && !current.isEmpty && enrolled != current {
+    if enrolmentChanged(enrolled, current) {
       return statusInvalidated
     }
     switch classify(error) {

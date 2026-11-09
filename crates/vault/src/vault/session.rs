@@ -229,13 +229,15 @@ impl Inner {
         {
             return Ok(pending);
         }
-        let client = Arc::new(Client::new(
+        let client = Arc::new(Client::with_timeouts(
             request.server.clone(),
             self.config.device.clone(),
+            self.config.timings.http,
         )?);
         let email = request.email.trim().to_owned();
         let prelogin = client.prelogin(&email).await?;
         let kdf = KdfRecord::from_prelogin(&prelogin);
+        self.refuse_kdf_downgrade(&request.server, &email, &kdf)?;
         let password = request.password.clone();
         let (master_key, hash) = {
             let email = email.clone();
@@ -263,6 +265,26 @@ impl Inner {
         });
         *lock(&self.pending) = Some(Arc::clone(&pending));
         Ok(pending)
+    }
+
+    /// A hostile or compromised server could lower the KDF to make the hash it receives cheap to
+    /// brute-force; the cached record of a known account is the reference.
+    fn refuse_kdf_downgrade(&self, server: &Url, email: &str, kdf: &KdfRecord) -> Result<()> {
+        let known_id = {
+            let state = self.read_state();
+            state
+                .index
+                .find_by_login(server, email)
+                .map(|entry| entry.id.clone())
+        };
+        let Some(id) = known_id else {
+            return Ok(());
+        };
+        let cached = self.store.load_account(&id)?;
+        if cached.is_some_and(|cached| kdf.is_weaker_than(&cached.kdf)) {
+            return Err(Error::KdfDowngrade);
+        }
+        Ok(())
     }
 
     async fn complete_login(
@@ -347,6 +369,7 @@ impl Inner {
 
     fn store_login_secrets(&self, id: &str, tokens: &LoginTokens) -> Result<()> {
         if let Some(refresh) = &tokens.refresh {
+            let _secrets = lock(&self.refresh_secret);
             self.secrets
                 .set(&refresh_token_key(id), refresh.as_bytes())
                 .map_err(secret_error)?;

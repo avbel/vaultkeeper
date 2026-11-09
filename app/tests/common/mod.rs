@@ -116,6 +116,8 @@ impl FileDialogs for FakeFiles {
 #[derive(Default)]
 pub struct RecordingSettings {
     pub saved: Mutex<Option<Settings>>,
+    /// An unreadable settings file was reset and the user has not been told yet.
+    pub reset_notice: std::sync::atomic::AtomicBool,
 }
 
 impl SettingsStore for RecordingSettings {
@@ -130,6 +132,11 @@ impl SettingsStore for RecordingSettings {
     fn save(&self, settings: &Settings) -> HookResult<()> {
         *self.saved.lock().unwrap_or_else(PoisonError::into_inner) = Some(settings.clone());
         Ok(())
+    }
+
+    fn take_reset_notice(&self) -> bool {
+        self.reset_notice
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -180,6 +187,7 @@ pub fn harness(setup: Setup) -> Harness {
     let files = Arc::new(FakeFiles::default());
     let settings = Arc::new(RecordingSettings {
         saved: Mutex::new(Some(setup.settings)),
+        ..RecordingSettings::default()
     });
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
     let defaults = Hooks::mock(&vault, &[]);

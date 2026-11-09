@@ -659,3 +659,29 @@ async fn debug_output_of_a_sync_never_contains_attachment_download_tokens() {
         "attachment URL leaked: {rendered}"
     );
 }
+
+#[tokio::test]
+async fn only_the_sync_may_answer_with_more_than_8_mib() {
+    let padding = "x".repeat(9 << 20);
+    let mut big_sync = sync_with_extras();
+    big_sync["profile"]["name"] = Value::String(padding.clone());
+    let sync = sync_of(big_sync).await;
+    assert_eq!(sync.ciphers.len(), 6);
+
+    let server = MockServer::start().await;
+    let mut big_cipher = fixture_json("cipher_create_type1.json");
+    big_cipher["notes"] = Value::String(padding);
+    Mock::given(method("POST"))
+        .and(path("/api/ciphers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(big_cipher))
+        .mount(&server)
+        .await;
+    let error = client(&server)
+        .create_cipher(&access_token(), &request(1), &[])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::Server { status: 200, message } if message == "response body too large"),
+        "{error:?}"
+    );
+}

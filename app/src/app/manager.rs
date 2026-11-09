@@ -34,6 +34,8 @@ pub(super) struct Manager {
     pub(super) selected: Option<ItemId>,
     pub(super) detail: Option<Detail>,
     pub(super) edit: Option<Edit>,
+    /// The row clicked while the form had unsaved changes, waiting for Save / Discard / Cancel.
+    pub(super) switch_to: Option<ItemId>,
 }
 
 impl Manager {
@@ -108,6 +110,7 @@ impl<S: VaultService> App<S> {
             selected: None,
             detail: None,
             edit: None,
+            switch_to: None,
         });
         self.restore_geometry(&window);
         self.refresh_manager();
@@ -145,7 +148,9 @@ impl<S: VaultService> App<S> {
         window.on_row_clicked(handler!(self, |app, row| app.select_row(row)));
         window.on_row_double_clicked(handler!(self, |app, row| {
             app.select_row(row);
-            app.start_edit();
+            if !app.editing() {
+                app.start_edit();
+            }
         }));
         window.on_copy_row(handler!(self, false, |app, row, code| app
             .copy_manager_row(row, code)));
@@ -285,6 +290,14 @@ impl<S: VaultService> App<S> {
             else {
                 return;
             };
+            if let Some(edit) = &manager.edit {
+                if manager.window.get_saving() || edit.id.as_ref() == Some(&item.id) {
+                    return;
+                }
+                drop(guard);
+                self.ask_before_leaving_edit(item.id);
+                return;
+            }
             manager.window.set_selected(row);
             manager.window.invoke_scroll_to(row);
             item

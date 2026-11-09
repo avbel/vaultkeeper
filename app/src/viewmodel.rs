@@ -249,6 +249,7 @@ pub fn error_text(error: &Error) -> String {
         Error::Cache(_) => "The local cache is damaged; sync again".to_owned(),
         Error::Offline => bwl_vault::OFFLINE_MESSAGE.to_owned(),
         Error::Conflict => bwl_vault::CONFLICT_MESSAGE.to_owned(),
+        Error::KdfDowngrade => bwl_vault::KDF_DOWNGRADE_MESSAGE.to_owned(),
         Error::Logout(errors) => match errors.0.as_slice() {
             [only] => format!("Logged out, but one step failed: {}", error_text(only)),
             steps => format!("Logged out, but {} steps failed", steps.len()),

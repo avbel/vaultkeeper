@@ -19,7 +19,10 @@ pub enum ThemeChoice {
 #[serde(rename_all = "snake_case")]
 pub enum LockTimeout {
     Minutes(u16),
-    OnSleep,
+    /// No idle timer. Older versions wrote `on_sleep`, which also meant "lock on sleep and screen
+    /// lock"; that part is now [`Settings::lock_on_sleep`], on by default, so it carries over.
+    #[serde(alias = "on_sleep")]
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +114,8 @@ pub struct Settings {
     pub text_scale: TextScale,
     pub manager_geometry: Option<WindowGeometry>,
     pub lock_timeout: LockTimeout,
+    /// Lock when the Mac sleeps or the screen locks, whatever the timeout.
+    pub lock_on_sleep: bool,
     pub clipboard_clear: ClipboardClear,
     pub start_at_login: bool,
     pub ask_unlock_on_start: bool,
@@ -132,6 +137,7 @@ impl Default for Settings {
             text_scale: TextScale::Default,
             manager_geometry: None,
             lock_timeout: LockTimeout::Minutes(15),
+            lock_on_sleep: true,
             clipboard_clear: ClipboardClear::Seconds(30),
             start_at_login: false,
             ask_unlock_on_start: false,
@@ -185,7 +191,7 @@ pub const LOCK_OPTIONS: [LockTimeout; 6] = [
     LockTimeout::Minutes(15),
     LockTimeout::Minutes(30),
     LockTimeout::Minutes(60),
-    LockTimeout::OnSleep,
+    LockTimeout::Never,
 ];
 
 pub const CLIPBOARD_OPTIONS: [ClipboardClear; 4] = [
@@ -201,7 +207,7 @@ impl LockTimeout {
         match self {
             Self::Minutes(1) => "1 minute".to_owned(),
             Self::Minutes(minutes) => format!("{minutes} minutes"),
-            Self::OnSleep => "On sleep / screen lock".to_owned(),
+            Self::Never => "Never".to_owned(),
         }
     }
 }
@@ -296,7 +302,7 @@ mod tests {
     fn labels() {
         assert_eq!(LockTimeout::Minutes(1).label(), "1 minute");
         assert_eq!(LockTimeout::Minutes(15).label(), "15 minutes");
-        assert_eq!(LockTimeout::OnSleep.label(), "On sleep / screen lock");
+        assert_eq!(LockTimeout::Never.label(), "Never");
         assert_eq!(ClipboardClear::Seconds(10).label(), "After 10 s");
         assert_eq!(ClipboardClear::Never.label(), "Never");
         assert_eq!(ClipboardClear::Never.duration(), None);
@@ -356,7 +362,8 @@ mod tests {
                 height: 700,
                 sidebar_collapsed: true,
             }),
-            lock_timeout: LockTimeout::OnSleep,
+            lock_timeout: LockTimeout::Never,
+            lock_on_sleep: false,
             clipboard_clear: ClipboardClear::Never,
             start_at_login: true,
             ask_unlock_on_start: true,
@@ -386,9 +393,27 @@ mod tests {
             settings.hotkey, "Cmd+Shift+Space",
             "missing fields take the default"
         );
+        assert!(
+            settings.lock_on_sleep,
+            "files from before the setting lock on sleep"
+        );
         let on_sleep: Settings =
             serde_json::from_str(r#"{"lock_timeout":"on_sleep","unknown":1}"#).expect("decode");
-        assert_eq!(on_sleep.lock_timeout, LockTimeout::OnSleep);
+        assert_eq!(on_sleep.lock_timeout, LockTimeout::Never);
+        assert!(
+            on_sleep.lock_on_sleep,
+            "the old \"on sleep\" choice keeps locking on sleep"
+        );
+        let json = serde_json::to_string(&on_sleep).expect("encode");
+        assert!(json.contains(r#""lock_timeout":"never""#), "{json}");
+        assert!(json.contains(r#""lock_on_sleep":true"#), "{json}");
+    }
+
+    #[test]
+    fn locking_on_sleep_is_on_by_default_next_to_the_timeout() {
+        let defaults = Settings::default();
+        assert!(defaults.lock_on_sleep);
+        assert_eq!(defaults.lock_timeout, LockTimeout::Minutes(15));
     }
 
     #[test]

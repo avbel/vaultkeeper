@@ -47,7 +47,11 @@ cleanup() {
     fi
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
-trap cleanup EXIT INT TERM
+# A signal handler that only cleans up would let the script carry on (and keep running cargo)
+# after Ctrl-C; exiting from it runs the EXIT trap once.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 wait_for() {
     local name="$1" url="$2"

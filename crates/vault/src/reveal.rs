@@ -31,6 +31,9 @@ pub(crate) fn reveal(
                 .as_deref()
                 .and_then(|fields| fields.get(index))
                 .ok_or(Error::NoSuchField)?;
+            if field.r#type == FIELD_HIDDEN && !cipher.view_password {
+                return Err(Error::NoSuchField);
+            }
             decrypt_text(field.value.as_deref(), &key)?
         }
         CopyField::Username => match cipher.r#type {
@@ -138,10 +141,18 @@ pub(crate) fn draft(cipher: &Cipher, keys: &KeyRing) -> Result<ItemDraft> {
         .unwrap_or_default()
         .iter()
         .map(|field| {
+            let hidden = field.r#type == FIELD_HIDDEN;
+            // Like the password: "can edit, except passwords" members never see hidden values;
+            // `encrypt` keeps the stored ciphertext for them.
+            let value = if hidden && !cipher.view_password {
+                Zeroizing::default()
+            } else {
+                decrypt_text(field.value.as_deref(), &key)?
+            };
             Ok(CustomField {
                 name: plain(field.name.as_deref(), &key)?,
-                value: decrypt_text(field.value.as_deref(), &key)?,
-                hidden: field.r#type == FIELD_HIDDEN,
+                value,
+                hidden,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -328,6 +339,26 @@ mod tests {
             panic!("login draft");
         };
         assert!(password.is_empty());
+    }
+
+    #[test]
+    fn hidden_custom_fields_follow_view_password() {
+        let keys = ring();
+        let mut cipher = login("l1", "Shared", "u", "secret", &keys);
+        cipher.view_password = false;
+        // Field 0 of the fixture is hidden ("pin" = "4321"), field 1 a boolean ("flag" = "true").
+        assert!(matches!(
+            reveal(&cipher, &keys, CopyField::Custom(0), 0),
+            Err(Error::NoSuchField)
+        ));
+        assert_eq!(
+            &*reveal(&cipher, &keys, CopyField::Custom(1), 0).unwrap(),
+            "true"
+        );
+        let fields = draft(&cipher, &keys).unwrap().fields;
+        assert!(fields[0].hidden && fields[0].value.is_empty());
+        assert_eq!(fields[0].name, "pin");
+        assert_eq!(&*fields[1].value, "true");
     }
 
     #[test]

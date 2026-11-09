@@ -24,7 +24,7 @@ const GEN_MESSAGES: &[&str] = &[
     "only otpauth://totp URIs are supported",
     "missing secret parameter",
     "unsupported algorithm",
-    "digits must be 6..=10",
+    "digits must be 1..=10",
     "period must be a positive number of seconds",
     "empty secret",
     "secret is not valid base32",
@@ -72,6 +72,7 @@ pub enum WireError {
     Cache(String),
     Offline,
     Conflict,
+    KdfDowngrade,
     Logout(Vec<WireError>),
 }
 
@@ -160,6 +161,7 @@ impl From<&Error> for WireError {
             Error::Cache(json) => Self::Cache(json.to_string()),
             Error::Offline => Self::Offline,
             Error::Conflict => Self::Conflict,
+            Error::KdfDowngrade => Self::KdfDowngrade,
             Error::Logout(errors) => Self::Logout(errors.0.iter().map(Self::from).collect()),
         }
     }
@@ -175,6 +177,7 @@ impl From<WireError> for Error {
             WireError::NoSuchField => Self::NoSuchField,
             WireError::ReadOnly => Self::ReadOnly,
             WireError::Conflict => Self::Conflict,
+            WireError::KdfDowngrade => Self::KdfDowngrade,
             WireError::Offline | WireError::Api(ApiErrorDto::Http { offline: true, .. }) => {
                 Self::Offline
             }
@@ -412,6 +415,7 @@ mod tests {
             Error::NotFound,
             Error::NoSuchField,
             Error::ReadOnly,
+            Error::KdfDowngrade,
         ] {
             let back = proxied(&error);
             assert_eq!(

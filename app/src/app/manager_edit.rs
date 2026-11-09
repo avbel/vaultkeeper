@@ -44,6 +44,9 @@ impl<S: VaultService> App<S> {
         window.on_edit_add_uri(handler!(self, |app| app.add_uri_field()));
         window.on_edit_save(handler!(self, |app| app.save_edit()));
         window.on_edit_cancel(handler!(self, |app| app.cancel_edit()));
+        window.on_leave_save(handler!(self, |app| app.leave_save()));
+        window.on_leave_discard(handler!(self, |app| app.leave_discard()));
+        window.on_leave_cancel(handler!(self, |app| app.leave_cancel()));
         window.on_edit_folder_selected(handler!(self, |app, index| app.pick_edit_folder(index)));
     }
 
@@ -153,6 +156,8 @@ impl<S: VaultService> App<S> {
     pub(super) fn cancel_edit(&self) {
         if let Some(manager) = self.manager.borrow_mut().as_mut() {
             manager.edit = None;
+            manager.switch_to = None;
+            manager.window.set_confirm_leave(false);
             manager.window.set_edit_fields(ModelRc::default());
             manager
                 .window
@@ -160,6 +165,39 @@ impl<S: VaultService> App<S> {
         }
         self.reload_detail();
         self.update_ticker();
+    }
+
+    pub(super) fn ask_before_leaving_edit(&self, target: ItemId) {
+        if let Some(manager) = self.manager.borrow_mut().as_mut() {
+            manager.switch_to = Some(target);
+            manager.window.set_confirm_leave(true);
+        }
+    }
+
+    fn take_switch_target(&self) -> Option<ItemId> {
+        let mut guard = self.manager.borrow_mut();
+        let manager = guard.as_mut()?;
+        manager.window.set_confirm_leave(false);
+        manager.switch_to.take()
+    }
+
+    fn leave_cancel(&self) {
+        self.take_switch_target();
+    }
+
+    fn leave_discard(&self) {
+        let target = self.take_switch_target();
+        self.cancel_edit();
+        if let Some(target) = target {
+            self.select_item_row(&target);
+        }
+    }
+
+    fn leave_save(&self) {
+        if let Some(manager) = self.manager.borrow().as_ref() {
+            manager.window.set_confirm_leave(false);
+        }
+        self.save_edit();
     }
 
     fn pick_edit_folder(&self, index: i32) {
@@ -276,26 +314,49 @@ impl<S: VaultService> App<S> {
             return;
         };
         manager.window.set_saving(false);
+        let mut switch_to = None;
         match result {
             Ok(id) => {
                 manager.edit = None;
                 manager.selected = Some(id.clone());
+                switch_to = manager.switch_to.take();
                 manager.window.set_edit_fields(ModelRc::default());
                 // `on_vault_changed` runs next and reloads the detail in view mode.
                 manager.window.set_detail_mode(1);
             }
             // The form stays open with the user's values so nothing typed is lost; saving it
             // again is refused the same way, and Cancel shows the version from elsewhere.
-            Err(bwl_vault::Error::Conflict) => manager.window.set_edit_error(
-                format!(
-                    "{} · Cancel to load the latest version",
-                    bwl_vault::CONFLICT_MESSAGE
-                )
-                .into(),
-            ),
-            Err(error) => manager
-                .window
-                .set_edit_error(crate::viewmodel::error_text(error).into()),
+            Err(bwl_vault::Error::Conflict) => {
+                manager.switch_to = None;
+                manager.window.set_edit_error(
+                    format!(
+                        "{} · Cancel to load the latest version",
+                        bwl_vault::CONFLICT_MESSAGE
+                    )
+                    .into(),
+                );
+            }
+            Err(error) => {
+                manager.switch_to = None;
+                manager
+                    .window
+                    .set_edit_error(crate::viewmodel::error_text(error).into());
+            }
+        }
+        drop(guard);
+        if let Some(target) = switch_to {
+            self.select_item_row(&target);
+        }
+    }
+
+    fn select_item_row(&self, id: &ItemId) {
+        let row = self
+            .manager
+            .borrow()
+            .as_ref()
+            .and_then(|manager| manager.rows.position(id));
+        if let Some(row) = row {
+            self.select_row(i32::try_from(row).unwrap_or(i32::MAX));
         }
     }
 

@@ -169,6 +169,7 @@ export component ManagerWindow inherits Window {
     in-out property <int> edit-folder-index;
     in property <bool> saving;
     in property <bool> can-add-uri;
+    in property <bool> confirm-leave;
 
     in property <string> status-text;
     in property <string> clip-label;
@@ -213,6 +214,9 @@ export component ManagerWindow inherits Window {
     callback edit-add-uri();
     callback edit-save();
     callback edit-cancel();
+    callback leave-save();
+    callback leave-discard();
+    callback leave-cancel();
     callback close-generator();
     callback toast-dismissed();
     callback status-tick();
@@ -425,6 +429,10 @@ export component ManagerWindow inherits Window {
                         folder-index <=> root.edit-folder-index;
                         saving: root.saving;
                         can-add-uri: root.can-add-uri;
+                        confirm-leave: root.confirm-leave;
+                        leave-save => { root.leave-save(); }
+                        leave-discard => { root.leave-discard(); }
+                        leave-cancel => { root.leave-cancel(); }
                         generate(i) => { root.edit-generate(i); }
                         add-uri => { root.edit-add-uri(); }
                         save => { root.edit-save(); }

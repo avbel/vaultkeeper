@@ -286,6 +286,13 @@ fn data_fields(out: &mut Vec<FieldSpec>, data: &ItemData) {
     }
 }
 
+fn locked(label: &str) -> FieldSpec {
+    FieldSpec {
+        copyable: false,
+        ..FieldSpec::plain(label, "", None)
+    }
+}
+
 #[must_use]
 pub fn fields(draft: &ItemDraft) -> Vec<FieldSpec> {
     let mut out = Vec::new();
@@ -305,7 +312,11 @@ pub fn fields(draft: &ItemDraft) -> Vec<FieldSpec> {
     }
     for (index, field) in draft.fields.iter().enumerate() {
         let copy = Some(CopyField::Custom(index));
-        if field.hidden {
+        if field.hidden && field.value.is_empty() {
+            // The vault withholds hidden values from members without viewPassword (it returns
+            // them empty, and `reveal` refuses), so there is nothing to reveal or copy.
+            out.push(locked(&field.name));
+        } else if field.hidden {
             out.push(FieldSpec::secret(
                 &field.name,
                 Secret::Custom(index),
@@ -444,6 +455,35 @@ mod tests {
         assert_eq!(secret_value(&item, Secret::Custom(0)), Some("0000"));
         assert_eq!(specs[2].value, "eu-west-1");
         assert_eq!(specs[2].copy, Some(CopyField::Custom(1)));
+    }
+
+    #[test]
+    fn a_hidden_field_without_a_value_offers_no_reveal_or_copy() {
+        let mut item = draft(ItemData::SecureNote);
+        item.fields = vec![
+            CustomField {
+                name: "PIN".to_owned(),
+                value: Zeroizing::new(String::new()),
+                hidden: true,
+            },
+            CustomField {
+                name: "Token".to_owned(),
+                value: Zeroizing::new("abc".to_owned()),
+                hidden: true,
+            },
+        ];
+        let specs = fields(&item);
+        let ui = specs[0].to_ui(None);
+        assert_eq!(
+            (ui.label.as_str(), ui.value.as_str(), ui.secret, ui.copy),
+            ("PIN", "", false, -1)
+        );
+        assert_eq!(specs[0].secret, None);
+        assert_eq!(
+            specs[1].secret,
+            Some(Secret::Custom(1)),
+            "others stay masked"
+        );
     }
 
     #[test]

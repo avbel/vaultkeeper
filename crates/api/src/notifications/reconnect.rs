@@ -7,7 +7,7 @@ use tokio::{
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::{ListenOptions, Notification, listen::session};
+use super::{ListenError, ListenOptions, Notification, listen::session};
 
 #[derive(Debug, Clone)]
 pub struct ReconnectOptions {
@@ -34,7 +34,9 @@ impl Default for ReconnectOptions {
 /// back to 1 s after a connection that stayed healthy for over 60 s.
 ///
 /// `access_token` is called before every attempt, so a token that expired while the socket was
-/// down (they live two hours) can be refreshed there; returning `None` ends the loop. Every
+/// down (they live two hours) can be refreshed there; returning `None` ends the loop. Its argument
+/// is the token the hub just rejected with HTTP 401, which the provider must not hand out again
+/// (refresh it instead), and `None` after any other failure. Every
 /// successful (re)connect sends [`Notification::Connected`]; treat it as "run a full sync".
 ///
 /// Finishes when the receiver is dropped or the token provider gives up. Dropping the future
@@ -45,20 +47,21 @@ pub async fn run_with_reconnect<F, Fut>(
     tx: Sender<Notification>,
     options: &ReconnectOptions,
 ) where
-    F: FnMut() -> Fut,
+    F: FnMut(Option<Zeroizing<String>>) -> Fut,
     Fut: Future<Output = Option<Zeroizing<String>>>,
 {
     let mut backoff = options.backoff_initial;
+    let mut rejected = None;
     loop {
-        let Some(token) = access_token().await else {
+        let Some(token) = access_token(rejected.take()).await else {
             return;
         };
         let mut connected_at = None;
         let outcome = session(base, &token, &tx, &options.listen, &mut connected_at).await;
-        drop(token);
 
         match outcome {
             Ok(()) => return,
+            Err(ListenError::Unauthorized) => rejected = Some(token),
             Err(error) => tracing::debug!(%error, "notification connection ended"),
         }
         if connected_at.is_some_and(|at: Instant| at.elapsed() >= options.healthy_after) {

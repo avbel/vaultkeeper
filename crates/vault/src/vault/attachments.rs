@@ -89,6 +89,8 @@ impl Inner {
             .await
             .map_err(Error::task)??;
 
+        // The sync lock covers only the server state changes; the data transfer can take minutes
+        // and must not hold syncs and other writes back.
         let serial = self.sync_lock.lock().await;
         let (enc_name_ref, enc_key_ref) = (enc_name.as_str(), enc_key.as_str());
         let upload = self
@@ -98,6 +100,7 @@ impl Inner {
                     .await
             })
             .await?;
+        drop(serial);
         let attachment_id = upload.attachment_id.as_str();
         let encrypted = temp.path();
         let sent = self
@@ -116,6 +119,7 @@ impl Inner {
             .await;
         if let Err(error) = sent {
             // Without its data the attachment record is useless; remove it if the server lets us.
+            let _serial = self.sync_lock.lock().await;
             let cleanup = self
                 .call(&ctx, |client, token| async move {
                     client.delete_attachment(&token, &id.0, attachment_id).await
@@ -136,10 +140,15 @@ impl Inner {
             size: Some(size.to_string()),
             size_name: None,
         };
+        let serial = self.sync_lock.lock().await;
         self.apply(&ctx, |data, keys| {
             if let Some(entry) = data.entry(&id.0) {
                 let mut cipher = entry.cipher.clone();
-                cipher.attachments.get_or_insert_default().push(attachment);
+                let list = cipher.attachments.get_or_insert_default();
+                // The server stores the row before the data, so a sync during the transfer may
+                // already have brought it.
+                list.retain(|known| known.id != attachment.id);
+                list.push(attachment);
                 data.upsert_cipher(cipher, keys);
             }
         });

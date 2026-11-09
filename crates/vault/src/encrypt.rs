@@ -395,11 +395,31 @@ fn fields(
     let base_fields = base
         .and_then(|base| base.fields.as_deref())
         .unwrap_or_default();
+    let masked = base.is_some_and(|base| !base.view_password);
     fields
         .iter()
         .enumerate()
         .map(|(index, field)| {
             let known = base_fields.get(index);
+            if masked
+                && field.hidden
+                && field.value.is_empty()
+                && let Some(stored) = stored_hidden_field(field, index, base_fields, item)?
+            {
+                return Ok(Field {
+                    name: encrypt_opt(&field.name, key)?,
+                    extra: item.carry(Some(&stored.extra))?,
+                    ..stored.clone()
+                });
+            }
+            if masked
+                && field.value.is_empty()
+                && known.is_some_and(|known| known.r#type == FIELD_HIDDEN)
+            {
+                // A renamed or un-hidden field whose value the user may not see: saving the blank
+                // draft would erase it. Upstream disables these fields for such members.
+                return Err(Error::ReadOnly);
+            }
             let kept = known.filter(|known| matches!(known.r#type, FIELD_BOOLEAN | FIELD_LINKED));
             let r#type = match (field.hidden, kept) {
                 (true, _) => FIELD_HIDDEN,
@@ -416,6 +436,32 @@ fn fields(
         })
         .collect::<Result<Vec<_>>>()
         .map(Some)
+}
+
+/// The draft of a cipher with `viewPassword: false` carries hidden fields without their value
+/// (the user may not see it), so the stored ciphertext is kept. Matched by name rather than only by
+/// position, so deleting an earlier field cannot hand one secret to another field.
+fn stored_hidden_field<'a>(
+    field: &CustomField,
+    index: usize,
+    base_fields: &'a [Field],
+    item: &ItemKeys,
+) -> Result<Option<&'a Field>> {
+    let same = |known: &Field| -> Result<bool> {
+        Ok(known.r#type == FIELD_HIDDEN
+            && *decrypt_text(known.name.as_deref(), &item.key)? == *field.name)
+    };
+    if let Some(known) = base_fields.get(index)
+        && same(known)?
+    {
+        return Ok(Some(known));
+    }
+    for known in base_fields {
+        if same(known)? {
+            return Ok(Some(known));
+        }
+    }
+    Ok(None)
 }
 
 fn identity_request(identity: &IdentityData, key: &SymmetricKey, extra: Extra) -> Result<Identity> {
@@ -666,6 +712,57 @@ mod tests {
             &*decrypt_text(Some(&kept.name), keys.user()).unwrap(),
             "Old"
         );
+    }
+
+    #[test]
+    fn hidden_custom_fields_of_masked_items_keep_the_stored_value() {
+        let keys = ring();
+        let mut base = legacy_login("l1", "Shared", "secret", &keys);
+        base.view_password = false;
+        base.fields = Some(vec![
+            Field {
+                r#type: FIELD_HIDDEN,
+                name: crate::testutil::enc("first", keys.user()),
+                value: crate::testutil::enc("first secret", keys.user()),
+                ..Field::default()
+            },
+            Field {
+                r#type: FIELD_HIDDEN,
+                name: crate::testutil::enc("second", keys.user()),
+                value: crate::testutil::enc("second secret", keys.user()),
+                ..Field::default()
+            },
+        ]);
+        let mut draft = reveal::draft(&base, &keys).unwrap();
+        assert!(draft.fields.iter().all(|field| field.value.is_empty()));
+        draft.fields.remove(0);
+        let request = prepare(&draft, Some(&base), &keys).unwrap().request;
+        let saved = request.fields.unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].r#type, FIELD_HIDDEN);
+        assert_eq!(
+            &*decrypt_text(saved[0].value.as_deref(), keys.user()).unwrap(),
+            "second secret"
+        );
+
+        let renamed = {
+            let mut draft = reveal::draft(&base, &keys).unwrap();
+            draft.fields[0].name = "renamed".into();
+            draft
+        };
+        assert!(matches!(
+            prepare(&renamed, Some(&base), &keys),
+            Err(Error::ReadOnly)
+        ));
+        let unhidden = {
+            let mut draft = reveal::draft(&base, &keys).unwrap();
+            draft.fields[1].hidden = false;
+            draft
+        };
+        assert!(matches!(
+            prepare(&unhidden, Some(&base), &keys),
+            Err(Error::ReadOnly)
+        ));
     }
 
     #[test]

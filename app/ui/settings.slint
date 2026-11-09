@@ -37,6 +37,7 @@ export component SettingsWindow inherits Window {
     in-out property <int> clipboard-index;
     in-out property <bool> start-at-login;
     in-out property <bool> ask-unlock-on-start;
+    in-out property <bool> lock-on-sleep: true;
     in-out property <bool> require-master-password;
     in property <bool> touch-id-available;
     in property <bool> touch-id-enrolled;
@@ -54,6 +55,7 @@ export component SettingsWindow inherits Window {
     callback clipboard-selected(int);
     callback start-at-login-toggled(bool);
     callback ask-unlock-toggled(bool);
+    callback lock-on-sleep-toggled(bool);
     callback require-master-password-toggled(bool);
     callback touch-id-enroll();
     callback touch-id-remove();
@@ -123,6 +125,7 @@ export component SettingsWindow inherits Window {
                     selected(i) => { root.lock-selected(i); }
                 }
             }
+            Toggle { text: "Lock on sleep or screen lock"; checked <=> root.lock-on-sleep; toggled(v) => { root.lock-on-sleep-toggled(v); } }
             SettingRow {
                 text: "Clear clipboard";
                 Select {

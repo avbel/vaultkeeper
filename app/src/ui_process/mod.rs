@@ -1,6 +1,6 @@
 //! `bw-lite --ui`: the windows. Started by the daemon on demand, it proxies `VaultService` to the
 //! daemon over `ui.sock`, shows what the daemon asks for, and exits 120 s after its last window
-//! closed, at once when the daemon goes away.
+//! closed, at once when the daemon goes away. Copies go to the daemon, which clears them.
 
 pub mod bridge;
 pub mod linger;
@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::Context;
-use bwl_ipc::{EventStream, IpcError, RemoteVault, UiNotice};
+use bwl_ipc::{EventStream, IpcError, RemoteVault, UiEvent, UiNotice};
 use tokio::sync::mpsc;
 
 use self::{
@@ -21,7 +21,7 @@ use self::{
 };
 use crate::{
     app::{App, UiCommand},
-    hooks::{Clipboard, Hooks},
+    hooks::Hooks,
     os::{Notifier, layout::UI_SOCKET},
     run::{Backend, UiOptions, run_ui, select_backend},
 };
@@ -55,10 +55,9 @@ pub fn run(first_unlock: bool) -> anyhow::Result<()> {
     let linger = Rc::new(LingerTimer {
         timer: slint::Timer::default(),
         linger: linger_from_env(std::env::var("BW_LITE_UI_LINGER_SECS").ok().as_deref()),
-        clipboard: Arc::clone(&hooks.clipboard),
     });
     let (commands, received) = mpsc::unbounded_channel();
-    let forwarder = runtime.spawn(forward_events(events, commands));
+    let forwarder = runtime.spawn(forward_events(events, commands, Arc::clone(&notify)));
     let on_closed = Rc::clone(&linger);
     let ran = run_ui(
         Arc::clone(&remote),
@@ -101,8 +100,17 @@ fn activity_reporter(notify: Notifier) -> Box<dyn FnMut()> {
     })
 }
 
-async fn forward_events(mut events: EventStream, commands: mpsc::UnboundedSender<UiCommand>) {
+async fn forward_events(
+    mut events: EventStream,
+    commands: mpsc::UnboundedSender<UiCommand>,
+    notify: Notifier,
+) {
+    let mut received = 0_u64;
     while let Some(event) = events.next().await {
+        if matches!(event, UiEvent::Command(_) | UiEvent::SshApproval(_)) {
+            received += 1;
+            report_alive(&notify, received);
+        }
         match bridge(event) {
             Bridged::Command(command) => {
                 if commands.send(command).is_err() {
@@ -124,39 +132,39 @@ async fn forward_events(mut events: EventStream, commands: mpsc::UnboundedSender
     }
 }
 
+/// Answers from the main loop, so a UI whose main thread hangs stays silent and the daemon's
+/// watchdog restarts it; this task alone would keep reading the socket.
+fn report_alive(notify: &Notifier, received: u64) {
+    let notify = Arc::clone(notify);
+    if let Err(error) = slint::invoke_from_event_loop(move || notify(UiNotice::Alive(received))) {
+        tracing::debug!(%error, "event loop gone; no answer to the daemon");
+    }
+}
+
 /// One restartable timer: each "last window closed" restarts the full linger.
 struct LingerTimer {
     timer: slint::Timer,
     linger: Duration,
-    clipboard: Arc<dyn Clipboard>,
 }
 
 impl LingerTimer {
-    fn start(self: &Rc<Self>, app: &Weak<App<RemoteVault>>) {
-        self.schedule(Weak::clone(app), self.linger);
-    }
-
-    fn schedule(self: &Rc<Self>, app: Weak<App<RemoteVault>>, after: Duration) {
-        let me = Rc::downgrade(self);
+    fn start(&self, app: &Weak<App<RemoteVault>>) {
+        let app = Weak::clone(app);
         self.timer
-            .start(slint::TimerMode::SingleShot, after, move || {
-                if let Some(me) = me.upgrade() {
-                    me.fire(Weak::clone(&app));
-                }
+            .start(slint::TimerMode::SingleShot, self.linger, move || {
+                linger_ended(&app);
             });
     }
+}
 
-    fn fire(self: &Rc<Self>, app: Weak<App<RemoteVault>>) {
-        let windows = app.upgrade().map_or(0, |app| app.open_window_count());
-        let now = Instant::now();
-        match decide(windows, self.clipboard.pending_clear(), now) {
-            Linger::Stay => {}
-            Linger::RecheckAt(at) => self.schedule(app, at.saturating_duration_since(now)),
-            Linger::ExitNow => {
-                tracing::info!("no window for the linger period; exiting");
-                if let Err(error) = slint::quit_event_loop() {
-                    tracing::error!(%error, "cannot quit the event loop");
-                }
+fn linger_ended(app: &Weak<App<RemoteVault>>) {
+    let windows = app.upgrade().map_or(0, |app| app.open_window_count());
+    match decide(windows) {
+        Linger::Stay => {}
+        Linger::ExitNow => {
+            tracing::info!("no window for the linger period; exiting");
+            if let Err(error) = slint::quit_event_loop() {
+                tracing::error!(%error, "cannot quit the event loop");
             }
         }
     }

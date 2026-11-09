@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 aes-gcm = { workspace = true, features = ["zeroize"] }
 arboard.workspace = true
-auto-launch.workspace = true
 directories.workspace = true
 hkdf.workspace = true
 interprocess.workspace = true

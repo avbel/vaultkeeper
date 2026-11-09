@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -50,6 +50,12 @@ pub enum UiNotice {
     SettingsChanged,
     /// The user typed or clicked in a UI window; resets the lock timeout.
     Activity,
+    /// The UI's main loop ran after the n-th command or SSH approval this UI process received, so
+    /// the daemon can tell a hung UI from a slow one. A running count, so a dropped notice is
+    /// covered by the next.
+    Alive(u64),
+    /// A native modal dialog (file panel) holds the main loop; `false` when it closed.
+    Modal(bool),
 }
 
 /// Daemon -> UI.
@@ -268,6 +274,13 @@ pub enum Call {
     },
     DeleteFolder(String),
     ProbeServer(String),
+    /// The daemon puts `text` on the clipboard and owns its auto-clear.
+    CopyToClipboard {
+        text: Zeroizing<String>,
+        clear_after_secs: Option<u64>,
+    },
+    /// Clears the clipboard if it still holds the daemon's last copy.
+    ClearClipboard,
 }
 
 impl Call {
@@ -307,6 +320,8 @@ impl Call {
                 | Self::Attachments(_)
                 | Self::DownloadAttachment { .. }
                 | Self::ProbeServer(_)
+                | Self::CopyToClipboard { .. }
+                | Self::ClearClipboard
         )
     }
 }
@@ -398,6 +413,14 @@ mod tests {
             .changes_state()
         );
         assert!(Call::UnlockWithTouchId { account_id }.changes_state());
+        assert!(
+            !Call::CopyToClipboard {
+                text: Zeroizing::new("x".to_owned()),
+                clear_after_secs: Some(30)
+            }
+            .changes_state()
+        );
+        assert!(!Call::ClearClipboard.changes_state());
     }
 
     #[test]

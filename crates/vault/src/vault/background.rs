@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-use bwl_api::notifications::{Notification, run_with_reconnect};
+use bwl_api::{
+    Prober,
+    notifications::{Notification, run_with_reconnect},
+};
 use tokio::{
     sync::mpsc,
     task::JoinHandle,
@@ -196,9 +199,14 @@ impl Inner {
         }
     }
 
-    async fn notification_token(self: &Arc<Self>, epoch: u64) -> Option<Zeroizing<String>> {
+    /// `rejected` is the token the hub just refused; it is refreshed instead of reused.
+    async fn notification_token(
+        self: &Arc<Self>,
+        epoch: u64,
+        rejected: Option<Zeroizing<String>>,
+    ) -> Option<Zeroizing<String>> {
         let ctx = self.unlocked_ctx().ok().filter(|ctx| ctx.epoch == epoch)?;
-        match self.access_token(&ctx, None).await {
+        match self.access_token(&ctx, rejected.as_ref()).await {
             Ok(token) => Some(token),
             Err(Error::Api(bwl_api::Error::Unauthorized)) => None,
             Err(error) => {
@@ -265,9 +273,9 @@ async fn websocket_task(inner: Arc<Inner>, epoch: u64, server: Url) {
     options.listen.own_device_id = Some(inner.config.device.identifier.to_string());
     let (tx, mut rx) = mpsc::channel(NOTIFICATION_BUFFER);
     let tokens = Arc::clone(&inner);
-    let token_provider = move || {
+    let token_provider = move |rejected| {
         let inner = Arc::clone(&tokens);
-        async move { inner.notification_token(epoch).await }
+        async move { inner.notification_token(epoch, rejected).await }
     };
     let connection = run_with_reconnect(&server, token_provider, tx, &options);
     tokio::pin!(connection);
@@ -283,15 +291,12 @@ async fn websocket_task(inner: Arc<Inner>, epoch: u64, server: Url) {
 /// `GET {base}/alive` with backoff until the server answers, then an immediate full sync.
 async fn probe_task(inner: Arc<Inner>, epoch: u64, server: Url, immediate: bool) {
     let timings = &inner.config.timings;
-    let http = match probe_client(timings.probe_timeout) {
-        Ok(http) => http,
+    let prober = match Prober::new(&server, timings.probe_timeout) {
+        Ok(prober) => prober,
         Err(error) => {
             tracing::warn!(%error, "could not build the offline probe client");
             return;
         }
-    };
-    let Ok(alive) = alive_url(&server) else {
-        return;
     };
     let mut delay = if immediate {
         Duration::ZERO
@@ -306,7 +311,7 @@ async fn probe_task(inner: Arc<Inner>, epoch: u64, server: Url, immediate: bool)
         if !inner.is_current(epoch) || !inner.is_offline() {
             return;
         }
-        if is_alive(&http, &alive).await {
+        if is_alive(&prober).await {
             match inner.sync_now(Some(epoch)).await {
                 Ok(()) => {
                     inner.after_recovery(epoch);
@@ -334,39 +339,14 @@ pub(crate) fn next_probe_delay(current: Duration, initial: Duration, max: Durati
     }
 }
 
-/// Same TLS stack as bwl-api, so a server the API trusts is also reachable for the probes.
-pub(super) fn probe_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .tls_backend_rustls()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(timeout)
-        .timeout(timeout)
-        .build()
-}
-
-/// `server` joined with a relative `path`, keeping a path prefix such as `/vw`.
-pub(super) fn server_url(server: &Url, path: &str) -> Result<Url, url::ParseError> {
-    let mut base = server.clone();
-    if !base.path().ends_with('/') {
-        let prefixed = format!("{}/", base.path());
-        base.set_path(&prefixed);
-    }
-    base.join(path)
-}
-
-fn alive_url(server: &Url) -> Result<Url, url::ParseError> {
-    server_url(server, "alive")
-}
-
-async fn is_alive(http: &reqwest::Client, url: &Url) -> bool {
-    match http.get(url.clone()).send().await {
-        Ok(response) => response.status().is_success(),
+async fn is_alive(prober: &Prober) -> bool {
+    match prober.alive().await {
+        // A bad certificate means the server answered: let the sync fail with that error instead
+        // of showing "offline" while waiting for a server that is already up.
+        Ok(()) | Err(bwl_api::Error::Tls(_)) => true,
         Err(error) => {
-            let error = bwl_api::Error::from(error.without_url());
             tracing::debug!(%error, "offline probe failed");
-            // The server answered with a bad certificate: let the sync fail with that error
-            // instead of showing "offline" while waiting for a server that is already up.
-            matches!(error, bwl_api::Error::Tls(_))
+            false
         }
     }
 }
@@ -387,19 +367,5 @@ mod tests {
         }
         assert_eq!(seen, [5, 10, 20, 40, 60, 60]);
         assert_eq!(next_probe_delay(Duration::ZERO, initial, max), initial);
-    }
-
-    #[test]
-    fn alive_url_keeps_a_path_prefix() {
-        let plain = Url::parse("https://vault.example.com").unwrap();
-        assert_eq!(
-            alive_url(&plain).unwrap().as_str(),
-            "https://vault.example.com/alive"
-        );
-        let prefixed = Url::parse("https://host.example/vw").unwrap();
-        assert_eq!(
-            alive_url(&prefixed).unwrap().as_str(),
-            "https://host.example/vw/alive"
-        );
     }
 }

@@ -162,7 +162,15 @@ fn settings_toggles_persist_through_the_store() {
     settings.invoke_lock_selected(5);
     assert_eq!(
         h.settings.load().lock_timeout,
-        bw_lite::settings::LockTimeout::OnSleep
+        bw_lite::settings::LockTimeout::Never
+    );
+    assert!(settings.get_lock_on_sleep(), "on by default");
+    click(&settings, "Lock on sleep or screen lock");
+    assert!(!h.settings.load().lock_on_sleep);
+    assert_eq!(
+        h.settings.load().lock_timeout,
+        bw_lite::settings::LockTimeout::Never,
+        "independent of the timeout"
     );
 }
 
@@ -205,4 +213,32 @@ fn manager_geometry_is_saved_on_close_and_restored() {
         .size()
         .to_logical(manager.window().scale_factor());
     assert_eq!((size.width.round(), size.height.round()), (900.0, 600.0));
+}
+
+#[test]
+fn a_reset_of_unreadable_settings_is_shown_once_when_a_window_opens() {
+    let h = harness(Setup::default());
+    h.settings
+        .reset_notice
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    h.app.show_pending_notices();
+    assert!(
+        h.settings
+            .reset_notice
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "kept until a window can show it"
+    );
+    h.app.handle(bw_lite::UiCommand::ShowManager);
+    h.app.show_pending_notices();
+    let manager = h.app.manager_window().expect("manager");
+    assert!(manager.get_toast_shown());
+    assert_eq!(
+        manager.get_toast_text(),
+        bw_lite::app::SETTINGS_RESET_NOTICE
+    );
+    assert!(
+        !h.settings
+            .reset_notice
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
 }

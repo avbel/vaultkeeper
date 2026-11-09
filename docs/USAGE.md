@@ -15,6 +15,16 @@ code-signing certificate, so every rebuild has the same code identity. Without i
 ad-hoc signed. macOS then asks again "bw-lite wants to use your confidential information" for the
 keychain item (the refresh token) after each rebuild.
 
+**Signing prompt.** `bundle-macos.sh` shows a keychain prompt ("codesign wants to sign using key
+…") on every build. Click **Allow**, not *Always Allow*. The prompt is the protection: bw-lite's
+keychain items trust anything signed as "bw-lite local", so a key that signs without asking
+would let any process sign its own binary as bw-lite and read the refresh token silently.
+*Always Allow* re-creates exactly that. While creating the certificate the script also asks once
+for your login keychain password (`security set-key-partition-list`); without that step the
+codesign prompt rejects even the correct password. If your certificate was made by an older version of the
+script (which trusted `codesign` without a prompt), run `scripts/make-signing-cert.sh --recreate`
+once; bw-lite then asks one more time for its keychain items after the next build.
+
 The app has no Dock icon. It lives in the menu bar; a Dock icon appears only while the vault
 window is open.
 
@@ -48,14 +58,20 @@ clipboard if it holds a copied secret.
   countdown ring). The sidebar has folders (create, rename, delete), organizations and collections,
   and kinds. The detail pane edits items and attachments.
 - Copied secrets are hidden from clipboard history, and cleared after 30 s (configurable) if the
-  clipboard still holds them.
+  clipboard still holds them. The background process does the clearing, so it happens even when
+  the windows have closed, and also on lock, log out, account switch and Quit. Time asleep counts.
 - **Generator:** in the tray menu, and the *Generate* button on the password field when editing an item.
 - **Sync:**
   - live through the server websocket;
   - also on unlock, every 30 min and *Sync now*.
 - **Offline:** when the server can't be reached the app keeps working from the encrypted cache. A
   toast tells you so, and it syncs as soon as the server is back.
-- **Lock:** after *Lock after* (Settings → Security; includes *On sleep / screen lock*), or from the tray.
+- **Lock:** after *Lock after* of inactivity (Settings → Security; *Never* turns the timer off), on
+  sleep or screen lock while *Lock on sleep or screen lock* is on (the default), or from the tray.
+  A settings file from an older version with *On sleep / screen lock* becomes *Never* plus that
+  switch.
+- **Broken settings file:** if `settings.json` cannot be read, bw-lite starts with the defaults,
+  keeps the old file as `settings.json.broken` and says so once in a window toast.
 
 ## Touch ID
 
@@ -109,6 +125,8 @@ window at launch.
 - Enable it from the copy in `/Applications`, because the agent stores the path of the executable
   that enabled it.
 - To remove it: turn the setting off, or `rm ~/Library/LaunchAgents/bw-lite.plist`.
+- After a crash macOS starts bw-lite again (`KeepAlive` on a failed exit); *Quit* from the tray
+  stays quit. An agent written by an older version is updated on its next start at login.
 
 ## Themes
 
@@ -121,10 +139,11 @@ Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *D
 | `~/Library/Application Support/bw-lite/` | settings, encrypted vault cache per account, sockets (mode 0600) |
 | login keychain, items prefixed `bw-lite` | refresh tokens |
 | `~/Library/LaunchAgents/bw-lite.plist` | only with *Start at login* |
+| `~/Library/Logs/bw-lite/daemon.log`, `ui.log` | logs of the two processes, at most 1 MiB each plus one older `.1` file; not meant to hold secrets |
 
 To uninstall:
 1. Log out of each account in the app, then quit it.
-2. `rm -rf /Applications/bw-lite.app "$HOME/Library/Application Support/bw-lite" ~/Library/LaunchAgents/bw-lite.plist`.
+2. `rm -rf /Applications/bw-lite.app "$HOME/Library/Application Support/bw-lite" ~/Library/LaunchAgents/bw-lite.plist ~/Library/Logs/bw-lite`.
 
 ## Command line
 

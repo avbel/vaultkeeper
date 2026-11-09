@@ -102,6 +102,22 @@ impl KdfRecord {
         }
     }
 
+    /// Weaker means cheaper for an attacker holding the server hash: fewer PBKDF2 iterations,
+    /// fewer Argon2id passes or less memory, or Argon2id → PBKDF2. Parallelism only splits the
+    /// same memory into lanes, so it is not compared.
+    pub(crate) fn is_weaker_than(&self, cached: &Self) -> bool {
+        const ARGON2ID: u8 = 1;
+        match (cached.kind, self.kind) {
+            (old, new) if old == new && new == ARGON2ID => {
+                self.iterations < cached.iterations
+                    || self.memory_mib.unwrap_or(0) < cached.memory_mib.unwrap_or(0)
+            }
+            (old, new) if old == new => self.iterations < cached.iterations,
+            (ARGON2ID, _) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn to_kdf(self) -> Result<Kdf> {
         Ok(Kdf::from_wire(
             self.kind,
@@ -216,14 +232,16 @@ impl Store {
     }
 
     /// `accounts/<id>/tmp`, for attachment transfers; wiped with the account.
+    /// Created under the write lock and without parents, so a transfer racing a log out cannot
+    /// bring the removed account directory back.
     pub(crate) fn temp_dir(&self, id: &str) -> Result<PathBuf> {
-        let dir = self.account_dir(id)?;
-        if !dir.is_dir() {
-            return Err(Error::LoggedOut);
+        let temp = self.account_dir(id)?.join(TEMP_DIR);
+        let _writes = self.lock_writes();
+        match create_private_child_dir(&temp) {
+            Ok(()) => Ok(temp),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(Error::LoggedOut),
+            Err(error) => Err(error.into()),
         }
-        let temp = dir.join(TEMP_DIR);
-        create_private_dir(&temp)?;
-        Ok(temp)
     }
 }
 
@@ -298,6 +316,20 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)
 }
 
+/// Like [`create_private_dir`] but fails with `NotFound` when the parent is gone.
+fn create_private_child_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -364,6 +396,44 @@ pub(crate) mod tests {
         assert!(store.save_vault_locked(ID, b"{}").is_err());
         assert!(matches!(store.temp_dir(ID), Err(Error::LoggedOut)));
         assert!(!root.join("accounts").join(ID).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_transfer_racing_a_log_out_does_not_recreate_the_account() {
+        let root = temp_root();
+        let store = std::sync::Arc::new(Store::open(root.clone()).unwrap());
+        store.create_account(&record()).unwrap();
+        let writes = store.lock_writes();
+        let transfer = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || store.temp_dir(ID).map(|_| ()))
+        };
+        // Log out's removal runs under the same lock; give the transfer time to reach its mkdir.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        fs::remove_dir_all(root.join("accounts").join(ID)).unwrap();
+        drop(writes);
+
+        assert!(matches!(transfer.join().unwrap(), Err(Error::LoggedOut)));
+        assert!(!root.join("accounts").join(ID).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn temp_dir_is_private_and_reusable() {
+        let root = temp_root();
+        let store = Store::open(root.clone()).unwrap();
+        store.create_account(&record()).unwrap();
+        let first = store.temp_dir(ID).unwrap();
+        assert_eq!(store.temp_dir(ID).unwrap(), first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -479,5 +549,35 @@ pub(crate) mod tests {
         assert!(matches!(record.to_kdf().unwrap(), Kdf::Argon2id { .. }));
         let broken = KdfRecord { kind: 7, ..record };
         assert!(matches!(broken.to_kdf(), Err(Error::Crypto(_))));
+    }
+
+    #[test]
+    fn weaker_kdfs_are_recognised() {
+        let pbkdf2 = |iterations| KdfRecord {
+            kind: 0,
+            iterations,
+            memory_mib: None,
+            parallelism: None,
+        };
+        let argon2 = |iterations, memory| KdfRecord {
+            kind: 1,
+            iterations,
+            memory_mib: Some(memory),
+            parallelism: Some(4),
+        };
+        // Bitwarden defaults: PBKDF2 600 000 iterations; Argon2id 3 passes, 64 MiB, 4 lanes.
+        assert!(pbkdf2(5_000).is_weaker_than(&pbkdf2(600_000)));
+        assert!(!pbkdf2(600_000).is_weaker_than(&pbkdf2(600_000)));
+        assert!(!pbkdf2(700_000).is_weaker_than(&pbkdf2(600_000)));
+        assert!(argon2(2, 64).is_weaker_than(&argon2(3, 64)));
+        assert!(argon2(3, 16).is_weaker_than(&argon2(3, 64)));
+        assert!(!argon2(3, 64).is_weaker_than(&argon2(3, 64)));
+        let fewer_lanes = KdfRecord {
+            parallelism: Some(1),
+            ..argon2(3, 64)
+        };
+        assert!(!fewer_lanes.is_weaker_than(&argon2(3, 64)));
+        assert!(pbkdf2(2_000_000).is_weaker_than(&argon2(3, 64)));
+        assert!(!argon2(2, 16).is_weaker_than(&pbkdf2(600_000)));
     }
 }

@@ -152,6 +152,7 @@ pub fn run_ui<S: VaultService>(
     if let Some(command) = options.initial {
         app.handle(command);
     }
+    app.show_pending_notices();
     slint::run_event_loop_until_quit().context("run the event loop")?;
     Ok(())
 }
@@ -180,7 +181,10 @@ fn forward_commands<S: VaultService>(
     slint::spawn_local(async move {
         while let Some(command) = commands.recv().await {
             match weak.upgrade() {
-                Some(app) => app.handle(command),
+                Some(app) => {
+                    app.handle(command);
+                    app.show_pending_notices();
+                }
                 None => break,
             }
         }

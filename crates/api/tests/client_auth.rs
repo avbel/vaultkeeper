@@ -432,6 +432,23 @@ async fn other_refresh_failures_stay_server_errors() {
 }
 
 #[tokio::test]
+async fn a_401_from_a_proxy_on_refresh_is_not_a_rejected_refresh_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .respond_with(html_response(401, "sync_unauthorized.txt"))
+        .mount(&server)
+        .await;
+
+    let error = client(&server).refresh("t").await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::Server { status: 401, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn send_email_login_posts_credentials_and_accepts_an_empty_200() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

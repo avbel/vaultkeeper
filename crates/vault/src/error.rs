@@ -24,6 +24,10 @@ pub enum Error {
     /// The item changed elsewhere since the draft was read; nothing was saved.
     #[error("{CONFLICT_MESSAGE}")]
     Conflict,
+    /// The server asked a known account for a weaker KDF than the cached one; no password hash
+    /// was derived or sent.
+    #[error("{KDF_DOWNGRADE_MESSAGE}")]
+    KdfDowngrade,
     #[error(transparent)]
     Api(#[from] bwl_api::Error),
     #[error(transparent)]
@@ -42,6 +46,11 @@ pub enum Error {
 /// What [`Error::Conflict`] displays.
 pub const CONFLICT_MESSAGE: &str =
     "This item was changed elsewhere since you opened it; your edits were not saved";
+
+/// What [`Error::KdfDowngrade`] displays.
+pub const KDF_DOWNGRADE_MESSAGE: &str = "The server asks for a weaker master password encryption \
+     than this account used before, so the password was not sent. If you lowered it yourself, \
+     log out of this account in bw-lite and log in again";
 
 /// What [`Error::Offline`] displays.
 pub const OFFLINE_MESSAGE: &str = "Offline: the vault is read-only until the server is reachable";

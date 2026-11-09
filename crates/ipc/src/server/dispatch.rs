@@ -1,14 +1,15 @@
 //! Runs one decoded [`Call`] against the real service.
 
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc};
+use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc, time::Duration};
 
 use bwl_vault::{
     VaultService,
     model::{ItemId, LoginRequest, TwoFactorAnswer},
 };
 
+use super::Backends;
 use crate::{
-    TouchIdBackend,
+    ClipboardHost, TouchIdBackend,
     dto::WireError,
     protocol::{Call, Reply, TouchIdFailure},
 };
@@ -18,9 +19,13 @@ use crate::{
 /// so they cannot stall the daemon's async workers.
 pub(super) async fn dispatch<S: VaultService>(
     service: &Arc<S>,
-    touch_id: Option<Arc<dyn TouchIdBackend>>,
+    backends: Backends,
     call: Call,
 ) -> Result<Reply, WireError> {
+    let Backends {
+        touch_id,
+        clipboard,
+    } = backends;
     match call {
         Call::State => Ok(Reply::State(service.state().into())),
         Call::Changes => Ok(Reply::Revision(*service.changes().borrow())),
@@ -36,17 +41,8 @@ pub(super) async fn dispatch<S: VaultService>(
         }
         Call::SendEmailCode => unit(service.send_email_code().await),
         Call::UnlockWithPassword(password) => unit(service.unlock_with_password(password).await),
-        Call::EnrollTouchId { account_id } => {
-            with_touch_id(service, touch_id, move |service, backend| {
-                enroll_touch_id(service, backend, &account_id)
-            })
-            .await
-        }
-        Call::UnlockWithTouchId { account_id } => {
-            with_touch_id(service, touch_id, move |service, backend| {
-                unlock_with_touch_id(service, backend, &account_id)
-            })
-            .await
+        call @ (Call::EnrollTouchId { .. } | Call::UnlockWithTouchId { .. }) => {
+            touch_id_call(service, touch_id, call).await
         }
         Call::VerifyMasterPassword(password) => {
             reply(service.verify_master_password(password).await, Reply::Bool)
@@ -117,7 +113,64 @@ pub(super) async fn dispatch<S: VaultService>(
         Call::RenameFolder { id, name } => unit(service.rename_folder(&id, &name).await),
         Call::DeleteFolder(id) => unit(service.delete_folder(&id).await),
         Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
+        call @ (Call::CopyToClipboard { .. } | Call::ClearClipboard) => {
+            clipboard_call(clipboard, call).await
+        }
     }
+}
+
+async fn clipboard_call(
+    clipboard: Option<Arc<dyn ClipboardHost>>,
+    call: Call,
+) -> Result<Reply, WireError> {
+    with_clipboard(clipboard, move |clipboard| {
+        if let Call::CopyToClipboard {
+            text,
+            clear_after_secs,
+        } = call
+        {
+            return clipboard
+                .copy(&text, clear_after_secs.map(Duration::from_secs))
+                .map_err(WireError::internal);
+        }
+        clipboard.clear_if_ours();
+        Ok(())
+    })
+    .await
+}
+
+async fn touch_id_call<S: VaultService>(
+    service: &Arc<S>,
+    touch_id: Option<Arc<dyn TouchIdBackend>>,
+    call: Call,
+) -> Result<Reply, WireError> {
+    with_touch_id(service, touch_id, move |service, backend| match call {
+        Call::EnrollTouchId { account_id } => enroll_touch_id(service, backend, &account_id),
+        Call::UnlockWithTouchId { account_id } => {
+            unlock_with_touch_id(service, backend, &account_id)
+        }
+        _ => Err(WireError::internal("not a Touch ID call".to_owned())),
+    })
+    .await
+}
+
+/// Pasteboard access takes a lock and may block, so it runs on the blocking pool.
+async fn with_clipboard<F>(
+    clipboard: Option<Arc<dyn ClipboardHost>>,
+    work: F,
+) -> Result<Reply, WireError>
+where
+    F: FnOnce(&dyn ClipboardHost) -> Result<(), WireError> + Send + 'static,
+{
+    let Some(clipboard) = clipboard else {
+        return Err(WireError::internal(
+            "the daemon has no clipboard".to_owned(),
+        ));
+    };
+    tokio::task::spawn_blocking(move || work(clipboard.as_ref()))
+        .await
+        .map_err(|error| WireError::internal(format!("daemon task failed: {error}")))?
+        .map(|()| Reply::Unit)
 }
 
 async fn with_touch_id<S, F>(

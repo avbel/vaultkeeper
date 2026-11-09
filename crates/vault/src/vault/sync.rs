@@ -202,9 +202,7 @@ impl Inner {
         if let Some(rotated) = response.refresh_token.map(Zeroizing::new)
             && rotated.as_bytes() != stored.as_slice()
         {
-            self.secrets
-                .set(&key, rotated.as_bytes())
-                .map_err(secret_error)?;
+            self.store_rotated(ctx, &key, &stored, &rotated)?;
         }
         let mut state = self.write_state();
         if let Some(active) = state.active.as_mut().filter(|a| a.id == ctx.account_id) {
@@ -214,6 +212,30 @@ impl Inner {
             });
         }
         Ok(access)
+    }
+
+    /// Log out drops the account from the index before it takes `refresh_secret` to wipe the
+    /// secrets, and a new login stores a different token under that lock, so a refresh that raced
+    /// either must not write its rotated token back. The state lock is held only for the index
+    /// check, never across keychain calls.
+    fn store_rotated(
+        &self,
+        ctx: &Ctx,
+        key: &str,
+        used: &[u8],
+        rotated: &Zeroizing<String>,
+    ) -> Result<()> {
+        let _secrets = lock(&self.refresh_secret);
+        if self.read_state().index.find(&ctx.account_id).is_none() {
+            return Ok(());
+        }
+        let current = self.secrets.get(key).map_err(secret_error)?;
+        if current.is_none_or(|current| current.as_slice() != used) {
+            return Ok(());
+        }
+        self.secrets
+            .set(key, rotated.as_bytes())
+            .map_err(secret_error)
     }
 
     pub(crate) fn set_offline(&self, offline: bool) {

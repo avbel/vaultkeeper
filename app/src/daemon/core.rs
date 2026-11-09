@@ -8,17 +8,17 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime},
 };
 
 use anyhow::Context;
 use bwl_ipc::{
-    DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind, SshDecision,
-    SshPrompt, TouchIdBackend, UiCommand, UiNotice,
+    ClipboardHost, DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind,
+    SshDecision, SshPrompt, TouchIdBackend, UiCommand, UiNotice,
 };
-use bwl_platform::power::PowerEvent;
+use bwl_platform::{network::NetworkEvent, power::PowerEvent};
 use bwl_ssh::{ApprovalKind, ApprovalRequest};
 use bwl_vault::{SecretStore, Timings, Vault, VaultConfig, VaultService, model::SessionState};
 use tokio::{
@@ -29,14 +29,14 @@ use tokio::{
 
 use super::{
     device,
-    launcher::{Launcher, restart_after_exit},
-    lock::{self, Activity, LockCheck},
+    launcher::{Hang, Launcher, judge, restart_after_exit},
+    lock::{self, Activity, LockCheck, LockWatch},
     routing::Effect,
     ssh::{SshControl, purpose},
 };
 use crate::{
     os::{
-        DaemonBiometrics, TouchId,
+        ClipboardKeeper, DaemonBiometrics, Keeper, TouchId,
         layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
         settings_file::SettingsFile,
     },
@@ -47,6 +47,9 @@ use crate::{
 const EVENT_QUEUE: usize = 32;
 const NOTICE_QUEUE: usize = 16;
 const APPROVAL_QUEUE: usize = 8;
+/// A UI whose main loop has not got to a command after this long is killed and restarted. Cold
+/// starts measure well under a second; the margin covers a loaded machine.
+const UI_HANG_AFTER: Duration = Duration::from_secs(20);
 
 /// Who may connect to the IPC socket besides the uid check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +69,10 @@ pub struct DaemonConfig {
     pub peers: Peers,
     /// Enrolment and unlock for the UI, presence checks for SSH approvals.
     pub touch_id: Arc<dyn DaemonBiometrics>,
+    /// The pasteboard the UI copies to; cleared on lock, logout, account switch and quit.
+    pub clipboard: Arc<dyn ClipboardKeeper>,
+    /// How long a started UI may leave a command unanswered before it is killed.
+    pub ui_hang_after: Duration,
 }
 
 impl DaemonConfig {
@@ -78,6 +85,8 @@ impl DaemonConfig {
             timings: Timings::default(),
             ui_exe: None,
             peers: Peers::SameExecutable,
+            clipboard: Keeper::system(),
+            ui_hang_after: UI_HANG_AFTER,
         }
     }
 }
@@ -89,6 +98,7 @@ pub struct Daemon {
     events: mpsc::Sender<DaemonEvent>,
     server: Mutex<Option<ServerHandle>>,
     launcher: Launcher,
+    hang: HangWatch,
     settings: watch::Sender<Arc<Settings>>,
     activity: Activity,
     lock_wake: Notify,
@@ -97,6 +107,9 @@ pub struct Daemon {
     quitting: AtomicBool,
     ssh: SshControl,
     touch_id: Arc<dyn DaemonBiometrics>,
+    clipboard: Arc<dyn ClipboardKeeper>,
+    /// The account the vault was last seen unlocked for; a change means lock, logout or switch.
+    unlocked_as: Mutex<Option<Identity>>,
     /// One Touch ID sheet at a time; concurrent sign requests wait their turn.
     presence: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -117,6 +130,8 @@ impl Daemon {
             ui_exe,
             peers,
             touch_id,
+            clipboard,
+            ui_hang_after,
         } = config;
         let runtime = Handle::current();
         let device = device::load_or_create(&data_dir).context("read the device id")?;
@@ -130,7 +145,8 @@ impl Daemon {
             Peers::AnyOfThisUser => ServeOptions::with_verifier(|_: &PeerCredentials| true),
         }
         .with_notices(notices)
-        .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>);
+        .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
+        .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>);
         let server =
             bwl_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
                 .await
@@ -148,10 +164,13 @@ impl Daemon {
             events,
             server: Mutex::new(Some(server)),
             launcher: Launcher::new(ui_exe),
+            hang: HangWatch::new(ui_hang_after),
             activity: Activity::new(),
             lock_wake: Notify::new(),
             quitting: AtomicBool::new(false),
             touch_id,
+            clipboard,
+            unlocked_as: Mutex::new(None),
             presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
         });
@@ -242,14 +261,32 @@ impl Daemon {
         }
     }
 
-    /// Queues an event for the UI and makes sure a UI process is on its way to read it.
+    /// Queues an event for the UI and makes sure a UI process is on its way to read it, and
+    /// answers it in time.
     fn send(self: &Arc<Self>, event: DaemonEvent) -> bool {
         if let Err(error) = self.events.try_send(event) {
             tracing::warn!(%error, "UI event dropped");
             return false;
         }
+        let seq = self.hang.delivered.fetch_add(1, Ordering::SeqCst) + 1;
         self.ensure_ui();
+        if self.launcher.can_start() {
+            drop(self.runtime.spawn(watch_answer(Arc::clone(self), seq)));
+        }
         true
+    }
+
+    /// The UI's main loop got through its first `handled` events.
+    fn ui_alive(&self, handled: u64) {
+        let base = self.hang.base.load(Ordering::SeqCst);
+        self.hang
+            .acked
+            .fetch_max(base.saturating_add(handled), Ordering::SeqCst);
+    }
+
+    fn queued_events(&self) -> u64 {
+        let queued = self.events.max_capacity() - self.events.capacity();
+        u64::try_from(queued).unwrap_or(u64::MAX)
     }
 
     fn ensure_ui(self: &Arc<Self>) {
@@ -266,10 +303,21 @@ impl Daemon {
     }
 
     fn ui_exited(self: &Arc<Self>, ran_for: Duration) {
+        // What the old UI received counts as answered; the next one counts from here.
+        let queued = self.queued_events();
+        let base = self
+            .hang
+            .delivered
+            .load(Ordering::SeqCst)
+            .saturating_sub(queued);
+        self.hang.base.store(base, Ordering::SeqCst);
+        self.hang.acked.fetch_max(base, Ordering::SeqCst);
+        self.hang.modal.store(false, Ordering::SeqCst);
         self.launcher.exited();
-        let queued = self.events.capacity() < self.events.max_capacity();
-        if restart_after_exit(queued, ran_for, self.quitting.load(Ordering::SeqCst)) {
-            tracing::debug!("commands arrived while the UI was leaving; starting a new one");
+        let quitting = self.quitting.load(Ordering::SeqCst);
+        let killed = self.hang.respawn.swap(false, Ordering::SeqCst);
+        if restart_after_exit(queued > 0, ran_for, quitting) || (killed && !quitting) {
+            tracing::debug!("starting a new UI process after the last one left");
             self.ensure_ui();
         }
     }
@@ -327,12 +375,20 @@ impl Daemon {
                 self.vault.on_wake();
                 // Tokio's timers stop while asleep; the wall clock decides on wake.
                 self.lock_wake.notify_one();
+                self.clipboard.recheck();
             }
             PowerEvent::ScreenLocked | PowerEvent::ScreenUnlocked => {}
         }
-        if lock::locks_on(event, self.settings().lock_timeout) {
+        if lock::locks_on(event, self.settings().lock_on_sleep) {
             tracing::info!(?event, "locking on sleep / screen lock");
             self.vault.lock();
+        }
+    }
+
+    /// A usable path (new connection or another interface) lets an offline vault retry now.
+    pub fn network_event(&self, event: NetworkEvent) {
+        if retries_on(event) {
+            self.vault.on_network_change();
         }
     }
 
@@ -340,22 +396,36 @@ impl Daemon {
         self.activity.touch();
     }
 
-    /// Tray Quit and SIGTERM: lock, stop the agent, tell the UI to exit, remove the sockets.
+    /// Tray Quit and SIGTERM: lock, clear our copy, stop the agent, tell the UI to exit, remove
+    /// the sockets.
     pub async fn shutdown(&self) {
         self.quitting.store(true, Ordering::SeqCst);
         self.vault.lock();
+        self.clipboard.clear_if_ours();
         self.ssh.stop();
         let server = guard(&self.server).take();
         if let Some(server) = server {
             server.shutdown().await;
         }
+        // A UI that is hung never reads the Shutdown it was just sent.
+        self.launcher.kill();
         for task in guard(&self.tasks).drain(..) {
             task.abort();
         }
     }
 
     fn on_state(&self) {
-        let unlocked = matches!(self.vault.state(), SessionState::Unlocked { .. });
+        let identity = match self.vault.state() {
+            SessionState::Unlocked { server, email } => Some(Identity { server, email }),
+            SessionState::Locked { .. } | SessionState::LoggedOut => None,
+        };
+        let unlocked = identity.is_some();
+        let previous = std::mem::replace(&mut *guard(&self.unlocked_as), identity.clone());
+        // `changes` is a watch: lock + switch + unlock may arrive as one Unlocked → Unlocked.
+        if left_session(previous.as_ref(), identity.as_ref()) {
+            self.clipboard.clear_if_ours();
+            self.ssh.forget_approvals();
+        }
         let was = self.was_unlocked.swap(unlocked, Ordering::SeqCst);
         if unlocked && !was {
             self.unlocked_once.store(true, Ordering::SeqCst);
@@ -365,6 +435,8 @@ impl Daemon {
         if !unlocked && was {
             self.ssh.forget_approvals();
             self.ssh.clear();
+            // Lets the timer see the lock now, so it notices the next unlock as a new session.
+            self.lock_wake.notify_one();
         }
     }
 
@@ -507,6 +579,23 @@ impl Daemon {
     }
 }
 
+/// Losing the network needs nothing: the next request finds out on its own.
+const fn retries_on(event: NetworkEvent) -> bool {
+    matches!(event, NetworkEvent::Usable)
+}
+
+/// Who the vault is unlocked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Identity {
+    server: url::Url,
+    email: String,
+}
+
+/// Whether the session that was unlocked ended: locked, logged out or switched to another account.
+fn left_session(previous: Option<&Identity>, now: Option<&Identity>) -> bool {
+    previous.is_some() && previous != now
+}
+
 struct SignPrompt {
     cipher_id: Option<String>,
     process: Option<String>,
@@ -524,6 +613,8 @@ async fn notices_loop(daemon: Arc<Daemon>, mut notices: mpsc::Receiver<UiNotice>
         match notice {
             UiNotice::SettingsChanged => daemon.reload_settings().await,
             UiNotice::Activity => daemon.activity.touch(),
+            UiNotice::Alive(handled) => daemon.ui_alive(handled),
+            UiNotice::Modal(open) => daemon.hang.modal.store(open, Ordering::SeqCst),
         }
     }
 }
@@ -567,25 +658,25 @@ async fn approvals_loop(daemon: Arc<Daemon>, mut approvals: mpsc::Receiver<Appro
     }
 }
 
-/// Sleeps until the lock deadline, never on a periodic tick; settings changes, wake-ups and
-/// vault changes make it look again.
+/// Sleeps until the lock deadline, never on a periodic tick. Only `lock_wake` makes it look
+/// early (unlock, settings change, wake from sleep), always after the activity it needs was
+/// recorded; it does not follow vault changes itself, which raced the state loop's activity
+/// update and could lock right after an unlock.
 async fn lock_timer(daemon: Arc<Daemon>) {
-    let mut changes = daemon.vault.changes();
+    let mut watch = LockWatch::default();
     loop {
         let unlocked = matches!(daemon.vault.state(), SessionState::Unlocked { .. });
-        let check = if unlocked {
-            lock::check(
-                daemon.settings().lock_timeout,
-                daemon.activity.last(),
-                SystemTime::now(),
-            )
-        } else {
-            LockCheck::Never
-        };
+        let check = watch.look(
+            unlocked,
+            daemon.settings().lock_timeout,
+            &daemon.activity,
+            SystemTime::now(),
+        );
         let wait = match check {
             LockCheck::LockNow => {
                 tracing::info!("lock timeout reached");
                 daemon.vault.lock();
+                watch.locked();
                 continue;
             }
             LockCheck::After(wait) => Some(wait),
@@ -594,7 +685,56 @@ async fn lock_timer(daemon: Arc<Daemon>) {
         tokio::select! {
             () = sleep_or_forever(wait) => {}
             () = daemon.lock_wake.notified() => {}
-            moved = changes.changed() => if moved.is_err() { return },
+        }
+    }
+}
+
+/// Kills the UI when its main loop has not got to event `seq` in time, then a new one starts.
+async fn watch_answer(daemon: Arc<Daemon>, seq: u64) {
+    loop {
+        tokio::time::sleep(daemon.hang.after).await;
+        if daemon.quitting.load(Ordering::SeqCst) {
+            return;
+        }
+        let acked = daemon.hang.acked.load(Ordering::SeqCst);
+        match judge(acked, seq, daemon.hang.modal.load(Ordering::SeqCst)) {
+            Hang::Answered => return,
+            Hang::Wait => {}
+            Hang::Kill => {
+                daemon.hang.respawn.store(true, Ordering::SeqCst);
+                if !daemon.launcher.kill() {
+                    daemon.hang.respawn.store(false, Ordering::SeqCst);
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// Counts that tell a hung UI process from a slow one.
+struct HangWatch {
+    after: Duration,
+    /// Events queued for the UI since the daemon started.
+    delivered: AtomicU64,
+    /// Events some UI's main loop got through (or that went with a UI that exited).
+    acked: AtomicU64,
+    /// `delivered` minus what was still queued when the last UI exited: where the running UI's
+    /// own count starts.
+    base: AtomicU64,
+    modal: AtomicBool,
+    /// The watchdog killed the UI: start a new one when it is reaped.
+    respawn: AtomicBool,
+}
+
+impl HangWatch {
+    const fn new(after: Duration) -> Self {
+        Self {
+            after,
+            delivered: AtomicU64::new(0),
+            acked: AtomicU64::new(0),
+            base: AtomicU64::new(0),
+            modal: AtomicBool::new(false),
+            respawn: AtomicBool::new(false),
         }
     }
 }
@@ -603,5 +743,37 @@ async fn sleep_or_forever(wait: Option<Duration>) {
     match wait {
         Some(wait) => tokio::time::sleep(wait).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn who(email: &str) -> Identity {
+        Identity {
+            server: url::Url::parse("https://vault.example").expect("url"),
+            email: email.to_owned(),
+        }
+    }
+
+    #[test]
+    fn only_a_usable_network_triggers_a_retry() {
+        assert!(retries_on(NetworkEvent::Usable));
+        assert!(!retries_on(NetworkEvent::Unusable));
+    }
+
+    #[test]
+    fn lock_logout_and_switch_end_the_session_but_unlock_does_not() {
+        let alice = who("alice@example.com");
+        let bob = who("bob@example.com");
+        assert!(left_session(Some(&alice), None), "lock or logout");
+        assert!(
+            left_session(Some(&alice), Some(&bob)),
+            "switch seen as one tick"
+        );
+        assert!(!left_session(None, Some(&alice)), "unlock");
+        assert!(!left_session(Some(&alice), Some(&alice)), "same session");
+        assert!(!left_session(None, None), "stays locked");
     }
 }

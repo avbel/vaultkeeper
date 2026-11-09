@@ -55,6 +55,9 @@ impl TestOverrides {
 
 pub fn run(launch: Launch) -> anyhow::Result<()> {
     let overrides = TestOverrides::from_env();
+    if launch == Launch::Tray {
+        refresh_login_agent();
+    }
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
     let instance = match single_instance::acquire_in(&data_dir, routing::forwarded(launch), {
@@ -106,6 +109,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         .then(|| Shell::install(&daemon))
         .transpose()?;
     let power = watch_power(&daemon);
+    let network = watch_network(&daemon);
     let signals = runtime.spawn(quit_on_signal());
     if let Some(effect) = routing::startup(
         launch,
@@ -118,13 +122,22 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     let ran = slint::run_event_loop_until_quit().context("run the event loop");
     runtime.block_on(daemon.shutdown());
     signals.abort();
-    drop((shell, power));
+    drop((shell, power, network));
     drop(instance);
     if forwarder.join().is_err() {
         tracing::error!("second-launch listener panicked");
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
     ran
+}
+
+/// Gives a login agent written by an older version the restart-after-crash setting.
+fn refresh_login_agent() {
+    match bwl_platform::autostart::refresh() {
+        Ok(true) => tracing::info!("login item updated to restart after a crash"),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(%error, "cannot check the login item"),
+    }
 }
 
 /// The main-thread parts: tray icon and global hotkey.
@@ -198,6 +211,32 @@ fn watch_power(daemon: &Arc<Daemon>) -> Option<bwl_platform::power::PowerWatcher
         });
     if let Err(error) = spawned {
         tracing::warn!(%error, "cannot watch power events");
+    }
+    Some(watcher)
+}
+
+/// Network path changes, on a small thread: an offline vault probes the server as soon as a
+/// network is usable again instead of waiting for its next retry.
+fn watch_network(daemon: &Arc<Daemon>) -> Option<bwl_platform::network::NetworkWatcher> {
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let watcher = match bwl_platform::network::subscribe(events_tx) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            tracing::warn!(%error, "no network change events");
+            return None;
+        }
+    };
+    let daemon = Arc::clone(daemon);
+    let spawned = std::thread::Builder::new()
+        .name("bw-lite-network".to_owned())
+        .spawn(move || {
+            for event in events {
+                tracing::debug!(?event, "network event");
+                daemon.network_event(event);
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "cannot watch network changes");
     }
     Some(watcher)
 }

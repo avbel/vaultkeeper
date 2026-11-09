@@ -1,4 +1,4 @@
-use std::{os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc};
+use std::{os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc, time::Duration};
 
 use bwl_vault::{
     Error, Result, TotpCode, VaultService,
@@ -308,6 +308,21 @@ impl RemoteVault {
         touch_id(&self.call_blocking(Call::UnlockWithTouchId {
             account_id: account_id.to_owned(),
         })?)
+    }
+}
+
+impl RemoteVault {
+    /// The daemon copies `text` and clears it after `clear_after`, even if this process exits
+    /// first. Blocking, but only for one round-trip.
+    pub fn copy_to_clipboard(&self, text: &str, clear_after: Option<Duration>) -> Result<()> {
+        unit(&self.call_blocking(Call::CopyToClipboard {
+            text: Zeroizing::new(text.to_owned()),
+            clear_after_secs: clear_after.map(|after| after.as_secs()),
+        })?)
+    }
+
+    pub fn clear_clipboard(&self) -> Result<()> {
+        unit(&self.call_blocking(Call::ClearClipboard)?)
     }
 }
 

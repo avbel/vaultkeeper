@@ -542,15 +542,17 @@ async fn dropping_the_listener_future_closes_the_socket() {
     assert!(closed_at.duration_since(dropped) < Duration::from_secs(2));
 }
 
+type Token = std::future::Ready<Option<Zeroizing<String>>>;
+
 fn provider(
     tokens: &'static [&'static str],
 ) -> (
-    impl FnMut() -> std::future::Ready<Option<Zeroizing<String>>>,
+    impl FnMut(Option<Zeroizing<String>>) -> Token,
     Arc<AtomicUsize>,
 ) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
-    let next_token = move || {
+    let next_token = move |_rejected| {
         let index = counter.fetch_add(1, Ordering::SeqCst);
         let token = tokens
             .get(index)
@@ -686,6 +688,46 @@ async fn an_expired_token_is_replaced_by_asking_the_provider_again() {
 }
 
 #[tokio::test]
+async fn the_provider_learns_which_token_the_hub_rejected() {
+    let hub = hub::spawn_rejecting(
+        |index, _| (index == 0).then_some(401),
+        |index, mut socket| async move {
+            if index == 1 {
+                // Ends this connection, so the next attempt follows a plain failure.
+                complete_handshake(&mut socket).await;
+                socket.close(None).await.unwrap();
+                drain(&mut socket).await;
+            } else {
+                serve_updates(socket, vec![]).await;
+            }
+        },
+    )
+    .await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let token = move |rejected: Option<Zeroizing<String>>| {
+        let mut seen = record.lock().unwrap();
+        seen.push(rejected.map(|token| token.to_string()));
+        std::future::ready(Some(Zeroizing::new(format!("t{}", seen.len()))))
+    };
+    let (tx, mut rx) = mpsc::channel(4);
+    let base = hub.base();
+    let options = reconnect_options(20, 100, 10_000);
+    let runner = tokio::spawn(async move { run_with_reconnect(&base, token, tx, &options).await });
+
+    assert_eq!(next(&mut rx).await, Notification::Connected);
+    assert_eq!(next(&mut rx).await, Notification::Connected);
+    runner.abort();
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen[..3],
+        [None, Some("t1".to_owned()), None],
+        "only the 401 hands the rejected token back"
+    );
+}
+
+#[tokio::test]
 async fn provider_returning_none_stops_the_loop_without_connecting() {
     let hub = closing_hub().await;
     let (tx, _rx) = mpsc::channel(4);
@@ -694,7 +736,7 @@ async fn provider_returning_none_stops_the_loop_without_connecting() {
 
     timeout(
         WAIT,
-        run_with_reconnect(&base, || std::future::ready(None), tx, &options),
+        run_with_reconnect(&base, |_| std::future::ready(None), tx, &options),
     )
     .await
     .expect("loop should end when logged out");

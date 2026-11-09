@@ -14,18 +14,44 @@ use crate::{
     normalize::{normalize_keys, parse_normalized},
 };
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Upper bound for attachment transfers. The transfer client has no read timeout because reqwest
-/// applies it to the whole request-body upload until response headers arrive, which aborted any
-/// upload slower than 30 s.
-pub(crate) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(3600);
-/// `/api/sync` of a large vault on a slow link: the server may take long before the first byte
-/// and the body is up to `MAX_BODY_BYTES`.
-pub(crate) const SYNC_TIMEOUT: Duration = Duration::from_secs(600);
-const MAX_BODY_BYTES: usize = 256 << 20;
+/// Limits of the API client. The defaults are the production values; tests shrink them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpTimeouts {
+    pub connect: Duration,
+    /// Whole-request limit of the ordinary endpoints (login, writes, folders).
+    pub request: Duration,
+    /// Longest silence while waiting for an ordinary endpoint's response.
+    pub read: Duration,
+    /// Upper bound for attachment transfers. The transfer client has no read timeout because
+    /// reqwest applies it to the whole request-body upload until response headers arrive, which
+    /// aborted any upload slower than 30 s.
+    pub transfer: Duration,
+    /// `/api/sync` of a large vault on a slow link: the server may take long before the first
+    /// byte and the body is up to `MAX_SYNC_BODY_BYTES`.
+    pub sync: Duration,
+}
+
+impl Default for HttpTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(10),
+            request: Duration::from_secs(30),
+            read: Duration::from_secs(30),
+            transfer: Duration::from_secs(3600),
+            sync: Duration::from_secs(600),
+        }
+    }
+}
+
+/// `/api/sync` only: the whole vault in one JSON document. Parsing goes through a `Value`, so
+/// the peak is a few times this.
+pub(crate) const MAX_SYNC_BODY_BYTES: usize = 256 << 20;
+/// Every other endpoint answers with one cipher, folder or token; Vaultwarden caps notes at
+/// 10 000 characters, so this is generous.
+const MAX_BODY_BYTES: usize = 8 << 20;
 const MAX_ERROR_BODY_BYTES: usize = 64 << 10;
+/// Server text shown to the user: one line, and short enough for a toast or a form error.
+const MAX_MESSAGE_CHARS: usize = 300;
 
 /// Vaultwarden hides every SSH key cipher (type 5) from `/api/sync` unless this header parses as
 /// semver >= 2024.12.0, so reporting the crate version (0.1.0) would silently drop them.
@@ -35,6 +61,7 @@ pub(crate) struct Transport {
     base: Url,
     http: reqwest::Client,
     transfer: reqwest::Client,
+    pub(crate) timeouts: HttpTimeouts,
 }
 
 pub(crate) struct Reply {
@@ -42,8 +69,17 @@ pub(crate) struct Reply {
     pub(crate) body: Vec<u8>,
 }
 
+/// The TLS stack and redirect policy of every client this crate builds.
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .tls_backend_rustls()
+        .user_agent(concat!("bw-lite/", env!("CARGO_PKG_VERSION")))
+        // Credentials and tokens must only ever go to the address the user configured.
+        .redirect(redirect::Policy::none())
+}
+
 impl Transport {
-    pub(crate) fn new(mut base: Url, device_type: u8) -> Result<Self> {
+    pub(crate) fn new(mut base: Url, device_type: u8, timeouts: HttpTimeouts) -> Result<Self> {
         if base.cannot_be_a_base() {
             return Err(ParseError::RelativeUrlWithCannotBeABaseBase.into());
         }
@@ -63,23 +99,20 @@ impl Transport {
         );
 
         let builder = || {
-            reqwest::Client::builder()
-                .tls_backend_rustls()
-                .user_agent(concat!("bw-lite/", env!("CARGO_PKG_VERSION")))
+            client_builder()
                 .default_headers(headers.clone())
-                .connect_timeout(CONNECT_TIMEOUT)
-                // Credentials and tokens must only ever go to the address the user configured.
-                .redirect(redirect::Policy::none())
+                .connect_timeout(timeouts.connect)
         };
         let http = builder()
-            .timeout(REQUEST_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
+            .timeout(timeouts.request)
+            .read_timeout(timeouts.read)
             .build()?;
         let transfer = builder().build()?;
         Ok(Self {
             base,
             http,
             transfer,
+            timeouts,
         })
     }
 
@@ -137,8 +170,17 @@ impl Transport {
     }
 
     pub(crate) async fn execute(&self, request: RequestBuilder) -> Result<Reply> {
+        self.execute_capped(request, MAX_BODY_BYTES).await
+    }
+
+    /// Like [`Transport::execute`] with a different cap for a successful body.
+    pub(crate) async fn execute_capped(
+        &self,
+        request: RequestBuilder,
+        max_body_bytes: usize,
+    ) -> Result<Reply> {
         let response = request.send().await?;
-        read_reply(response).await
+        read_reply(response, max_body_bytes).await
     }
 
     /// Sends a request whose URL carries a secret (attachment download tokens) and returns the
@@ -148,15 +190,15 @@ impl Transport {
         if response.status().is_success() {
             return Ok(response);
         }
-        Err(read_reply(response).await?.failure())
+        Err(read_reply(response, MAX_BODY_BYTES).await?.failure())
     }
 }
 
-async fn read_reply(mut response: Response) -> Result<Reply> {
+async fn read_reply(mut response: Response, max_body_bytes: usize) -> Result<Reply> {
     let status = response.status();
     let success = status.is_success();
     let limit = if success {
-        MAX_BODY_BYTES
+        max_body_bytes
     } else {
         MAX_ERROR_BODY_BYTES
     };
@@ -219,12 +261,37 @@ pub(crate) fn error_message(status: StatusCode, body: &[u8]) -> String {
     if let Ok(mut value) = serde_json::from_slice::<Value>(body) {
         normalize_keys(&mut value);
         if let Some(message) = message_candidates(&value).next() {
-            return message.to_owned();
+            return one_line(message);
         }
     }
     status
         .canonical_reason()
         .map_or_else(|| format!("HTTP {}", status.as_u16()), str::to_owned)
+}
+
+/// Collapses whitespace and control characters (a server can send a stack trace) and cuts the
+/// text at [`MAX_MESSAGE_CHARS`].
+fn one_line(text: &str) -> String {
+    let mut line = String::with_capacity(text.len().min(MAX_MESSAGE_CHARS * 4));
+    let words = text
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|word| !word.is_empty());
+    let mut chars = 0;
+    for word in words {
+        if chars > 0 {
+            line.push(' ');
+            chars += 1;
+        }
+        for c in word.chars() {
+            if chars == MAX_MESSAGE_CHARS {
+                line.push('…');
+                return line;
+            }
+            line.push(c);
+            chars += 1;
+        }
+    }
+    line
 }
 
 pub(crate) fn message_candidates(value: &Value) -> impl Iterator<Item = &str> {
@@ -245,7 +312,7 @@ mod tests {
     use super::*;
 
     fn transport(base: &str) -> Transport {
-        Transport::new(Url::parse(base).unwrap(), 7).unwrap()
+        Transport::new(Url::parse(base).unwrap(), 7, HttpTimeouts::default()).unwrap()
     }
 
     #[test]
@@ -288,7 +355,11 @@ mod tests {
 
     #[test]
     fn non_base_urls_are_rejected() {
-        let result = Transport::new(Url::parse("mailto:a@b.example").unwrap(), 7);
+        let result = Transport::new(
+            Url::parse("mailto:a@b.example").unwrap(),
+            7,
+            HttpTimeouts::default(),
+        );
         assert!(matches!(result, Err(Error::Url(_))));
     }
 
@@ -392,6 +463,27 @@ mod tests {
         assert_eq!(
             error_message(StatusCode::from_u16(599).unwrap(), b""),
             "HTTP 599"
+        );
+    }
+
+    #[test]
+    fn server_messages_are_shown_as_one_short_line() {
+        let trace = format!(
+            r#"{{"message":"Internal error:\n\tat db.rs:42\r\n\u0007{}"}}"#,
+            "x".repeat(1000)
+        );
+        let message = error_message(StatusCode::INTERNAL_SERVER_ERROR, trace.as_bytes());
+        assert!(
+            message.starts_with("Internal error: at db.rs:42 xxx"),
+            "{message}"
+        );
+        assert!(!message.contains(['\n', '\r', '\t', '\u{7}']), "{message}");
+        assert_eq!(message.chars().count(), 301);
+        assert!(message.ends_with("x…"), "{message}");
+        let short = r#"{"message":"The client copy of this cipher is out of date."}"#;
+        assert_eq!(
+            error_message(StatusCode::BAD_REQUEST, short.as_bytes()),
+            "The client copy of this cipher is out of date."
         );
     }
 

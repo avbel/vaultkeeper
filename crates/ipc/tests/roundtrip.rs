@@ -478,3 +478,67 @@ async fn secure_note_save_crosses_the_socket() {
     vault.save(None, note).await.expect("save note");
     assert_eq!(daemon.fake.log(), ["save new Bank  fields=1"]);
 }
+
+#[derive(Default)]
+struct FakeClipboard {
+    log: std::sync::Mutex<Vec<String>>,
+}
+
+impl FakeClipboard {
+    fn log(&self) -> Vec<String> {
+        self.log.lock().expect("log").clone()
+    }
+}
+
+impl bwl_ipc::ClipboardHost for FakeClipboard {
+    fn copy(
+        &self,
+        text: &str,
+        clear_after: Option<std::time::Duration>,
+    ) -> std::result::Result<(), String> {
+        if text == "refused" {
+            return Err("pasteboard refused".to_owned());
+        }
+        self.log
+            .lock()
+            .expect("log")
+            .push(format!("copy {text} {clear_after:?}"));
+        Ok(())
+    }
+
+    fn clear_if_ours(&self) {
+        self.log.lock().expect("log").push("clear".to_owned());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copies_and_clears_run_in_the_daemon_clipboard() {
+    let clipboard = Arc::new(FakeClipboard::default());
+    let options = ServeOptions::new()
+        .expect("options")
+        .with_clipboard(Arc::clone(&clipboard) as Arc<dyn bwl_ipc::ClipboardHost>);
+    let daemon = Daemon::start_with(FakeVault::new(locked(), 0), options).await;
+    let (vault, _events) = daemon.connect().await;
+    vault
+        .copy_to_clipboard("hunter2", Some(std::time::Duration::from_secs(30)))
+        .expect("copy");
+    vault.copy_to_clipboard("kept", None).expect("copy");
+    vault.clear_clipboard().expect("clear");
+    assert_eq!(
+        clipboard.log(),
+        ["copy hunter2 Some(30s)", "copy kept None", "clear"]
+    );
+    let refused = vault
+        .copy_to_clipboard("refused", None)
+        .expect_err("the daemon's error comes back");
+    assert!(
+        refused.to_string().contains("pasteboard refused"),
+        "{refused}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_without_a_clipboard_refuses_copies() {
+    let (_daemon, vault) = unlocked_pair().await;
+    assert!(vault.copy_to_clipboard("hunter2", None).is_err());
+}

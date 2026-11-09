@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
+use bw_lite::os::log_file::{BoundedLog, LOG_CAP, log_dir};
 use bw_lite::{
     SshApprovalRequest, UiCommand,
     cli::{self, Mode},
@@ -12,13 +13,14 @@ use tokio::sync::{mpsc, oneshot};
 
 fn main() -> anyhow::Result<()> {
     bwl_platform::hardening::harden_process();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-    let args = cli::parse(std::env::args().skip(1))?;
+    let args = cli::parse(std::env::args().skip(1));
+    let log_name = match args.as_ref().map(cli::Args::mode) {
+        Ok(Mode::Daemon(_)) => Some("daemon"),
+        Ok(Mode::Ui { .. }) => Some("ui"),
+        Ok(Mode::Mock) | Err(_) => None,
+    };
+    init_logging(log_name);
+    let args = args?;
     if args.help {
         tracing::info!("{}", cli::USAGE);
         return Ok(());
@@ -28,6 +30,46 @@ fn main() -> anyhow::Result<()> {
         Mode::Ui { first_unlock } => bw_lite::ui_process::run(first_unlock),
         Mode::Daemon(launch) => bw_lite::daemon::run(launch),
     }
+}
+
+/// stderr, plus the bounded log file for the daemon and the UI process (stderr goes nowhere when
+/// launchd starts them).
+fn init_logging(file_name: Option<&str>) {
+    use tracing_subscriber::{EnvFilter, Layer as _, layer::SubscriberExt as _};
+
+    let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let file = file_name.and_then(|name| {
+        let dir = log_dir()?;
+        match BoundedLog::open(&dir, name, LOG_CAP) {
+            Ok(log) => Some(log),
+            Err(error) => {
+                // No subscriber yet, and this is the only way left to say it.
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("bw-lite: no log file in {}: {error}", dir.display());
+                }
+                None
+            }
+        }
+    });
+    let file_layer = file.map(|log| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(log))
+            .with_filter(filter())
+    });
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter()))
+        .with(file_layer);
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        tracing::warn!("a logger was already installed");
+    }
+    // Release builds abort on panic; this puts the reason into the log file before they do.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(%info, "panic");
+        default_hook(info);
+    }));
 }
 
 /// `--mock`: the UI alone, in one process with its own tray, on the built-in mock vault.

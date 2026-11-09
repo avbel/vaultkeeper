@@ -3,11 +3,16 @@
 //!
 //! Only a SHA-256 of the last copied text is kept. One background thread per [`SecretClipboard`]
 //! sleeps until the next deadline; it never polls.
+//!
+//! A clear is due when either the monotonic or the wall clock passed its deadline: the monotonic
+//! clock stops while the Mac sleeps and the wall clock can be set back, and clearing early is
+//! harmless where clearing late is the defect. Call [`SecretClipboard::recheck`] on wake, because
+//! the sleeping thread's timeout does not advance during system sleep either.
 
 use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use sha2::{Digest as _, Sha256};
@@ -96,27 +101,60 @@ fn digest(text: &str) -> Digest {
     Sha256::digest(text.as_bytes()).into()
 }
 
+/// Both clocks at one moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Now {
+    monotonic: Instant,
+    wall: SystemTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Deadline {
+    monotonic: Instant,
+    wall: SystemTime,
+}
+
+impl Deadline {
+    fn after(now: Now, delay: Duration) -> Option<Self> {
+        Some(Self {
+            monotonic: now.monotonic.checked_add(delay)?,
+            wall: now.wall.checked_add(delay)?,
+        })
+    }
+
+    fn passed(&self, now: Now) -> bool {
+        self.monotonic <= now.monotonic || self.wall <= now.wall
+    }
+
+    /// The shorter of the two remaining waits; zero once passed.
+    fn remaining(&self, now: Now) -> Duration {
+        let monotonic = self.monotonic.saturating_duration_since(now.monotonic);
+        let wall = self.wall.duration_since(now.wall).unwrap_or_default();
+        monotonic.min(wall)
+    }
+}
+
 /// The last value we copied and when to clear it. Pure, so tests drive it with explicit instants.
 #[derive(Debug, Default)]
 struct Schedule {
     last_copied: Option<Digest>,
-    deadline: Option<Instant>,
+    deadline: Option<Deadline>,
 }
 
 impl Schedule {
     /// A copy replaces whatever was pending; `None` means "keep until replaced".
-    fn copied(&mut self, text: &str, clear_after: Option<Duration>, now: Instant) {
+    fn copied(&mut self, text: &str, clear_after: Option<Duration>, now: Now) {
         self.last_copied = Some(digest(text));
-        self.deadline = clear_after.and_then(|after| now.checked_add(after));
+        self.deadline = clear_after.and_then(|after| Deadline::after(now, after));
     }
 
-    const fn next_deadline(&self) -> Option<Instant> {
+    const fn next_deadline(&self) -> Option<Deadline> {
         self.deadline
     }
 
     /// The digest to clear if the deadline has passed.
-    fn take_due(&mut self, now: Instant) -> Option<Digest> {
-        if self.deadline.is_some_and(|deadline| deadline <= now) {
+    fn take_due(&mut self, now: Now) -> Option<Digest> {
+        if self.deadline.is_some_and(|deadline| deadline.passed(now)) {
             return self.take_now();
         }
         None
@@ -128,6 +166,9 @@ impl Schedule {
         self.last_copied.take()
     }
 }
+
+/// The wall clock; tests substitute one they can move forward without waiting.
+pub type WallClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClearOutcome {
@@ -153,11 +194,19 @@ struct State<B> {
 struct Shared<B> {
     state: Mutex<State<B>>,
     wake: Condvar,
+    wall: WallClock,
 }
 
 impl<B> Shared<B> {
     fn lock(&self) -> MutexGuard<'_, State<B>> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn now(&self) -> Now {
+        Now {
+            monotonic: Instant::now(),
+            wall: (self.wall)(),
+        }
     }
 }
 
@@ -174,6 +223,10 @@ impl SecretClipboard {
 
 impl<B: ClipboardBackend> SecretClipboard<B> {
     pub fn with_backend(backend: B) -> Result<Self> {
+        Self::with_clock(backend, Arc::new(SystemTime::now))
+    }
+
+    pub fn with_clock(backend: B, wall: WallClock) -> Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 backend,
@@ -181,6 +234,7 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
                 shutdown: false,
             }),
             wake: Condvar::new(),
+            wall,
         });
         let worker = Arc::clone(&shared);
         let clearer = std::thread::Builder::new()
@@ -197,14 +251,14 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
     pub fn copy(&self, text: &str, clear_after: Option<Duration>) -> Result<()> {
         let mut state = self.shared.lock();
         state.backend.set_secret(text)?;
-        state.schedule.copied(text, clear_after, Instant::now());
+        state.schedule.copied(text, clear_after, self.shared.now());
         drop(state);
         self.shared.wake.notify_one();
         Ok(())
     }
 
     /// Clears the clipboard now if it still holds our last copy and cancels the pending clear.
-    /// Returns whether it cleared. Used on lock and logout.
+    /// Returns whether it cleared.
     pub fn clear_if_ours(&self) -> Result<bool> {
         let mut state = self.shared.lock();
         let Some(ours) = state.schedule.take_now() else {
@@ -212,6 +266,11 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
         };
         let outcome = clear_if_holds(&mut state.backend, &ours)?;
         Ok(outcome == ClearOutcome::Cleared)
+    }
+
+    /// Makes the clearer look at the clocks again; call it after the system woke from sleep.
+    pub fn recheck(&self) {
+        self.shared.wake.notify_one();
     }
 }
 
@@ -230,16 +289,16 @@ impl<B: ClipboardBackend> Drop for SecretClipboard<B> {
 fn run_clearer<B: ClipboardBackend>(shared: &Shared<B>) {
     let mut state = shared.lock();
     while !state.shutdown {
-        let now = Instant::now();
+        let now = shared.now();
         state = match state.schedule.next_deadline() {
             None => shared
                 .wake
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner),
-            Some(deadline) if deadline > now => {
+            Some(deadline) if !deadline.passed(now) => {
                 let (state, _) = shared
                     .wake
-                    .wait_timeout(state, deadline - now)
+                    .wait_timeout(state, deadline.remaining(now))
                     .unwrap_or_else(PoisonError::into_inner);
                 state
             }
@@ -320,42 +379,125 @@ mod tests {
         condition()
     }
 
+    fn start() -> Now {
+        Now {
+            monotonic: Instant::now(),
+            wall: SystemTime::UNIX_EPOCH + Duration::from_secs(1_762_600_000),
+        }
+    }
+
+    /// Both clocks moved on by `seconds`.
+    fn later(now: Now, seconds: u64) -> Now {
+        let by = Duration::from_secs(seconds);
+        Now {
+            monotonic: now.monotonic + by,
+            wall: now.wall + by,
+        }
+    }
+
+    /// The daemon copies from a blocking-pool thread, not a main thread. Touches the real
+    /// pasteboard, so it only runs on request:
+    /// `cargo test -p bwl-platform real_pasteboard -- --ignored` (save your clipboard first).
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "uses the real pasteboard"]
+    fn real_pasteboard_copy_and_clear_from_worker_threads() {
+        let probe = "bw-lite clipboard probe";
+        let clipboard = std::thread::spawn(move || {
+            let clipboard = SecretClipboard::new().expect("pasteboard");
+            clipboard
+                .copy(probe, Some(Duration::from_millis(300)))
+                .expect("copy");
+            clipboard
+        })
+        .join()
+        .expect("copy thread");
+        let mut reader = SystemClipboard::new().expect("pasteboard");
+        assert_eq!(
+            reader.text().expect("read").as_deref().map(String::as_str),
+            Some(probe)
+        );
+        assert!(
+            wait_until(|| reader.text().expect("read").is_none()),
+            "cleared by the clearer thread"
+        );
+        drop(clipboard);
+    }
+
     #[test]
     fn schedule_is_due_exactly_at_the_deadline() {
-        let t0 = Instant::now();
+        let t0 = start();
         let mut schedule = Schedule::default();
         schedule.copied("hunter2", Some(THIRTY_SECONDS), t0);
-        assert_eq!(schedule.next_deadline(), Some(t0 + THIRTY_SECONDS));
-        assert_eq!(schedule.take_due(t0 + Duration::from_secs(29)), None);
         assert_eq!(
-            schedule.take_due(t0 + THIRTY_SECONDS),
+            schedule
+                .next_deadline()
+                .map(|deadline| deadline.remaining(t0)),
+            Some(THIRTY_SECONDS)
+        );
+        assert_eq!(schedule.take_due(later(t0, 29)), None);
+        assert_eq!(schedule.take_due(later(t0, 30)), Some(digest("hunter2")));
+        assert_eq!(schedule.next_deadline(), None);
+        assert_eq!(schedule.take_due(later(t0, 60)), None);
+    }
+
+    #[test]
+    fn time_asleep_counts_although_the_monotonic_clock_stood_still() {
+        let t0 = start();
+        let mut schedule = Schedule::default();
+        schedule.copied("hunter2", Some(THIRTY_SECONDS), t0);
+        let after_an_hour_asleep = Now {
+            monotonic: t0.monotonic + Duration::from_secs(1),
+            wall: t0.wall + Duration::from_secs(3600),
+        };
+        assert_eq!(
+            schedule.take_due(after_an_hour_asleep),
             Some(digest("hunter2"))
         );
-        assert_eq!(schedule.next_deadline(), None);
-        assert_eq!(schedule.take_due(t0 + Duration::from_secs(60)), None);
+    }
+
+    #[test]
+    fn a_wall_clock_set_back_does_not_postpone_the_clear() {
+        let t0 = start();
+        let mut schedule = Schedule::default();
+        schedule.copied("hunter2", Some(THIRTY_SECONDS), t0);
+        let clock_set_back_an_hour = Now {
+            monotonic: t0.monotonic + THIRTY_SECONDS,
+            wall: t0.wall - Duration::from_secs(3600),
+        };
+        let deadline = schedule.next_deadline().expect("pending");
+        assert_eq!(
+            deadline.remaining(Now {
+                monotonic: t0.monotonic + Duration::from_secs(10),
+                ..clock_set_back_an_hour
+            }),
+            Duration::from_secs(20),
+            "waits for the shorter clock"
+        );
+        assert_eq!(
+            schedule.take_due(clock_set_back_an_hour),
+            Some(digest("hunter2"))
+        );
     }
 
     #[test]
     fn a_new_copy_replaces_the_pending_clear() {
-        let t0 = Instant::now();
+        let t0 = start();
         let mut schedule = Schedule::default();
         schedule.copied("first", Some(THIRTY_SECONDS), t0);
-        schedule.copied("second", Some(THIRTY_SECONDS), t0 + Duration::from_secs(10));
-        assert_eq!(schedule.take_due(t0 + THIRTY_SECONDS), None);
-        assert_eq!(
-            schedule.take_due(t0 + Duration::from_secs(40)),
-            Some(digest("second"))
-        );
+        schedule.copied("second", Some(THIRTY_SECONDS), later(t0, 10));
+        assert_eq!(schedule.take_due(later(t0, 30)), None);
+        assert_eq!(schedule.take_due(later(t0, 40)), Some(digest("second")));
     }
 
     #[test]
     fn a_copy_without_timeout_cancels_the_pending_clear() {
-        let t0 = Instant::now();
+        let t0 = start();
         let mut schedule = Schedule::default();
         schedule.copied("first", Some(THIRTY_SECONDS), t0);
         schedule.copied("second", None, t0);
         assert_eq!(schedule.next_deadline(), None);
-        assert_eq!(schedule.take_due(t0 + Duration::from_secs(3600)), None);
+        assert_eq!(schedule.take_due(later(t0, 3600)), None);
         assert_eq!(schedule.take_now(), Some(digest("second")));
     }
 
@@ -407,6 +549,29 @@ mod tests {
         assert!(
             wait_until(|| fake.content().is_none()),
             "clipboard was not cleared"
+        );
+    }
+
+    #[test]
+    fn recheck_after_wake_clears_when_the_wall_clock_passed_the_deadline() {
+        let fake = FakeClipboard::default();
+        let wall = Arc::new(Mutex::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_762_600_000),
+        ));
+        let clock = Arc::clone(&wall);
+        let clipboard = SecretClipboard::with_clock(
+            fake.clone(),
+            Arc::new(move || *clock.lock().expect("clock")),
+        )
+        .expect("clipboard");
+        clipboard
+            .copy("hunter2", Some(THIRTY_SECONDS))
+            .expect("copy");
+        *wall.lock().expect("clock") += Duration::from_secs(3600);
+        clipboard.recheck();
+        assert!(
+            wait_until(|| fake.content().is_none()),
+            "an hour asleep must clear a 30 s copy on wake"
         );
     }
 

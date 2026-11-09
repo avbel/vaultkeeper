@@ -141,10 +141,22 @@ fn is_set(field: Option<&str>) -> bool {
     field.is_some_and(|text| !text.is_empty())
 }
 
+/// Per-character lowercase with the Greek final sigma folded into σ. `str::to_lowercase` picks
+/// ς or σ from the word position, so the same word could lowercase differently in an item name
+/// and in a query typed in capitals or cut off mid-word; folding makes both sides agree.
 fn push_lowercase(out: &mut String, text: &str) {
     for c in text.chars() {
-        out.extend(c.to_lowercase());
+        out.extend(
+            c.to_lowercase()
+                .map(|lower| if lower == 'ς' { 'σ' } else { lower }),
+        );
     }
+}
+
+fn fold_query(query: &str) -> String {
+    let mut folded = String::with_capacity(query.len());
+    push_lowercase(&mut folded, query.trim());
+    folded
 }
 
 struct ListFields {
@@ -413,7 +425,7 @@ impl VaultData {
         filter: &Filter,
         mru: &VecDeque<ItemId>,
     ) -> Arc<[ItemSummary]> {
-        let query = query.trim().to_lowercase();
+        let query = fold_query(query);
         if query.is_empty() {
             return self.recent_first(filter, mru);
         }
@@ -704,6 +716,41 @@ mod tests {
             data.search("nothing like this", &Filter::default(), &none)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn greek_final_sigma_matches_in_any_case_and_position() {
+        let keys = ring();
+        let data = VaultData::build(
+            testutil::sync(
+                vec![
+                    login("odysseus", "Οδυσσεύς", "u", "p", &keys),
+                    login("caps", "ΟΔΥΣΣΕΥΣ", "u", "p", &keys),
+                ],
+                vec![],
+            ),
+            &keys,
+        );
+        let none = VecDeque::new();
+        // A prefix typed in capitals: `str::to_lowercase` would end it in ς and miss both.
+        let prefix = data.search("ΟΔΥΣ", &Filter::default(), &none);
+        let mut both = ids(&prefix);
+        both.sort_unstable();
+        assert_eq!(both, ["caps", "odysseus"]);
+        for query in ["ΟΔΥΣΣΕΎΣ", "Οδυσσεύς", "οδυσσεύσ"] {
+            assert_eq!(
+                ids(&data.search(query, &Filter::default(), &none)),
+                ["odysseus"],
+                "{query}"
+            );
+        }
+        for query in ["ΟΔΥΣΣΕΥΣ", "οδυσσευς"] {
+            assert_eq!(
+                ids(&data.search(query, &Filter::default(), &none)),
+                ["caps"],
+                "{query}"
+            );
+        }
     }
 
     #[test]

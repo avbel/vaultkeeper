@@ -12,6 +12,8 @@
 //!   are exactly sized `Zeroizing` vectors, and secret DTOs wipe themselves on drop.
 //! - **No key material on the wire:** Touch ID enrolment and unlock run in the daemon through a
 //!   [`TouchIdBackend`]; the UI never receives the user key or SSH private keys.
+//! - **Clipboard:** copies go to the daemon ([`ClipboardHost`]), which owns the auto-clear timer
+//!   and the "still ours" digest, so a clear survives the UI process exiting or being killed.
 //! - **Calls** are multiplexed by id, so a slow sync does not hold up a search; the daemon runs
 //!   up to 8 at once per connection.
 //! - **Notices** ([`UiNotice`]: settings saved, user activity) go the other way without an answer,
@@ -30,6 +32,7 @@
 compile_error!("bwl-ipc talks over a unix domain socket; only unix targets are supported");
 
 mod client;
+mod clipboard;
 pub mod dto;
 mod error;
 pub mod frame;
@@ -39,6 +42,7 @@ mod server;
 mod touch_id;
 
 pub use client::{EventStream, RemoteVault, SshApproval, UiEvent};
+pub use clipboard::ClipboardHost;
 pub use error::{ConvertError, IpcError, ipc_error};
 pub use peer::{PeerCredentials, PeerVerifier, SameExecutable};
 pub use protocol::{

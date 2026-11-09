@@ -1,8 +1,10 @@
 //! RFC 6238 TOTP. Accepts a bare base32 secret (SHA1/6 digits/30 s), an `otpauth://totp/...` URI
 //! (`secret`, `algorithm`, `digits`, `period`) or `steam://<base32>` (5 chars from the Steam alphabet).
 //!
-//! Unlike the official clients, secrets with characters outside the base32 alphabet are rejected
-//! instead of having those characters silently dropped, so a typo never yields a wrong code.
+//! Spaces and dashes, which issuers use to group a secret for reading, are ignored like the
+//! official clients do. Unlike them, other characters outside the base32 alphabet are rejected
+//! instead of being silently dropped, so a typo never yields a wrong code. `digits` is 1..=10 as
+//! in the official clients (codes shorter than 6 exist, e.g. some 4-digit bank tokens).
 
 use std::borrow::Cow;
 use std::fmt;
@@ -19,7 +21,7 @@ use crate::{Error, Result};
 
 const DEFAULT_DIGITS: u8 = 6;
 const DEFAULT_PERIOD: u32 = 30;
-const MIN_DIGITS: u8 = 6;
+const MIN_DIGITS: u8 = 1;
 const MAX_DIGITS: u8 = 10;
 const STEAM_DIGITS: u8 = 5;
 const STEAM_ALPHABET: &[u8; 26] = b"23456789BCDFGHJKMNPQRTVWXY";
@@ -216,7 +218,7 @@ fn parse_digits(value: &str) -> Result<u8> {
         .parse::<u8>()
         .ok()
         .filter(|digits| (MIN_DIGITS..=MAX_DIGITS).contains(digits))
-        .ok_or(Error::InvalidTotp("digits must be 6..=10"))
+        .ok_or(Error::InvalidTotp("digits must be 1..=10"))
 }
 
 fn parse_period(value: &str) -> Result<u32> {
@@ -233,7 +235,7 @@ fn decode_secret(raw: &str) -> Result<Zeroizing<Vec<u8>>> {
     let mut cleaned = Zeroizing::new(Vec::with_capacity(raw.len()));
     cleaned.extend(
         raw.bytes()
-            .filter(|byte| !byte.is_ascii_whitespace())
+            .filter(|byte| !byte.is_ascii_whitespace() && *byte != b'-')
             .map(|byte| byte.to_ascii_uppercase()),
     );
     while cleaned.last() == Some(&b'=') {
@@ -440,6 +442,39 @@ mod tests {
     }
 
     #[test]
+    fn short_codes_are_the_last_digits_of_the_rfc_value() {
+        // RFC 6238 appendix B, SHA1 at T = 59 s: 94287082.
+        let code = |digits: u8| {
+            code_at(
+                &format!("otpauth://totp/x?secret={B32_SHA1}&digits={digits}"),
+                59,
+            )
+        };
+        assert_eq!(code(5), "87082");
+        assert_eq!(code(4), "7082");
+        assert_eq!(code(1), "2");
+    }
+
+    #[test]
+    fn grouping_dashes_and_spaces_are_ignored() {
+        // Bitwarden SDK vector: WQIQ25BRKZYCJVYP at 2023-01-01T00:00:00Z is 194506.
+        for secret in [
+            "WQIQ-25BR-KZYC-JVYP",
+            "wqiq 25br kzyc jvyp",
+            "WQIQ - 25BR\tKZYC-JVYP",
+            "otpauth://totp/x?secret=WQIQ-25BR-KZYC-JVYP",
+            "steam://WQIQ-25BR-KZYC-JVYP",
+        ] {
+            let expected = if secret.starts_with("steam") {
+                code_at("steam://WQIQ25BRKZYCJVYP", BITWARDEN_TIME)
+            } else {
+                "194506".to_owned()
+            };
+            assert_eq!(code_at(secret, BITWARDEN_TIME), expected, "{secret:?}");
+        }
+    }
+
+    #[test]
     fn ten_digit_code_is_the_zero_padded_truncated_value() {
         // RFC 4226 dynamic truncation at T=1 yields 1094287082 for the SHA1 seed (the 8-digit
         // code 94287082 is its last eight digits).
@@ -578,7 +613,6 @@ mod tests {
     #[test]
     fn rejects_out_of_range_parameters() {
         let params = [
-            "digits=5",
             "digits=11",
             "digits=0",
             "digits=-6",

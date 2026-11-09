@@ -6,8 +6,10 @@ use std::{path::PathBuf, process::Command, str::FromStr};
 use bwl_gen::generator::{
     PassphraseOptions, PasswordOptions, generate_passphrase, generate_password,
 };
+use bwl_ipc::UiNotice;
 use zeroize::Zeroizing;
 
+use super::Notifier;
 use crate::hooks::{
     Autostart, FileDialogs, GlobalHotkey, HookError, HookResult, PasswordGenerator,
     SshAgentControl, SshKeyTool, UrlOpener,
@@ -83,15 +85,30 @@ impl UrlOpener for BrowserOpener {
 }
 
 /// Native panels (rfd); they run modally on the main thread, where the UI calls them.
-pub struct FilePanels;
+/// Native open/save panels. They run modally on the main thread, so the daemon is told while one
+/// is open: its hang watchdog must not kill a UI the user is busy with.
+pub struct FilePanels {
+    pub notify: Notifier,
+}
+
+impl FilePanels {
+    fn modal<T>(&self, show: impl FnOnce() -> T) -> T {
+        (self.notify)(UiNotice::Modal(true));
+        let picked = show();
+        (self.notify)(UiNotice::Modal(false));
+        picked
+    }
+}
 
 impl FileDialogs for FilePanels {
     fn save_file(&self, suggested_name: &str) -> Option<PathBuf> {
         #[cfg(target_os = "macos")]
         {
-            rfd::FileDialog::new()
-                .set_file_name(suggested_name)
-                .save_file()
+            self.modal(|| {
+                rfd::FileDialog::new()
+                    .set_file_name(suggested_name)
+                    .save_file()
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -103,7 +120,7 @@ impl FileDialogs for FilePanels {
     fn open_file(&self) -> Option<PathBuf> {
         #[cfg(target_os = "macos")]
         {
-            rfd::FileDialog::new().pick_file()
+            self.modal(|| rfd::FileDialog::new().pick_file())
         }
         #[cfg(not(target_os = "macos"))]
         {

@@ -158,6 +158,9 @@ impl<S: VaultService> App<S> {
         let has_totp = specs.iter().any(|spec| spec.kind == FieldKind::Totp);
         manager.selected = Some(id.clone());
         manager.edit = None;
+        manager.switch_to = None;
+        manager.window.set_confirm_leave(false);
+        manager.window.set_edit_fields(ModelRc::default());
         manager.detail = Some(Detail {
             revealed: vec![false; specs.len()],
             summary,

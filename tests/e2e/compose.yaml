@@ -2,11 +2,14 @@
 #
 # DOMAIN has to be the exact origin the tests use: attachment download URLs are built from it, and
 # the client refuses to fetch from any other origin.
+#
+# Images are pinned so a new upstream release cannot change the results unnoticed. To bump:
+# pull the new tag, change it below, and run scripts/e2e.sh; keep the change only if it passes.
 name: bwl-e2e
 
 services:
   vaultwarden:
-    image: vaultwarden/server:latest
+    image: vaultwarden/server:1.37.5
     environment:
       DOMAIN: "http://localhost:${VW_PORT:-8098}"
       SIGNUPS_ALLOWED: "true"
@@ -40,7 +43,7 @@ services:
       retries: 30
 
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.33.1
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"

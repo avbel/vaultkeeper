@@ -6,6 +6,7 @@ mod biometrics;
 mod clipboard;
 pub mod fs;
 pub mod layout;
+pub mod log_file;
 mod misc;
 pub mod settings_file;
 
@@ -16,13 +17,13 @@ use bwl_ipc::{RemoteVault, UiNotice};
 pub use biometrics::{
     DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED, TouchId,
 };
-pub use clipboard::SystemClipboard;
+pub use clipboard::{ClipboardKeeper, DaemonClipboard, Keeper, NoClipboard};
 pub use misc::{
     AgentSocket, BrowserOpener, FilePanels, Generator, HotkeyBinding, LaunchAgent, SshKeys, web_url,
 };
 pub use settings_file::SettingsFile;
 
-use crate::hooks::{Clipboard, HookError, HookResult, Hooks, SystemClock};
+use crate::hooks::{Hooks, SystemClock};
 
 /// Sends a notice to the daemon; failures are only logged (the daemon re-reads on its own start).
 pub type Notifier = Arc<dyn Fn(UiNotice) + Send + Sync>;
@@ -33,12 +34,14 @@ impl Hooks {
     pub fn system(data_dir: &Path, notify: &Notifier, daemon: &Arc<RemoteVault>) -> Self {
         let settings_notify = Arc::clone(notify);
         Self {
-            clipboard: system_clipboard(),
+            clipboard: Arc::new(DaemonClipboard::new(Arc::clone(daemon))),
             biometrics: Arc::new(DaemonTouchId::new(data_dir.to_owned(), Arc::clone(daemon))),
             autostart: Arc::new(LaunchAgent),
             hotkey: Arc::new(HotkeyBinding),
             opener: Arc::new(BrowserOpener),
-            files: Arc::new(FilePanels),
+            files: Arc::new(FilePanels {
+                notify: Arc::clone(notify),
+            }),
             generator: Arc::new(Generator),
             settings: Arc::new(SettingsFile::with_after_save(
                 data_dir.join(layout::SETTINGS_FILE),
@@ -53,24 +56,4 @@ impl Hooks {
             clock: Arc::new(SystemClock),
         }
     }
-}
-
-fn system_clipboard() -> Arc<dyn Clipboard> {
-    match SystemClipboard::new() {
-        Ok(clipboard) => Arc::new(clipboard),
-        Err(error) => {
-            tracing::error!(%error, "no clipboard; copy buttons will report it");
-            Arc::new(NoClipboard)
-        }
-    }
-}
-
-struct NoClipboard;
-
-impl Clipboard for NoClipboard {
-    fn copy(&self, _text: &str, _clear_after: Option<std::time::Duration>) -> HookResult<()> {
-        Err(HookError::Unavailable("the clipboard"))
-    }
-
-    fn clear_if_ours(&self) {}
 }

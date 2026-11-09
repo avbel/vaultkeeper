@@ -1,12 +1,15 @@
 //! SSH sign approvals: one prompt at a time, auto-deny after 30 s. A request that arrives while
 //! the vault is locked shows the lock screen first and its prompt after the unlock.
 //!
+//! "Remember for this key until lock" is kept by the daemon, keyed by cipher id: displayed
+//! fingerprints can be empty or shared between items, so the UI must not decide on them.
+//!
 //! "SSH requires Touch ID" is enforced by the daemon after it gets the approval, so a decision
 //! here is final the moment it is made. Every queued request gets its own id, and each prompt's
 //! buttons and timer answer only that id: an event from an old prompt can never decide a newer
 //! request.
 
-use std::{collections::HashSet, collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 
 use bwl_ipc::SshDecision;
 use bwl_vault::{VaultService, model::SessionState};
@@ -41,8 +44,6 @@ pub(super) struct SshQueue {
     next_id: u64,
     pending: VecDeque<Queued>,
     current: Option<Queued>,
-    /// Fingerprints approved with "Remember for this key until lock".
-    remembered: HashSet<String>,
     timeout: Option<Timer>,
 }
 
@@ -79,12 +80,6 @@ impl<S: VaultService> App<S> {
         match self.vault.state() {
             SessionState::LoggedOut => {
                 reply(request, SshDecision::DENY);
-                return;
-            }
-            SessionState::Unlocked { .. }
-                if self.ssh.borrow().remembered.contains(&request.fingerprint) =>
-            {
-                reply(request, SshDecision::approve(true));
                 return;
             }
             SessionState::Locked { .. } => {
@@ -169,13 +164,7 @@ impl<S: VaultService> App<S> {
                 return;
             }
             stop_timer(queue.timeout.take());
-            let request = queue.current.take().map(|current| current.request);
-            if let Some(request) = &request
-                && remember
-            {
-                queue.remembered.insert(request.fingerprint.clone());
-            }
-            request
+            queue.current.take().map(|current| current.request)
         };
         if let Some(request) = request {
             reply(request, SshDecision { approved, remember });
@@ -188,11 +177,10 @@ impl<S: VaultService> App<S> {
         self.show_next_ssh_prompt();
     }
 
-    /// Lock, logout and account switch: deny everything pending and forget remembered keys.
+    /// Lock, logout and account switch: deny everything pending.
     pub(super) fn deny_all_ssh(&self) {
         let requests: Vec<SshApprovalRequest> = {
             let mut queue = self.ssh.borrow_mut();
-            queue.remembered.clear();
             stop_timer(queue.timeout.take());
             queue
                 .current

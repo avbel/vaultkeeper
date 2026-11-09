@@ -1,5 +1,5 @@
 //! When the daemon locks the vault: after `lock_timeout` without user activity (wall clock, so
-//! time asleep counts), and on sleep or screen lock when the timeout is set to that.
+//! time asleep counts), and on sleep or screen lock when `lock_on_sleep` is set, independently.
 
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -15,7 +15,7 @@ pub enum LockCheck {
     LockNow,
     /// Look again after this long (the activity may have moved on by then).
     After(Duration),
-    /// No timer: only sleep or screen lock lock the vault.
+    /// No timer (locked, or the timeout is "never").
     Never,
 }
 
@@ -33,16 +33,45 @@ pub fn check(timeout: LockTimeout, last_activity: SystemTime, now: SystemTime) -
     }
 }
 
+/// The lock timer's view of the session between two looks. An unlock it has not seen yet counts
+/// as activity before the timeout is evaluated, so an unlock without keyboard or mouse input (an
+/// SSH request answered with Touch ID after a long idle) never locks again at once, whichever of
+/// the timer and the state loop runs first.
+#[derive(Debug, Default)]
+pub struct LockWatch {
+    saw_unlocked: bool,
+}
+
+impl LockWatch {
+    #[must_use]
+    pub fn look(
+        &mut self,
+        unlocked: bool,
+        timeout: LockTimeout,
+        activity: &Activity,
+        now: SystemTime,
+    ) -> LockCheck {
+        let newly_unlocked = unlocked && !self.saw_unlocked;
+        self.saw_unlocked = unlocked;
+        if !unlocked {
+            return LockCheck::Never;
+        }
+        if newly_unlocked {
+            activity.touch_at(now);
+        }
+        check(timeout, activity.last(), now)
+    }
+
+    /// The timer locked the vault itself.
+    pub const fn locked(&mut self) {
+        self.saw_unlocked = false;
+    }
+}
+
 /// Whether `event` locks the vault right away.
 #[must_use]
-pub const fn locks_on(event: PowerEvent, timeout: LockTimeout) -> bool {
-    matches!(
-        (event, timeout),
-        (
-            PowerEvent::WillSleep | PowerEvent::ScreenLocked,
-            LockTimeout::OnSleep
-        )
-    )
+pub const fn locks_on(event: PowerEvent, lock_on_sleep: bool) -> bool {
+    lock_on_sleep && matches!(event, PowerEvent::WillSleep | PowerEvent::ScreenLocked)
 }
 
 /// The last user action, as unix seconds; updated from any thread without waking the timer.
@@ -58,10 +87,15 @@ impl Activity {
     }
 
     pub fn touch(&self) {
-        let now = SystemTime::now()
+        self.touch_at(SystemTime::now());
+    }
+
+    /// Never moves the last activity back.
+    pub fn touch_at(&self, now: SystemTime) {
+        let seconds = now
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
-        self.0.store(now, Ordering::Relaxed);
+        self.0.fetch_max(seconds, Ordering::Relaxed);
     }
 
     #[must_use]
@@ -109,16 +143,78 @@ mod tests {
     }
 
     #[test]
-    fn on_sleep_has_no_timer_and_locks_on_sleep_and_screen_lock() {
+    fn never_has_no_timer() {
         assert_eq!(
-            check(LockTimeout::OnSleep, at(0), at(99_999)),
+            check(LockTimeout::Never, at(0), at(99_999)),
             LockCheck::Never
         );
-        assert!(locks_on(PowerEvent::WillSleep, LockTimeout::OnSleep));
-        assert!(locks_on(PowerEvent::ScreenLocked, LockTimeout::OnSleep));
-        assert!(!locks_on(PowerEvent::DidWake, LockTimeout::OnSleep));
-        assert!(!locks_on(PowerEvent::ScreenUnlocked, LockTimeout::OnSleep));
-        assert!(!locks_on(PowerEvent::WillSleep, LockTimeout::Minutes(5)));
+    }
+
+    #[test]
+    fn sleep_and_screen_lock_lock_when_the_setting_is_on() {
+        assert!(locks_on(PowerEvent::WillSleep, true));
+        assert!(locks_on(PowerEvent::ScreenLocked, true));
+        assert!(!locks_on(PowerEvent::DidWake, true));
+        assert!(!locks_on(PowerEvent::ScreenUnlocked, true));
+        assert!(!locks_on(PowerEvent::WillSleep, false));
+        assert!(!locks_on(PowerEvent::ScreenLocked, false));
+    }
+
+    fn idle_since(time: SystemTime) -> Activity {
+        let activity = Activity(AtomicU64::new(0));
+        activity.touch_at(time);
+        activity
+    }
+
+    #[test]
+    fn an_unlock_after_a_long_idle_restarts_the_timeout() {
+        let fifteen = LockTimeout::Minutes(15);
+        let activity = idle_since(at(0));
+        let mut watch = LockWatch::default();
+        assert_eq!(
+            watch.look(false, fifteen, &activity, at(1200)),
+            LockCheck::Never
+        );
+        // The state loop has not touched the activity yet: the timer must not lock on the
+        // 20-minute-old value.
+        assert_eq!(
+            watch.look(true, fifteen, &activity, at(1200)),
+            LockCheck::After(Duration::from_mins(15))
+        );
+        assert_eq!(activity.last(), at(1200));
+        assert_eq!(
+            watch.look(true, fifteen, &activity, at(1200 + 900)),
+            LockCheck::LockNow,
+            "idle for the timeout after the unlock"
+        );
+    }
+
+    #[test]
+    fn an_unlock_seen_before_is_not_activity_again() {
+        let fifteen = LockTimeout::Minutes(15);
+        let activity = idle_since(at(0));
+        let mut watch = LockWatch::default();
+        assert_eq!(
+            watch.look(true, fifteen, &activity, at(60)),
+            LockCheck::After(Duration::from_mins(15))
+        );
+        assert_eq!(
+            watch.look(true, fifteen, &activity, at(960)),
+            LockCheck::LockNow
+        );
+        watch.locked();
+        assert_eq!(
+            watch.look(true, fifteen, &activity, at(2000)),
+            LockCheck::After(Duration::from_mins(15)),
+            "the next unlock counts again"
+        );
+    }
+
+    #[test]
+    fn activity_never_moves_back() {
+        let activity = idle_since(at(100));
+        activity.touch_at(at(50));
+        assert_eq!(activity.last(), at(100));
     }
 
     #[test]

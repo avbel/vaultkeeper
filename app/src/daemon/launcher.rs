@@ -1,6 +1,6 @@
-//! Starts `bw-lite --ui` on demand and reaps it. At most one UI process runs: none is started
-//! while one is connected or still starting, and commands wait in the IPC event queue until it
-//! connects.
+//! Starts `bw-lite --ui` on demand, reaps it and kills it when it hangs. At most one UI process
+//! runs: none is started while one is connected or still starting, and commands wait in the IPC
+//! event queue until it connects.
 
 use std::{
     path::PathBuf,
@@ -8,6 +8,8 @@ use std::{
     sync::{Mutex, PoisonError},
     time::{Duration, Instant},
 };
+
+use tokio::sync::oneshot;
 
 /// A UI that dies sooner than this after its start is treated as crashing: it is not restarted
 /// just because commands are still queued, so a broken build cannot spin.
@@ -47,10 +49,37 @@ pub fn ui_args(first_unlock: bool) -> Vec<&'static str> {
     args
 }
 
+/// What the daemon does about a command the UI has not acknowledged yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hang {
+    /// Its main loop ran after the command arrived.
+    Answered,
+    /// A native modal dialog holds the main loop; the user is busy, not the UI hung.
+    Wait,
+    Kill,
+}
+
+/// After the hang timeout: `acked` is how many events the UI's main loop got through, `seq` the
+/// number of the event being watched.
+#[must_use]
+pub const fn judge(acked: u64, seq: u64, modal: bool) -> Hang {
+    if acked >= seq {
+        Hang::Answered
+    } else if modal {
+        Hang::Wait
+    } else {
+        Hang::Kill
+    }
+}
+
+struct Running {
+    started: Instant,
+    kill: Option<oneshot::Sender<()>>,
+}
+
 pub struct Launcher {
     exe: Option<PathBuf>,
-    /// Start time of the running child.
-    running: Mutex<Option<Instant>>,
+    running: Mutex<Option<Running>>,
 }
 
 impl Launcher {
@@ -63,13 +92,29 @@ impl Launcher {
         }
     }
 
-    fn running(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
+    fn running(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.running().is_some()
+    }
+
+    /// Whether this launcher starts UI processes at all.
+    #[must_use]
+    pub const fn can_start(&self) -> bool {
+        self.exe.is_some()
+    }
+
+    /// Kills the running child (SIGKILL); the reaper then reports its exit as usual. Returns
+    /// whether there was one to kill.
+    pub fn kill(&self) -> bool {
+        let kill = self
+            .running()
+            .as_mut()
+            .and_then(|running| running.kill.take());
+        kill.is_some_and(|kill| kill.send(()).is_ok())
     }
 
     /// Spawns the UI unless one is connected or running. Must run inside the Tokio runtime
@@ -92,7 +137,7 @@ impl Launcher {
             .stdin(Stdio::null())
             .kill_on_drop(false)
             .spawn();
-        let mut child = match child {
+        let child = match child {
             Ok(child) => child,
             Err(error) => {
                 tracing::error!(%error, exe = %exe.display(), "cannot start the UI process");
@@ -100,14 +145,15 @@ impl Launcher {
             }
         };
         let started = Instant::now();
-        *running = Some(started);
+        let (kill, killed) = oneshot::channel();
+        *running = Some(Running {
+            started,
+            kill: Some(kill),
+        });
         drop(running);
         tracing::debug!(pid = child.id(), "UI process started");
         tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => tracing::debug!(%status, "UI process exited"),
-                Err(error) => tracing::warn!(%error, "lost track of the UI process"),
-            }
+            reap(child, killed).await;
             on_exit(started.elapsed());
         });
     }
@@ -115,6 +161,32 @@ impl Launcher {
     /// Called by the reaper before it decides about a restart.
     pub fn exited(&self) {
         *self.running() = None;
+    }
+
+    /// How long the running child has been up.
+    #[must_use]
+    pub fn running_for(&self) -> Option<Duration> {
+        self.running()
+            .as_ref()
+            .map(|running| running.started.elapsed())
+    }
+}
+
+/// Waits for the child, killing it first when asked to.
+async fn reap(mut child: tokio::process::Child, killed: oneshot::Receiver<()>) {
+    let status = tokio::select! {
+        status = child.wait() => status,
+        Ok(()) = killed => {
+            tracing::warn!(pid = child.id(), "the UI process stopped answering; killing it");
+            if let Err(error) = child.start_kill() {
+                tracing::warn!(%error, "cannot kill the UI process");
+            }
+            child.wait().await
+        }
+    };
+    match status {
+        Ok(status) => tracing::debug!(%status, "UI process exited"),
+        Err(error) => tracing::warn!(%error, "lost track of the UI process"),
     }
 }
 
@@ -168,6 +240,54 @@ mod tests {
             .expect("reaped");
         assert!(ran < Duration::from_secs(5));
         assert!(!launcher.is_running());
+    }
+
+    #[test]
+    fn an_unanswered_command_kills_the_ui_unless_a_dialog_is_open() {
+        assert_eq!(judge(3, 3, false), Hang::Answered);
+        assert_eq!(
+            judge(4, 3, false),
+            Hang::Answered,
+            "later ones answered too"
+        );
+        assert_eq!(judge(2, 3, false), Hang::Kill);
+        assert_eq!(judge(2, 3, true), Hang::Wait);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_hung_child_is_killed_and_reaped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("hang.sh");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        let launcher = std::sync::Arc::new(Launcher::new(Some(script)));
+        let (done, exited) = tokio::sync::mpsc::unbounded_channel();
+        // Exec'ing a file just written fails with ETXTBSY while another test thread forks.
+        for _ in 0..20 {
+            let reaper = std::sync::Arc::clone(&launcher);
+            let done = done.clone();
+            launcher.ensure(false, false, move |ran| {
+                reaper.exited();
+                let _ = done.send(ran);
+            });
+            if launcher.is_running() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(launcher.running_for().is_some());
+        assert!(launcher.kill());
+        assert!(!launcher.kill(), "one kill per child");
+        let mut exited = exited;
+        let ran = tokio::time::timeout(Duration::from_secs(5), exited.recv())
+            .await
+            .expect("killed well before the 30 s sleep ends")
+            .expect("reaped");
+        assert!(ran < Duration::from_secs(5));
+        assert!(!launcher.is_running());
+        assert!(!launcher.kill(), "nothing left to kill");
     }
 
     #[test]

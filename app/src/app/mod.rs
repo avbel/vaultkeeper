@@ -99,6 +99,8 @@ fn account_key(server: &url::Url, email: &str) -> SharedString {
 }
 
 pub const OFFLINE_TOAST: &str = "Offline mode — showing cached vault";
+pub const SETTINGS_RESET_NOTICE: &str =
+    "Settings could not be read and were reset; the old file is kept as settings.json.broken";
 
 pub struct App<S: VaultService> {
     vault: Arc<S>,
@@ -248,6 +250,7 @@ impl<S: VaultService> App<S> {
             Target::None => {}
         }
         self.show_next_ssh_prompt();
+        self.show_pending_notices();
         self.sync_now();
     }
 
@@ -373,6 +376,15 @@ impl<S: VaultService> App<S> {
             quick.window.set_toast_text(text.into());
             quick.window.set_toast_error(error);
             quick.window.set_toast_shown(true);
+        }
+    }
+
+    /// Tells the user once that an unreadable settings file was reset, as soon as a window can
+    /// show it.
+    pub fn show_pending_notices(&self) {
+        let has_window = self.manager.borrow().is_some() || self.quick.borrow().is_some();
+        if has_window && self.hooks.settings.take_reset_notice() {
+            self.toast(SETTINGS_RESET_NOTICE, true);
         }
     }
 

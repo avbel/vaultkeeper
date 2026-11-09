@@ -18,9 +18,9 @@ use tokio::{
 };
 use zeroize::Zeroizing;
 
-use super::{DaemonEvent, Shared, TaskGuard, dispatch::dispatch, log_join, stopped};
+use super::{Backends, DaemonEvent, Shared, TaskGuard, dispatch::dispatch, log_join, stopped};
 use crate::{
-    IpcError, TouchIdBackend,
+    IpcError,
     dto::WireError,
     frame::{decode, encode, read_frame},
     peer,
@@ -149,7 +149,7 @@ async fn serve_session<S: VaultService>(
         limit: Arc::new(Semaphore::new(shared.max_concurrent_calls)),
         calls: Arc::clone(&calls),
         notices: shared.notices.clone(),
-        touch_id: shared.touch_id.clone(),
+        backends: shared.backends.clone(),
     };
     let mut reader = TaskGuard(tokio::spawn(read_requests(read, requests)));
     let ended = tokio::select! {
@@ -210,7 +210,7 @@ struct Requests<S> {
     /// Shared with the session so the calls outlive this reader.
     calls: Arc<Mutex<JoinSet<()>>>,
     notices: Option<mpsc::Sender<UiNotice>>,
-    touch_id: Option<Arc<dyn TouchIdBackend>>,
+    backends: Backends,
 }
 
 async fn read_requests<S: VaultService>(
@@ -227,7 +227,7 @@ async fn read_requests<S: VaultService>(
                     .map_err(|_| IpcError::Protocol("call limiter closed"))?;
                 let call = answer(
                     Arc::clone(&requests.service),
-                    requests.touch_id.clone(),
+                    requests.backends.clone(),
                     Arc::clone(&requests.publisher),
                     id,
                     call,
@@ -266,14 +266,14 @@ fn lock_calls(calls: &Mutex<JoinSet<()>>) -> std::sync::MutexGuard<'_, JoinSet<(
 
 async fn answer<S: VaultService>(
     service: Arc<S>,
-    touch_id: Option<Arc<dyn TouchIdBackend>>,
+    backends: Backends,
     publisher: Arc<Publisher<S>>,
     id: u64,
     call: crate::protocol::Call,
     _permit: OwnedSemaphorePermit,
 ) {
     let refresh = call.changes_state();
-    let result = dispatch(&service, touch_id, call).await;
+    let result = dispatch(&service, backends, call).await;
     if let Err(error) = &result {
         tracing::debug!(id, ?error, "IPC call failed");
     }

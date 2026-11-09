@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     Error, Result,
-    http::{Reply, SYNC_TIMEOUT, TRANSFER_TIMEOUT, Transport},
+    http::{HttpTimeouts, MAX_SYNC_BODY_BYTES, Reply, Transport},
     login::{classify_bad_request, is_invalid_grant},
     models::{
         Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, PreloginResponse,
@@ -111,11 +111,15 @@ pub struct Client {
 
 impl Client {
     pub fn new(base: Url, device: DeviceInfo) -> Result<Self> {
+        Self::with_timeouts(base, device, HttpTimeouts::default())
+    }
+
+    pub fn with_timeouts(base: Url, device: DeviceInfo, timeouts: HttpTimeouts) -> Result<Self> {
         if base.cannot_be_a_base() {
             return Err(url::ParseError::RelativeUrlWithCannotBeABaseBase.into());
         }
         validate_server_url(&base)?;
-        let transport = Transport::new(base, device.device_type)?;
+        let transport = Transport::new(base, device.device_type, timeouts)?;
         Ok(Self {
             transport,
             device_type: device.device_type.to_string(),
@@ -186,8 +190,10 @@ impl Client {
         self.call_empty(self.transport.post(url).json(&body)).await
     }
 
-    /// `grant_type=refresh_token`, `client_id=desktop`. A refresh token the server rejects
-    /// (HTTP 400 `invalid_grant`) is reported as [`Error::Unauthorized`]: the caller must log in again.
+    /// `grant_type=refresh_token`, `client_id=desktop`. Only the identity server's rejection of
+    /// the refresh token (HTTP 400 `invalid_grant`) is reported as [`Error::Unauthorized`]: the
+    /// caller must log in again. Any other failure, including a 401 from an auth proxy in front
+    /// of the server, is an [`Error::Server`] and leaves the refresh token usable.
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenResponse> {
         let form = [
             ("grant_type", "refresh_token"),
@@ -195,10 +201,13 @@ impl Client {
             ("refresh_token", refresh_token),
         ];
         let reply = self.token_request(&form).await?;
+        if reply.status.is_success() {
+            return reply.json();
+        }
         if reply.status == StatusCode::BAD_REQUEST && is_invalid_grant(&reply.body) {
             return Err(Error::Unauthorized);
         }
-        reply.into_success()?.json()
+        Err(reply.error())
     }
 
     /// `GET {base}/api/sync?excludeDomains=true`.
@@ -209,8 +218,12 @@ impl Client {
             .transport
             .get_transfer(url)
             .bearer_auth(access_token)
-            .timeout(SYNC_TIMEOUT);
-        self.call(request).await
+            .timeout(self.transport.timeouts.sync);
+        self.transport
+            .execute_capped(request, MAX_SYNC_BODY_BYTES)
+            .await?
+            .into_success()?
+            .json()
     }
 
     /// `POST /api/ciphers` (personal) or `POST /api/ciphers/create` with `collectionIds` (org).
@@ -336,7 +349,10 @@ impl Client {
         max_bytes: u64,
     ) -> Result<u64> {
         let url = self.transport.resolve_same_origin(url)?;
-        let request = self.transport.get_transfer(url).timeout(TRANSFER_TIMEOUT);
+        let request = self
+            .transport
+            .get_transfer(url)
+            .timeout(self.transport.timeouts.transfer);
         let mut response = self.transport.open_sensitive(request).await?;
 
         let mut written = 0_u64;
@@ -399,7 +415,7 @@ impl Client {
             .post_transfer(url)
             .bearer_auth(access_token)
             .multipart(Form::new().part("data", part))
-            .timeout(TRANSFER_TIMEOUT);
+            .timeout(self.transport.timeouts.transfer);
         self.call_empty(request).await
     }
 

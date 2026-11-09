@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use bwl_api::{DeviceInfo, notifications::ReconnectOptions};
+use bwl_api::{DeviceInfo, HttpTimeouts, notifications::ReconnectOptions};
 use tokio::runtime::Handle;
 
 /// Everything the vault needs from its host; nothing here is platform specific.
@@ -40,6 +40,7 @@ pub struct Timings {
     /// Refresh the access token when it expires within this margin.
     pub token_refresh_margin: Duration,
     pub notifications: ReconnectOptions,
+    pub http: HttpTimeouts,
 }
 
 impl Default for Timings {
@@ -52,6 +53,7 @@ impl Default for Timings {
             probe_timeout: Duration::from_secs(10),
             token_refresh_margin: Duration::from_mins(5),
             notifications: ReconnectOptions::default(),
+            http: HttpTimeouts::default(),
         }
     }
 }

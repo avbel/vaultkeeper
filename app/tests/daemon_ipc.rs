@@ -5,19 +5,20 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use bw_lite::{
     daemon::{Daemon, DaemonConfig, Peers, routing::Effect},
     os::{
+        ClipboardKeeper,
         layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
         settings_file::SettingsFile,
     },
     settings::{Settings, ThemeChoice},
 };
-use bwl_ipc::{EventStream, RemoteVault, UiCommand, UiEvent, UiNotice};
+use bwl_ipc::{ClipboardHost, EventStream, RemoteVault, UiCommand, UiEvent, UiNotice};
 use bwl_vault::{
     MemorySecretStore, VaultService,
     model::{Filter, LoginRequest, SessionState},
@@ -56,9 +57,41 @@ fn write_settings(dir: &Path, settings: &Settings) {
 }
 
 async fn start(dir: &DataDir) -> Arc<Daemon> {
+    start_with_clipboard(dir, Arc::new(FakeClipboard::default())).await
+}
+
+async fn start_with_clipboard(dir: &DataDir, clipboard: Arc<FakeClipboard>) -> Arc<Daemon> {
     let mut config = DaemonConfig::new(dir.path().to_owned(), Arc::new(MemorySecretStore::new()));
     config.peers = Peers::AnyOfThisUser;
+    config.clipboard = clipboard;
     Daemon::start(config).await.unwrap()
+}
+
+/// The daemon's pasteboard, so no test touches the user's real one.
+#[derive(Default)]
+struct FakeClipboard {
+    content: Mutex<Option<(String, Option<Duration>)>>,
+}
+
+impl FakeClipboard {
+    fn content(&self) -> Option<(String, Option<Duration>)> {
+        self.content.lock().unwrap().clone()
+    }
+}
+
+impl ClipboardHost for FakeClipboard {
+    fn copy(&self, text: &str, clear_after: Option<Duration>) -> Result<(), String> {
+        *self.content.lock().unwrap() = Some((text.to_owned(), clear_after));
+        Ok(())
+    }
+
+    fn clear_if_ours(&self) {
+        *self.content.lock().unwrap() = None;
+    }
+}
+
+impl ClipboardKeeper for FakeClipboard {
+    fn recheck(&self) {}
 }
 
 async fn connect(dir: &DataDir) -> (RemoteVault, EventStream) {
@@ -256,4 +289,124 @@ async fn the_device_id_survives_a_restart() {
         std::fs::read(dir.path().join("device.json")).unwrap(),
         device
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_outlives_the_ui_process_that_made_it_and_quit_clears_it() {
+    let dir = DataDir::new();
+    let clipboard = Arc::new(FakeClipboard::default());
+    let daemon = start_with_clipboard(&dir, Arc::clone(&clipboard)).await;
+    let (first, events) = connect(&dir).await;
+    let thirty = Some(Duration::from_secs(30));
+    first.copy_to_clipboard("hunter2", thirty).unwrap();
+    assert_eq!(clipboard.content(), Some(("hunter2".to_owned(), thirty)));
+    drop((first, events));
+    eventually(|| !daemon.ui_connected()).await;
+    assert_eq!(
+        clipboard.content(),
+        Some(("hunter2".to_owned(), thirty)),
+        "the daemon keeps the copy and its timer when the UI goes"
+    );
+    let (second, _events) = connect(&dir).await;
+    second.clear_clipboard().unwrap();
+    assert_eq!(
+        clipboard.content(),
+        None,
+        "a later UI clears an earlier one's copy"
+    );
+    second.copy_to_clipboard("kept", None).unwrap();
+    daemon.shutdown().await;
+    assert_eq!(clipboard.content(), None, "quitting clears our copy");
+}
+
+/// A stand-in `--ui` executable that never connects, logging the pid of each start to
+/// `<its path>.log`. Each test gets a symlink to one script written once: exec'ing a file that
+/// was just written while another test thread forks fails with ETXTBSY.
+fn hanging_ui(dir: &DataDir) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    static SCRIPT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let script = SCRIPT.get_or_init(|| {
+        let script = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bwl-hanging-ui.sh");
+        if !script.exists() {
+            std::fs::write(&script, "#!/bin/sh\necho $$ >> \"$0.log\"\nexec sleep 30\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        script
+    });
+    let link = dir.path().join("hanging-ui");
+    std::os::unix::fs::symlink(script, &link).unwrap();
+    let log = dir.path().join("hanging-ui.log");
+    (link, log)
+}
+
+fn starts(log: &Path) -> usize {
+    pids(log).len()
+}
+
+fn pids(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log).map_or_else(
+        |_| Vec::new(),
+        |text| text.lines().map(str::to_owned).collect(),
+    )
+}
+
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("/bin/kill")
+        .args(["-0", pid])
+        .status()
+        .unwrap()
+        .success()
+}
+
+async fn start_with_ui(dir: &DataDir, ui_exe: PathBuf, hang_after: Duration) -> Arc<Daemon> {
+    let mut config = DaemonConfig::new(dir.path().to_owned(), Arc::new(MemorySecretStore::new()));
+    config.peers = Peers::AnyOfThisUser;
+    config.clipboard = Arc::new(FakeClipboard::default());
+    config.ui_exe = Some(ui_exe);
+    config.ui_hang_after = hang_after;
+    Daemon::start(config).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ui_that_never_answers_is_killed_and_replaced() {
+    let dir = DataDir::new();
+    let (script, log) = hanging_ui(&dir);
+    let daemon = start_with_ui(&dir, script, Duration::from_millis(300)).await;
+    daemon.apply(Effect::Show(UiCommand::ShowManager));
+    eventually(|| starts(&log) >= 2).await;
+    let first = pids(&log).remove(0);
+    eventually(|| !alive(&first)).await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ui_that_answers_from_its_main_loop_is_kept() {
+    let dir = DataDir::new();
+    let (script, log) = hanging_ui(&dir);
+    // Long enough that a loaded machine cannot fail the setup below on its own.
+    let hang_after = Duration::from_secs(2);
+    let daemon = start_with_ui(&dir, script, hang_after).await;
+    // The started process plays dead; the test plays the UI it would have become, so the
+    // watchdog's victim would be that process.
+    daemon.apply(Effect::Show(UiCommand::ShowManager));
+    eventually(|| starts(&log) >= 1).await;
+    let (ui, mut events) = connect(&dir).await;
+    assert!(matches!(
+        next(&mut events).await,
+        UiEvent::Command(UiCommand::ShowManager)
+    ));
+    ui.notify(UiNotice::Alive(1)).unwrap();
+    // A file panel holds the main loop: the next command waits for the user, not the watchdog.
+    ui.notify(UiNotice::Modal(true)).unwrap();
+    daemon.apply(Effect::Show(UiCommand::ShowGenerator));
+    assert!(matches!(
+        next(&mut events).await,
+        UiEvent::Command(UiCommand::ShowGenerator)
+    ));
+    tokio::time::sleep(hang_after + Duration::from_millis(700)).await;
+    assert_eq!(starts(&log), 1, "nothing replaced");
+    assert!(alive(&pids(&log)[0]), "nothing killed");
+    assert!(daemon.ui_connected());
+    daemon.shutdown().await;
 }

@@ -1191,3 +1191,373 @@ async fn the_servers_out_of_date_refusal_is_a_conflict_and_asks_for_a_sync() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_known_account_refuses_a_weaker_kdf_before_sending_the_hash() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, vec![]).await;
+    let vault = &harness.vault;
+    // Same KDF as cached: logging in again is fine.
+    assert_eq!(
+        vault.login(fake.request(), None, None).await.unwrap(),
+        LoginStep::Done
+    );
+
+    // The account was created at Bitwarden's default of 600 000 PBKDF2 iterations; the server now
+    // claims 5 000.
+    let account = harness
+        .dir
+        .join("accounts")
+        .join(USER_ID)
+        .join("account.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&account).unwrap()).unwrap();
+    record["kdf"]["iterations"] = json!(600_000);
+    std::fs::write(&account, serde_json::to_vec(&record).unwrap()).unwrap();
+    fake.server.reset().await;
+    fake.mount_login().await;
+
+    let error = vault.login(fake.request(), None, None).await.unwrap_err();
+    assert!(matches!(error, Error::KdfDowngrade), "{error:?}");
+    assert!(fake.requests_to("/identity/connect/token").await.is_empty());
+    assert_eq!(
+        fake.requests_to("/identity/accounts/prelogin").await.len(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_in_flight_during_log_out_does_not_store_its_rotated_token() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, vec![]).await;
+    let vault = &harness.vault;
+    fake.server.reset().await;
+    fake.mount_status("GET", "/api/sync", 401).await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "access_token": ACCESS_2, "expires_in": 3600, "refresh_token": "refresh-rotated"
+                }))
+                .set_delay(Duration::from_millis(500)),
+        )
+        .mount(&fake.server)
+        .await;
+
+    let sync = vault.sync();
+    let log_out = async {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while fake.requests_to("/identity/connect/token").await.is_empty() {
+            assert!(tokio::time::Instant::now() < deadline, "no refresh started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        vault.logout().await
+    };
+    let (_, logged_out) = tokio::join!(sync, log_out);
+    logged_out.unwrap();
+
+    assert!(
+        harness.memory.as_ref().unwrap().keys().is_empty(),
+        "the rotated refresh token outlived the log out"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_attachment_upload_does_not_hold_back_a_sync() {
+    let fake = Fake::start().await;
+    let item = fake.login("c1", "Item", "pw");
+    let harness = logged_in(&fake, vec![item.clone()]).await;
+    let vault = &harness.vault;
+    // Vaultwarden saves the attachment row before its data arrives, so the sync below sees it.
+    let mut with_row = item;
+    with_row.attachments = Some(vec![bwl_api::models::Attachment {
+        id: "att1".into(),
+        size: Some("15".into()),
+        ..bwl_api::models::Attachment::default()
+    }]);
+    fake.server.reset().await;
+    fake.mount_sync(vec![with_row]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ciphers/c1/attachment/v2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attachmentId": "att1",
+            "url": "/ciphers/c1/attachment/att1",
+            "fileUploadType": 0,
+        })))
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ciphers/c1/attachment/att1"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+        .mount(&fake.server)
+        .await;
+    let source = harness.dir.join("report.txt");
+    std::fs::write(&source, b"attachment body").unwrap();
+
+    let id = bwl_vault::model::ItemId(Arc::from("c1"));
+    let upload = vault.upload_attachment(&id, source);
+    let sync_meanwhile = async {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while fake
+            .requests_to("/api/ciphers/c1/attachment/v2")
+            .await
+            .is_empty()
+        {
+            assert!(tokio::time::Instant::now() < deadline, "no upload started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::timeout(Duration::from_secs(1), vault.sync()).await
+    };
+    let (uploaded, synced) = tokio::join!(upload, sync_meanwhile);
+    synced.expect("the sync waited for the upload").unwrap();
+    assert_eq!(&*uploaded.unwrap().file_name, "report.txt");
+    let views = vault.attachments(&id).unwrap();
+    assert_eq!(
+        views.len(),
+        1,
+        "the synced row and the upload are one attachment"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_401_from_a_proxy_during_refresh_keeps_the_refresh_token() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, vec![]).await;
+    let vault = &harness.vault;
+    fake.server.reset().await;
+    fake.mount_status("GET", "/api/sync", 401).await;
+    fake.mount_status("POST", "/identity/connect/token", 401)
+        .await;
+
+    let error = vault.sync().await.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::Api(bwl_api::Error::Server { status: 401, .. })
+        ),
+        "{error:?}"
+    );
+    assert!(
+        harness
+            .secrets
+            .get(&format!("{USER_ID}.refresh_token"))
+            .unwrap()
+            .is_some(),
+        "only invalid_grant from the identity server deletes the refresh token"
+    );
+}
+
+/// The ordinary endpoints answer within `read`; a sync or an attachment upload may take far
+/// longer and must not be cut off by it.
+#[tokio::test(flavor = "multi_thread")]
+async fn syncs_and_uploads_outlast_the_read_timeout_of_ordinary_requests() {
+    let fake = Fake::start().await;
+    let mut timings = timings();
+    timings.http.read = Duration::from_millis(300);
+    timings.http.request = Duration::from_millis(300);
+    let harness = harness_with(timings, None);
+    fake.mount_sync(vec![fake.login("c1", "Item", "pw")]).await;
+    harness
+        .vault
+        .login(fake.request(), None, None)
+        .await
+        .unwrap();
+    let vault = &harness.vault;
+
+    fake.server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/api/sync"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(fake.sync_body(vec![fake.login("c1", "Item", "pw")]))
+                .set_delay(Duration::from_secs(1)),
+        )
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ciphers/c1/attachment/v2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attachmentId": "att1",
+            "url": "/ciphers/c1/attachment/att1",
+            "fileUploadType": 0,
+        })))
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ciphers/c1/attachment/att1"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/folders"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(
+                    json!({ "id": "f1", "name": "x", "revisionDate": "2026-11-08T17:00:59.321Z" }),
+                )
+                .set_delay(Duration::from_secs(1)),
+        )
+        .mount(&fake.server)
+        .await;
+
+    vault.sync().await.unwrap();
+    let source = harness.dir.join("slow.bin");
+    std::fs::write(&source, b"attachment body").unwrap();
+    let id = bwl_vault::model::ItemId(Arc::from("c1"));
+    vault.upload_attachment(&id, source).await.unwrap();
+    // The short limits are in force for everything else.
+    let error = vault.create_folder("Slow").await.unwrap_err();
+    assert!(error.is_offline(), "{error:?}");
+}
+
+/// A keychain whose writes take a second once `slow` is set, like one waiting on an access prompt.
+#[derive(Default)]
+struct SlowSets {
+    memory: MemorySecretStore,
+    slow: std::sync::atomic::AtomicBool,
+}
+
+impl SecretStore for SlowSets {
+    fn get(&self, key: &str) -> Result<Option<Zeroizing<Vec<u8>>>, SecretStoreError> {
+        self.memory.get(key)
+    }
+
+    fn set(&self, key: &str, secret: &[u8]) -> Result<(), SecretStoreError> {
+        if self.slow.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        self.memory.set(key, secret)
+    }
+
+    fn delete(&self, key: &str) -> Result<(), SecretStoreError> {
+        self.memory.delete(key)
+    }
+
+    fn delete_all_for(&self, prefix: &str) -> Result<usize, SecretStoreError> {
+        self.memory.delete_all_for(prefix)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_keychain_write_during_refresh_does_not_block_state_reads() {
+    let fake = Fake::start().await;
+    fake.mount_sync(vec![]).await;
+    let secrets = Arc::new(SlowSets::default());
+    let harness = harness_with(timings(), Some(secrets.clone() as Arc<dyn SecretStore>));
+    let vault = &harness.vault;
+    vault.login(fake.request(), None, None).await.unwrap();
+    fake.server.reset().await;
+    fake.mount_status("GET", "/api/sync", 401).await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": ACCESS_2, "expires_in": 3600, "refresh_token": "refresh-rotated"
+        })))
+        .mount(&fake.server)
+        .await;
+    secrets
+        .slow
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // The keychain write blocks its thread, so the sync runs on its own; on this task's thread
+    // the read would only run after it.
+    let runtime = tokio::runtime::Handle::current();
+    let (waited, state) = tokio::task::block_in_place(|| {
+        std::thread::scope(|scope| {
+            let sync = scope.spawn(|| runtime.block_on(vault.sync()));
+            runtime.block_on(async {
+                let deadline = tokio::time::Instant::now() + WAIT;
+                while fake.requests_to("/identity/connect/token").await.is_empty() {
+                    assert!(tokio::time::Instant::now() < deadline, "no refresh started");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                // The refresh is now inside its one-second keychain write.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            });
+            let started = std::time::Instant::now();
+            let state = vault.state();
+            let waited = started.elapsed();
+            sync.join().unwrap().unwrap_err();
+            (waited, state)
+        })
+    });
+
+    assert!(
+        waited < Duration::from_millis(300),
+        "a state read waited {waited:?} for the keychain"
+    );
+    assert!(matches!(state, SessionState::Unlocked { .. }), "{state:?}");
+    assert_eq!(
+        secrets
+            .get(&format!("{USER_ID}.refresh_token"))
+            .unwrap()
+            .as_deref()
+            .map(Vec::as_slice),
+        Some(&b"refresh-rotated"[..])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_the_hub_rejects_is_refreshed_before_reconnecting() {
+    let fake = Fake::start().await;
+    fake.mount_sync(vec![]).await;
+    Mock::given(method("GET"))
+        .and(path("/notifications/hub"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            format!("Bearer {ACCESS_1}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&fake.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": ACCESS_2, "expires_in": 3600
+        })))
+        .mount(&fake.server)
+        .await;
+    let mut timings = timings();
+    timings.notifications.backoff_initial = Duration::from_millis(50);
+    timings.notifications.backoff_max = Duration::from_millis(200);
+    let harness = harness_with(timings, None);
+    harness
+        .vault
+        .login(fake.request(), None, None)
+        .await
+        .unwrap();
+
+    let bearer = |request: &Request| {
+        request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let seen: Vec<_> = fake
+            .requests_to("/notifications/hub")
+            .await
+            .iter()
+            .filter_map(bearer)
+            .collect();
+        if seen.contains(&format!("Bearer {ACCESS_2}")) {
+            assert_eq!(seen[0], format!("Bearer {ACCESS_1}"));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the hub only ever saw {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        fake.requests_to("/identity/connect/token").await.len(),
+        2,
+        "the password login and one refresh"
+    );
+}

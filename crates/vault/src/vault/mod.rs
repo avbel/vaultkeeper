@@ -59,6 +59,10 @@ pub(crate) struct Inner {
     sync_lock: tokio::sync::Mutex<()>,
     /// One token refresh at a time; the others wait and reuse its result.
     token_lock: tokio::sync::Mutex<()>,
+    /// Serializes refresh-token writes with log out's wipe and a new login's write. Separate from
+    /// the state lock, which must never wait on the keychain (an access prompt would freeze
+    /// every reader, the UI included).
+    refresh_secret: Mutex<()>,
     sync_wanted: Notify,
     probe_wake: Notify,
     pending: Mutex<Option<Arc<PendingLogin>>>,
@@ -141,6 +145,7 @@ impl Vault {
             tasks: Mutex::new(Tasks::default()),
             sync_lock: tokio::sync::Mutex::new(()),
             token_lock: tokio::sync::Mutex::new(()),
+            refresh_secret: Mutex::new(()),
             sync_wanted: Notify::new(),
             probe_wake: Notify::new(),
             pending: Mutex::new(None),
@@ -230,7 +235,11 @@ impl Drop for Vault {
 
 fn locked_active(store: &Store, config: &VaultConfig, entry: &IndexEntry) -> Result<Active> {
     let record = store.load_account(&entry.id)?.ok_or(Error::NotFound)?;
-    let client = Client::new(record.server.clone(), config.device.clone())?;
+    let client = Client::with_timeouts(
+        record.server.clone(),
+        config.device.clone(),
+        config.timings.http,
+    )?;
     Ok(Active {
         id: Arc::from(record.id.as_str()),
         record,

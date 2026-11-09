@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::{Inner, locked_active, secret_error};
+use super::{Inner, lock, locked_active, secret_error};
 use crate::{Error, Result, error::LogoutErrors};
 
 impl Inner {
@@ -31,7 +31,11 @@ impl Inner {
         let mut errors = Vec::new();
         // 3. Every secret stored under the user id: refresh token, remember-device token, and
         //    whatever the app keeps there (the Touch ID key).
-        if let Err(error) = self.secrets.delete_all_for(&id) {
+        let wiped = {
+            let _secrets = lock(&self.refresh_secret);
+            self.secrets.delete_all_for(&id)
+        };
+        if let Err(error) = wiped {
             errors.push(secret_error(error));
         }
         // 4. `accounts/<id>/`: cache, settings, Touch ID blob, attachment temp files.

@@ -1,8 +1,5 @@
 //! Private on-disk state: owner-only directories and atomically replaced files.
 
-// Atomic writes serve Touch ID enrollment, which exists on macOS only for now.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
@@ -16,7 +13,7 @@ const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 
 /// Creates `path` (and parents) as owner-only, and tightens it if it already exists.
-pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
+pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -29,7 +26,7 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
 
 /// Writes `bytes` to a fresh 0600 file next to `path`, syncs it and renames it over `path`, so
 /// readers see either the old or the new content and the secret is never world-readable.
-pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())

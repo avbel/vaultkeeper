@@ -171,3 +171,84 @@ impl Diag {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::{CString, c_char};
+
+    use crate::Error;
+
+    unsafe extern "C" {
+        fn bwl_se_key_init_status_for_test(
+            domain: *const c_char,
+            code: isize,
+            underlying_domain: *const c_char,
+            underlying_code: isize,
+            enrolled_changed: bool,
+        ) -> i32;
+    }
+
+    const TK: &str = "CryptoTokenKit";
+    const OS_STATUS: &str = "NSOSStatusErrorDomain";
+    const CRYPTO_KIT: &str = "CryptoKit.CryptoKitError";
+
+    /// What an unlock reports when restoring the Secure Enclave key fails with this error.
+    fn unlock_after_key_init_failure(
+        error: (&str, isize),
+        underlying: Option<(&str, isize)>,
+        enrolled_changed: bool,
+    ) -> crate::Result<()> {
+        let domain = CString::new(error.0).expect("domain");
+        let (under_domain, under_code) = underlying.unwrap_or(("", 0));
+        let under_domain = CString::new(under_domain).expect("domain");
+        // SAFETY: both strings are NUL-terminated and outlive the call, which only reads them.
+        let status = unsafe {
+            bwl_se_key_init_status_for_test(
+                domain.as_ptr(),
+                error.1,
+                under_domain.as_ptr(),
+                under_code,
+                enrolled_changed,
+            )
+        };
+        super::status_result(status, super::Operation::Unlock, "")
+    }
+
+    fn invalidates(result: &crate::Result<()>) -> bool {
+        matches!(result, Err(Error::BiometricInvalidated))
+    }
+
+    #[test]
+    fn only_a_gone_or_corrupt_key_or_changed_fingers_delete_the_enrolment() {
+        // TKError.Code (CryptoTokenKit/TKError.h): corruptedData -3, objectNotFound -6,
+        // tokenNotFound -7 mean the key can never be used again.
+        for code in [-3, -6, -7] {
+            assert!(
+                invalidates(&unlock_after_key_init_failure((TK, code), None, false)),
+                "TKError {code}"
+            );
+        }
+        assert!(invalidates(&unlock_after_key_init_failure(
+            (CRYPTO_KIT, 1),
+            Some((TK, -6)),
+            false
+        )));
+        assert!(
+            invalidates(&unlock_after_key_init_failure((CRYPTO_KIT, 1), None, true)),
+            "fingers changed since enrolment"
+        );
+    }
+
+    #[test]
+    fn transient_key_init_failures_keep_the_enrolment() {
+        // communicationError -2 (Secure Enclave busy), errSecInteractionNotAllowed -25308
+        // (keychain locked with the screen), an unclassified CryptoKit error.
+        for (domain, code) in [(TK, -2), (OS_STATUS, -25_308), (CRYPTO_KIT, 3)] {
+            let result = unlock_after_key_init_failure((domain, code), None, false);
+            assert!(
+                matches!(result, Err(Error::BiometricFailed)),
+                "{domain} {code}: {result:?}"
+            );
+        }
+    }
+}

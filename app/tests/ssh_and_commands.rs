@@ -91,9 +91,9 @@ fn unanswered_requests_are_denied_after_30_seconds() {
 }
 
 #[test]
-fn remember_until_lock_skips_the_prompt_for_that_key() {
+fn remember_is_left_to_the_daemon_so_the_ui_asks_again_for_the_same_fingerprint() {
     let h = harness(remember_mode());
-    let (req, mut rx) = request("SHA256:eee");
+    let (req, mut rx) = request("");
     h.app.request_ssh_approval(req);
     let prompt = h.app.ssh_prompt().expect("prompt");
     click(&prompt, "Remember for this key until lock");
@@ -101,20 +101,16 @@ fn remember_until_lock_skips_the_prompt_for_that_key() {
     assert_eq!(
         rx.try_recv().ok(),
         Some(SshDecision::approve(true)),
-        "the daemon learns to remember it too"
+        "the daemon learns to remember it"
     );
-    let (req, rx) = request("SHA256:eee");
+    let (req, rx) = request("");
     h.app.request_ssh_approval(req);
-    assert!(h.app.ssh_prompt().is_none());
-    assert_eq!(answer(rx), Some(true));
-    h.app.lock();
-    let (req, _rx) = request("SHA256:eee");
-    h.app.request_ssh_approval(req);
-    let lock = h.app.lock_window().expect("unlock comes first");
-    type_into(&lock, "Master password", MOCK_MASTER_PASSWORD);
-    click(&lock, "Unlock");
-    pump();
-    assert!(h.app.ssh_prompt().is_some(), "lock forgets remembered keys");
+    let prompt = h
+        .app
+        .ssh_prompt()
+        .expect("another item with the same empty fingerprint is not covered by that consent");
+    click(&prompt, "Deny");
+    assert_eq!(answer(rx), Some(false));
 }
 
 #[test]

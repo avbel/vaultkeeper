@@ -243,6 +243,64 @@ fn edit_and_save_sends_the_edited_draft() {
     assert_eq!(manager.get_detail_header().name, "GitHub (personal)");
 }
 
+fn edit_name(manager: &ManagerWindow) -> String {
+    manager
+        .get_edit_fields()
+        .row_data(0)
+        .expect("name field")
+        .value
+        .to_string()
+}
+
+fn start_dirty_edit(manager: &ManagerWindow) {
+    manager.invoke_row_clicked(row_of(manager, "GitHub"));
+    pump();
+    click(manager, "Edit");
+    type_into(manager, "Name", "GitHub (draft)");
+    manager.invoke_row_clicked(row_of(manager, "Slack"));
+    pump();
+}
+
+#[test]
+fn clicking_another_row_while_editing_asks_before_discarding() {
+    let (h, manager) = open();
+    start_dirty_edit(&manager);
+    assert!(manager.get_confirm_leave());
+    assert_eq!(manager.get_detail_mode(), 2, "the form stays open");
+    assert_eq!(edit_name(&manager), "GitHub (draft)");
+    click(&manager, "Keep editing");
+    assert!(!manager.get_confirm_leave());
+    assert_eq!(manager.get_detail_mode(), 2);
+    assert_eq!(edit_name(&manager), "GitHub (draft)");
+    assert!(h.vault.last_saved().is_none());
+}
+
+#[test]
+fn discarding_switches_to_the_clicked_row_and_clears_the_edit_model() {
+    let (h, manager) = open();
+    start_dirty_edit(&manager);
+    click(&manager, "Discard changes and switch");
+    pump();
+    assert_eq!(manager.get_detail_mode(), 1);
+    assert_eq!(manager.get_detail_header().name, "Slack");
+    assert!(!manager.get_confirm_leave());
+    assert_eq!(manager.get_edit_fields().row_count(), 0);
+    assert!(h.vault.last_saved().is_none());
+}
+
+#[test]
+fn saving_from_the_prompt_stores_the_edit_then_switches() {
+    let (h, manager) = open();
+    start_dirty_edit(&manager);
+    click(&manager, "Save changes and switch");
+    pump();
+    let saved = h.vault.last_saved().expect("saved");
+    assert_eq!(saved.name, "GitHub (draft)");
+    assert_eq!(manager.get_detail_mode(), 1);
+    assert_eq!(manager.get_detail_header().name, "Slack");
+    assert_eq!(manager.get_edit_fields().row_count(), 0);
+}
+
 #[test]
 fn new_item_requires_a_name_and_saves_into_the_selected_folder() {
     let (h, manager) = open();
@@ -870,4 +928,35 @@ fn the_edit_form_keeps_the_picked_folder_when_the_folder_list_changes() {
         h.vault.last_saved().expect("save").folder_id.as_deref(),
         Some("f-travel")
     );
+}
+
+#[test]
+fn a_hidden_custom_field_without_a_visible_value_has_no_reveal_or_copy() {
+    let (h, manager) = open();
+    let draft = bwl_vault::model::ItemDraft {
+        name: "Shared note".to_owned(),
+        notes: zeroize::Zeroizing::new(String::new()),
+        folder_id: None,
+        organization_id: None,
+        collection_ids: Vec::new(),
+        favorite: false,
+        reprompt: false,
+        fields: vec![bwl_vault::model::CustomField {
+            name: "Locked PIN".to_owned(),
+            value: zeroize::Zeroizing::new(String::new()),
+            hidden: true,
+        }],
+        data: ItemData::SecureNote,
+        revision_date: None,
+    };
+    block_on(h.vault.save(None, draft)).expect("save");
+    h.app.on_vault_changed();
+    pump();
+    manager.invoke_row_clicked(row_of(&manager, "Shared note"));
+    pump();
+    let row = field_row(&manager, "Locked PIN");
+    let field = manager.get_detail_fields().row_data(row).expect("field");
+    assert!(!field.secret, "no mask, so no reveal control");
+    assert_eq!(field.copy, -1, "no copy control");
+    assert_eq!(field.value, "");
 }

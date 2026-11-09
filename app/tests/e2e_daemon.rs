@@ -21,7 +21,7 @@ use std::{
 
 use bw_lite::{
     os::{DaemonBiometrics, settings_file::SettingsFile},
-    settings::{LockTimeout, Settings, SshApproval},
+    settings::{Settings, SshApproval},
 };
 use bwl_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
 use bwl_ipc::{
@@ -510,7 +510,7 @@ async fn remember_until_lock_is_kept_by_the_daemon_and_forgotten_on_lock() {
 
 /// The daemon core in-process, so power events can be fed in directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
+async fn sleep_and_screen_lock_lock_only_when_the_setting_says_so() {
     use bw_lite::daemon::{Daemon, DaemonConfig, Peers};
     use bwl_platform::power::PowerEvent;
 
@@ -518,11 +518,8 @@ async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
     let account = register(&server).await;
     let sandbox = Sandbox::new();
     let settings_file = sandbox.dir.join("settings.json");
-    let on_sleep = Settings {
-        lock_timeout: LockTimeout::OnSleep,
-        ..Settings::default()
-    };
-    SettingsFile::write(&settings_file, &on_sleep).unwrap();
+    // The defaults: a 15-minute timeout and lock on sleep, both at once.
+    SettingsFile::write(&settings_file, &Settings::default()).unwrap();
     let mut config = DaemonConfig::new(
         sandbox.dir.clone(),
         Arc::new(bwl_vault::MemorySecretStore::new()),
@@ -541,7 +538,7 @@ async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
     daemon.power_event(PowerEvent::WillSleep);
     assert!(
         matches!(vault.state(), SessionState::Locked { .. }),
-        "sleep locks"
+        "sleep locks with the default timeout"
     );
     daemon.power_event(PowerEvent::DidWake);
     unlock().await;
@@ -553,11 +550,11 @@ async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
         "screen lock locks"
     );
 
-    // With a 15-minute timeout neither locks; the timer decides.
+    // Switched off, neither locks; the timer decides.
     SettingsFile::write(
         &settings_file,
         &Settings {
-            lock_timeout: LockTimeout::Minutes(15),
+            lock_on_sleep: false,
             ..Settings::default()
         },
     )
@@ -565,7 +562,7 @@ async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
     let (client, _events) = sandbox.connect().await;
     client.notify(bwl_ipc::UiNotice::SettingsChanged).unwrap();
     let deadline = tokio::time::Instant::now() + WAIT;
-    while daemon.settings().lock_timeout != LockTimeout::Minutes(15) {
+    while daemon.settings().lock_on_sleep {
         assert!(tokio::time::Instant::now() < deadline, "settings re-read");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -576,6 +573,79 @@ async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
     daemon.power_event(PowerEvent::DidWake);
     vault.logout().await.unwrap();
     drop(client);
+    daemon.shutdown().await;
+}
+
+/// The daemon's pasteboard in-process, so the user's real one is never touched.
+#[derive(Default)]
+struct FakeClipboard(std::sync::Mutex<Option<String>>);
+
+impl bwl_ipc::ClipboardHost for FakeClipboard {
+    fn copy(&self, text: &str, _clear_after: Option<Duration>) -> Result<(), String> {
+        *self.0.lock().unwrap() = Some(text.to_owned());
+        Ok(())
+    }
+
+    fn clear_if_ours(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+impl bw_lite::os::ClipboardKeeper for FakeClipboard {
+    fn recheck(&self) {}
+}
+
+/// One short-lived UI process copies and disconnects.
+async fn copy_and_leave(sandbox: &Sandbox, text: &str) {
+    let (client, events) = sandbox.connect().await;
+    client.copy_to_clipboard(text, None).unwrap();
+    drop((client, events));
+}
+
+/// A copy made through one UI process is cleared by the daemon on lock and on logout, with no UI
+/// connected any more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn the_daemon_clears_a_copy_on_lock_and_logout() {
+    use bw_lite::daemon::{Daemon, DaemonConfig, Peers};
+
+    let server = server();
+    let account = register(&server).await;
+    let sandbox = Sandbox::new();
+    let clipboard = Arc::new(FakeClipboard::default());
+    let mut config = DaemonConfig::new(
+        sandbox.dir.clone(),
+        Arc::new(bwl_vault::MemorySecretStore::new()),
+    );
+    config.peers = Peers::AnyOfThisUser;
+    config.clipboard = Arc::clone(&clipboard) as Arc<dyn bw_lite::os::ClipboardKeeper>;
+    let daemon = Daemon::start(config).await.unwrap();
+    let vault = Arc::clone(daemon.vault());
+    log_in(vault.as_ref(), &server, &account).await;
+    let content = || clipboard.0.lock().unwrap().clone();
+    let wait_cleared = || async {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while content().is_some() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "clipboard not cleared"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+
+    copy_and_leave(&sandbox, "hunter2").await;
+    assert_eq!(content().as_deref(), Some("hunter2"));
+    vault.lock();
+    wait_cleared().await;
+
+    vault
+        .unlock_with_password(Zeroizing::new(account.password.clone()))
+        .await
+        .unwrap();
+    copy_and_leave(&sandbox, "octocat").await;
+    assert_eq!(content().as_deref(), Some("octocat"));
+    vault.logout().await.unwrap();
+    wait_cleared().await;
     daemon.shutdown().await;
 }
 
