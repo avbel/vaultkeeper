@@ -119,6 +119,10 @@ pub struct Settings {
     pub ssh_approval: SshApproval,
     pub ssh_touch_id: bool,
     pub hotkey: String,
+    /// Sealed by [`crate::last_login`]; never plain text. A value of the wrong type reads as
+    /// `None` instead of failing the whole file.
+    #[serde(deserialize_with = "lenient_string")]
+    pub last_login: Option<String>,
 }
 
 impl Default for Settings {
@@ -136,8 +140,16 @@ impl Default for Settings {
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
             hotkey: "Cmd+Shift+Space".to_owned(),
+            last_login: None,
         }
     }
+}
+
+fn lenient_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_str().map(str::to_owned))
 }
 
 impl Settings {
@@ -323,6 +335,16 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_last_login_value_is_dropped_without_resetting_other_settings() {
+        for broken in ["42", "{\"server\":1}", "[]", "null"] {
+            let json = format!(r#"{{"theme":"dark","last_login":{broken}}}"#);
+            let settings: Settings = serde_json::from_str(&json).expect(&json);
+            assert_eq!(settings.theme, ThemeChoice::Dark, "{json}");
+            assert_eq!(settings.last_login, None, "{json}");
+        }
+    }
+
+    #[test]
     fn json_round_trips_every_field() {
         let settings = Settings {
             theme: ThemeChoice::Dark,
@@ -343,6 +365,7 @@ mod tests {
             ssh_approval: SshApproval::RememberUntilLock,
             ssh_touch_id: true,
             hotkey: "Cmd+Alt+K".to_owned(),
+            last_login: Some("2.sealed".to_owned()),
         };
         let json = serde_json::to_string(&settings).expect("encode");
         let back: Settings = serde_json::from_str(&json).expect("decode");

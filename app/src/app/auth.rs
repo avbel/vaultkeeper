@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};
 use crate::{
+    last_login::{self, LastLogin},
     server_url,
     ui::{LockWindow, LoginWindow},
     viewmodel::{self, LoginError, account_rows, host, initial},
@@ -295,7 +296,22 @@ impl<S: VaultService> App<S> {
             .iter()
             .find(|account| account.logged_in && !account.active)
             .map(|account| Arc::clone(&account.id));
-        self.open_login(prefill.as_deref(), previous);
+        let remembered = self
+            .settings
+            .borrow()
+            .last_login
+            .as_deref()
+            .and_then(last_login::open);
+        // The remembered email belongs to the remembered server only.
+        let (server, email) = match (prefill, remembered) {
+            (None, Some(last)) => (Some(last.server), Some(last.email)),
+            (Some(server), Some(last)) if last.server == server => (Some(server), Some(last.email)),
+            (server, _) => (server, None),
+        };
+        self.open_login(server.as_deref(), previous);
+        if let (Some(email), Some(window)) = (email, self.login_window()) {
+            window.set_email(email.into());
+        }
     }
 
     fn open_login(&self, server: Option<&str>, previous: Option<Arc<str>>) {
@@ -433,6 +449,13 @@ impl<S: VaultService> App<S> {
             return;
         }
         window.set_password(SharedString::new());
+        let typed = LastLogin {
+            server: server_url::display(&server),
+            email: email.clone(),
+        };
+        if let Some(sealed) = last_login::seal(&typed) {
+            self.update_settings(|settings| settings.last_login = Some(sealed));
+        }
         if let Some(login) = self.login.borrow_mut().as_mut() {
             login.pending = Some((server, email, password));
         }

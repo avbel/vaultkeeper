@@ -24,6 +24,7 @@ vw-it = []
 [dependencies]
 anyhow.workspace = true
 bwl-api.workspace = true
+bwl-crypto.workspace = true
 bwl-gen.workspace = true
 bwl-ipc.workspace = true
 bwl-platform.workspace = true

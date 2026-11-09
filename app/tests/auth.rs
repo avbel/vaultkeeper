@@ -2,7 +2,9 @@
 
 mod common;
 
+use bw_lite::last_login::{self, LastLogin};
 use bw_lite::mock::{MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MockCall};
+use bw_lite::settings::Settings;
 use bwl_vault::{VaultService, model::SessionState};
 use common::{Setup, click, exists, harness, pump, type_into, value_of};
 use slint::Model;
@@ -289,6 +291,86 @@ fn logout_with_confirm_activates_the_next_account_then_shows_login_when_none_is_
     assert!(h.app.lock_window().is_none());
     let login = h.app.login_window().expect("login when no account is left");
     assert!(!login.get_can_cancel());
+}
+
+#[test]
+fn the_login_form_remembers_the_last_server_and_email_encrypted() {
+    let h = harness(Setup::default());
+    let login = open_login_for_new_account(&h);
+    type_into(&login, "Server URL", "https://vault.example.com");
+    type_into(&login, "Email", "frank@example.com");
+    type_into(&login, "Master password", MOCK_MASTER_PASSWORD);
+    click(&login, "Log in");
+    let saved = h
+        .settings
+        .saved
+        .lock()
+        .expect("settings")
+        .as_ref()
+        .and_then(|settings| settings.last_login.clone())
+        .expect("saved on submit");
+    assert!(!saved.contains("frank"), "not stored in plain text");
+    assert_eq!(
+        last_login::open(&saved),
+        Some(LastLogin {
+            server: "https://vault.example.com".to_owned(),
+            email: "frank@example.com".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn the_login_shown_after_the_last_logout_is_filled_from_the_remembered_entry() {
+    let bob = harness(Setup::default())
+        .vault
+        .accounts()
+        .into_iter()
+        .find(|account| &*account.email == "bob@work.example.org")
+        .expect("bob");
+    let server = bw_lite::server_url::display(&bob.server);
+    let sealed = last_login::seal(&LastLogin {
+        server: server.clone(),
+        email: "bob@work.example.org".to_owned(),
+    });
+    let h = harness(Setup {
+        settings: Settings {
+            last_login: sealed,
+            ..Settings::default()
+        },
+        ..Setup::default()
+    });
+    h.app.start(false);
+    let manager = h.app.manager_window().expect("manager");
+    manager.set_confirm_logout(true);
+    manager.invoke_logout_confirmed();
+    pump();
+    let lock = h.app.lock_window().expect("bob's lock screen");
+    lock.set_confirm_logout(true);
+    click(&lock, "Confirm log out");
+    let login = h.app.login_window().expect("login when no account is left");
+    assert_eq!(login.get_server(), server);
+    assert_eq!(login.get_email(), "bob@work.example.org");
+}
+
+#[test]
+fn an_unreadable_remembered_login_leaves_the_fields_empty() {
+    let h = harness(Setup {
+        settings: Settings {
+            last_login: Some("2.not|really|sealed".to_owned()),
+            ..Settings::default()
+        },
+        ..Setup::default()
+    });
+    h.app.start(false);
+    let manager = h.app.manager_window().expect("manager");
+    manager.set_confirm_logout(true);
+    manager.invoke_logout_confirmed();
+    pump();
+    let lock = h.app.lock_window().expect("bob's lock screen");
+    lock.set_confirm_logout(true);
+    click(&lock, "Confirm log out");
+    let login = h.app.login_window().expect("login still opens");
+    assert_eq!(login.get_email(), "");
 }
 
 #[test]
