@@ -59,6 +59,12 @@ clipboard if it holds a copied secret.
 - **Manager window:** every row has one-click copy buttons for username, password and TOTP (with a
   countdown ring). The sidebar has folders (create, rename, delete), organizations and collections,
   and kinds. The detail pane edits items and attachments.
+- **Collections:** the detail pane's *Move to organization…* moves a personal item into an
+  organization's collections, as the official clients' *Assign collections* does. This can't be
+  undone: the item can't go back to your personal vault or to another organization. On an
+  organization item, *Change…* changes which of its collections it is in. Read-only collections
+  stay assigned. An item from before per-item keys that has attachments can't be moved here; use
+  the official client for those.
 - Copied secrets are hidden from clipboard history, and cleared after 30 s (configurable) if the
   clipboard still holds them. The background process does the clearing, so it happens even when
   the windows have closed, and also on lock, log out, account switch and Quit. Time asleep counts.
@@ -67,7 +73,10 @@ clipboard if it holds a copied secret.
 - **Settings:** tray menu → *Settings…*, or ⌘, in the Manager.
 - **Sync:**
   - live through the server websocket;
-  - also on unlock, every 30 min and *Sync now*.
+  - also on unlock, every 30 min and *Sync now*;
+  - the tray's *Sync now* reads *Syncing…* while it runs, and an open Manager shows *Vault synced*
+    or why it failed. Under it the tray menu shows *Last synced 12:04* (the date too, if it was
+    not today), or the failure until a later sync succeeds.
 - **Offline:** when the server can't be reached the app keeps working from the encrypted cache. A
   toast tells you so, and it syncs as soon as the server is back.
 - **Lock:** after *Lock after* of inactivity (Settings → Security; *Never* turns the timer off), on
@@ -167,13 +176,6 @@ window at launch.
 ## Themes
 
 Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *Dark*. Text size is there too.
-
-Settings → Shortcuts → *Show keyboard shortcuts* (on by default). Off hides the shortcut hints:
-button suffixes such as *Lock ⌘⇧L*, key caps in fields (*⌘F*, *Esc*), *Settings ⌘,* on the lock
-window and *⌘⇧↩* next to the Quick Panel's Auto-type button. The tray menu never shows
-shortcuts. Every open window follows at once. The
-shortcuts keep working, and the key legends stay: the Quick Panel footer (Enter, ⇧Enter, ⌘Enter…)
-and the Manager's empty detail pane.
 
 Settings → Shortcuts → *Quick Panel hotkey* / *Generator hotkey* are shortcut recorders: click one,
 it shows *Press a shortcut…*, then press the combination. It needs ⌘, ⌥ or ⌃ (⇧ can be added, but

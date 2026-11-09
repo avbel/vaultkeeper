@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -166,6 +166,11 @@ pub enum UiCommand {
     ToggleQuickPanel {
         target: Option<TypingTarget>,
     },
+    /// The tray's "Sync now" ended; `error` is why it failed. Sent only to a running UI, which
+    /// shows it if a window is open.
+    SyncFinished {
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -297,6 +302,11 @@ pub enum Call {
     DeleteAttachment {
         id: Arc<str>,
         attachment_id: String,
+    },
+    AssignCollections {
+        id: Arc<str>,
+        organization_id: String,
+        collection_ids: Vec<Arc<str>>,
     },
     Trash(Arc<str>),
     Restore(Arc<str>),

@@ -101,7 +101,6 @@ impl<S: VaultService> App<S> {
         ));
         window.set_ssh_touch_id(settings.ssh_touch_id);
         window.set_touch_id_right_away(settings.touch_id_right_away);
-        window.set_show_shortcuts(settings.show_shortcuts);
         super::settings_hotkeys::show_hotkeys(window, &settings);
     }
 
@@ -181,10 +180,6 @@ impl<S: VaultService> App<S> {
         self.bind_ssh_settings(window);
         window.on_touch_id_right_away_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.touch_id_right_away = enabled);
-        }));
-        window.on_show_shortcuts_toggled(handler!(self, |app, shown| {
-            app.update_settings(|settings| settings.show_shortcuts = shown);
-            app.apply_theme_everywhere();
         }));
         self.bind_hotkeys(window);
     }

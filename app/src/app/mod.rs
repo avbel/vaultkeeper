@@ -10,6 +10,7 @@ mod commands;
 mod copy;
 mod generator;
 mod manager;
+mod manager_assign;
 mod manager_detail;
 mod manager_edit;
 mod quick;
@@ -102,6 +103,7 @@ fn account_key(server: &url::Url, email: &str) -> SharedString {
 }
 
 pub const OFFLINE_TOAST: &str = "Offline mode — showing cached vault";
+pub const SYNCED_TOAST: &str = "Vault synced";
 pub const SETTINGS_RESET_NOTICE: &str =
     "Settings could not be read and were reset; the old file is kept as settings.json.broken";
 
@@ -428,7 +430,6 @@ impl<S: VaultService> App<S> {
         let theme = component.global::<Theme>();
         theme.set_mode(theme_mode(settings.theme));
         theme.set_scale(settings.text_scale.factor());
-        theme.set_show_shortcuts(settings.show_shortcuts);
     }
 
     fn apply_theme_everywhere(&self) {

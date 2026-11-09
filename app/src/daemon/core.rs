@@ -35,6 +35,7 @@ use super::{
     routing::Effect,
     ssh::{SshControl, purpose},
     target::{FrontmostApp, SystemFrontmost, outside},
+    tray_sync::{self, TraySync},
 };
 use crate::{
     os::{
@@ -120,6 +121,7 @@ pub struct Daemon {
     /// One Touch ID sheet at a time; concurrent sign requests wait their turn.
     presence: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    tray_sync: watch::Sender<TraySync>,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -183,6 +185,7 @@ impl Daemon {
             unlocked_as: Mutex::new(None),
             presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
+            tray_sync: watch::Sender::new(TraySync::default()),
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -291,7 +294,7 @@ impl Daemon {
         match effect {
             Effect::Show(command) => self.send_command(command),
             Effect::Lock => self.vault.lock(),
-            Effect::Sync => self.vault.request_sync(),
+            Effect::Sync => self.sync_from_tray(),
             Effect::SwitchAccount(id) => {
                 if let Err(error) = self.vault.switch_account(&id) {
                     tracing::warn!(%error, "account switch failed");
@@ -300,6 +303,31 @@ impl Daemon {
             // The shell quits its event loop and then calls `shutdown`.
             Effect::Quit => {}
         }
+    }
+
+    /// A UI process already running toasts the result; none is started just for that.
+    fn sync_from_tray(self: &Arc<Self>) {
+        if !tray_sync::start(&self.tray_sync) {
+            return;
+        }
+        let daemon = Arc::clone(self);
+        drop(self.runtime.spawn(async move {
+            let result = daemon.vault.sync().await;
+            let error = tray_sync::finish(&daemon.tray_sync, &result);
+            if daemon.ui_connected() {
+                daemon.send_command(UiCommand::SyncFinished { error });
+            }
+        }));
+    }
+
+    #[must_use]
+    pub fn tray_sync(&self) -> TraySync {
+        self.tray_sync.borrow().clone()
+    }
+
+    #[must_use]
+    pub fn subscribe_tray_sync(&self) -> watch::Receiver<TraySync> {
+        self.tray_sync.subscribe()
     }
 
     fn send_command(self: &Arc<Self>, command: UiCommand) {

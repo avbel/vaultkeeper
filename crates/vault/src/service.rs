@@ -128,6 +128,17 @@ pub trait VaultService: Send + Sync + 'static {
         attachment_id: &str,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Puts the item in exactly `collection_ids` (at least one) of `organization_id`. A personal
+    /// item moves into the organization for good; an organization item keeps the read-only
+    /// collections it is in. Moving to another organization or back to the personal vault is
+    /// refused, as the server offers no way to do it.
+    fn assign_collections(
+        &self,
+        id: &ItemId,
+        organization_id: &str,
+        collection_ids: Vec<Arc<str>>,
+    ) -> impl Future<Output = Result<()>> + Send;
+
     fn trash(&self, id: &ItemId) -> impl Future<Output = Result<()>> + Send;
     fn restore(&self, id: &ItemId) -> impl Future<Output = Result<()>> + Send;
     fn delete_permanently(&self, id: &ItemId) -> impl Future<Output = Result<()>> + Send;

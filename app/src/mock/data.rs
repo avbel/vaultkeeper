@@ -274,6 +274,12 @@ pub fn alice() -> AccountData {
                 read_only: false,
             },
             CollectionView {
+                id: Arc::from("col-ops"),
+                organization_id: Arc::clone(&org),
+                name: Arc::from("Operations"),
+                read_only: false,
+            },
+            CollectionView {
                 id: Arc::from("col-fin"),
                 organization_id: Arc::clone(&org),
                 name: Arc::from("Finance"),

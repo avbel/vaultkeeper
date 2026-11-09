@@ -50,6 +50,7 @@ pub fn command_for(command: bwl_ipc::UiCommand) -> UiCommand {
         bwl_ipc::UiCommand::ShowGenerator => UiCommand::ShowGenerator,
         bwl_ipc::UiCommand::UnlockInTray => UiCommand::UnlockInTray,
         bwl_ipc::UiCommand::ReloadSettings => UiCommand::ReloadSettings,
+        bwl_ipc::UiCommand::SyncFinished { error } => UiCommand::SyncFinished(error),
     }
 }
 
@@ -98,6 +99,12 @@ mod tests {
             (bwl_ipc::UiCommand::ShowGenerator, "ShowGenerator"),
             (bwl_ipc::UiCommand::UnlockInTray, "UnlockInTray"),
             (bwl_ipc::UiCommand::ReloadSettings, "ReloadSettings"),
+            (
+                bwl_ipc::UiCommand::SyncFinished {
+                    error: Some("offline".to_owned()),
+                },
+                r#"SyncFinished(Some("offline"))"#,
+            ),
         ];
         for (daemon, app) in pairs {
             assert_eq!(format!("{:?}", command_for(daemon)), app);

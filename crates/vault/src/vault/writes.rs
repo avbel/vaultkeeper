@@ -12,7 +12,7 @@ use crate::{
 
 /// Vaultwarden's refusal of a `lastKnownRevisionDate` older than its copy (`ciphers.rs`:
 /// "The client copy of this cipher is out of date. Resync the client and try again.").
-fn stale_revision_as_conflict(error: Error) -> Error {
+pub(super) fn stale_revision_as_conflict(error: Error) -> Error {
     match &error {
         Error::Api(bwl_api::Error::Server {
             status: 400,
@@ -41,7 +41,7 @@ impl Inner {
 
     /// An update is built from the stored cipher, so one from a cache older than lossless ciphers
     /// would delete what that cache lost (passkeys). Fetch the server's copy first.
-    async fn ensure_complete_ciphers(self: &Arc<Self>) -> Result<()> {
+    pub(super) async fn ensure_complete_ciphers(self: &Arc<Self>) -> Result<()> {
         let complete = || self.read_unlocked(|_, unlocked| Ok(unlocked.data.is_complete()));
         if complete()? {
             return Ok(());

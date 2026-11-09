@@ -93,6 +93,37 @@ impl ItemKeys {
         })
     }
 
+    /// Moving a personal item into an organization: an item key is re-wrapped by the org key, so
+    /// everything it encrypts (attachment keys included) stays valid. A legacy item gets a new
+    /// item key under the org key, unless attachment keys are wrapped by the user key.
+    fn for_share(base: &Cipher, keys: &KeyRing, org_key: &SymmetricKey) -> Result<Self> {
+        let old = copy_key(&*keys.cipher_key(base)?)?;
+        if base.key.as_deref().is_some_and(|key| !key.is_empty()) {
+            return Ok(Self {
+                key: copy_key(&old)?,
+                wrapped: Some(encrypt_text_bytes(&old.to_bytes(), org_key)?),
+                old: Some(old),
+                rekeyed: false,
+            });
+        }
+        if base
+            .attachments
+            .as_ref()
+            .is_some_and(|list| !list.is_empty())
+        {
+            return Err(Error::unsupported(
+                "This item's attachments use an older encryption: \
+                 move it with the official Bitwarden client",
+            ));
+        }
+        let upgraded = Self::new_item(org_key)?;
+        Ok(Self {
+            old: Some(old),
+            rekeyed: true,
+            ..upgraded
+        })
+    }
+
     fn rekey(&self) -> Option<Rekey<'_>> {
         match &self.old {
             Some(old) if self.rekeyed => Some(Rekey {
@@ -150,6 +181,42 @@ pub(crate) fn prepare(
         Some(base) => ItemKeys::for_update(base, keys, base_key)?,
         None => ItemKeys::new_item(base_key)?,
     };
+    Ok(Prepared {
+        request: build(draft, base, &item, organization_id)?,
+        collection_ids: draft
+            .collection_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    })
+}
+
+/// The `/share` body that moves the personal item `base` (decrypted as `draft`) into
+/// `organization_id`.
+pub(crate) fn prepare_share(
+    draft: &ItemDraft,
+    base: &Cipher,
+    organization_id: &str,
+    keys: &KeyRing,
+) -> Result<CipherRequest> {
+    if base.organization_id.is_some() || draft.organization_id.is_some() {
+        return Err(Error::unsupported(
+            "The item already belongs to an organization",
+        ));
+    }
+    check_update(draft, base, type_of(&draft.data))?;
+    let org_key = keys.base_key(Some(organization_id))?;
+    let item = ItemKeys::for_share(base, keys, org_key)?;
+    build(draft, Some(base), &item, Some(organization_id))
+}
+
+fn build(
+    draft: &ItemDraft,
+    base: Option<&Cipher>,
+    item: &ItemKeys,
+    organization_id: Option<&str>,
+) -> Result<CipherRequest> {
+    let kind = type_of(&draft.data);
     let key = &item.key;
 
     let mut request = CipherRequest {
@@ -161,23 +228,16 @@ pub(crate) fn prepare(
         favorite: draft.favorite,
         reprompt: u8::from(draft.reprompt),
         key: item.wrapped.clone(),
-        fields: fields(&draft.fields, base, &item)?,
+        fields: fields(&draft.fields, base, item)?,
         last_known_revision_date: base.and(draft.revision_date.as_deref().map(str::to_owned)),
-        extra: top_level_extra(base, &item)?,
+        extra: top_level_extra(base, item)?,
         ..CipherRequest::default()
     };
-    fill_type_data(&mut request, &draft.data, base, &item)?;
+    fill_type_data(&mut request, &draft.data, base, item)?;
     if request.password_history.is_none() {
-        request.password_history = carried_history(base, &item)?;
+        request.password_history = carried_history(base, item)?;
     }
-    Ok(Prepared {
-        request,
-        collection_ids: draft
-            .collection_ids
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
-    })
+    Ok(request)
 }
 
 fn top_level_extra(base: Option<&Cipher>, item: &ItemKeys) -> Result<Extra> {

@@ -91,7 +91,7 @@ component AutoTypeBtn inherits Rectangle {
     callback clicked();
 
     // Same width on every row, so the copy buttons stay in one column.
-    width: Theme.control-height + (Theme.show-shortcuts ? 30px * Theme.scale : 0px);
+    width: Theme.control-height + 30px * Theme.scale;
     height: 24px * Theme.scale;
     border-radius: Theme.radius-control;
     background: ta.has-hover && root.enabled ? Theme.hover : transparent;
@@ -112,7 +112,7 @@ component AutoTypeBtn inherits Rectangle {
         alignment: end;
         spacing: Theme.s1;
         padding-right: (Theme.control-height - 16px * Theme.scale) / 2;
-        if root.enabled && root.hint-shown && Theme.show-shortcuts: Text {
+        if root.enabled && root.hint-shown: Text {
             text: "⌘⇧↩";
             color: Theme.text-muted;
             font-size: Theme.font-meta;

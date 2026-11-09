@@ -544,6 +544,20 @@ impl VaultService for FakeVault {
         Ok(())
     }
 
+    async fn assign_collections(
+        &self,
+        id: &ItemId,
+        organization_id: &str,
+        collection_ids: Vec<Arc<str>>,
+    ) -> Result<()> {
+        self.record(format!(
+            "assign_collections {} {organization_id} {}",
+            id.0,
+            collection_ids.join(",")
+        ));
+        Ok(())
+    }
+
     async fn trash(&self, id: &ItemId) -> Result<()> {
         self.record(format!("trash {}", id.0));
         Ok(())

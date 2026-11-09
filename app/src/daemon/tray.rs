@@ -11,7 +11,10 @@ use super::{
     Daemon,
     routing::{self, Effect, TrayAction},
 };
-use crate::{ui::TrayIcon, viewmodel::host};
+use crate::{
+    ui::TrayIcon,
+    viewmodel::{host, local_time, tray_sync_label},
+};
 
 pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     let tray = TrayIcon::new()?;
@@ -64,6 +67,17 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         })
         .collect();
     tray.set_accounts(ModelRc::new(VecModel::from(labels)));
+    let sync = daemon.tray_sync();
+    let last_sync = vault.last_sync();
+    tray.set_syncing(sync.running);
+    tray.set_sync_label(
+        tray_sync_label(
+            last_sync.map(local_time),
+            chrono::Local::now().naive_local(),
+            sync.failure(last_sync),
+        )
+        .into(),
+    );
     // Re-read on every refresh: a system appearance switch shows on the next vault or settings
     // change (a sync runs at least every 30 minutes).
     tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {
@@ -76,6 +90,7 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
 fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
     let mut changes = daemon.vault().changes();
     let mut settings = daemon.subscribe_settings();
+    let mut sync = daemon.subscribe_tray_sync();
     let weak = tray.as_weak();
     let daemon = Arc::clone(daemon);
     slint::spawn_local(async move {
@@ -84,6 +99,7 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
                 biased;
                 vault = changes.changed() => if vault.is_err() { break },
                 prefs = settings.changed() => if prefs.is_err() { break },
+                status = sync.changed() => if status.is_err() { break },
             }
             match weak.upgrade() {
                 Some(tray) => refresh(&tray, &daemon),

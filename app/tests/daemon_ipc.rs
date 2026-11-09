@@ -654,3 +654,40 @@ async fn an_ssh_prompt_carries_the_app_that_was_in_front_when_the_request_came()
     tokio::time::timeout(WAIT, asking).await.unwrap().unwrap();
     daemon.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_tray_sync_reports_to_a_running_ui_and_starts_none() {
+    let dir = DataDir::new();
+    let daemon = start(&dir).await;
+    // Logged out, so the sync fails at once with the vault's own refusal.
+    daemon.apply(Effect::Sync);
+    eventually(|| !daemon.tray_sync().running).await;
+    assert_eq!(
+        daemon.tray_sync().failure(None),
+        Some("Not logged in"),
+        "the tray menu shows why"
+    );
+    assert!(!daemon.ui_connected(), "no UI was started to report it");
+
+    let (_vault, mut events) = connect(&dir).await;
+    daemon.apply(Effect::Show(UiCommand::ShowManager));
+    assert!(
+        matches!(
+            next(&mut events).await,
+            UiEvent::Command {
+                seq: 1,
+                command: UiCommand::ShowManager
+            }
+        ),
+        "the result without a UI was not queued for a later one"
+    );
+    daemon.apply(Effect::Sync);
+    match next(&mut events).await {
+        UiEvent::Command {
+            seq: 2,
+            command: UiCommand::SyncFinished { error },
+        } => assert_eq!(error.as_deref(), Some("Not logged in")),
+        other => panic!("expected the sync result, got {other:?}"),
+    }
+    daemon.shutdown().await;
+}

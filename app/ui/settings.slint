@@ -49,7 +49,6 @@ export component SettingsWindow inherits Window {
     in-out property <int> ssh-approval-index;
     in-out property <bool> ssh-touch-id;
     in-out property <bool> touch-id-right-away;
-    in-out property <bool> show-shortcuts: true;
     // Saved accelerators ("Cmd+Shift+Space") and the same in symbols ("⇧⌘Space").
     in property <string> hotkey;
     in property <string> generator-hotkey;
@@ -76,7 +75,6 @@ export component SettingsWindow inherits Window {
     callback ssh-approval-selected(int);
     callback ssh-touch-id-toggled(bool);
     callback touch-id-right-away-toggled(bool);
-    callback show-shortcuts-toggled(bool);
     // Both save paths validate and save an accelerator; an empty one clears the Generator's.
     callback hotkey-accepted(string);
     callback generator-hotkey-accepted(string);
@@ -274,12 +272,6 @@ export component SettingsWindow inherits Window {
                 Toggle { text: "SSH requires Touch ID"; checked <=> root.ssh-touch-id; toggled(v) => { root.ssh-touch-id-toggled(v); } }
                 Divider { }
                 SectionLabel { text: "SHORTCUTS"; }
-                Toggle {
-                    text: "Show keyboard shortcuts";
-                    description: "Hints next to buttons and in fields; the shortcuts work either way";
-                    checked <=> root.show-shortcuts;
-                    toggled(v) => { root.show-shortcuts-toggled(v); }
-                }
                 SettingRow {
                     text: "Quick Panel hotkey";
                     quick-recorder := ShortcutRecorder {

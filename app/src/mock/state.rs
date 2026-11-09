@@ -1,5 +1,7 @@
 //! Mock vault internals: account and item lookups, search matching and fake secrets.
 
+use std::sync::Arc;
+
 use bwl_vault::{
     Error, Result, TotpCode,
     model::{CopyField, Filter, ItemData, ItemId},
@@ -166,6 +168,65 @@ pub(super) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Mirrors the real vault's rules: writable collections of one organization, read-only ones the
+/// item is in stay, and no way out of an organization.
+pub(super) fn assign_collections(
+    inner: &mut Inner,
+    id: &ItemId,
+    organization_id: &str,
+    picked: &[Arc<str>],
+) -> Result<()> {
+    let data = inner.data_mut()?;
+    let writable = |id: &Arc<str>| {
+        data.collections.iter().any(|collection| {
+            collection.id == *id
+                && &*collection.organization_id == organization_id
+                && !collection.read_only
+        })
+    };
+    if picked.is_empty() || !picked.iter().all(writable) {
+        return Err(Error::ReadOnly);
+    }
+    let read_only: Vec<Arc<str>> = data
+        .collections
+        .iter()
+        .filter(|collection| collection.read_only)
+        .map(|collection| Arc::clone(&collection.id))
+        .collect();
+    let organization = data
+        .organizations
+        .iter()
+        .find(|organization| &*organization.id == organization_id)
+        .map(|organization| Arc::clone(&organization.id))
+        .ok_or(Error::NotFound)?;
+    let item = data
+        .items
+        .iter_mut()
+        .find(|item| &item.summary.id == id)
+        .ok_or(Error::NotFound)?;
+    if !item.summary.editable {
+        return Err(Error::ReadOnly);
+    }
+    if item
+        .draft
+        .organization_id
+        .as_ref()
+        .is_some_and(|current| *current != organization)
+    {
+        return Err(Error::ReadOnly);
+    }
+    let kept = item
+        .draft
+        .collection_ids
+        .iter()
+        .filter(|id| read_only.contains(id) && !picked.contains(id))
+        .cloned();
+    item.draft.collection_ids = picked.iter().cloned().chain(kept).collect();
+    item.draft.organization_id = Some(Arc::clone(&organization));
+    item.summary.organization_id = Some(organization);
+    Ok(())
 }
 
 pub(super) fn set_deleted(inner: &mut Inner, id: &ItemId, deleted: bool) -> Result<()> {

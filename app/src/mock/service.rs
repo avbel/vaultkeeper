@@ -20,8 +20,8 @@ use super::{
     MockCall, MockVault,
     data::{self, AccountData, MockItem},
     state::{
-        fake_totp, field_value, matches, not_bitwarden, rank, set_deleted, unix_now, unreachable,
-        user_key,
+        assign_collections, fake_totp, field_value, matches, not_bitwarden, rank, set_deleted,
+        unix_now, unreachable, user_key,
     },
 };
 
@@ -280,8 +280,19 @@ impl VaultService for MockVault {
         self.guard().data()?;
         self.online()?;
         self.record(MockCall::Sync);
+        *self
+            .last_sync
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(std::time::SystemTime::now());
         self.bump();
         Ok(())
+    }
+
+    fn last_sync(&self) -> Option<std::time::SystemTime> {
+        *self
+            .last_sync
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn is_offline(&self) -> bool {
@@ -499,6 +510,23 @@ impl VaultService for MockVault {
                 return Err(Error::NotFound);
             }
             Ok(())
+        })
+    }
+
+    async fn assign_collections(
+        &self,
+        id: &ItemId,
+        organization_id: &str,
+        collection_ids: Vec<Arc<str>>,
+    ) -> Result<()> {
+        self.delay().await;
+        let call = MockCall::AssignCollections {
+            id: id.clone(),
+            organization_id: organization_id.to_owned(),
+            collection_ids: collection_ids.clone(),
+        };
+        self.write(call, |inner| {
+            assign_collections(inner, id, organization_id, &collection_ids)
         })
     }
 

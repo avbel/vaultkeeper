@@ -339,6 +339,10 @@ async fn writes_attachments_folders_and_ssh_keys_round_trip() {
         .await
         .expect("delete attachment");
 
+    vault
+        .assign_collections(&id("item-002"), "org-1", vec!["c1".into(), "c2".into()])
+        .await
+        .expect("assign collections");
     vault.trash(&id("item-002")).await.expect("trash");
     vault.restore(&id("item-002")).await.expect("restore");
     let refused = vault.delete_permanently(&id("item-002")).await;
@@ -366,6 +370,7 @@ async fn writes_attachments_folders_and_ssh_keys_round_trip() {
             "download item-001 a1 /tmp/out/ré port.pdf",
             "upload item-001 /tmp/in/scan.png",
             "delete_attachment item-001 a1",
+            "assign_collections item-002 org-1 c1,c2",
             "trash item-002",
             "restore item-002",
             "delete_permanently item-002",

@@ -10,9 +10,6 @@ export global Theme {
     in-out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
     // 1.0, 1.15 or 1.3: multiplies fonts and row heights.
     in-out property <float> scale: 1.0;
-    // "Show keyboard shortcuts": hides the inline hints (button suffixes, field key caps). Legends
-    // that explain keys found nowhere else (the Quick Panel footer) and accessible descriptions stay.
-    in-out property <bool> show-shortcuts: true;
     out property <bool> dark: mode == ThemeMode.dark || (mode == ThemeMode.system && system-dark);
 
     out property <color> bg: dark ? #141518 : #F6F7F9;

@@ -13,6 +13,7 @@ pub mod secrets;
 pub mod ssh;
 pub mod target;
 mod tray;
+pub mod tray_sync;
 
 use std::{sync::Arc, time::Duration};
 

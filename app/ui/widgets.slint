@@ -66,6 +66,7 @@ export component Btn inherits Rectangle {
     in property <string> hint;
     in property <image> icon;
     in property <bool> has-icon: false;
+    in property <bool> has-chevron: false;
     in property <BtnKind> kind: BtnKind.normal;
     in property <bool> enabled: true;
     in property <string> label: text;
@@ -126,11 +127,20 @@ export component Btn inherits Rectangle {
             font-weight: 500;
             vertical-alignment: center;
         }
-        if root.hint != "" && Theme.show-shortcuts: Text {
+        if root.hint != "" && root.text != "": Text {
             text: root.hint;
             color: root.kind == BtnKind.primary ? root.fg.with-alpha(0.7) : Theme.text-muted;
             font-size: Theme.font-meta;
             vertical-alignment: center;
+        }
+        if root.has-chevron: VerticalLayout {
+            alignment: center;
+            Icon {
+                source: @image-url("icons/chevron-down.svg");
+                tint: Theme.text-muted;
+                width: 12px;
+                height: 12px;
+            }
         }
     }
 }

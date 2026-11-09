@@ -8,6 +8,7 @@
 
 mod attachments;
 mod background;
+mod collections;
 mod logout;
 mod probe;
 mod service_impl;

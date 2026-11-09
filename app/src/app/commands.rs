@@ -37,6 +37,8 @@ pub enum UiCommand {
     ReloadSettings,
     /// The server became unreachable (`true`) or reachable again.
     OfflineChanged(bool),
+    /// The tray's "Sync now" ended, with the error text when it failed.
+    SyncFinished(Option<String>),
 }
 
 impl<S: VaultService> App<S> {
@@ -82,7 +84,20 @@ impl<S: VaultService> App<S> {
             UiCommand::VaultChanged => self.on_vault_changed(),
             UiCommand::ReloadSettings => self.reload_settings(),
             UiCommand::OfflineChanged(offline) => self.offline_changed(offline),
+            UiCommand::SyncFinished(error) => self.sync_finished(error.as_deref()),
         }
+    }
+
+    /// Only an open Manager shows it; the tray menu carries the result otherwise.
+    pub(super) fn sync_finished(&self, error: Option<&str>) {
+        if self.manager.borrow().is_none() {
+            return;
+        }
+        match error {
+            None => self.toast(super::SYNCED_TOAST, false),
+            Some(error) => self.toast(&format!("Sync failed: {error}"), true),
+        }
+        self.refresh_status();
     }
 
     fn offline_changed(&self, offline: bool) {
@@ -165,7 +180,10 @@ impl UiCommand {
     const fn shows_a_window(&self) -> bool {
         !matches!(
             self,
-            Self::VaultChanged | Self::ReloadSettings | Self::OfflineChanged(_)
+            Self::VaultChanged
+                | Self::ReloadSettings
+                | Self::OfflineChanged(_)
+                | Self::SyncFinished(_)
         )
     }
 }

@@ -685,3 +685,86 @@ async fn only_the_sync_may_answer_with_more_than_8_mib() {
         "{error:?}"
     );
 }
+
+#[tokio::test]
+async fn share_cipher_wraps_the_cipher_with_its_collections() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/api/ciphers/{LOGIN_ID}/share")))
+        .and(header("authorization", bearer().as_str()))
+        .and(body_partial_json(json!({
+            "cipher": {
+                "organizationId": "org-1",
+                "encryptedFor": USER_ID,
+                "lastKnownRevisionDate": "2026-11-08T17:00:59.323234Z",
+            },
+            "collectionIds": ["col-1", "col-2"],
+        })))
+        .respond_with(json_response(200, "cipher_update.json"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let cipher = CipherRequest {
+        organization_id: Some("org-1".into()),
+        last_known_revision_date: Some("2026-11-08T17:00:59.323234Z".into()),
+        ..request(1)
+    };
+
+    let shared = client(&server)
+        .share_cipher(
+            &access_token(),
+            LOGIN_ID,
+            &cipher,
+            &["col-1".into(), "col-2".into()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(shared.id, LOGIN_ID);
+}
+
+#[tokio::test]
+async fn update_cipher_collections_reads_the_optional_cipher() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/api/ciphers/{LOGIN_ID}/collections_v2")))
+        .and(header("authorization", bearer().as_str()))
+        .and(body_json(json!({ "collectionIds": ["col-1"] })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "optionalCipherDetails",
+            "unavailable": false,
+            "cipher": fixture_json("cipher_update.json"),
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let updated = client(&server)
+        .update_cipher_collections(&access_token(), LOGIN_ID, &["col-1".into()])
+        .await
+        .unwrap();
+
+    assert!(!updated.unavailable);
+    assert_eq!(updated.cipher.unwrap().id, LOGIN_ID);
+}
+
+#[tokio::test]
+async fn update_cipher_collections_reports_lost_access() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/api/ciphers/{LOGIN_ID}/collections_v2")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "unavailable": true, "cipher": null })),
+        )
+        .mount(&server)
+        .await;
+
+    let updated = client(&server)
+        .update_cipher_collections(&access_token(), LOGIN_ID, &["col-1".into()])
+        .await
+        .unwrap();
+
+    assert!(updated.unavailable);
+    assert!(updated.cipher.is_none());
+}

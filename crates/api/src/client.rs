@@ -15,8 +15,8 @@ use crate::{
     http::{HttpTimeouts, MAX_SYNC_BODY_BYTES, Reply, Transport},
     login::{classify_bad_request, is_invalid_grant},
     models::{
-        Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, PreloginResponse,
-        SyncResponse, TokenResponse,
+        Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, OptionalCipher,
+        PreloginResponse, SyncResponse, TokenResponse,
     },
     server_url::validate_server_url,
     token,
@@ -262,6 +262,47 @@ impl Client {
                 .put(url)
                 .bearer_auth(access_token)
                 .json(&body),
+        )
+        .await
+    }
+
+    /// `PUT /api/ciphers/{id}/share` with `{cipher, collectionIds}`: moves a personal item into
+    /// an organization. `cipher` must be re-encrypted for the organization's key.
+    pub async fn share_cipher(
+        &self,
+        access_token: &str,
+        id: &str,
+        cipher: &CipherRequest,
+        collection_ids: &[String],
+    ) -> Result<Cipher> {
+        let body = cipher_body(cipher, access_token)?;
+        let url = self.transport.endpoint(&["api", "ciphers", id, "share"])?;
+        let wrapped = json!({ "cipher": body, "collectionIds": collection_ids });
+        self.call(
+            self.transport
+                .put(url)
+                .bearer_auth(access_token)
+                .json(&wrapped),
+        )
+        .await
+    }
+
+    /// `PUT /api/ciphers/{id}/collections_v2` with `{collectionIds}`: the full new set of an
+    /// organization item's collections.
+    pub async fn update_cipher_collections(
+        &self,
+        access_token: &str,
+        id: &str,
+        collection_ids: &[String],
+    ) -> Result<OptionalCipher> {
+        let url = self
+            .transport
+            .endpoint(&["api", "ciphers", id, "collections_v2"])?;
+        self.call(
+            self.transport
+                .put(url)
+                .bearer_auth(access_token)
+                .json(&json!({ "collectionIds": collection_ids })),
         )
         .await
     }

@@ -126,9 +126,6 @@ pub struct Settings {
     pub hotkey: String,
     /// Opens the Generator window from anywhere; empty means no shortcut.
     pub generator_hotkey: String,
-    /// Shortcut hints next to buttons, in fields and in the tray menu; the shortcuts themselves
-    /// always work.
-    pub show_shortcuts: bool,
     /// Start the Touch ID unlock as soon as something needs the vault, before any lock window.
     pub touch_id_right_away: bool,
     #[serde(deserialize_with = "lenient_generator")]
@@ -156,7 +153,6 @@ impl Default for Settings {
             ssh_touch_id: false,
             hotkey: "Cmd+Shift+Space".to_owned(),
             generator_hotkey: String::new(),
-            show_shortcuts: true,
             touch_id_right_away: false,
             last_login: None,
             generator: GeneratorPrefs::default(),
@@ -521,7 +517,6 @@ mod tests {
             ssh_touch_id: true,
             hotkey: "Cmd+Alt+K".to_owned(),
             generator_hotkey: "Cmd+Alt+G".to_owned(),
-            show_shortcuts: false,
             touch_id_right_away: true,
             last_login: Some("2.sealed".to_owned()),
             generator: GeneratorPrefs {
@@ -569,10 +564,9 @@ mod tests {
     }
 
     #[test]
-    fn files_from_before_the_shortcut_and_touch_id_options_get_their_defaults() {
+    fn files_from_before_the_touch_id_option_get_its_default() {
         let settings: Settings =
             serde_json::from_str(r#"{"theme":"dark","hotkey":"Cmd+Alt+K"}"#).expect("decode");
-        assert!(settings.show_shortcuts, "hints stay visible by default");
         assert!(!settings.touch_id_right_away, "Touch ID waits for a click");
         assert_eq!(settings.theme, ThemeChoice::Dark);
     }

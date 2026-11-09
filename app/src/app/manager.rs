@@ -93,6 +93,7 @@ impl<S: VaultService> App<S> {
         window.set_sidebar_entries(ModelRc::from(Rc::clone(&sidebar_model)));
         self.bind_manager(&window);
         self.bind_manager_detail(&window);
+        self.bind_manager_assign(&window);
         self.bind_manager_edit(&window);
         self.bind_sidebar(&window);
         self.bind_reprompt(&window);

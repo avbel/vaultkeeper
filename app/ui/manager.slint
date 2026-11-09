@@ -2,14 +2,14 @@ import { ListView } from "std-widgets.slint";
 import { Theme, Clock } from "theme.slint";
 import { Btn, BtnKind, Divider, EmptyState, Field, Icon, MenuRow, PopupPanel, SkeletonRows, Toast } from "kit.slint";
 import { ItemRow, RowData } from "row.slint";
-import { AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
+import { AssignChoice, AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
 import { GeneratorView, GeneratorState } from "generator.slint";
 import { Sidebar, SidebarEntry } from "sidebar.slint";
 import { AccountRow, AccountSwitcher } from "accounts.slint";
 
 component NewMenu inherits Rectangle {
     callback new-item(int);
-    width: 112px;
+    width: 136px;
     height: Theme.control-height;
     Btn {
         width: 100%;
@@ -17,9 +17,9 @@ component NewMenu inherits Rectangle {
         text: "New";
         hint: "⌘N";
         has-icon: true;
-        icon: @image-url("icons/key.svg");
+        icon: @image-url("icons/plus.svg");
+        has-chevron: true;
         label: "New item";
-        kind: BtnKind.primary;
         clicked => { popup.show(); }
     }
     popup := PopupWindow {
@@ -162,6 +162,14 @@ export component ManagerWindow inherits Window {
     in-out property <int> attachment-confirm: -1;
     in property <[string]> folder-options;
     in-out property <int> detail-folder-index;
+    in property <bool> assign-visible;
+    in property <[string]> assign-org-options;
+    in-out property <int> assign-org-index;
+    in property <bool> assign-org-fixed;
+    in property <[AssignChoice]> assign-choices;
+    in property <string> assign-warning;
+    in property <bool> assign-can-submit;
+    in property <bool> assign-busy;
     in property <bool> online: true;
     in-out property <bool> reprompt-visible;
     in property <string> reprompt-error;
@@ -212,6 +220,11 @@ export component ManagerWindow inherits Window {
     callback delete-confirmed();
     callback restore();
     callback move-to-folder(int);
+    callback assign-open();
+    callback assign-org-selected(int);
+    callback assign-toggled(int, bool);
+    callback assign-submit();
+    callback assign-cancel();
     callback attachment-save(int);
     callback attachment-delete(int);
     callback attach-file();
@@ -305,12 +318,13 @@ export component ManagerWindow inherits Window {
                         new-item(kind) => { root.new-item(kind); }
                     }
                     Btn {
+                        width: Theme.field-height;
                         height: Theme.field-height;
                         y: (parent.height - self.height) / 2;
-                        text: "Lock";
                         hint: "⌘⇧L";
                         has-icon: true;
                         icon: @image-url("icons/lock.svg");
+                        label: "Lock";
                         clicked => { root.lock(); }
                     }
                     Btn {
@@ -416,6 +430,14 @@ export component ManagerWindow inherits Window {
                         online: root.online;
                         folder-options: root.folder-options;
                         folder-index <=> root.detail-folder-index;
+                        assign-visible: root.assign-visible;
+                        assign-org-options: root.assign-org-options;
+                        assign-org-index <=> root.assign-org-index;
+                        assign-org-fixed: root.assign-org-fixed;
+                        assign-choices: root.assign-choices;
+                        assign-warning: root.assign-warning;
+                        assign-can-submit: root.assign-can-submit;
+                        assign-busy: root.assign-busy;
                         reprompt-visible: root.reprompt-visible;
                         reprompt-error: root.reprompt-error;
                         reprompt-submit(password) => { root.reprompt-submit(password); }
@@ -428,6 +450,11 @@ export component ManagerWindow inherits Window {
                         delete-confirmed => { root.delete-confirmed(); }
                         restore => { root.restore(); }
                         move-to-folder(i) => { root.move-to-folder(i); }
+                        assign-open => { root.assign-open(); }
+                        assign-org-selected(i) => { root.assign-org-selected(i); }
+                        assign-toggled(i, on) => { root.assign-toggled(i, on); }
+                        assign-submit => { root.assign-submit(); }
+                        assign-cancel => { root.assign-cancel(); }
                         attachment-save(i) => { root.attachment-save(i); }
                         attachment-delete(i) => { root.attachment-delete(i); }
                         attach-file => { root.attach-file(); }

@@ -47,6 +47,11 @@ pub enum MockCall {
         id: Option<ItemId>,
         name: String,
     },
+    AssignCollections {
+        id: ItemId,
+        organization_id: String,
+        collection_ids: Vec<Arc<str>>,
+    },
     Trash(ItemId),
     Restore(ItemId),
     DeletePermanently(ItemId),
@@ -124,6 +129,7 @@ pub struct MockVault {
     changes: watch::Sender<u64>,
     calls: Mutex<Vec<MockCall>>,
     last_saved: Mutex<Option<ItemDraft>>,
+    last_sync: Mutex<Option<std::time::SystemTime>>,
 }
 
 fn account(id: &str, server: &str, email: &str, logged_in: bool, data: AccountData) -> Account {
@@ -183,6 +189,7 @@ impl MockVault {
             changes: watch::channel(0).0,
             calls: Mutex::new(Vec::new()),
             last_saved: Mutex::new(None),
+            last_sync: Mutex::new(None),
         }
     }
 

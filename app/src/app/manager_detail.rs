@@ -1,4 +1,5 @@
 //! Manager detail pane: fields, reveal and copy, favorite, folder move, delete, attachments.
+//! The collections panel lives in [`super::manager_assign`].
 
 use std::{rc::Rc, sync::Arc};
 
@@ -8,8 +9,9 @@ use bwl_vault::{
 };
 use slint::{Model, ModelRc, VecModel};
 
-use super::{App, handler};
+use super::{App, handler, manager_assign::render_assign};
 use crate::{
+    assign::{self, AssignForm},
     detail::{self, FieldKind, FieldSpec},
     ui::{AttachmentRow, DetailHeader, ManagerWindow},
     viewmodel::{self, group_code, human_size, kind_code, kind_label},
@@ -24,6 +26,8 @@ pub(super) struct Detail {
     pub(super) attachments: Vec<AttachmentView>,
     has_totp: bool,
     totp_expires: i32,
+    /// The open collections panel; kept while background syncs reload the same item.
+    pub(super) assign: Option<AssignForm>,
 }
 
 impl Detail {
@@ -96,6 +100,7 @@ impl<S: VaultService> App<S> {
         };
         let attachments = self.vault.attachments(id).unwrap_or_default();
         let organizations = self.organizations_cached();
+        let collections = self.vault.collections().unwrap_or_default();
         let mut guard = self.manager.borrow_mut();
         let Some(manager) = guard.as_mut() else {
             return;
@@ -136,6 +141,8 @@ impl<S: VaultService> App<S> {
             favorite: summary.favorite,
             deleted: summary.deleted,
             editable: summary.editable,
+            collections: assign::collection_names(&draft.collection_ids, &collections).into(),
+            can_assign: assign::available(draft.organization_id.as_ref(), &organizations),
         });
         window.set_detail_fields(ModelRc::from(Rc::clone(&fields_model)));
         window.set_attachments(ModelRc::new(VecModel::from(attachment_rows(&attachments))));
@@ -156,6 +163,13 @@ impl<S: VaultService> App<S> {
         window.set_attach_busy(false);
         window.set_detail_mode(1);
         let has_totp = specs.iter().any(|spec| spec.kind == FieldKind::Totp);
+        let assign = manager
+            .detail
+            .take()
+            .filter(|previous| &previous.summary.id == id && !summary.deleted)
+            .and_then(|previous| previous.assign)
+            .filter(|_| summary.editable);
+        render_assign(window, assign.as_ref());
         manager.selected = Some(id.clone());
         manager.edit = None;
         manager.switch_to = None;
@@ -170,6 +184,7 @@ impl<S: VaultService> App<S> {
             attachments,
             has_totp,
             totp_expires: 0,
+            assign,
         });
         drop(guard);
         self.refresh_detail_totp();
@@ -382,7 +397,7 @@ impl<S: VaultService> App<S> {
         })
     }
 
-    fn require_online(&self) -> bool {
+    pub(super) fn require_online(&self) -> bool {
         if self.vault.is_offline() {
             self.toast("You're offline: changes need the server", true);
             return false;

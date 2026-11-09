@@ -5,7 +5,7 @@ mod common;
 
 use std::sync::atomic::Ordering;
 
-use bw_lite::{UiCommand, hooks::TypingTarget, mock::MOCK_MASTER_PASSWORD, settings::Settings};
+use bw_lite::{UiCommand, hooks::TypingTarget, mock::MOCK_MASTER_PASSWORD};
 use bwl_vault::{
     VaultService,
     model::{CopyField, Filter, ItemData, ItemDraft},
@@ -288,24 +288,12 @@ fn a_panel_opened_inside_the_app_does_not_reuse_an_old_target() {
 }
 
 #[test]
-fn the_shortcut_hint_follows_show_keyboard_shortcuts_and_the_legend_stays() {
+fn the_selected_rows_shortcut_hint_and_the_footer_legend_show() {
     let h = harness(Setup::default());
     let panel = hotkey(&h);
     type_into(&panel, "Quick search", "tailscale");
     assert!(exists(&panel, "⌘⇧↩"), "the selected row's hint");
     assert!(exists(&panel, "auto-type"), "the footer legend");
-    let h = harness(Setup {
-        settings: Settings {
-            show_shortcuts: false,
-            ..Settings::default()
-        },
-        ..Setup::default()
-    });
-    let panel = hotkey(&h);
-    type_into(&panel, "Quick search", "tailscale");
-    assert!(!exists(&panel, "⌘⇧↩"), "hint hidden");
-    assert!(exists(&panel, "Auto-type"), "the button stays");
-    assert!(exists(&panel, "auto-type"), "the footer legend stays");
 }
 
 #[test]

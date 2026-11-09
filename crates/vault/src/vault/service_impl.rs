@@ -162,6 +162,17 @@ impl VaultService for Vault {
         self.inner.delete_attachment(id, attachment_id).await
     }
 
+    async fn assign_collections(
+        &self,
+        id: &ItemId,
+        organization_id: &str,
+        collection_ids: Vec<Arc<str>>,
+    ) -> Result<()> {
+        self.inner
+            .assign_collections(id, organization_id, &collection_ids)
+            .await
+    }
+
     async fn trash(&self, id: &ItemId) -> Result<()> {
         self.inner.trash(id).await
     }

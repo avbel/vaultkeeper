@@ -280,6 +280,16 @@ pub struct PasswordHistory {
     pub extra: Extra,
 }
 
+/// Answer to a collections update. `unavailable`: the user no longer has access to the item.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionalCipher {
+    #[serde(default)]
+    pub unavailable: bool,
+    #[serde(default)]
+    pub cipher: Option<Cipher>,
+}
+
 /// Attachment metadata. The file itself is encrypted client-side with `key`; `file_name` is an EncString.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

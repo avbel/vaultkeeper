@@ -10,6 +10,16 @@ export struct DetailHeader {
     favorite: bool,
     deleted: bool,
     editable: bool,
+    // Names of the item's collections, comma-separated; empty for a personal item.
+    collections: string,
+    // An organization exists that the item can move to or already belongs to.
+    can-assign: bool,
+}
+
+export struct AssignChoice {
+    name: string,
+    checked: bool,
+    enabled: bool,
 }
 
 // Field kinds: 0 text, 1 URI, 2 TOTP, 3 multiline. Secret values arrive masked until revealed.
@@ -180,6 +190,84 @@ component RepromptRow inherits Rectangle {
     }
 }
 
+// "Assign collections": a personal item picks an organization (for good), an organization
+// item only changes its collections there.
+component AssignPanel inherits Rectangle {
+    in property <[string]> org-options;
+    in-out property <int> org-index;
+    in property <bool> org-fixed;
+    in property <[AssignChoice]> choices;
+    in property <string> warning;
+    in property <bool> can-submit;
+    in property <bool> busy;
+    callback org-selected(int);
+    callback toggled(int, bool);
+    callback submit();
+    callback cancel();
+
+    border-radius: Theme.radius-control;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        padding: Theme.s3;
+        spacing: Theme.s2;
+        if !root.org-fixed: HorizontalLayout {
+            spacing: Theme.s2;
+            Text {
+                text: "Organization";
+                width: 96px;
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                font-weight: 500;
+                vertical-alignment: center;
+            }
+            Select {
+                label: "Organization";
+                options: root.org-options;
+                index <=> root.org-index;
+                enabled: !root.busy;
+                selected(i) => { root.org-selected(i); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        for choice[i] in root.choices: Check {
+            text: choice.name;
+            checked: choice.checked;
+            enabled: choice.enabled && !root.busy;
+            toggled(on) => { root.toggled(i, on); }
+        }
+        if root.choices.length == 0: Text {
+            text: "No collections you can add items to";
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+        }
+        if root.warning != "": Text {
+            text: root.warning;
+            color: Theme.warn;
+            font-size: Theme.font-hint;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: start;
+            Btn {
+                text: root.org-fixed ? "Save" : "Move";
+                label: root.org-fixed ? "Save collections" : "Move to organization";
+                kind: BtnKind.primary;
+                enabled: root.can-submit && !root.busy;
+                clicked => { root.submit(); }
+            }
+            Btn {
+                text: "Cancel";
+                label: "Cancel collections";
+                kind: BtnKind.ghost;
+                enabled: !root.busy;
+                clicked => { root.cancel(); }
+            }
+            if root.busy: Spinner { }
+        }
+    }
+}
+
 component AttachmentsSection inherits VerticalLayout {
     in property <[AttachmentRow]> attachments;
     in property <bool> busy;
@@ -289,6 +377,14 @@ export component DetailView inherits Rectangle {
     in-out property <int> attachment-confirm: -1;
     in property <[string]> folder-options;
     in-out property <int> folder-index;
+    in property <bool> assign-visible;
+    in property <[string]> assign-org-options;
+    in-out property <int> assign-org-index;
+    in property <bool> assign-org-fixed;
+    in property <[AssignChoice]> assign-choices;
+    in property <string> assign-warning;
+    in property <bool> assign-can-submit;
+    in property <bool> assign-busy;
     in property <bool> reprompt-visible;
     in property <string> reprompt-error;
     callback reprompt-submit(string);
@@ -301,6 +397,11 @@ export component DetailView inherits Rectangle {
     callback delete-confirmed();
     callback restore();
     callback move-to-folder(int);
+    callback assign-open();
+    callback assign-org-selected(int);
+    callback assign-toggled(int, bool);
+    callback assign-submit();
+    callback assign-cancel();
     callback attachment-save(int);
     callback attachment-delete(int);
     callback attach-file();
@@ -369,6 +470,49 @@ export component DetailView inherits Rectangle {
                     selected(i) => { root.move-to-folder(i); }
                 }
                 Rectangle { horizontal-stretch: 1; }
+            }
+            if !root.header.deleted && (root.header.collections != "" || (root.header.editable && root.header.can-assign)): HorizontalLayout {
+                spacing: Theme.s2;
+                Text {
+                    text: "Collections";
+                    width: 96px;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.header.collections != "" ? root.header.collections : "None";
+                    color: root.header.collections != "" ? Theme.text : Theme.text-muted;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Collections";
+                    accessible-value: self.text;
+                }
+                if root.header.editable && root.header.can-assign && !root.assign-visible: Btn {
+                    y: (parent.height - self.height) / 2;
+                    text: root.header.collections != "" ? "Change…" : "Move to organization…";
+                    label: root.header.collections != "" ? "Change collections" : "Move to organization";
+                    kind: BtnKind.ghost;
+                    enabled: root.online;
+                    clicked => { root.assign-open(); }
+                }
+            }
+            if root.assign-visible: AssignPanel {
+                org-options: root.assign-org-options;
+                org-index <=> root.assign-org-index;
+                org-fixed: root.assign-org-fixed;
+                choices: root.assign-choices;
+                warning: root.assign-warning;
+                can-submit: root.assign-can-submit && root.online;
+                busy: root.assign-busy;
+                org-selected(i) => { root.assign-org-selected(i); }
+                toggled(i, on) => { root.assign-toggled(i, on); }
+                submit => { root.assign-submit(); }
+                cancel => { root.assign-cancel(); }
             }
             Divider { }
             if root.reprompt-visible: RepromptRow {

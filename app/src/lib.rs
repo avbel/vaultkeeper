@@ -5,6 +5,7 @@
 //! runs the UI alone on [`mock::MockVault`] with the logging stubs in [`hooks`].
 
 pub mod app;
+pub mod assign;
 pub mod autotype;
 pub mod cli;
 pub mod daemon;

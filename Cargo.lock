@@ -793,6 +793,7 @@ dependencies = [
  "bwl-platform",
  "bwl-ssh",
  "bwl-vault",
+ "chrono",
  "global-hotkey",
  "i-slint-backend-testing",
  "objc2 0.6.5",

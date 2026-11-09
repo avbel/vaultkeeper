@@ -78,14 +78,37 @@ pub(super) async fn dispatch<S: VaultService>(
         Call::Draft(id) => reply(service.draft(&ItemId(id)), |draft| {
             Reply::Draft(Box::new(draft.into()))
         }),
+        Call::Attachments(id) => reply(service.attachments(&ItemId(id)), |list| {
+            Reply::Attachments(convert_all(list))
+        }),
+        call @ (Call::Save { .. }
+        | Call::DownloadAttachment { .. }
+        | Call::UploadAttachment { .. }
+        | Call::DeleteAttachment { .. }
+        | Call::AssignCollections { .. }
+        | Call::Trash(_)
+        | Call::Restore(_)
+        | Call::DeletePermanently(_)) => item_write_call(service.as_ref(), call).await,
+        Call::CreateFolder(name) => reply(service.create_folder(&name).await, |folder| {
+            Reply::Folder(folder.into())
+        }),
+        Call::RenameFolder { id, name } => unit(service.rename_folder(&id, &name).await),
+        Call::DeleteFolder(id) => unit(service.delete_folder(&id).await),
+        Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
+        call @ (Call::CopyToClipboard { .. } | Call::ClearClipboard) => {
+            clipboard_call(clipboard, call).await
+        }
+    }
+}
+
+/// Item writes and attachment transfers, all of which wait on the server.
+async fn item_write_call<S: VaultService>(service: &S, call: Call) -> Result<Reply, WireError> {
+    match call {
         Call::Save { id, draft } => {
             reply(service.save(id.map(ItemId), (*draft).into()).await, |id| {
                 Reply::ItemId(id.0)
             })
         }
-        Call::Attachments(id) => reply(service.attachments(&ItemId(id)), |list| {
-            Reply::Attachments(convert_all(list))
-        }),
         Call::DownloadAttachment {
             id,
             attachment_id,
@@ -104,18 +127,19 @@ pub(super) async fn dispatch<S: VaultService>(
         Call::DeleteAttachment { id, attachment_id } => {
             unit(service.delete_attachment(&ItemId(id), &attachment_id).await)
         }
+        Call::AssignCollections {
+            id,
+            organization_id,
+            collection_ids,
+        } => unit(
+            service
+                .assign_collections(&ItemId(id), &organization_id, collection_ids)
+                .await,
+        ),
         Call::Trash(id) => unit(service.trash(&ItemId(id)).await),
         Call::Restore(id) => unit(service.restore(&ItemId(id)).await),
         Call::DeletePermanently(id) => unit(service.delete_permanently(&ItemId(id)).await),
-        Call::CreateFolder(name) => reply(service.create_folder(&name).await, |folder| {
-            Reply::Folder(folder.into())
-        }),
-        Call::RenameFolder { id, name } => unit(service.rename_folder(&id, &name).await),
-        Call::DeleteFolder(id) => unit(service.delete_folder(&id).await),
-        Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
-        call @ (Call::CopyToClipboard { .. } | Call::ClearClipboard) => {
-            clipboard_call(clipboard, call).await
-        }
+        _ => Err(WireError::internal("not an item write".to_owned())),
     }
 }
 

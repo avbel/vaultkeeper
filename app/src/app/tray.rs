@@ -4,7 +4,10 @@ use bwl_vault::{VaultService, model::SessionState};
 use slint::{ModelRc, SharedString, VecModel};
 
 use super::{App, handler};
-use crate::{ui::TrayIcon, viewmodel::host};
+use crate::{
+    ui::TrayIcon,
+    viewmodel::{self, host, local_time, tray_sync_label},
+};
 
 impl<S: VaultService> App<S> {
     /// Creates the tray icon; it lives as long as the app. Not used in headless tests.
@@ -21,7 +24,7 @@ impl<S: VaultService> App<S> {
         tray.on_generator(handler!(self, |app| app.open_generator_window()));
         tray.on_settings(handler!(self, |app| app.open_settings()));
         tray.on_lock_toggle(handler!(self, |app| app.tray_lock_toggle()));
-        tray.on_sync_now(handler!(self, |app| app.sync_now()));
+        tray.on_sync_now(handler!(self, |app| app.tray_sync_now()));
         tray.on_switch_account(handler!(self, |app, index| app.switch_account_at(index)));
         tray.on_quit(handler!(self, |app| app.quit()));
         if let Err(error) = tray.show() {
@@ -43,7 +46,36 @@ impl<S: VaultService> App<S> {
             tray.set_locked(!matches!(state, SessionState::Unlocked { .. }));
             tray.set_logged_in(!matches!(state, SessionState::LoggedOut));
         }
+        self.refresh_tray_sync(false, None);
         self.refresh_accounts_menu();
+    }
+
+    /// The daemon's tray does the same in `daemon::tray`; this one serves `--mock`.
+    fn tray_sync_now(&self) {
+        self.refresh_tray_sync(true, None);
+        let vault = std::sync::Arc::clone(&self.vault);
+        self.exec.spawn(
+            async move { vault.sync().await },
+            handler!(self, |app, result| {
+                let error = result.as_ref().err().map(viewmodel::error_text);
+                app.refresh_tray_sync(false, error.as_deref());
+                app.sync_finished(error.as_deref());
+            }),
+        );
+    }
+
+    fn refresh_tray_sync(&self, running: bool, failed: Option<&str>) {
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            tray.set_syncing(running);
+            tray.set_sync_label(
+                tray_sync_label(
+                    self.vault.last_sync().map(local_time),
+                    chrono::Local::now().naive_local(),
+                    failed,
+                )
+                .into(),
+            );
+        }
     }
 
     /// Account lists of the tray submenu, the Manager switcher and the lock screen.

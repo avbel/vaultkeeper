@@ -1,9 +1,12 @@
 //! Pure mappings from vault types to what the Slint views display.
 
+use std::time::SystemTime;
+
 use bwl_vault::{
     Error,
     model::{AccountView, CopyField, ItemKind, ItemSummary, SessionState},
 };
+use chrono::{DateTime, Local, NaiveDateTime};
 use slint::SharedString;
 use url::Url;
 
@@ -210,6 +213,29 @@ pub fn synced_text(seconds_ago: Option<u64>) -> String {
     }
 }
 
+/// The tray menu's sync line. A clock time rather than "5 min ago": the menu is only rebuilt on
+/// vault changes, so an age would go stale while it sits unchanged.
+#[must_use]
+pub fn tray_sync_label(
+    last: Option<NaiveDateTime>,
+    now: NaiveDateTime,
+    failed: Option<&str>,
+) -> String {
+    if let Some(error) = failed {
+        return format!("Sync failed: {error}");
+    }
+    match last {
+        None => "Not synced yet".to_owned(),
+        Some(last) if last.date() == now.date() => format!("Last synced {}", last.format("%H:%M")),
+        Some(last) => format!("Last synced {}", last.format("%-d %b, %H:%M")),
+    }
+}
+
+#[must_use]
+pub fn local_time(time: SystemTime) -> NaiveDateTime {
+    DateTime::<Local>::from(time).naive_local()
+}
+
 #[must_use]
 pub fn status_line(
     seconds_since_sync: Option<u64>,
@@ -395,6 +421,32 @@ mod tests {
     use bwl_vault::model::ItemId;
 
     use super::*;
+
+    fn at(text: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").expect("a test time")
+    }
+
+    #[test]
+    fn tray_sync_label_shows_the_clock_time_and_the_date_on_another_day() {
+        let now = at("2026-11-09 18:30");
+        assert_eq!(tray_sync_label(None, now, None), "Not synced yet");
+        assert_eq!(
+            tray_sync_label(Some(at("2026-11-09 09:05")), now, None),
+            "Last synced 09:05"
+        );
+        assert_eq!(
+            tray_sync_label(Some(at("2026-11-08 23:59")), now, None),
+            "Last synced 8 Nov, 23:59"
+        );
+        assert_eq!(
+            tray_sync_label(
+                Some(at("2026-11-09 09:05")),
+                now,
+                Some("Server unreachable")
+            ),
+            "Sync failed: Server unreachable"
+        );
+    }
 
     fn item(kind: ItemKind, subtitle: &str, has_password: bool, has_totp: bool) -> ItemSummary {
         ItemSummary {

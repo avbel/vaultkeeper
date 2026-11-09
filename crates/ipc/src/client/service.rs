@@ -253,6 +253,20 @@ impl VaultService for RemoteVault {
         unit(&self.call(call).await?)
     }
 
+    async fn assign_collections(
+        &self,
+        id: &ItemId,
+        organization_id: &str,
+        collection_ids: Vec<Arc<str>>,
+    ) -> Result<()> {
+        let call = Call::AssignCollections {
+            id: Arc::clone(&id.0),
+            organization_id: organization_id.to_owned(),
+            collection_ids,
+        };
+        unit(&self.call(call).await?)
+    }
+
     async fn trash(&self, id: &ItemId) -> Result<()> {
         unit(&self.call(Call::Trash(Arc::clone(&id.0))).await?)
     }
