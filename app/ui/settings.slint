@@ -46,6 +46,8 @@ export component SettingsWindow inherits Window {
     in property <string> ssh-socket;
     in-out property <int> ssh-approval-index;
     in-out property <bool> ssh-touch-id;
+    in-out property <bool> touch-id-right-away;
+    in-out property <bool> show-shortcuts: true;
     in-out property <string> hotkey;
     in property <string> error-text;
 
@@ -63,6 +65,8 @@ export component SettingsWindow inherits Window {
     callback copy-socket() -> bool;
     callback ssh-approval-selected(int);
     callback ssh-touch-id-toggled(bool);
+    callback touch-id-right-away-toggled(bool);
+    callback show-shortcuts-toggled(bool);
     callback hotkey-accepted(string);
 
     VerticalLayout {
@@ -166,6 +170,13 @@ export component SettingsWindow inherits Window {
                         clicked => { root.touch-id-remove(); }
                     }
                 }
+                Toggle {
+                    text: "Unlock with Touch ID right away";
+                    description: root.touch-id-enrolled ? "Skips the lock screen; it opens if Touch ID is cancelled" : "Enrol Touch ID to use this";
+                    enabled: root.touch-id-enrolled;
+                    checked <=> root.touch-id-right-away;
+                    toggled(v) => { root.touch-id-right-away-toggled(v); }
+                }
                 Divider { }
                 SectionLabel { text: "SSH AGENT"; }
                 Toggle { text: "SSH agent"; checked <=> root.ssh-agent; toggled(v) => { root.ssh-agent-toggled(v); } }
@@ -201,6 +212,12 @@ export component SettingsWindow inherits Window {
                 Toggle { text: "SSH requires Touch ID"; checked <=> root.ssh-touch-id; toggled(v) => { root.ssh-touch-id-toggled(v); } }
                 Divider { }
                 SectionLabel { text: "SHORTCUTS"; }
+                Toggle {
+                    text: "Show keyboard shortcuts";
+                    description: "Hints next to buttons and in fields; the shortcuts work either way";
+                    checked <=> root.show-shortcuts;
+                    toggled(v) => { root.show-shortcuts-toggled(v); }
+                }
                 SettingRow {
                     text: "Quick Panel hotkey";
                     Field {

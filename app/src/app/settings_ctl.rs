@@ -96,6 +96,8 @@ impl<S: VaultService> App<S> {
             settings.ssh_approval == SshApproval::RememberUntilLock,
         ));
         window.set_ssh_touch_id(settings.ssh_touch_id);
+        window.set_touch_id_right_away(settings.touch_id_right_away);
+        window.set_show_shortcuts(settings.show_shortcuts);
         window.set_hotkey(settings.hotkey.as_str().into());
     }
 
@@ -163,6 +165,13 @@ impl<S: VaultService> App<S> {
         }));
         window.on_ssh_touch_id_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.ssh_touch_id = enabled);
+        }));
+        window.on_touch_id_right_away_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.touch_id_right_away = enabled);
+        }));
+        window.on_show_shortcuts_toggled(handler!(self, |app, shown| {
+            app.update_settings(|settings| settings.show_shortcuts = shown);
+            app.apply_theme_everywhere();
         }));
         window.on_hotkey_accepted(handler!(self, |app, accelerator| {
             let accelerator = accelerator.trim().to_owned();

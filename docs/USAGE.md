@@ -81,6 +81,15 @@ Settings → Security → Touch ID → *Enrol* (while unlocked).
 - Adding or removing a fingerprint disables Touch ID unlock: unlock with the master password and
   enrol again.
 - *Require master password on app start* (off by default) forces the password after every launch.
+- *Unlock with Touch ID right away* (off by default; available once Touch ID is enrolled) skips
+  the lock window: opening the vault, *Unlock* in the tray, the Quick Panel hotkey, *Ask to unlock
+  on start* and an SSH request while locked start the Touch ID prompt at once, and on success go
+  straight to what you asked for (Manager, Quick Panel, SSH approval). Cancelling or a failure
+  opens the usual lock window (the Quick Panel with its password field for the hotkey); after a
+  cancel or failure it does not ask again while that window is open. A cancel shows no error;
+  other failures show the reason.
+  With *Require master password on app start* the first unlock after launch still needs the
+  password. Locking (timer, sleep, ⌘⇧L) never starts a prompt by itself.
 
 ## SSH agent
 
@@ -131,6 +140,12 @@ window at launch.
 ## Themes
 
 Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *Dark*. Text size is there too.
+
+Settings → Shortcuts → *Show keyboard shortcuts* (on by default). Off hides the shortcut hints:
+button suffixes such as *Lock ⌘⇧L*, key caps in fields (*⌘F*, *Esc*), *Settings ⌘,* on the lock
+window and the hotkey after *Quick search* in the tray menu. Every open window follows at once. The
+shortcuts keep working, and the key legends stay: the Quick Panel footer (Enter, ⇧Enter, ⌘Enter…)
+and the Manager's empty detail pane.
 
 ## Files
 

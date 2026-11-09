@@ -14,8 +14,8 @@ use bw_lite::{
     App,
     exec::Exec,
     hooks::{
-        Clipboard, Clock, FileDialogs, HookResult, Hooks, SettingsStore, SshKeyTool,
-        WindowPlacement,
+        Biometrics, Clipboard, Clock, FileDialogs, HookError, HookResult, Hooks, SettingsStore,
+        SshKeyTool, WindowPlacement,
     },
     mock::{MockConfig, MockVault},
     settings::Settings,
@@ -167,8 +167,90 @@ impl Clock for FixedClock {
     }
 }
 
+/// What the next Touch ID prompt of [`ScriptedTouchId`] answers.
+#[derive(Debug, Clone)]
+pub enum TouchIdOutcome {
+    Unlock,
+    Cancel,
+    Fail(&'static str),
+}
+
+thread_local! {
+    /// Runs inside the next prompt, on the test thread (`Exec::blocking` runs it inline), so a
+    /// test can look at the app while the system prompt would be on screen.
+    static DURING_PROMPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+pub fn during_next_prompt(probe: impl FnOnce() + 'static) {
+    DURING_PROMPT.with(|slot| *slot.borrow_mut() = Some(Box::new(probe)));
+}
+
+/// Touch ID enrolled for every account, answering prompts from a script and counting them.
+pub struct ScriptedTouchId {
+    vault: Arc<MockVault>,
+    outcomes: Mutex<std::collections::VecDeque<TouchIdOutcome>>,
+    prompts: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedTouchId {
+    pub fn prompts(&self) -> usize {
+        self.prompts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn answer_next(&self, outcome: TouchIdOutcome) {
+        self.outcomes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(outcome);
+    }
+}
+
+impl Biometrics for ScriptedTouchId {
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn is_enrolled(&self, _account_id: &str) -> bool {
+        true
+    }
+
+    fn enroll(&self, _account_id: &str) -> HookResult<()> {
+        Ok(())
+    }
+
+    fn unlock(&self, account_id: &str) -> HookResult<()> {
+        self.prompts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(probe) = DURING_PROMPT.with(|slot| slot.borrow_mut().take()) {
+            probe();
+        }
+        let outcome = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+            .expect("a scripted Touch ID answer");
+        match outcome {
+            TouchIdOutcome::Unlock => bwl_vault::VaultService::unlock_with_user_key(
+                &*self.vault,
+                bw_lite::mock::mock_user_key(account_id),
+            )
+            .map_err(|error| HookError::Failed(error.to_string())),
+            TouchIdOutcome::Cancel => Err(HookError::Cancelled),
+            TouchIdOutcome::Fail(text) => Err(HookError::Failed(text.to_owned())),
+        }
+    }
+
+    fn unenroll(&self, _account_id: &str) -> HookResult<()> {
+        Ok(())
+    }
+}
+
 pub struct Harness {
     pub app: Rc<App<MockVault>>,
+    /// Set when [`Setup::scripted_touch_id`] is.
+    pub touch_id: Option<Arc<ScriptedTouchId>>,
     pub vault: Arc<MockVault>,
     pub clipboard: Arc<RecordingClipboard>,
     pub files: Arc<FakeFiles>,
@@ -183,6 +265,8 @@ pub struct Setup {
     pub settings: Settings,
     /// Replaces the mock SSH key tool (e.g. with the real one).
     pub ssh_keys: Option<Arc<dyn SshKeyTool>>,
+    /// Replaces the mock Touch ID with [`ScriptedTouchId`].
+    pub scripted_touch_id: bool,
 }
 
 impl Default for Setup {
@@ -192,6 +276,7 @@ impl Default for Setup {
             offline: false,
             settings: Settings::default(),
             ssh_keys: None,
+            scripted_touch_id: false,
         }
     }
 }
@@ -212,7 +297,18 @@ pub fn harness(setup: Setup) -> Harness {
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
     let placement = Arc::new(RecordingPlacement::default());
     let defaults = Hooks::mock(&vault, &[]);
+    let touch_id = setup.scripted_touch_id.then(|| {
+        Arc::new(ScriptedTouchId {
+            vault: Arc::clone(&vault),
+            outcomes: Mutex::default(),
+            prompts: std::sync::atomic::AtomicUsize::new(0),
+        })
+    });
     let hooks = Hooks {
+        biometrics: touch_id.as_ref().map_or_else(
+            || Arc::clone(&defaults.biometrics),
+            |touch_id| Arc::clone(touch_id) as Arc<dyn Biometrics>,
+        ),
         clipboard: Arc::clone(&clipboard) as Arc<dyn Clipboard>,
         files: Arc::clone(&files) as Arc<dyn FileDialogs>,
         settings: Arc::clone(&settings) as Arc<dyn SettingsStore>,
@@ -230,6 +326,7 @@ pub fn harness(setup: Setup) -> Harness {
     );
     Harness {
         app,
+        touch_id,
         vault,
         clipboard,
         files,

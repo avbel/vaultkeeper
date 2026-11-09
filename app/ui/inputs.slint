@@ -94,7 +94,7 @@ export component Field inherits Rectangle {
                 vertical-alignment: center;
             }
         }
-        if root.cap != "" && root.text == "": KeyCap {
+        if root.cap != "" && root.text == "" && Theme.show-shortcuts: KeyCap {
             y: (parent.height - self.height) / 2;
             text: root.cap;
         }
@@ -238,6 +238,7 @@ export component Toggle inherits Rectangle {
     accessible-role: switch;
     accessible-label: root.text;
     accessible-description: root.description;
+    accessible-enabled: root.enabled;
     accessible-checkable: true;
     accessible-checked: root.checked;
     accessible-action-default => { root.flip(); }
@@ -377,7 +378,7 @@ export component MenuRow inherits Rectangle {
             horizontal-stretch: 1;
             overflow: elide;
         }
-        Text {
+        if Theme.show-shortcuts: Text {
             text: root.hint;
             color: Theme.text-muted;
             font-size: Theme.font-meta;

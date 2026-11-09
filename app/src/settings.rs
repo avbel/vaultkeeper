@@ -124,6 +124,11 @@ pub struct Settings {
     pub ssh_approval: SshApproval,
     pub ssh_touch_id: bool,
     pub hotkey: String,
+    /// Shortcut hints next to buttons, in fields and in the tray menu; the shortcuts themselves
+    /// always work.
+    pub show_shortcuts: bool,
+    /// Start the Touch ID unlock as soon as something needs the vault, before any lock window.
+    pub touch_id_right_away: bool,
     /// Sealed by [`crate::last_login`]; never plain text. A value of the wrong type reads as
     /// `None` instead of failing the whole file.
     #[serde(deserialize_with = "lenient_string")]
@@ -146,6 +151,8 @@ impl Default for Settings {
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
             hotkey: "Cmd+Shift+Space".to_owned(),
+            show_shortcuts: true,
+            touch_id_right_away: false,
             last_login: None,
         }
     }
@@ -432,6 +439,8 @@ mod tests {
             ssh_approval: SshApproval::RememberUntilLock,
             ssh_touch_id: true,
             hotkey: "Cmd+Alt+K".to_owned(),
+            show_shortcuts: false,
+            touch_id_right_away: true,
             last_login: Some("2.sealed".to_owned()),
         };
         let json = serde_json::to_string(&settings).expect("encode");
@@ -467,6 +476,15 @@ mod tests {
         let json = serde_json::to_string(&on_sleep).expect("encode");
         assert!(json.contains(r#""lock_timeout":"never""#), "{json}");
         assert!(json.contains(r#""lock_on_sleep":true"#), "{json}");
+    }
+
+    #[test]
+    fn files_from_before_the_shortcut_and_touch_id_options_get_their_defaults() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"theme":"dark","hotkey":"Cmd+Alt+K"}"#).expect("decode");
+        assert!(settings.show_shortcuts, "hints stay visible by default");
+        assert!(!settings.touch_id_right_away, "Touch ID waits for a click");
+        assert_eq!(settings.theme, ThemeChoice::Dark);
     }
 
     #[test]

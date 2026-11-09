@@ -64,7 +64,7 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
     tray.set_accounts(ModelRc::new(VecModel::from(labels)));
     let settings = daemon.settings();
     tray.set_theme_index(settings.theme.index());
-    tray.set_quick_hotkey(crate::settings::hotkey_symbols(&settings.hotkey).into());
+    tray.set_quick_hotkey(quick_hotkey_hint(&settings).into());
     // Re-read on every refresh: a system appearance switch shows on the next vault or settings
     // change (a sync runs at least every 30 minutes).
     tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {
@@ -72,6 +72,15 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         Some(false) => ColorScheme::Light,
         None => ColorScheme::Unknown,
     });
+}
+
+/// The hotkey suffix of "Quick search"; empty (no suffix) with "Show keyboard shortcuts" off.
+fn quick_hotkey_hint(settings: &crate::settings::Settings) -> String {
+    if settings.show_shortcuts {
+        crate::settings::hotkey_symbols(&settings.hotkey)
+    } else {
+        String::new()
+    }
 }
 
 fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
@@ -93,4 +102,24 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    #[test]
+    fn the_quick_search_item_shows_the_hotkey_only_while_shortcuts_are_shown() {
+        let shown = Settings {
+            hotkey: "Cmd+Shift+Space".to_owned(),
+            ..Settings::default()
+        };
+        assert_eq!(quick_hotkey_hint(&shown), "⇧⌘Space");
+        let hidden = Settings {
+            show_shortcuts: false,
+            ..shown
+        };
+        assert_eq!(quick_hotkey_hint(&hidden), "");
+    }
 }

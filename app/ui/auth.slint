@@ -170,7 +170,7 @@ export component LockWindow inherits Window {
                 clicked => { root.confirm-logout = true; }
             }
             LinkText {
-                text: "Settings  ⌘,";
+                text: Theme.show-shortcuts ? "Settings  ⌘," : "Settings";
                 clicked => { root.open-settings(); }
             }
         }

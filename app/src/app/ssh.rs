@@ -84,7 +84,7 @@ impl<S: VaultService> App<S> {
             }
             SessionState::Locked { .. } => {
                 self.ssh.borrow_mut().enqueue(request);
-                self.open_lock_window();
+                self.request_unlock(super::unlock::UnlockView::LockWindow);
                 return;
             }
             SessionState::Unlocked { .. } => {}

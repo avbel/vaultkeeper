@@ -90,6 +90,7 @@ impl<S: VaultService> App<S> {
     }
 
     pub(super) fn close_quick_panel(&self) {
+        self.forget_declined_touch_id();
         let Some(quick) = self.quick.borrow_mut().take() else {
             return;
         };
@@ -140,7 +141,9 @@ impl<S: VaultService> App<S> {
         }));
         window.on_unlock(handler!(self, |app, password| app
             .unlock(zeroize::Zeroizing::new(password.to_string()))));
-        window.on_unlock_touch_id(handler!(self, |app| app.unlock_touch_id()));
+        window.on_unlock_touch_id(handler!(self, |app| {
+            app.unlock_touch_id();
+        }));
     }
 
     /// Re-runs the panel's search; an empty query lists the most recently used items.

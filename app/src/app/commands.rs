@@ -49,7 +49,7 @@ impl<S: VaultService> App<S> {
             UiCommand::ShowUnlock => match self.vault.state() {
                 SessionState::Locked { .. } => {
                     self.target.set(Target::Manager);
-                    self.open_lock_window();
+                    self.request_unlock(super::unlock::UnlockView::LockWindow);
                 }
                 SessionState::LoggedOut => self.show_login_for_state(),
                 SessionState::Unlocked { .. } => self.open_manager(),
@@ -103,6 +103,8 @@ impl<S: VaultService> App<S> {
             self.settings_window.borrow().is_some(),
             self.generator_window.borrow().is_some(),
             self.ssh_prompt.borrow().is_some(),
+            // Counted like a window, so the process does not linger out under the system prompt.
+            self.right_away_pending(),
         ]
         .into_iter()
         .filter(|open| *open)

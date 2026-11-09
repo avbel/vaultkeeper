@@ -109,7 +109,9 @@ impl<S: VaultService> App<S> {
         ));
         window.on_unlock(handler!(self, |app, password| app
             .unlock(Zeroizing::new(password.to_string()))));
-        window.on_unlock_touch_id(handler!(self, |app| app.unlock_touch_id()));
+        window.on_unlock_touch_id(handler!(self, |app| {
+            app.unlock_touch_id();
+        }));
         window.on_logout_confirmed(handler!(self, |app| app.logout()));
         window.on_open_settings(handler!(self, |app| app.open_settings()));
         window.on_switch_account(handler!(self, |app, index| app.switch_account_at(index)));
@@ -117,6 +119,7 @@ impl<S: VaultService> App<S> {
     }
 
     pub(super) fn close_lock_window(&self) {
+        self.forget_declined_touch_id();
         if let Some(window) = self.lock_window.borrow_mut().take() {
             hide(&window);
             retire(window);
@@ -135,12 +138,20 @@ impl<S: VaultService> App<S> {
 
     /// "Ask to unlock on start": the lock screen opens and Touch ID is offered once right away,
     /// unless the master password is required on app start. Success leaves the app in the tray.
+    /// With "Unlock with Touch ID right away" the lock screen opens only if Touch ID fails.
     pub(super) fn ask_unlock_on_start(&self) {
         if matches!(self.vault.state(), SessionState::LoggedOut) {
             self.show_login_for_state();
             return;
         }
-        self.target.set(super::Target::None);
+        // A right-away prompt already on screen keeps the target it was started for.
+        if !self.right_away_pending() {
+            self.target.set(super::Target::None);
+        }
+        if self.touch_id_right_away() {
+            self.request_unlock(super::unlock::UnlockView::LockWindow);
+            return;
+        }
         self.open_lock_window();
         if self.touch_id_enrolled() {
             self.unlock_touch_id();
@@ -202,31 +213,43 @@ impl<S: VaultService> App<S> {
         self.on_vault_changed();
     }
 
-    pub(super) fn unlock_touch_id(&self) {
+    /// Starts the Touch ID prompt; `false` when none was started. One prompt at a time: a
+    /// request while one is on screen is left to that prompt.
+    pub(super) fn unlock_touch_id(&self) -> bool {
+        if self.touch_id_in_flight.get() {
+            return false;
+        }
         let Some(account) = self.active_account() else {
-            return;
+            return false;
         };
+        self.touch_id_in_flight.set(true);
         self.set_lock_busy(true);
         let biometrics = Arc::clone(&self.hooks.biometrics);
         self.exec.spawn_blocking(
             move || biometrics.unlock(&account.id),
             handler!(self, |app, result| app.touch_id_unlocked(result)),
         );
+        true
     }
 
     fn touch_id_unlocked(&self, result: crate::hooks::HookResult<()>) {
-        let result = result.map_err(|error| error.to_string());
+        self.touch_id_in_flight.set(false);
         self.set_lock_busy(false);
+        if self.finish_right_away(&result) {
+            return;
+        }
         match result {
             Ok(()) => self.on_vault_changed(),
-            Err(text) => {
-                let attempts = self.failed_unlocks.get();
-                self.show_unlock_error(
-                    &format!("Touch ID failed: {text} · use your master password"),
-                    attempts,
-                );
-            }
+            Err(error) => self.show_touch_id_error(&error),
         }
+    }
+
+    pub(super) fn show_touch_id_error(&self, error: &crate::hooks::HookError) {
+        let attempts = self.failed_unlocks.get();
+        self.show_unlock_error(
+            &format!("Touch ID failed: {error} · use your master password"),
+            attempts,
+        );
     }
 
     pub(super) fn logout(&self) {

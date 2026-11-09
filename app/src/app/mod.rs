@@ -18,6 +18,7 @@ mod sidebar_ctl;
 mod ssh;
 mod ticker;
 mod tray;
+mod unlock;
 
 use std::{
     cell::{Cell, RefCell},
@@ -121,6 +122,12 @@ pub struct App<S: VaultService> {
     failed_unlocks: Cell<i32>,
     /// No unlock since the app started: "Require master password on app start" hides Touch ID.
     first_unlock: Cell<bool>,
+    /// A Touch ID prompt runs; a second one is never started next to it.
+    touch_id_in_flight: Cell<bool>,
+    /// A right-away Touch ID prompt runs with no window open, and what to show if it fails.
+    right_away: Cell<Option<unlock::UnlockView>>,
+    /// A right-away attempt was cancelled or failed and its lock view is still open.
+    right_away_declined: Cell<bool>,
     login: RefCell<Option<LoginState>>,
     settings_window: RefCell<Option<SettingsWindow>>,
     generator_window: RefCell<Option<GeneratorWindow>>,
@@ -158,6 +165,9 @@ impl<S: VaultService> App<S> {
             lock_window: RefCell::new(None),
             failed_unlocks: Cell::new(0),
             first_unlock: Cell::new(true),
+            touch_id_in_flight: Cell::new(false),
+            right_away: Cell::new(None),
+            right_away_declined: Cell::new(false),
             login: RefCell::new(None),
             settings_window: RefCell::new(None),
             generator_window: RefCell::new(None),
@@ -238,6 +248,7 @@ impl<S: VaultService> App<S> {
 
     fn on_unlocked(&self) {
         self.first_unlock.set(false);
+        self.forget_declined_touch_id();
         self.failed_unlocks.set(0);
         self.close_lock_window();
         self.close_login();
@@ -291,7 +302,7 @@ impl<S: VaultService> App<S> {
             SessionState::Unlocked { .. } => self.open_manager(),
             SessionState::Locked { .. } => {
                 self.target.set(Target::Manager);
-                self.open_lock_window();
+                self.request_unlock(unlock::UnlockView::LockWindow);
             }
             SessionState::LoggedOut => {
                 self.target.set(Target::Manager);
@@ -310,7 +321,7 @@ impl<S: VaultService> App<S> {
             SessionState::Unlocked { .. } => self.open_quick_panel(),
             SessionState::Locked { .. } => {
                 self.target.set(Target::QuickPanel);
-                self.open_quick_panel();
+                self.request_unlock(unlock::UnlockView::QuickPanel);
             }
             SessionState::LoggedOut => {
                 self.target.set(Target::QuickPanel);
@@ -388,7 +399,7 @@ impl<S: VaultService> App<S> {
         }
     }
 
-    /// Applies the theme mode and text size to a window's `Theme` global. System mode leaves
+    /// Applies the theme mode, text size and shortcut hints to a window's `Theme` global. System mode leaves
     /// `Theme.system-dark` bound to the OS scheme, so it keeps following live changes.
     fn apply_theme<C>(&self, component: &C)
     where
@@ -399,6 +410,7 @@ impl<S: VaultService> App<S> {
         let theme = component.global::<Theme>();
         theme.set_mode(theme_mode(settings.theme));
         theme.set_scale(settings.text_scale.factor());
+        theme.set_show_shortcuts(settings.show_shortcuts);
     }
 
     fn apply_theme_everywhere(&self) {
