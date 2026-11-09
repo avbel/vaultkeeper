@@ -15,6 +15,7 @@ mod manager_edit;
 mod quick;
 mod reprompt;
 mod settings_ctl;
+mod settings_hotkeys;
 mod sidebar_ctl;
 mod ssh;
 mod ticker;

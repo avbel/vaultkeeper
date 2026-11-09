@@ -62,7 +62,9 @@ clipboard if it holds a copied secret.
 - Copied secrets are hidden from clipboard history, and cleared after 30 s (configurable) if the
   clipboard still holds them. The background process does the clearing, so it happens even when
   the windows have closed, and also on lock, log out, account switch and Quit. Time asleep counts.
-- **Generator:** in the tray menu, and the *Generate* button on the password field when editing an item.
+- **Generator:** in the tray menu, its own global hotkey if you set one (Settings → Shortcuts), and
+  the *Generate* button on the password field when editing an item.
+- **Settings:** tray menu → *Settings…*, or ⌘, in the Manager.
 - **Sync:**
   - live through the server websocket;
   - also on unlock, every 30 min and *Sync now*.
@@ -172,6 +174,18 @@ window, the hotkey after *Quick search* in the tray menu and *⌘⇧↩* next to
 Auto-type button. Every open window follows at once. The
 shortcuts keep working, and the key legends stay: the Quick Panel footer (Enter, ⇧Enter, ⌘Enter…)
 and the Manager's empty detail pane.
+
+Settings → Shortcuts → *Quick Panel hotkey* / *Generator hotkey* are shortcut recorders: click one,
+it shows *Press a shortcut…*, then press the combination. It needs ⌘, ⌥ or ⌃ (⇧ can be added, but
+not on its own) plus a letter, digit, Space, F1–F12, Return, Tab, an arrow or one of
+`` ` \ [ ] , - . ' ; / = ``. It is saved at once and works system-wide straight away. Esc or
+clicking elsewhere cancels; Delete or Backspace removes the Generator hotkey (the Quick Panel always
+keeps one). The two can't be the same shortcut. Keys are recorded by their position on the
+keyboard, as macOS matches global shortcuts, so ⌥ letters and non-Latin layouts record the key
+itself. While a recorder waits, bw-lite's own global hotkeys are off, so pressing the current
+Quick Panel hotkey records it instead of opening the panel. They come back when recording ends,
+when Settings closes, if the window process goes away, and in any case after 30 s. A combination
+another app or macOS holds as a global shortcut still never reaches the recorder.
 
 ## Files
 

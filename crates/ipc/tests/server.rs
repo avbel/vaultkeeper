@@ -796,6 +796,25 @@ async fn notices_from_the_ui_reach_the_daemon_channel() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_end_of_a_ui_session_is_queued_as_a_notice() {
+    let (notices, mut received) = mpsc::channel(4);
+    let options = ServeOptions::new().expect("options").with_notices(notices);
+    let daemon = Daemon::start_with(FakeVault::new(unlocked(), 0), options).await;
+    let (vault, events) = daemon.connect().await;
+    vault
+        .notify(UiNotice::ShortcutRecording(true))
+        .expect("notify recording");
+    let first = tokio::time::timeout(EVENT_WAIT, received.recv()).await;
+    assert_eq!(
+        first.expect("in time"),
+        Some(UiNotice::ShortcutRecording(true))
+    );
+    drop((vault, events));
+    let ended = tokio::time::timeout(EVENT_WAIT, received.recv()).await;
+    assert_eq!(ended.expect("in time"), Some(UiNotice::Disconnected));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notices_without_a_daemon_channel_are_ignored() {
     let daemon = Daemon::start(FakeVault::new(unlocked(), 0)).await;
     let (vault, _events) = daemon.connect().await;

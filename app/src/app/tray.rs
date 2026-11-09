@@ -19,6 +19,7 @@ impl<S: VaultService> App<S> {
         tray.on_quick_search(handler!(self, |app| app.toggle_quick_panel()));
         tray.on_open_vault(handler!(self, |app| app.open_vault()));
         tray.on_generator(handler!(self, |app| app.open_generator_window()));
+        tray.on_settings(handler!(self, |app| app.open_settings()));
         tray.on_lock_toggle(handler!(self, |app| app.tray_lock_toggle()));
         tray.on_sync_now(handler!(self, |app| app.sync_now()));
         tray.on_switch_account(handler!(self, |app, index| app.switch_account_at(index)));

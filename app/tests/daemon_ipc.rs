@@ -288,6 +288,27 @@ async fn the_daemon_and_its_ui_process_in_front_are_no_typing_target() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shortcut_recording_pauses_the_hotkeys_until_it_stops_or_the_ui_goes() {
+    let dir = DataDir::new();
+    let daemon = start(&dir).await;
+    let mut paused = daemon.subscribe_hotkey_pause();
+    assert!(!daemon.hotkeys_paused());
+    let (vault, events) = connect(&dir).await;
+    vault.notify(UiNotice::ShortcutRecording(true)).unwrap();
+    eventually(|| daemon.hotkeys_paused()).await;
+    assert!(paused.has_changed().unwrap(), "the shell is told to unbind");
+    paused.mark_unchanged();
+    vault.notify(UiNotice::ShortcutRecording(false)).unwrap();
+    eventually(|| !daemon.hotkeys_paused()).await;
+
+    vault.notify(UiNotice::ShortcutRecording(true)).unwrap();
+    eventually(|| daemon.hotkeys_paused()).await;
+    drop((vault, events));
+    eventually(|| !daemon.hotkeys_paused()).await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_agent_follows_the_saved_setting() {
     let dir = DataDir::new();
     write_settings(

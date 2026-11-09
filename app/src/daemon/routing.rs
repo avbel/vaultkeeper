@@ -11,6 +11,7 @@ pub enum TrayAction {
     QuickSearch,
     OpenVault,
     Generator,
+    Settings,
     LockToggle,
     SyncNow,
     SwitchAccount(i32),
@@ -49,6 +50,7 @@ pub fn tray(
         })],
         TrayAction::OpenVault => vec![Effect::Show(UiCommand::ShowManager)],
         TrayAction::Generator => vec![Effect::Show(UiCommand::ShowGenerator)],
+        TrayAction::Settings => vec![Effect::Show(UiCommand::ShowSettings)],
         TrayAction::LockToggle => match state {
             SessionState::Unlocked { .. } => vec![Effect::Lock],
             SessionState::Locked { .. } => vec![Effect::Show(UiCommand::ShowUnlock)],
@@ -204,6 +206,10 @@ mod tests {
         assert_eq!(
             tray_now(TrayAction::Generator, &state, &[]),
             [Effect::Show(UiCommand::ShowGenerator)]
+        );
+        assert_eq!(
+            tray_now(TrayAction::Settings, &state, &[]),
+            [Effect::Show(UiCommand::ShowSettings)]
         );
         assert_eq!(tray_now(TrayAction::Quit, &state, &[]), [Effect::Quit]);
     }

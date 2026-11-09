@@ -130,13 +130,19 @@ impl FileDialogs for FilePanels {
 }
 
 /// The daemon registers the shortcut; here it is only checked, before the setting is saved.
-pub struct HotkeyBinding;
+pub struct HotkeyBinding {
+    pub notify: Notifier,
+}
 
 impl GlobalHotkey for HotkeyBinding {
     fn register(&self, accelerator: &str) -> HookResult<()> {
         global_hotkey::hotkey::HotKey::from_str(accelerator)
             .map(drop)
             .map_err(|error| HookError::Failed(format!("Not a shortcut: {error}")))
+    }
+
+    fn pause(&self, recording: bool) {
+        (self.notify)(UiNotice::ShortcutRecording(recording));
     }
 }
 
@@ -180,12 +186,43 @@ mod tests {
         }
     }
 
+    fn binding() -> (
+        HotkeyBinding,
+        std::sync::Arc<std::sync::Mutex<Vec<UiNotice>>>,
+    ) {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&sent);
+        let notify: Notifier = std::sync::Arc::new(move |notice| {
+            log.lock().expect("log").push(notice);
+        });
+        (HotkeyBinding { notify }, sent)
+    }
+
     #[test]
     fn hotkeys_are_validated_with_the_daemon_parser() {
-        assert!(HotkeyBinding.register("Cmd+Shift+Space").is_ok());
-        assert!(HotkeyBinding.register("cmd+alt+k").is_ok());
-        assert!(HotkeyBinding.register("Cmd+Nope").is_err());
-        assert!(HotkeyBinding.register("").is_err());
+        let (binding, sent) = binding();
+        assert!(binding.register("Cmd+Shift+Space").is_ok());
+        assert!(binding.register("cmd+alt+k").is_ok());
+        assert!(binding.register("Cmd+Nope").is_err());
+        assert!(binding.register("").is_err());
+        assert!(
+            sent.lock().expect("log").is_empty(),
+            "checking tells the daemon nothing"
+        );
+    }
+
+    #[test]
+    fn a_recording_pause_is_sent_to_the_daemon() {
+        let (binding, sent) = binding();
+        binding.pause(true);
+        binding.pause(false);
+        assert_eq!(
+            *sent.lock().expect("log"),
+            [
+                UiNotice::ShortcutRecording(true),
+                UiNotice::ShortcutRecording(false)
+            ]
+        );
     }
 
     #[test]

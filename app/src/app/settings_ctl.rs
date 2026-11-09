@@ -41,7 +41,9 @@ impl<S: VaultService> App<S> {
     }
 
     pub(super) fn close_settings(&self) {
-        if let Some(window) = self.settings_window.borrow_mut().take() {
+        let window = self.settings_window.borrow_mut().take();
+        if let Some(window) = window {
+            self.end_recording(&window);
             hide(&window);
             retire(window);
             self.window_closed();
@@ -100,8 +102,7 @@ impl<S: VaultService> App<S> {
         window.set_ssh_touch_id(settings.ssh_touch_id);
         window.set_touch_id_right_away(settings.touch_id_right_away);
         window.set_show_shortcuts(settings.show_shortcuts);
-        window.set_hotkey(settings.hotkey.as_str().into());
-        window.set_generator_hotkey(settings.generator_hotkey.as_str().into());
+        super::settings_hotkeys::show_hotkeys(window, &settings);
     }
 
     fn bind_ssh_settings(&self, window: &SettingsWindow) {
@@ -185,32 +186,7 @@ impl<S: VaultService> App<S> {
             app.update_settings(|settings| settings.show_shortcuts = shown);
             app.apply_theme_everywhere();
         }));
-        window.on_hotkey_accepted(handler!(self, |app, accelerator| {
-            let accelerator = accelerator.trim().to_owned();
-            // Checked before saving: the daemon registers whatever the file says.
-            match app.hooks.hotkey.register(&accelerator) {
-                Ok(()) => app.update_settings(|settings| settings.hotkey.clone_from(&accelerator)),
-                Err(error) => app.report(Err(error)),
-            }
-        }));
-        window.on_generator_hotkey_accepted(handler!(self, |app, accelerator| {
-            let accelerator = accelerator.trim().to_owned();
-            let result = if accelerator.is_empty() {
-                Ok(())
-            } else if same_shortcut(&accelerator, &app.settings.borrow().hotkey) {
-                Err(crate::hooks::HookError::Failed(
-                    "Already the Quick Panel hotkey".to_owned(),
-                ))
-            } else {
-                app.hooks.hotkey.register(&accelerator)
-            };
-            match result {
-                Ok(()) => app.update_settings(|settings| {
-                    settings.generator_hotkey.clone_from(&accelerator);
-                }),
-                Err(error) => app.report(Err(error)),
-            }
-        }));
+        self.bind_hotkeys(window);
     }
 
     /// Re-reads the store after the daemon changed it and applies what is visible.
@@ -237,7 +213,7 @@ impl<S: VaultService> App<S> {
         self.report(self.hooks.settings.save(&updated));
     }
 
-    fn report(&self, result: crate::hooks::HookResult<()>) {
+    pub(super) fn report(&self, result: crate::hooks::HookResult<()>) {
         let text: SharedString = result
             .err()
             .map(|error| error.to_string())
@@ -299,12 +275,6 @@ impl<S: VaultService> App<S> {
         self.report(result);
         self.refresh_lock_window();
     }
-}
-
-/// The same keys however they are spelled ("cmd+alt+g" and "Alt+Cmd+G").
-fn same_shortcut(a: &str, b: &str) -> bool {
-    crate::settings::hotkey_symbols(a).to_lowercase()
-        == crate::settings::hotkey_symbols(b).to_lowercase()
 }
 
 /// `~/.ssh/config` lines that send every host's key requests to the agent. The path is quoted

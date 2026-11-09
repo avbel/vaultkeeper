@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -56,6 +56,12 @@ pub enum UiNotice {
     Alive(u64),
     /// A native modal dialog (file panel) holds the main loop; `false` when it closed.
     Modal(bool),
+    /// A Settings shortcut recorder waits for a key (`false`: it stopped). The daemon's global
+    /// hotkeys would take the press first, so they are off meanwhile.
+    ShortcutRecording(bool),
+    /// Not sent by a UI: the server queues it when a UI session ends, however it ended, so
+    /// whatever the UI turned on (a hotkey pause) can be undone.
+    Disconnected,
 }
 
 /// Daemon -> UI.

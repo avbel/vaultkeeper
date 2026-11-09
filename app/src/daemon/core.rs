@@ -29,6 +29,7 @@ use tokio::{
 
 use super::{
     device,
+    hotkey_pause::{HotkeyPause, PAUSE_LIMIT},
     launcher::{Hang, Launcher, judge, restart_after_exit},
     lock::{self, Activity, LockCheck, LockWatch},
     routing::Effect,
@@ -104,6 +105,7 @@ pub struct Daemon {
     launcher: Launcher,
     hang: HangWatch,
     settings: watch::Sender<Arc<Settings>>,
+    hotkey_pause: HotkeyPause,
     activity: Activity,
     lock_wake: Notify,
     was_unlocked: AtomicBool,
@@ -164,6 +166,7 @@ impl Daemon {
             unlocked_once: AtomicBool::new(false),
             was_unlocked: AtomicBool::new(false),
             settings: watch::Sender::new(Arc::new(settings)),
+            hotkey_pause: HotkeyPause::new(PAUSE_LIMIT),
             vault,
             runtime,
             data_dir,
@@ -229,6 +232,17 @@ impl Daemon {
     #[must_use]
     pub fn subscribe_settings(&self) -> watch::Receiver<Arc<Settings>> {
         self.settings.subscribe()
+    }
+
+    /// `true` while a Settings shortcut recorder waits for a key: the global hotkeys are off.
+    #[must_use]
+    pub fn subscribe_hotkey_pause(&self) -> watch::Receiver<bool> {
+        self.hotkey_pause.subscribe()
+    }
+
+    #[must_use]
+    pub fn hotkeys_paused(&self) -> bool {
+        self.hotkey_pause.is_paused()
     }
 
     #[must_use]
@@ -638,6 +652,9 @@ async fn notices_loop(daemon: Arc<Daemon>, mut notices: mpsc::Receiver<UiNotice>
                 daemon.hang.acked.fetch_max(seq, Ordering::SeqCst);
             }
             UiNotice::Modal(open) => daemon.hang.modal.store(open, Ordering::SeqCst),
+            UiNotice::ShortcutRecording(_) | UiNotice::Disconnected => {
+                daemon.hotkey_pause.on_notice(notice);
+            }
         }
     }
 }

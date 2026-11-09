@@ -38,7 +38,9 @@ impl Hooks {
             clipboard: Arc::new(DaemonClipboard::new(Arc::clone(daemon))),
             biometrics: Arc::new(DaemonTouchId::new(data_dir.to_owned(), Arc::clone(daemon))),
             autostart: Arc::new(LaunchAgent),
-            hotkey: Arc::new(HotkeyBinding),
+            hotkey: Arc::new(HotkeyBinding {
+                notify: Arc::clone(notify),
+            }),
             opener: Arc::new(BrowserOpener),
             files: Arc::new(FilePanels {
                 notify: Arc::clone(notify),

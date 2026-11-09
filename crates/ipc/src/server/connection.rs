@@ -173,6 +173,13 @@ async fn serve_session<S: VaultService>(
     drop(writer);
     // The next UI process may connect while the calls of this one finish.
     drop(slot);
+    // Waits for room rather than dropping it like the UI's own notices: nothing else would
+    // undo what the UI turned on.
+    if let Some(notices) = &shared.notices
+        && notices.send(UiNotice::Disconnected).await.is_err()
+    {
+        tracing::debug!("nobody reads UI notices");
+    }
     finish_calls(&calls).await;
     result
 }

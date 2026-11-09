@@ -53,14 +53,14 @@ impl Hotkey {
 
     /// Replaces the binding of `slot`; an empty `accelerator` removes it. On failure the previous
     /// binding stays registered.
-    pub fn bind(&self, slot: HotkeySlot, accelerator: &str) -> anyhow::Result<()> {
+    fn bind_slot(&self, slot: HotkeySlot, accelerator: &str) -> anyhow::Result<()> {
         let accelerator = accelerator.trim();
-        if self
+        let unchanged = self
             .bound
             .borrow()
             .get(&slot)
-            .is_some_and(|(text, _)| text == accelerator)
-        {
+            .map_or_else(|| accelerator.is_empty(), |(text, _)| text == accelerator);
+        if unchanged {
             return Ok(());
         }
         let hotkey = if accelerator.is_empty() {
@@ -112,6 +112,12 @@ impl Hotkey {
         if let Err(error) = self.manager.unregister(hotkey) {
             tracing::debug!(%error, "previous hotkey was not registered");
         }
+    }
+}
+
+impl super::hotkey_pause::HotkeyBinder for Hotkey {
+    fn bind(&self, slot: HotkeySlot, accelerator: &str) -> anyhow::Result<()> {
+        self.bind_slot(slot, accelerator)
     }
 }
 

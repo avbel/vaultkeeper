@@ -15,8 +15,8 @@ use bw_lite::{
     autotype::{Stroke, typed_text},
     exec::Exec,
     hooks::{
-        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, DockIcon, FileDialogs, HookError,
-        HookResult, Hooks, SettingsStore, SshKeyTool, TypingTarget, WindowPlacement,
+        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, DockIcon, FileDialogs, GlobalHotkey,
+        HookError, HookResult, Hooks, SettingsStore, SshKeyTool, TypingTarget, WindowPlacement,
     },
     mock::{MockConfig, MockVault},
     settings::Settings,
@@ -379,6 +379,28 @@ impl DockIcon for RecordingDock {
     }
 }
 
+/// Accepts every shortcut, like the logging stub, and records the recorder's pause notices.
+#[derive(Default)]
+pub struct RecordingHotkey {
+    pub pauses: Mutex<Vec<bool>>,
+}
+
+impl RecordingHotkey {
+    pub fn pauses(&self) -> Vec<bool> {
+        self.pauses.lock().expect("pauses").clone()
+    }
+}
+
+impl GlobalHotkey for RecordingHotkey {
+    fn register(&self, _accelerator: &str) -> HookResult<()> {
+        Ok(())
+    }
+
+    fn pause(&self, recording: bool) {
+        self.pauses.lock().expect("pauses").push(recording);
+    }
+}
+
 pub struct Harness {
     pub app: Rc<App<MockVault>>,
     /// Set when [`Setup::scripted_touch_id`] is.
@@ -391,6 +413,7 @@ pub struct Harness {
     pub placement: Arc<RecordingPlacement>,
     pub autotype: Arc<FakeAutoType>,
     pub dock: Arc<RecordingDock>,
+    pub hotkey: Arc<RecordingHotkey>,
 }
 
 pub struct Setup {
@@ -432,6 +455,7 @@ pub fn harness(setup: Setup) -> Harness {
     let placement = Arc::new(RecordingPlacement::default());
     let autotype = Arc::new(FakeAutoType::default());
     let dock = Arc::new(RecordingDock::default());
+    let hotkey = Arc::new(RecordingHotkey::default());
     let defaults = Hooks::mock(&vault, &[]);
     let touch_id = setup.scripted_touch_id.then(|| {
         Arc::new(ScriptedTouchId {
@@ -452,6 +476,7 @@ pub fn harness(setup: Setup) -> Harness {
         placement: Arc::clone(&placement) as Arc<dyn WindowPlacement>,
         autotype: Arc::clone(&autotype) as Arc<dyn AutoType>,
         dock: Arc::clone(&dock) as Arc<dyn DockIcon>,
+        hotkey: Arc::clone(&hotkey) as Arc<dyn GlobalHotkey>,
         ssh_keys: setup
             .ssh_keys
             .unwrap_or_else(|| Arc::clone(&defaults.ssh_keys)),
@@ -473,6 +498,7 @@ pub fn harness(setup: Setup) -> Harness {
         placement,
         autotype,
         dock,
+        hotkey,
     }
 }
 

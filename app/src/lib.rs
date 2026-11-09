@@ -12,6 +12,7 @@ pub mod detail;
 pub mod edit_form;
 pub mod exec;
 pub mod hooks;
+pub mod hotkey_recorder;
 pub mod keymap;
 pub mod last_login;
 pub mod mock;

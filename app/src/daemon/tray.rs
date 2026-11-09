@@ -22,6 +22,7 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.on_quick_search(on(TrayAction::QuickSearch));
     tray.on_open_vault(on(TrayAction::OpenVault));
     tray.on_generator(on(TrayAction::Generator));
+    tray.on_settings(on(TrayAction::Settings));
     tray.on_lock_toggle(on(TrayAction::LockToggle));
     tray.on_sync_now(on(TrayAction::SyncNow));
     tray.on_quit(on(TrayAction::Quit));

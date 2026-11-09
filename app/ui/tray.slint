@@ -20,6 +20,7 @@ export component TrayIcon inherits SystemTrayIcon {
     callback quick-search();
     callback open-vault();
     callback generator();
+    callback settings();
     callback lock-toggle();
     callback sync-now();
     callback switch-account(int);
@@ -37,6 +38,10 @@ export component TrayIcon inherits SystemTrayIcon {
         MenuItem {
             title: root.generator-hotkey == "" ? "Generator" : "Generator    " + root.generator-hotkey;
             activated => { root.generator(); }
+        }
+        MenuItem {
+            title: "Settings…";
+            activated => { root.settings(); }
         }
         MenuSeparator { }
         MenuItem {

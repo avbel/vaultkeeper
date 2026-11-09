@@ -575,3 +575,89 @@ export component SliderBar inherits Rectangle {
         }
     }
 }
+
+// Click or focus to record: the next key press with ⌘, ⌥ or ⌃ goes to `pressed` (Rust converts
+// and saves it, `true` ends the recording). Esc cancels, Delete clears when `clearable`, losing
+// focus cancels. Rust owns `shown`; the recorder never writes it.
+export component ShortcutRecorder inherits Rectangle {
+    in property <string> label;
+    // The saved shortcut in symbols, e.g. "⌥⌘G"; empty shows the placeholder.
+    in property <string> shown;
+    in property <string> placeholder: "None";
+    in property <bool> clearable: false;
+    out property <bool> recording: scope.has-focus;
+    // Key text and modifiers as Slint reports them: `control` is ⌘ and `meta` is ⌃ on macOS.
+    callback pressed(text: string, control: bool, meta: bool, alt: bool, shift: bool) -> bool;
+    // An accelerator typed or set by an accessibility client ("Cmd+Alt+G"); empty clears.
+    callback entered(string);
+    callback cleared();
+
+    public function start() {
+        scope.focus();
+    }
+
+    public function stop() {
+        scope.clear-focus();
+    }
+
+    min-height: Theme.field-height;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: root.recording ? Theme.accent : Theme.border;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-value: root.recording ? "Press a shortcut…" : root.shown == "" ? root.placeholder : root.shown;
+    accessible-description: root.clearable ? "Click and press a shortcut; Delete removes it" : "Click and press a shortcut";
+    accessible-action-default => { root.start(); }
+    accessible-action-set-value(value) => { root.entered(value); }
+
+    if root.recording: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
+        border-radius: root.border-radius + 2px;
+        border-width: Theme.focus-ring;
+        border-color: Theme.accent.with-alpha(0.55);
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.start(); }
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                self.clear-focus();
+                return accept;
+            }
+            if !event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt {
+                if event.text == Key.Tab || event.text == Key.Backtab {
+                    return reject;
+                }
+                if root.clearable && (event.text == Key.Backspace || event.text == Key.Delete) {
+                    root.cleared();
+                    self.clear-focus();
+                    return accept;
+                }
+            }
+            if root.pressed(event.text, event.modifiers.control, event.modifiers.meta, event.modifiers.alt, event.modifiers.shift) {
+                self.clear-focus();
+            }
+            accept
+        }
+    }
+
+    Text {
+        x: 10px;
+        width: root.width - 20px;
+        height: root.height;
+        text: root.recording ? "Press a shortcut…" : root.shown == "" ? root.placeholder : root.shown;
+        color: root.recording || root.shown == "" ? Theme.text-muted : Theme.text;
+        font-size: Theme.font-body;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}

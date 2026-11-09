@@ -237,11 +237,22 @@ pub fn hotkey_symbols(accelerator: &str) -> String {
         .or_else(|| key.strip_prefix("Digit"))
         .filter(|rest| rest.len() == 1)
         .unwrap_or(key);
-    text.push_str(&if key.len() == 1 {
-        key.to_ascii_uppercase()
-    } else {
-        key.to_owned()
-    });
+    let named = [
+        (&["up", "arrowup"][..], "↑"),
+        (&["down", "arrowdown"], "↓"),
+        (&["left", "arrowleft"], "←"),
+        (&["right", "arrowright"], "→"),
+        (&["enter"], "↩"),
+        (&["tab"], "⇥"),
+    ]
+    .iter()
+    .find(|(names, _)| names.contains(&key.to_ascii_lowercase().as_str()))
+    .map(|(_, symbol)| *symbol);
+    match named {
+        Some(symbol) => text.push_str(symbol),
+        None if key.len() == 1 => text.push_str(&key.to_ascii_uppercase()),
+        None => text.push_str(key),
+    }
     text
 }
 
@@ -417,6 +428,11 @@ mod tests {
         assert_eq!(hotkey_symbols("ctrl+alt+Digit1"), "⌃⌥1");
         assert_eq!(hotkey_symbols("Cmd+Alt+k"), "⌥⌘K");
         assert_eq!(hotkey_symbols("F5"), "F5");
+        assert_eq!(hotkey_symbols("Cmd+Alt+Up"), "⌥⌘↑");
+        assert_eq!(hotkey_symbols("Ctrl+ArrowLeft"), "⌃←");
+        assert_eq!(hotkey_symbols("Cmd+Enter"), "⌘↩");
+        assert_eq!(hotkey_symbols("Cmd+Shift+Tab"), "⇧⌘⇥");
+        assert_eq!(hotkey_symbols("Cmd+Alt+,"), "⌥⌘,");
         assert_eq!(hotkey_symbols(""), "");
     }
 

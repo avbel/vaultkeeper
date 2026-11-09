@@ -57,6 +57,11 @@ pub trait Autostart: Send + Sync {
 /// fires and `App::lock` for ⌘⇧L.
 pub trait GlobalHotkey: Send + Sync {
     fn register(&self, accelerator: &str) -> HookResult<()>;
+    /// A Settings shortcut recorder started (`true`) or stopped waiting for a key; the daemon's
+    /// hotkeys are off meanwhile, so a press of one reaches the recorder.
+    fn pause(&self, recording: bool) {
+        let _ = recording;
+    }
 }
 
 pub trait UrlOpener: Send + Sync {

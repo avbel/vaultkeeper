@@ -5,6 +5,7 @@
 mod core;
 pub mod device;
 mod hotkey;
+mod hotkey_pause;
 pub mod launcher;
 pub mod lock;
 pub mod routing;
@@ -153,7 +154,7 @@ impl Shell {
         let hotkey = match hotkey::Hotkey::new(daemon) {
             Ok(hotkey) => {
                 let hotkey = std::rc::Rc::new(hotkey);
-                bind_hotkeys(&hotkey, &daemon.settings());
+                hotkey_pause::apply(&*hotkey, &daemon.settings(), daemon.hotkeys_paused());
                 follow_hotkey_setting(daemon, &hotkey)?;
                 Some(hotkey)
             }
@@ -169,30 +170,26 @@ impl Shell {
     }
 }
 
-fn bind_hotkeys(hotkey: &hotkey::Hotkey, settings: &crate::settings::Settings) {
-    for (slot, accelerator) in [
-        (routing::HotkeySlot::QuickPanel, &settings.hotkey),
-        (routing::HotkeySlot::Generator, &settings.generator_hotkey),
-    ] {
-        if let Err(error) = hotkey.bind(slot, accelerator) {
-            tracing::warn!(%error, ?slot, "global hotkey not registered");
-        }
-    }
-}
-
+/// Rebinds on every settings re-read and pause change; while paused nothing is bound.
 fn follow_hotkey_setting(
     daemon: &Arc<Daemon>,
     hotkey: &std::rc::Rc<hotkey::Hotkey>,
 ) -> anyhow::Result<()> {
     let mut settings = daemon.subscribe_settings();
+    let mut paused = daemon.subscribe_hotkey_pause();
     let weak = std::rc::Rc::downgrade(hotkey);
     slint::spawn_local(async move {
-        while settings.changed().await.is_ok() {
+        loop {
+            tokio::select! {
+                changed = settings.changed() => if changed.is_err() { break },
+                changed = paused.changed() => if changed.is_err() { break },
+            }
             let Some(hotkey) = weak.upgrade() else {
                 break;
             };
             let fresh = settings.borrow_and_update().clone();
-            bind_hotkeys(&hotkey, &fresh);
+            let pause = *paused.borrow_and_update();
+            hotkey_pause::apply(&*hotkey, &fresh, pause);
         }
     })?;
     Ok(())

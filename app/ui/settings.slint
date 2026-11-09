@@ -1,6 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, CopyBtn, Divider, Field, Segmented, SectionLabel, Select, Toggle } from "kit.slint";
+import { Btn, BtnKind, CopyBtn, Divider, Segmented, SectionLabel, Select, ShortcutRecorder, Toggle } from "kit.slint";
 import { GeneratorView } from "generator.slint";
 
 component SettingRow inherits HorizontalLayout {
@@ -50,8 +50,14 @@ export component SettingsWindow inherits Window {
     in-out property <bool> ssh-touch-id;
     in-out property <bool> touch-id-right-away;
     in-out property <bool> show-shortcuts: true;
-    in-out property <string> hotkey;
-    in-out property <string> generator-hotkey;
+    // Saved accelerators ("Cmd+Shift+Space") and the same in symbols ("⇧⌘Space").
+    in property <string> hotkey;
+    in property <string> generator-hotkey;
+    in property <string> hotkey-shown;
+    in property <string> generator-hotkey-shown;
+    // Which recorder waits for a key: 0 none, 1 Quick Panel, 2 Generator. Read by the winit key
+    // filter, which records by physical key.
+    out property <int> recording-slot: quick-recorder.recording ? 1 : generator-recorder.recording ? 2 : 0;
     in property <string> error-text;
 
     callback theme-selected(int);
@@ -71,8 +77,23 @@ export component SettingsWindow inherits Window {
     callback ssh-touch-id-toggled(bool);
     callback touch-id-right-away-toggled(bool);
     callback show-shortcuts-toggled(bool);
+    // Both save paths validate and save an accelerator; an empty one clears the Generator's.
     callback hotkey-accepted(string);
     callback generator-hotkey-accepted(string);
+    // A key press in a recorder; `true` when it was saved.
+    callback hotkey-pressed(string, bool, bool, bool, bool) -> bool;
+    callback generator-hotkey-pressed(string, bool, bool, bool, bool) -> bool;
+
+    // A recorder started (`true`) or stopped waiting for a key; the daemon pauses its hotkeys.
+    callback recording-changed(bool);
+    changed recording-slot => {
+        root.recording-changed(self.recording-slot != 0);
+    }
+
+    public function stop-recording() {
+        quick-recorder.stop();
+        generator-recorder.stop();
+    }
 
     VerticalLayout {
         // The window title, drawn in the transparent title bar beside the traffic lights.
@@ -261,23 +282,28 @@ export component SettingsWindow inherits Window {
                 }
                 SettingRow {
                     text: "Quick Panel hotkey";
-                    Field {
+                    quick-recorder := ShortcutRecorder {
                         width: 200px;
                         label: "Quick Panel hotkey";
-                        mono: true;
-                        text <=> root.hotkey;
-                        accepted(text) => { root.hotkey-accepted(text); }
+                        shown: root.hotkey-shown;
+                        pressed(text, control, meta, alt, shift) => {
+                            return root.hotkey-pressed(text, control, meta, alt, shift);
+                        }
+                        entered(accelerator) => { root.hotkey-accepted(accelerator); }
                     }
                 }
                 SettingRow {
                     text: "Generator hotkey";
-                    Field {
+                    generator-recorder := ShortcutRecorder {
                         width: 200px;
                         label: "Generator hotkey";
-                        placeholder: "None";
-                        mono: true;
-                        text <=> root.generator-hotkey;
-                        accepted(text) => { root.generator-hotkey-accepted(text); }
+                        shown: root.generator-hotkey-shown;
+                        clearable: true;
+                        pressed(text, control, meta, alt, shift) => {
+                            return root.generator-hotkey-pressed(text, control, meta, alt, shift);
+                        }
+                        entered(accelerator) => { root.generator-hotkey-accepted(accelerator); }
+                        cleared => { root.generator-hotkey-accepted(""); }
                     }
                 }
                 if root.error-text != "": Text {
