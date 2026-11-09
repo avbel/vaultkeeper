@@ -123,6 +123,13 @@ impl SshAgent {
         self.agent.replace(served)
     }
 
+    /// Drops every served key and keeps serving. Unlike `replace_keys(vec![])`, the next list
+    /// request goes to the approval channel as [`ApprovalKind::List`] again, which is how a
+    /// locked vault gets the user to unlock.
+    pub fn clear_keys(&self) {
+        self.agent.clear();
+    }
+
     /// Stops serving, clears keys and removes the socket file.
     pub fn stop(&mut self) {
         if self.is_running() {

@@ -113,10 +113,15 @@ fn encrypt_text_bytes(bytes: &[u8], key: &SymmetricKey) -> Result<String> {
     Ok(bwl_crypto::EncString::encrypt(bytes, key)?.to_string())
 }
 
-fn check_update(base: &Cipher, organization_id: Option<&str>, kind: u8) -> Result<()> {
+fn check_update(draft: &ItemDraft, base: &Cipher, kind: u8) -> Result<()> {
     if !base.edit {
         return Err(Error::ReadOnly);
     }
+    // Re-reading the moved base instead would mix its new fields with the draft's stale ones.
+    if draft.revision_date.as_deref() != Some(base.revision_date.as_str()) {
+        return Err(Error::Conflict);
+    }
+    let organization_id = draft.organization_id.as_deref();
     if base.organization_id.as_deref() != organization_id {
         return Err(Error::unsupported(
             "Moving items between the personal vault and an organization is not supported",
@@ -138,7 +143,7 @@ pub(crate) fn prepare(
     let kind = type_of(&draft.data);
     let organization_id = draft.organization_id.as_deref();
     if let Some(base) = base {
-        check_update(base, organization_id, kind)?;
+        check_update(draft, base, kind)?;
     }
     let base_key = keys.base_key(organization_id)?;
     let item = match base {
@@ -157,7 +162,7 @@ pub(crate) fn prepare(
         reprompt: u8::from(draft.reprompt),
         key: item.wrapped.clone(),
         fields: fields(&draft.fields, base, &item)?,
-        last_known_revision_date: base.map(|base| base.revision_date.clone()),
+        last_known_revision_date: base.and(draft.revision_date.as_deref().map(str::to_owned)),
         extra: top_level_extra(base, &item)?,
         ..CipherRequest::default()
     };
@@ -296,8 +301,9 @@ fn login_request(login: &LoginParts<'_>, base: Option<&Cipher>, item: &ItemKeys)
     })
 }
 
-/// Blank URIs are dropped. Each URI keeps the match rule and extras of the stored one at its
-/// position and gets a fresh checksum, as the official clients write one on every save.
+/// Blank URIs are dropped after pairing, so URI `i` keeps the match rule and extras of stored
+/// URI `i` even when an earlier one was cleared. Each gets a fresh checksum, as the official
+/// clients write one on every save.
 fn login_uris(
     uris: &[String],
     base_login: Option<&Login>,
@@ -309,8 +315,8 @@ fn login_uris(
         .unwrap_or_default();
     uris.iter()
         .map(|uri| uri.trim())
-        .filter(|uri| !uri.is_empty())
         .enumerate()
+        .filter(|(_, uri)| !uri.is_empty())
         .map(|(index, uri)| {
             let known = base_uris.get(index);
             Ok(LoginUri {
@@ -495,6 +501,7 @@ mod tests {
                 totp: Zeroizing::default(),
                 uris: vec!["https://a.example".into(), "  ".into()],
             },
+            revision_date: None,
         }
     }
 
@@ -551,6 +558,7 @@ mod tests {
         if let ItemData::Login { uris, .. } = &mut expected.data {
             uris.truncate(1);
         }
+        expected.revision_date = Some(Arc::from("2026-11-08T18:00:00.000Z"));
         assert!(back == expected);
     }
 
@@ -636,7 +644,11 @@ mod tests {
         let upgraded = prepare(&draft, Some(&base), &keys).unwrap().request;
         assert!(upgraded.key.is_some());
         let after = stored(&upgraded, "l1");
-        assert!(reveal::draft(&after, &keys).unwrap() == draft);
+        let expected = ItemDraft {
+            revision_date: Some(Arc::from(after.revision_date.as_str())),
+            ..draft.clone()
+        };
+        assert!(reveal::draft(&after, &keys).unwrap() == expected);
         let item = keys.cipher_key(&after).unwrap();
         let history = upgraded.password_history.as_deref().unwrap();
         assert_eq!(
@@ -668,6 +680,54 @@ mod tests {
             request.login.unwrap().password,
             base.login.unwrap().password
         );
+    }
+
+    #[test]
+    fn a_cleared_uri_does_not_hand_its_match_rule_to_the_next_one() {
+        let keys = ring();
+        let mut base = login("l1", "GitHub", "u", "p", &keys);
+        let stored_uris = base.login.as_mut().unwrap().uris.as_mut().unwrap();
+        stored_uris[0]
+            .extra
+            .insert("futureUri".into(), serde_json::json!("first only"));
+        stored_uris[1].r#match = Some(1);
+        let mut draft = reveal::draft(&base, &keys).unwrap();
+        if let ItemData::Login { uris, .. } = &mut draft.data {
+            uris[0] = String::new();
+        }
+        let request = prepare(&draft, Some(&base), &keys).unwrap().request;
+        let saved = request.login.unwrap().uris.unwrap();
+        assert_eq!(saved.len(), 1);
+        let item = keys.cipher_key(&base).unwrap();
+        assert_eq!(
+            &*decrypt_text(saved[0].uri.as_deref(), &item).unwrap(),
+            "https://second.example.org"
+        );
+        assert_eq!(saved[0].r#match, Some(1), "the second URI's own rule");
+        assert!(saved[0].extra.is_empty(), "{:?}", saved[0].extra);
+    }
+
+    #[test]
+    fn an_update_from_a_draft_of_another_revision_is_a_conflict() {
+        let keys = ring();
+        let base = login("l1", "GitHub", "u", "p", &keys);
+        let draft = reveal::draft(&base, &keys).unwrap();
+        let moved = Cipher {
+            revision_date: "2026-11-09T09:00:00.000Z".into(),
+            ..base.clone()
+        };
+        assert!(matches!(
+            prepare(&draft, Some(&moved), &keys),
+            Err(Error::Conflict)
+        ));
+        let unknown = ItemDraft {
+            revision_date: None,
+            ..draft
+        };
+        assert!(matches!(
+            prepare(&unknown, Some(&base), &keys),
+            Err(Error::Conflict)
+        ));
     }
 
     #[test]

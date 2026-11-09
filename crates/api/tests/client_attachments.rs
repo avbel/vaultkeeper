@@ -427,3 +427,57 @@ async fn download_stops_with_an_io_error_when_the_writer_fails() {
 
     assert!(matches!(error, Error::Io(_)), "{error:?}");
 }
+
+#[tokio::test]
+async fn crafted_relative_urls_never_reach_another_host() {
+    let victim = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"leak".to_vec()))
+        .expect(0)
+        .mount(&victim)
+        .await;
+    let home = MockServer::start().await;
+    let victim_authority = victim.uri().replace("http://", "");
+    let client = client(&home);
+    for raw in [
+        format!("\\\\{victim_authority}/x"),
+        format!(" //{victim_authority}/x"),
+        format!("\t//{victim_authority}/x"),
+        format!("/\\{victim_authority}/x"),
+        format!("{}/x", victim.uri()),
+        victim.uri().replace("http://", "https://"),
+    ] {
+        let mut sink = Vec::new();
+        let outcome = client.download_attachment(&raw, &mut sink).await;
+        assert!(sink.is_empty(), "{raw:?}");
+        // Resolving to the home server (404 there) is fine; only the victim must stay untouched.
+        assert!(outcome.is_err(), "{raw:?}");
+    }
+    assert!(victim.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn download_stops_once_the_body_exceeds_the_cap() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/attachments/big"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7_u8; 100_000]))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+
+    let mut sink = Vec::new();
+    let error = client
+        .download_attachment_capped("/attachments/big", &mut sink, 1000)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Server { .. }), "{error:?}");
+    assert!(sink.len() <= 100_000);
+
+    let mut exact = Vec::new();
+    let written = client
+        .download_attachment_capped("/attachments/big", &mut exact, 100_000)
+        .await
+        .unwrap();
+    assert_eq!(written, 100_000);
+}

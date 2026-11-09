@@ -51,7 +51,7 @@ pub fn run(first_unlock: bool) -> anyhow::Result<()> {
     select_backend(Backend::Ui {
         on_input: activity_reporter(Arc::clone(&notify)),
     })?;
-    let hooks = Hooks::system(&data_dir, &notify);
+    let hooks = Hooks::system(&data_dir, &notify, &remote);
     let linger = Rc::new(LingerTimer {
         timer: slint::Timer::default(),
         linger: linger_from_env(std::env::var("BW_LITE_UI_LINGER_SECS").ok().as_deref()),

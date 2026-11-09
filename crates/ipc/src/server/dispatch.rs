@@ -8,15 +8,17 @@ use bwl_vault::{
 };
 
 use crate::{
+    TouchIdBackend,
     dto::WireError,
-    protocol::{Call, Reply},
+    protocol::{Call, Reply, TouchIdFailure},
 };
 
 /// Sync service methods run inline when they only read in-memory views, and on the blocking
-/// pool when they touch the disk or decrypt in bulk (unlock, account switch, SSH keys), so they
-/// cannot stall the daemon's async workers.
+/// pool when they touch the disk, decrypt in bulk or wait on Touch ID (unlock, account switch),
+/// so they cannot stall the daemon's async workers.
 pub(super) async fn dispatch<S: VaultService>(
     service: &Arc<S>,
+    touch_id: Option<Arc<dyn TouchIdBackend>>,
     call: Call,
 ) -> Result<Reply, WireError> {
     match call {
@@ -34,10 +36,18 @@ pub(super) async fn dispatch<S: VaultService>(
         }
         Call::SendEmailCode => unit(service.send_email_code().await),
         Call::UnlockWithPassword(password) => unit(service.unlock_with_password(password).await),
-        Call::UnlockWithUserKey(key) => {
-            unit(blocking(service, move |service| service.unlock_with_user_key(key)).await?)
+        Call::EnrollTouchId { account_id } => {
+            with_touch_id(service, touch_id, move |service, backend| {
+                enroll_touch_id(service, backend, &account_id)
+            })
+            .await
         }
-        Call::UserKey => reply(service.user_key(), Reply::UserKey),
+        Call::UnlockWithTouchId { account_id } => {
+            with_touch_id(service, touch_id, move |service, backend| {
+                unlock_with_touch_id(service, backend, &account_id)
+            })
+            .await
+        }
         Call::VerifyMasterPassword(password) => {
             reply(service.verify_master_password(password).await, Reply::Bool)
         }
@@ -106,11 +116,67 @@ pub(super) async fn dispatch<S: VaultService>(
         }),
         Call::RenameFolder { id, name } => unit(service.rename_folder(&id, &name).await),
         Call::DeleteFolder(id) => unit(service.delete_folder(&id).await),
-        Call::SshKeys => reply(blocking(service, S::ssh_keys).await?, |keys| {
-            Reply::SshKeys(convert_all(keys))
-        }),
         Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
     }
+}
+
+async fn with_touch_id<S, F>(
+    service: &Arc<S>,
+    backend: Option<Arc<dyn TouchIdBackend>>,
+    work: F,
+) -> Result<Reply, WireError>
+where
+    S: VaultService,
+    F: FnOnce(&S, &dyn TouchIdBackend) -> Result<Reply, WireError> + Send + 'static,
+{
+    let Some(backend) = backend else {
+        return Ok(Reply::TouchId(Err(TouchIdFailure::Unavailable)));
+    };
+    blocking(service, move |service| work(service, backend.as_ref())).await?
+}
+
+fn is_active<S: VaultService>(service: &S, account_id: &str) -> bool {
+    service
+        .accounts()
+        .iter()
+        .any(|account| account.active && account.id.as_ref() == account_id)
+}
+
+/// The key is read from the unlocked vault here, so a peer can never hand in a key of its own.
+fn enroll_touch_id<S: VaultService>(
+    service: &S,
+    backend: &dyn TouchIdBackend,
+    account_id: &str,
+) -> Result<Reply, WireError> {
+    if !is_active(service, account_id) {
+        return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
+    }
+    let user_key = service
+        .user_key()
+        .map_err(|error| WireError::from(&error))?;
+    Ok(Reply::TouchId(backend.enroll(account_id, &user_key)))
+}
+
+fn unlock_with_touch_id<S: VaultService>(
+    service: &S,
+    backend: &dyn TouchIdBackend,
+    account_id: &str,
+) -> Result<Reply, WireError> {
+    if !is_active(service, account_id) {
+        return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
+    }
+    let user_key = match backend.unlock(account_id) {
+        Ok(user_key) => user_key,
+        Err(failure) => return Ok(Reply::TouchId(Err(failure))),
+    };
+    // The prompt may have been up for a while: an account switch meanwhile must not get this key.
+    if !is_active(service, account_id) {
+        return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
+    }
+    service
+        .unlock_with_user_key(user_key)
+        .map_err(|error| WireError::from(&error))?;
+    Ok(Reply::TouchId(Ok(())))
 }
 
 async fn probe<S: VaultService>(service: &S, server: &str) -> Result<Reply, WireError> {

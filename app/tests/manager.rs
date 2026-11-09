@@ -11,8 +11,8 @@ use bwl_vault::{
     model::{CopyField, Filter, ItemData, ItemKind},
 };
 use common::{
-    CMD, Harness, Setup, click, control_exists, elapse, enabled, find, harness, key, pump,
-    set_size, special, type_into, value_of,
+    CMD, Harness, Setup, block_on, click, control_exists, elapse, enabled, find, harness, key,
+    pump, set_size, special, type_into, value_of,
 };
 use slint::{ComponentHandle, Model, platform::Key};
 
@@ -632,6 +632,7 @@ fn a_pasted_private_key_is_stored_as_openssh_with_its_public_key() {
     manager.invoke_new_item(4);
     pump();
     type_into(&manager, "Name", "pasted key");
+    click(&manager, "Show Private key");
     type_into(&manager, "Private key", &pasted);
     type_into(&manager, "Public key", "stale");
     click(&manager, "Save");
@@ -650,7 +651,223 @@ fn a_pasted_private_key_is_stored_as_openssh_with_its_public_key() {
     manager.invoke_new_item(4);
     pump();
     type_into(&manager, "Name", "garbage");
+    click(&manager, "Show Private key");
     type_into(&manager, "Private key", "-----BEGIN NOTHING-----");
     click(&manager, "Save");
     assert!(value_of(&manager, "Edit error").contains("Not a usable private key"));
+}
+
+fn item_id(h: &Harness, name: &str) -> bwl_vault::model::ItemId {
+    h.vault
+        .search(name, &Filter::default())
+        .expect("search")
+        .iter()
+        .find(|item| item.name.as_ref() == name)
+        .expect("item")
+        .id
+        .clone()
+}
+
+fn field_row(manager: &ManagerWindow, label: &str) -> usize {
+    let fields = manager.get_detail_fields();
+    (0..fields.row_count())
+        .find(|row| fields.row_data(*row).is_some_and(|f| f.label == label))
+        .unwrap_or_else(|| panic!("no {label} row"))
+}
+
+/// The value of the text input labelled `label`, if one is shown (its caption is a `Text` with
+/// the same label).
+fn input_value(manager: &ManagerWindow, label: &str) -> Option<String> {
+    i_slint_backend_testing::ElementHandle::find_by_accessible_label(manager, label)
+        .find(|element| {
+            element.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::TextInput)
+        })
+        .and_then(|element| element.accessible_value())
+        .map(|value| value.to_string())
+}
+
+fn confirm_reprompt(manager: &ManagerWindow) {
+    type_into(
+        manager,
+        "Reprompt master password",
+        bw_lite::mock::MOCK_MASTER_PASSWORD,
+    );
+    click(manager, "Confirm master password");
+}
+
+#[test]
+fn every_way_into_the_editor_asks_for_the_master_password_of_a_reprompt_item() {
+    type Start = fn(&ManagerWindow);
+    let entries: [(&str, Start); 3] = [
+        ("Edit button", |manager| click(manager, "Edit")),
+        ("⌘E", |manager| key(manager, "e", CMD)),
+        ("double-click", |manager| {
+            manager.invoke_row_double_clicked(row_of(manager, "PayPal"));
+            pump();
+        }),
+    ];
+    for (entry, start) in entries {
+        let (_h, manager) = open();
+        type_into(&manager, "Search vault", "paypal");
+        manager.invoke_row_clicked(row_of(&manager, "PayPal"));
+        pump();
+        start(&manager);
+        assert_eq!(manager.get_detail_mode(), 1, "{entry}: no form yet");
+        assert_eq!(manager.get_edit_fields().row_count(), 0, "{entry}");
+        assert!(manager.get_reprompt_visible(), "{entry}");
+        confirm_reprompt(&manager);
+        assert_eq!(manager.get_detail_mode(), 2, "{entry}: the form opens");
+        assert!(manager.get_edit_reprompt(), "{entry}");
+    }
+}
+
+#[test]
+fn reprompt_hides_notes_and_totp_codes_until_the_password_is_confirmed() {
+    let (h, manager) = open();
+    type_into(&manager, "Search vault", "paypal");
+    let row = usize::try_from(row_of(&manager, "PayPal")).expect("row");
+    let listed = manager.get_rows().row_data(row).expect("row");
+    assert!(listed.has_totp);
+    assert_eq!(listed.totp_code, "", "no live code in the list");
+    manager.invoke_row_clicked(row_of(&manager, "PayPal"));
+    pump();
+    assert_eq!(manager.get_detail_totp_code(), "••• •••");
+    let notes = field_row(&manager, "Notes");
+    let fields = manager.get_detail_fields();
+    assert_eq!(fields.row_data(notes).expect("f").value, "••••••••");
+    assert!(fields.row_data(notes).expect("f").secret);
+    let copies = h.clipboard.count();
+    assert!(!manager.invoke_copy_field(i32::try_from(notes).expect("small")));
+    assert_eq!(h.clipboard.count(), copies, "notes are not copied");
+    assert!(manager.get_reprompt_visible());
+
+    confirm_reprompt(&manager);
+    assert_eq!(
+        h.clipboard.last().as_deref(),
+        Some("Security answer: blue heron")
+    );
+    assert_eq!(
+        manager.get_detail_totp_code().len(),
+        7,
+        "{}",
+        manager.get_detail_totp_code()
+    );
+    let listed = manager.get_rows().row_data(row).expect("row");
+    assert_eq!(listed.totp_code.len(), 7, "{}", listed.totp_code);
+    manager.invoke_reveal_field(i32::try_from(notes).expect("small"));
+    assert_eq!(
+        manager
+            .get_detail_fields()
+            .row_data(notes)
+            .expect("f")
+            .value,
+        "Security answer: blue heron"
+    );
+}
+
+#[test]
+fn the_ssh_private_key_is_masked_in_the_editor_until_shown() {
+    let (h, manager) = open();
+    type_into(&manager, "Search vault", "homelab");
+    let name = "homelab";
+    manager.invoke_row_clicked(row_of(&manager, name));
+    pump();
+    click(&manager, "Edit");
+    assert_eq!(manager.get_detail_mode(), 2);
+    let private = reveal(&h, name, CopyField::SshPrivateKey);
+    let masked = input_value(&manager, "Private key");
+    assert!(
+        masked.as_deref().is_none_or(str::is_empty),
+        "masked: {masked:?}"
+    );
+    click(&manager, "Show Private key");
+    assert_eq!(input_value(&manager, "Private key"), Some(private));
+}
+
+#[test]
+fn a_save_after_the_item_changed_elsewhere_is_refused_and_keeps_the_form() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    click(&manager, "Edit");
+    type_into(&manager, "Name", "GitHub (desktop)");
+    h.vault
+        .edit_elsewhere(&item_id(&h, "GitHub"), "GitHub (phone)")
+        .expect("remote edit");
+    h.app.on_vault_changed();
+    pump();
+    assert_eq!(
+        manager.get_detail_mode(),
+        2,
+        "the open form is not replaced"
+    );
+
+    click(&manager, "Save");
+    assert_eq!(manager.get_detail_mode(), 2, "the form stays open");
+    assert!(
+        value_of(&manager, "Edit error").starts_with(bwl_vault::CONFLICT_MESSAGE),
+        "{}",
+        value_of(&manager, "Edit error")
+    );
+    assert_eq!(
+        input_value(&manager, "Name").as_deref(),
+        Some("GitHub (desktop)"),
+        "nothing typed is lost"
+    );
+    assert!(
+        !h.vault
+            .calls()
+            .iter()
+            .any(|call| matches!(call, MockCall::Save { .. })),
+        "nothing was written"
+    );
+
+    click(&manager, "Cancel");
+    assert_eq!(manager.get_detail_mode(), 1);
+    assert_eq!(manager.get_detail_header().name, "GitHub (phone)");
+    click(&manager, "Edit");
+    type_into(&manager, "Name", "GitHub (desktop)");
+    click(&manager, "Save");
+    assert_eq!(
+        h.vault.last_saved().expect("saved").name,
+        "GitHub (desktop)",
+        "an edit of the latest version saves"
+    );
+    assert_eq!(manager.get_detail_mode(), 1);
+}
+
+#[test]
+fn the_edit_form_keeps_the_picked_folder_when_the_folder_list_changes() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    click(&manager, "Edit");
+    let options = |manager: &ManagerWindow| -> Vec<String> {
+        manager
+            .get_folder_options()
+            .iter()
+            .map(|option| option.to_string())
+            .collect()
+    };
+    let travel = options(&manager)
+        .iter()
+        .position(|option| option == "Travel")
+        .expect("Travel option");
+    let travel = i32::try_from(travel).expect("small");
+    manager.set_edit_folder_index(travel);
+    manager.invoke_edit_folder_selected(travel);
+    block_on(h.vault.create_folder("Aardvark")).expect("folder");
+    h.app.on_vault_changed();
+    pump();
+    let index = usize::try_from(manager.get_edit_folder_index()).expect("index");
+    assert_eq!(
+        options(&manager)[index],
+        "Travel",
+        "the picker follows the id"
+    );
+    click(&manager, "Save");
+    assert_eq!(
+        h.vault.last_saved().expect("save").folder_id.as_deref(),
+        Some("f-travel")
+    );
 }

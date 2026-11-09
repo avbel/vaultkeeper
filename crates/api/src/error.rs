@@ -8,6 +8,8 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("invalid server URL: {0}")]
     Url(#[from] url::ParseError),
+    #[error("server URL refused: {0}")]
+    InvalidServerUrl(&'static str),
     #[error("unexpected response: {0}")]
     Decode(#[from] serde_json::Error),
     /// Server returned an error model (`message` / `error_description`).

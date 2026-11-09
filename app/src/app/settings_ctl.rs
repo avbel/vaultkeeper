@@ -211,8 +211,11 @@ impl<S: VaultService> App<S> {
             .accounts()
             .into_iter()
             .find(|account| account.active);
-        let key = self.vault.user_key();
-        let (Some(account), Ok(key)) = (account, key) else {
+        let unlocked = matches!(
+            self.vault.state(),
+            bwl_vault::model::SessionState::Unlocked { .. }
+        );
+        let (Some(account), true) = (account, unlocked) else {
             self.report(Err(crate::hooks::HookError::Failed(
                 "Unlock the vault to enrol Touch ID".to_owned(),
             )));
@@ -220,7 +223,7 @@ impl<S: VaultService> App<S> {
         };
         let biometrics = Arc::clone(&self.hooks.biometrics);
         self.exec.spawn_blocking(
-            move || biometrics.enroll(&account.id, &key),
+            move || biometrics.enroll(&account.id),
             handler!(self, |app, result| app.touch_id_changed(result)),
         );
     }

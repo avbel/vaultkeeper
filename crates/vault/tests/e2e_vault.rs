@@ -21,6 +21,26 @@ use support::{
 };
 use zeroize::Zeroizing;
 
+/// `saved` is `expected` as stored by a later revision: every field but the revision matches.
+fn assert_saved_as(saved: &ItemDraft, expected: &ItemDraft, what: &str) {
+    assert!(
+        saved.revision_date.is_some(),
+        "{what}: stored items carry a revision"
+    );
+    assert_ne!(
+        saved.revision_date, expected.revision_date,
+        "{what}: the revision moved on"
+    );
+    let unrevised = |draft: &ItemDraft| ItemDraft {
+        revision_date: None,
+        ..draft.clone()
+    };
+    assert!(
+        unrevised(saved) == unrevised(expected),
+        "{what}: round trip"
+    );
+}
+
 /// Changes one field per kind and returns its new plaintext.
 fn edit_kind_field(draft: &mut ItemDraft) -> String {
     let value = match &mut draft.data {
@@ -110,10 +130,10 @@ async fn every_item_kind_round_trips_through_the_server() {
         assert_eq!(found[0].id, id);
         assert_eq!(found[0].kind, *kind);
         assert_eq!(&*found[0].subtitle, *subtitle);
-        assert!(
-            vault.draft(&id).unwrap() == *draft,
-            "{} draft round trip",
-            draft.name
+        assert_saved_as(
+            &vault.draft(&id).unwrap(),
+            draft,
+            &format!("{} draft round trip", draft.name),
         );
 
         // New items carry their own key, wrapped by the user key; the name decrypts with it.
@@ -173,10 +193,10 @@ async fn every_item_kind_round_trips_through_the_server() {
         changed.name = format!("{} v2", changed.name);
         let expected = edit_kind_field(&mut changed);
         vault.save(Some(id.clone()), changed.clone()).await.unwrap();
-        assert!(
-            vault.draft(id).unwrap() == changed,
-            "{} edit round trip",
-            changed.name
+        assert_saved_as(
+            &vault.draft(id).unwrap(),
+            &changed,
+            &format!("{} edit round trip", changed.name),
         );
         let stored = server.cipher(&id.0).await;
         let key = server_cipher_key(&stored, &account.user_key);
@@ -206,7 +226,7 @@ async fn every_item_kind_round_trips_through_the_server() {
     }
 
     // Edit: the old password moves to the history, encrypted under the same item key.
-    let mut edited = login.clone();
+    let mut edited = vault.draft(bank).unwrap();
     if let ItemData::Login { password, .. } = &mut edited.data {
         *password = Zeroizing::new("second-password".into());
     }
@@ -216,7 +236,7 @@ async fn every_item_kind_round_trips_through_the_server() {
         .save(Some(bank.clone()), edited.clone())
         .await
         .unwrap();
-    assert!(vault.draft(bank).unwrap() == edited);
+    assert_saved_as(&vault.draft(bank).unwrap(), &edited, "bank edit");
     let after = server.cipher(&bank.0).await;
     assert_eq!(after.key, before.key, "an existing item key is kept");
     let item_key = server_cipher_key(&after, &account.user_key);
@@ -234,9 +254,11 @@ async fn every_item_kind_round_trips_through_the_server() {
 
     // Optimistic concurrency: another device edits the item while this one has not synced
     // (sleeping, so the websocket can't deliver the change). The vault's save carries the old
-    // lastKnownRevisionDate and is refused; after a sync it goes through. The server only
-    // refuses when its copy is more than one whole second newer.
+    // lastKnownRevisionDate and the server's refusal is reported as a conflict; after a sync a
+    // fresh draft goes through. The server only refuses when its copy is more than one whole
+    // second newer.
     vault.on_sleep();
+    let mut late = vault.draft(bank).unwrap();
     tokio::time::sleep(Duration::from_millis(2500)).await;
     let other_device = CipherRequest {
         r#type: 1,
@@ -251,19 +273,12 @@ async fn every_item_kind_round_trips_through_the_server() {
         .update_cipher(&server.token, &bank.0, &other_device)
         .await
         .unwrap();
-    let mut late = edited.clone();
     late.name = "Bank (this device)".into();
     let refused = vault
         .save(Some(bank.clone()), late.clone())
         .await
         .unwrap_err();
-    assert!(
-        matches!(
-            &refused,
-            Error::Api(bwl_api::Error::Server { status: 400, .. })
-        ),
-        "{refused:?}"
-    );
+    assert!(matches!(&refused, Error::Conflict), "{refused:?}");
     vault.on_wake();
     vault.sync().await.unwrap();
     assert_eq!(
@@ -273,6 +288,34 @@ async fn every_item_kind_round_trips_through_the_server() {
     let mut fresh = vault.draft(bank).unwrap();
     fresh.name = "Bank".into();
     vault.save(Some(bank.clone()), fresh).await.unwrap();
+
+    // The same race after a sync already brought the other device's edit: the draft opened
+    // before it is refused locally, nothing is sent, and the other device's edit stays.
+    let mut opened = vault.draft(bank).unwrap();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let current = server.cipher(&bank.0).await;
+    let phone = CipherRequest {
+        name: enc("Bank (phone)", &item_key),
+        last_known_revision_date: Some(current.revision_date.clone()),
+        ..other_device.clone()
+    };
+    server
+        .client
+        .update_cipher(&server.token, &bank.0, &phone)
+        .await
+        .unwrap();
+    vault.sync().await.unwrap();
+    opened.name = "Bank (desktop)".into();
+    let before = server.cipher(&bank.0).await.revision_date;
+    let refused = vault.save(Some(bank.clone()), opened).await.unwrap_err();
+    assert!(matches!(&refused, Error::Conflict), "{refused:?}");
+    let kept = server.cipher(&bank.0).await;
+    assert_eq!(kept.revision_date, before, "nothing was written");
+    assert_eq!(decrypt(kept.name.as_deref(), &item_key), "Bank (phone)");
+    let mut reopened = vault.draft(bank).unwrap();
+    assert_eq!(reopened.name, "Bank (phone)");
+    reopened.name = "Bank".into();
+    vault.save(Some(bank.clone()), reopened).await.unwrap();
 
     // Trash, restore and permanent delete.
     vault.trash(&ids[1]).await.unwrap();

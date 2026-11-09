@@ -75,6 +75,13 @@ where
         info!("Key data replaced.");
         Ok(())
     }
+
+    /// Drops every key and marks the keystore uninitialized, so the next list request asks for
+    /// approval again (the "unlock first" path) instead of answering with an empty list.
+    pub fn clear(&self) {
+        debug!("Clearing key data.");
+        self.keystore.clear();
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +98,15 @@ mod tests {
         let mut agent = BitwardenSSHAgent::new(keystore, approval_handler);
 
         agent.stop();
+    }
+
+    #[test]
+    fn clear_clears_the_keystore_without_stopping() {
+        let mut keystore = MockKeyStore::new();
+        keystore.expect_clear().once().return_const(());
+        let agent = BitwardenSSHAgent::new(keystore, MockApprovalRequester::new());
+
+        agent.clear();
+        assert!(!agent.is_running());
     }
 }

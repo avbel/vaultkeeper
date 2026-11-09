@@ -6,6 +6,7 @@ mod common;
 use std::{path::PathBuf, sync::Arc};
 
 use bwl_ipc::{
+    ServeOptions, TouchIdBackend, TouchIdFailure,
     dto::{AccountDto, FolderDto, SessionStateDto, WireError},
     protocol::{Call, DaemonMessage, Event, Reply, UiMessage},
 };
@@ -16,7 +17,7 @@ use bwl_vault::{
     },
 };
 use common::{
-    Daemon, EMAIL, FakeVault, OTHER_EMAIL, OTHER_SERVER, PASSWORD, RawClient, SERVER, SSH_PEM,
+    Daemon, EMAIL, FakeTouchId, FakeVault, OTHER_EMAIL, OTHER_SERVER, PASSWORD, RawClient, SERVER,
     USER_KEY, accounts, attachment, collections, draft, folders, locked, organizations, secret,
     unlocked, url,
 };
@@ -85,7 +86,11 @@ async fn login_rounds_carry_every_argument_and_step() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
-    let daemon = Daemon::start(FakeVault::new(locked(), 0)).await;
+    let touch_id = Arc::new(FakeTouchId::default());
+    let options = ServeOptions::new()
+        .expect("options")
+        .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>);
+    let daemon = Daemon::start_with(FakeVault::new(locked(), 0), options).await;
     let (vault, _events) = daemon.connect().await;
     assert_eq!(vault.state(), locked());
     assert!(matches!(vault.folders(), Err(Error::Locked)));
@@ -105,13 +110,50 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
     assert_eq!(vault.state(), locked());
     assert!(matches!(vault.collections(), Err(Error::Locked)));
 
-    let bad_key = vault.unlock_with_user_key(Zeroizing::new(vec![1; 64]));
-    assert!(matches!(bad_key, Err(Error::InvalidPassword)));
+    // Key material never crosses the socket: these fail in the client and reach no daemon.
+    let refused = vault.unlock_with_user_key(Zeroizing::new(USER_KEY.to_vec()));
+    assert!(bwl_ipc::ipc_error(&refused.expect_err("no key unlock")).is_some());
+    assert!(bwl_ipc::ipc_error(&vault.user_key().expect_err("no user key")).is_some());
+
+    // Touch ID runs in the daemon: it reads the key from its own vault and seals it.
+    assert!(matches!(
+        vault.enroll_touch_id("user-1"),
+        Err(Error::Locked)
+    ));
+    assert_eq!(
+        vault.unlock_with_touch_id("user-1").expect("call"),
+        Err(TouchIdFailure::Unavailable),
+        "nothing enrolled yet"
+    );
     vault
-        .unlock_with_user_key(Zeroizing::new(USER_KEY.to_vec()))
-        .expect("touch id unlock");
-    assert_eq!(vault.state(), unlocked());
-    assert_eq!(vault.user_key().expect("user key").as_slice(), USER_KEY);
+        .unlock_with_password(secret(PASSWORD))
+        .await
+        .expect("unlock");
+    assert_eq!(
+        vault.enroll_touch_id("user-2").expect("call"),
+        Err(TouchIdFailure::AccountChanged),
+        "only the active account can be enrolled"
+    );
+    assert_eq!(vault.enroll_touch_id("user-1").expect("call"), Ok(()));
+    assert_eq!(
+        touch_id.sealed(),
+        Some(("user-1".to_owned(), USER_KEY.to_vec()))
+    );
+    vault.lock();
+    touch_id.refuse(Some(TouchIdFailure::Cancelled));
+    assert_eq!(
+        vault.unlock_with_touch_id("user-1").expect("call"),
+        Err(TouchIdFailure::Cancelled)
+    );
+    assert_eq!(vault.state(), locked());
+    touch_id.refuse(None);
+    assert_eq!(vault.unlock_with_touch_id("user-1").expect("call"), Ok(()));
+    assert_eq!(
+        vault.state(),
+        unlocked(),
+        "cache refreshed before the answer"
+    );
+    assert_eq!(touch_id.unlocks(), ["user-1", "user-1", "user-1"]);
 
     assert_eq!(vault.accounts(), accounts());
     assert!(matches!(
@@ -126,7 +168,10 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
             email: OTHER_EMAIL.to_owned(),
         }
     );
-    assert!(matches!(vault.user_key(), Err(Error::Locked)));
+    assert!(matches!(
+        vault.enroll_touch_id("user-1"),
+        Err(Error::Locked)
+    ));
 
     // The fake does not bump its counter here; the cache must still follow.
     vault.begin_add_account();
@@ -141,7 +186,8 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
             "unlock_with_password nope",
             format!("unlock_with_password {PASSWORD}").as_str(),
             "lock",
-            "unlock_with_user_key 64 bytes",
+            format!("unlock_with_password {PASSWORD}").as_str(),
+            "lock",
             "unlock_with_user_key 64 bytes",
             "switch_account nobody",
             "switch_account user-2",
@@ -303,11 +349,13 @@ async fn writes_attachments_folders_and_ssh_keys_round_trip() {
     vault.rename_folder("f3", "Tax 2026").await.expect("rename");
     vault.delete_folder("f3").await.expect("delete folder");
 
-    let keys = vault.ssh_keys().expect("ssh keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0].cipher_id, id("k1"));
-    assert_eq!(keys[0].name, "deploy");
-    assert_eq!(keys[0].private_key.as_str(), SSH_PEM);
+    let Err(refused) = vault.ssh_keys() else {
+        panic!("SSH keys stay in the daemon");
+    };
+    assert!(
+        bwl_ipc::ipc_error(&refused).is_some(),
+        "the client never asks the daemon for private keys"
+    );
 
     assert_eq!(
         daemon.fake.log(),

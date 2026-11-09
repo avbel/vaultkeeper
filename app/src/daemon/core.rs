@@ -16,7 +16,7 @@ use std::{
 use anyhow::Context;
 use bwl_ipc::{
     DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind, SshDecision,
-    SshPrompt, UiCommand, UiNotice,
+    SshPrompt, TouchIdBackend, UiCommand, UiNotice,
 };
 use bwl_platform::power::PowerEvent;
 use bwl_ssh::{ApprovalKind, ApprovalRequest};
@@ -36,6 +36,7 @@ use super::{
 };
 use crate::{
     os::{
+        DaemonBiometrics, TouchId,
         layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
         settings_file::SettingsFile,
     },
@@ -63,12 +64,15 @@ pub struct DaemonConfig {
     /// The binary to start as `--ui`; `None` never starts a UI process.
     pub ui_exe: Option<PathBuf>,
     pub peers: Peers,
+    /// Enrolment and unlock for the UI, presence checks for SSH approvals.
+    pub touch_id: Arc<dyn DaemonBiometrics>,
 }
 
 impl DaemonConfig {
     #[must_use]
     pub fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
+            touch_id: Arc::new(TouchId::new(data_dir.clone())),
             data_dir,
             secrets,
             timings: Timings::default(),
@@ -92,6 +96,9 @@ pub struct Daemon {
     unlocked_once: AtomicBool,
     quitting: AtomicBool,
     ssh: SshControl,
+    touch_id: Arc<dyn DaemonBiometrics>,
+    /// One Touch ID sheet at a time; concurrent sign requests wait their turn.
+    presence: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -109,6 +116,7 @@ impl Daemon {
             timings,
             ui_exe,
             peers,
+            touch_id,
         } = config;
         let runtime = Handle::current();
         let device = device::load_or_create(&data_dir).context("read the device id")?;
@@ -121,7 +129,8 @@ impl Daemon {
             Peers::SameExecutable => ServeOptions::new().context("identify this executable")?,
             Peers::AnyOfThisUser => ServeOptions::with_verifier(|_: &PeerCredentials| true),
         }
-        .with_notices(notices);
+        .with_notices(notices)
+        .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>);
         let server =
             bwl_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
                 .await
@@ -142,6 +151,8 @@ impl Daemon {
             activity: Activity::new(),
             lock_wake: Notify::new(),
             quitting: AtomicBool::new(false),
+            touch_id,
+            presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
         });
         if daemon.settings().ssh_agent
@@ -353,6 +364,7 @@ impl Daemon {
         }
         if !unlocked && was {
             self.ssh.forget_approvals();
+            self.ssh.clear();
         }
     }
 
@@ -379,11 +391,17 @@ impl Daemon {
         }
     }
 
-    /// Listing before the first unlock (the agent holds no keys yet): unlocking is the consent.
+    /// The agent asks only while it holds no keys (before the first unlock, after a lock, log
+    /// out or switch). While locked, unlocking is the consent; logged out there is nothing to
+    /// unlock, so the empty list is answered without a prompt.
     async fn approve_list(self: &Arc<Self>, reply: &mut oneshot::Sender<bool>) -> bool {
         match self.vault.state() {
-            SessionState::Unlocked { .. } => true,
-            SessionState::LoggedOut => false,
+            SessionState::LoggedOut => true,
+            // Just unlocked, before the key refresh ran: load them so the list is not empty.
+            SessionState::Unlocked { .. } => {
+                self.ssh.refresh(&self.vault).await;
+                true
+            }
             SessionState::Locked { .. } => {
                 self.send(DaemonEvent::Command(UiCommand::UnlockInTray));
                 self.wait_unlocked(reply).await
@@ -443,21 +461,49 @@ impl Daemon {
             decision = decision => decision.unwrap_or(SshDecision::DENY),
             () = reply.closed() => SshDecision::DENY,
         };
-        // Keys stay loaded while locked (so a request can reach the UI, which unlocks first);
-        // the agent may sign only for an unlocked vault, whatever the UI answered.
-        if !matches!(self.vault.state(), SessionState::Unlocked { .. }) {
-            if decision.approved {
-                tracing::warn!("SSH approval arrived while the vault is locked; denied");
-            }
+        if !decision.approved {
             return false;
         }
-        if decision.approved
-            && decision.remember
-            && self.settings().ssh_approval == SshApproval::RememberUntilLock
-        {
+        // The UI's "approved" alone cannot sign: with the setting on, the daemon asks for the
+        // finger itself, for this request only.
+        if self.settings().ssh_touch_id && !self.confirm_presence(reply).await {
+            return false;
+        }
+        // Keys are cleared on lock, but a lock may land while the prompt is up.
+        if !matches!(self.vault.state(), SessionState::Unlocked { .. }) {
+            tracing::warn!("SSH approval arrived while the vault is locked; denied");
+            return false;
+        }
+        if decision.remember && self.settings().ssh_approval == SshApproval::RememberUntilLock {
             self.ssh.remember(cipher_id);
         }
-        decision.approved
+        true
+    }
+
+    /// Touch ID for one approved sign request. Gives up when the agent stops waiting.
+    async fn confirm_presence(&self, reply: &mut oneshot::Sender<bool>) -> bool {
+        let _turn = tokio::select! {
+            turn = self.presence.lock() => turn,
+            () = reply.closed() => return false,
+        };
+        if reply.is_closed() {
+            return false;
+        }
+        let touch_id = Arc::clone(&self.touch_id);
+        let checked =
+            tokio::task::spawn_blocking(move || touch_id.authenticate("approve an SSH signature"))
+                .await;
+        match checked {
+            Ok(Ok(())) => true,
+            Ok(Err(failure)) => {
+                tracing::info!(%failure, "Touch ID refused the SSH approval");
+                false
+            }
+            Err(error) => {
+                tracing::error!(%error, "Touch ID task failed");
+                false
+            }
+        }
     }
 }
 

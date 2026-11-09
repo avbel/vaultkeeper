@@ -14,11 +14,17 @@ use zeroize::Zeroizing;
 use super::RemoteVault;
 use crate::{
     ConvertError, IpcError,
-    protocol::{Call, Reply},
+    protocol::{Call, Reply, TouchIdFailure},
 };
 
 fn unexpected() -> Error {
     IpcError::Protocol("the reply does not match the call").into()
+}
+
+/// What `RemoteVault` answers for the `VaultService` methods that would move key material over
+/// the socket; the daemon does that work itself (see [`RemoteVault::unlock_with_touch_id`]).
+fn stays_in_daemon() -> Error {
+    IpcError::Protocol("key material stays in the daemon").into()
 }
 
 fn invalid(error: ConvertError) -> Error {
@@ -75,14 +81,12 @@ impl VaultService for RemoteVault {
     }
 
     fn unlock_with_user_key(&self, user_key: Zeroizing<Vec<u8>>) -> Result<()> {
-        unit(&self.call_blocking(Call::UnlockWithUserKey(user_key))?)
+        drop(user_key);
+        Err(stays_in_daemon())
     }
 
     fn user_key(&self) -> Result<Zeroizing<Vec<u8>>> {
-        match self.call_blocking(Call::UserKey)? {
-            Reply::UserKey(key) => Ok(key),
-            _ => Err(unexpected()),
-        }
+        Err(stays_in_daemon())
     }
 
     async fn verify_master_password(&self, password: Zeroizing<String>) -> Result<bool> {
@@ -285,9 +289,31 @@ impl VaultService for RemoteVault {
     }
 
     fn ssh_keys(&self) -> Result<Vec<SshKeyMaterial>> {
-        match self.call_blocking(Call::SshKeys)? {
-            Reply::SshKeys(keys) => Ok(convert_all(keys)),
-            _ => Err(unexpected()),
-        }
+        Err(stays_in_daemon())
+    }
+}
+
+impl RemoteVault {
+    /// Has the daemon wrap the active account's user key for Touch ID. Blocking; the outer error
+    /// is a vault or transport failure (e.g. `Locked`), the inner one a Touch ID failure.
+    pub fn enroll_touch_id(&self, account_id: &str) -> Result<Result<(), TouchIdFailure>> {
+        touch_id(&self.call_blocking(Call::EnrollTouchId {
+            account_id: account_id.to_owned(),
+        })?)
+    }
+
+    /// The daemon shows the Touch ID prompt and unlocks `account_id`; blocks until the user
+    /// answers, so call it off the UI thread.
+    pub fn unlock_with_touch_id(&self, account_id: &str) -> Result<Result<(), TouchIdFailure>> {
+        touch_id(&self.call_blocking(Call::UnlockWithTouchId {
+            account_id: account_id.to_owned(),
+        })?)
+    }
+}
+
+fn touch_id(reply: &Reply) -> Result<Result<(), TouchIdFailure>> {
+    match reply {
+        Reply::TouchId(outcome) => Ok(outcome.clone()),
+        _ => Err(unexpected()),
     }
 }

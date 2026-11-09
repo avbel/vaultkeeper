@@ -21,6 +21,9 @@ pub const QUICK_ROWS: usize = 8;
 pub(super) struct Quick {
     pub(super) window: QuickPanel,
     pub(super) rows: Rc<RowsModel>,
+    /// The query the rows were last filled for: a vault change re-runs it and keeps the
+    /// selected item, a new query starts again at the top.
+    query: SharedString,
 }
 
 impl<S: VaultService> App<S> {
@@ -42,6 +45,9 @@ impl<S: VaultService> App<S> {
             window.invoke_pause_focus_tracking();
             window.set_locked(locked);
             if !locked {
+                // Set after an inline unlock; it must not outlive it.
+                window.set_password(SharedString::new());
+                window.set_unlock_error(SharedString::new());
                 self.refresh_quick();
             }
             show(&window, "quick panel");
@@ -75,6 +81,7 @@ impl<S: VaultService> App<S> {
         *self.quick.borrow_mut() = Some(Quick {
             window: window.clone_strong(),
             rows,
+            query: SharedString::new(),
         });
         if !locked {
             self.refresh_quick();
@@ -154,9 +161,19 @@ impl<S: VaultService> App<S> {
         let result = self.vault.search(&query, &Filter::default());
         match result {
             Ok(items) => {
-                if let Some(quick) = self.quick.borrow().as_ref() {
+                if let Some(quick) = self.quick.borrow_mut().as_mut() {
+                    let kept = (quick.query == query)
+                        .then(|| usize::try_from(quick.window.get_selected()).ok())
+                        .flatten()
+                        .and_then(|row| quick.rows.item(row))
+                        .map(|item| item.id);
                     quick.rows.set_items(items);
-                    quick.window.set_selected(0);
+                    let row = kept
+                        .and_then(|id| quick.rows.position(&id))
+                        .and_then(|row| i32::try_from(row).ok())
+                        .unwrap_or(0);
+                    quick.window.set_selected(row);
+                    quick.query = query;
                 }
             }
             Err(error) => self.toast(&viewmodel::error_text(&error), true),

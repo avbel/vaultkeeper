@@ -585,6 +585,7 @@ pub mod drafts {
             reprompt: false,
             fields: Vec::new(),
             data,
+            revision_date: None,
         }
     }
 

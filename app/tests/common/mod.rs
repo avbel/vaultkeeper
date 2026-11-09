@@ -182,7 +182,7 @@ pub fn harness(setup: Setup) -> Harness {
         saved: Mutex::new(Some(setup.settings)),
     });
     let clock = Arc::new(FixedClock(Mutex::new(NOW)));
-    let defaults = Hooks::logging();
+    let defaults = Hooks::mock(&vault, &[]);
     let hooks = Hooks {
         clipboard: Arc::clone(&clipboard) as Arc<dyn Clipboard>,
         files: Arc::clone(&files) as Arc<dyn FileDialogs>,

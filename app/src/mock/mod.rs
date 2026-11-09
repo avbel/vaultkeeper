@@ -208,6 +208,27 @@ impl MockVault {
             .clone()
     }
 
+    /// Another device renames `id`: its revision moves on and the change is announced like a
+    /// websocket sync, so a draft read before is now stale.
+    pub fn edit_elsewhere(&self, id: &ItemId, name: &str) -> bwl_vault::Result<()> {
+        {
+            let mut inner = self.guard();
+            let revision = format!("mock-rev-{}", inner.tick());
+            let item = inner.item_mut(id)?;
+            let draft = ItemDraft {
+                name: name.to_owned(),
+                revision_date: Some(Arc::from(revision)),
+                ..item.draft.clone()
+            };
+            let (editable, deleted, last_used) =
+                (item.summary.editable, item.summary.deleted, item.last_used);
+            *item = data::MockItem::new(id, draft, editable, deleted);
+            item.last_used = last_used;
+        }
+        self.bump();
+        Ok(())
+    }
+
     /// Every item name of the account with this email, for leak checks in tests.
     #[must_use]
     pub fn item_names(&self, email: &str) -> Vec<String> {

@@ -102,8 +102,14 @@ vendor/ssh_agent, vendor/secure_memory   copied from ../clients with the upstrea
   This keeps both RAM and the amount of plaintext in memory down.
 - **SSH agent.**
   - Keys are pushed to the agent after unlock and on every sync.
-  - Each sign request opens an approval window; while locked, the unlock prompt comes first.
-  - Approval can be remembered until the next lock, as in the official app.
+  - Lock, log out and account switch clear them and reset the agent's store to "uninitialized" (a vendored
+    `clear()`, see `vendor/PATCHES.md`). The next `ssh-add -l` or connection then asks for list approval, which opens
+    the lock screen and answers once the vault is unlocked with the keys loaded. A locked vault serves no keys.
+  - Each sign request opens an approval window.
+  - With "SSH requires Touch ID" on, the daemon shows the Touch ID prompt itself after the UI approves (one prompt at a
+    time, for that request only). An `approved` from the UI alone cannot sign.
+  - Approval can be remembered until the next lock, as in the official app; a remembered key skips the UI and Touch ID.
+    It is remembered only after Touch ID passed.
 - **Sync.** Runs on unlock, every 30 minutes, and on demand. A websocket live-sync comes later.
 - **UI (Fable design).** Two surfaces sharing one set of view models:
   - **Quick Panel:** a search-first pop-up opened by a global hotkey (default ⌘⇧Space) or a tray click.
@@ -216,6 +222,10 @@ Commits go through a Haiku agent, with no co-author lines and no new branches.
       ad-hoc signature.
     - Why: it keeps the app's code identity the same across rebuilds, so the keychain item holding the refresh token
       doesn't trigger an "allow access" prompt after every update.
+    - Always with the hardened runtime (`--options runtime`) and no entitlements. dyld then ignores `DYLD_*` variables
+      and library validation refuses foreign dylibs, so the bundled binary cannot be run with injected code. The IPC
+      peer check relies on this. Checked 2026-11-09: a constructor dylib loads into the cargo-built binary but not into
+      the bundle.
     - Depends on: 9.
     - Done when: after install and a log-out/log-in, only the tray icon appears; the unlock prompt appears when
       enabled; RSS is in the expected range.
@@ -363,8 +373,24 @@ The decision rule was D ≤ A + 15 MB. Every renderer fails it (the best, softwa
   - It lingers 120 s after its last window closes, so the Quick Panel opens instantly on repeated use, then exits.
 - **IPC**
   - Transport: a unix socket at `data_dir/ui.sock`, mode 0600.
-  - The daemon checks the peer's uid (`getpeereid`) and that the peer's executable path is its own.
+  - The daemon checks the peer's uid (`getpeereid`) and its code identity.
+    - It reads the peer's audit token (`LOCAL_PEERTOKEN`) instead of a pid, so connect-then-`exec` cannot race the
+      check.
+    - It gets the peer's code object with `SecCodeCopyGuestWithAttributes` and checks it with `SecCodeCheckValidity`
+      against `cdhash H"…"`, its own cdhash. Only the very same build gets in, and only while its signature is still
+      valid. This works the same for ad-hoc, linker-signed and certificate-signed builds.
+    - A designated requirement was not used: with the local certificate it would admit anything signed with that
+      certificate, and its private key sits in the user's keychain.
+    - `vw-it` test builds can still admit any process of the user (`BW_LITE_TEST_ANY_PEER`).
+  - No key material crosses the socket.
+    - Touch ID enrolment and unlock run in the daemon (`EnrollTouchId` / `UnlockWithTouchId`): it reads the user key
+      from its own vault, seals or unseals it, and shows the prompt with its own text.
+    - The UI checks only whether the enrolment file exists, and it can delete it.
+    - There is no call that returns the user key or SSH private keys; `RemoteVault` answers those `VaultService`
+      methods with an error locally.
   - Messages are length-prefixed serde frames.
   - In the UI process, `VaultService` is implemented by an IPC client that proxies to the daemon's real `Vault`.
   - Daemon → UI commands: show Manager, show Quick Panel, show SSH approval, show unlock, state changes.
+  - Each SSH approval carries a request id end to end. A reply settles only the request with that id; a repeated or
+    late reply is dropped. In the UI, each prompt's buttons, Esc and 30 s timer answer only their own queued request.
   - Decrypted fields cross the socket only when the UI asks for them (reveal, draft, totp).

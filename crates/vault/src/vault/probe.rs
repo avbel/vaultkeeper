@@ -13,6 +13,7 @@ const MAX_VERSION_BODY: usize = 128;
 const MAX_VERSION_LEN: usize = 40;
 
 pub(super) async fn probe(server: &Url, timeout: Duration) -> Result<ServerProbe> {
+    bwl_api::validate_server_url(server)?;
     let http = probe_client(timeout).map_err(bwl_api::Error::from)?;
     let response = http
         .get(server_url(server, "alive").map_err(bwl_api::Error::from)?)

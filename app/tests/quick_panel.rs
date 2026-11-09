@@ -180,3 +180,72 @@ fn reprompt_items_are_refused_in_the_quick_panel() {
     );
     drop(panel);
 }
+
+fn selected_name(panel: &bw_lite::ui::QuickPanel) -> String {
+    let row = usize::try_from(panel.get_selected()).expect("row");
+    panel
+        .get_rows()
+        .row_data(row)
+        .expect("row")
+        .name
+        .to_string()
+}
+
+#[test]
+fn a_vault_change_keeps_the_selected_item_not_the_row_number() {
+    let (h, panel) = open(true);
+    key(&panel, &special(Key::DownArrow), Mods::default());
+    key(&panel, &special(Key::DownArrow), Mods::default());
+    assert_eq!(selected_name(&panel), "Gmail");
+    let visa = h
+        .vault
+        .search("Personal Visa", &Filter::default())
+        .expect("search")[0]
+        .clone();
+    h.vault
+        .reveal(&visa.id, CopyField::CardNumber)
+        .expect("used elsewhere");
+    h.app.on_vault_changed();
+    pump();
+    let first = panel.get_rows().row_data(0).expect("row").name.to_string();
+    assert_eq!(first, "Personal Visa", "the MRU order changed");
+    assert_eq!(selected_name(&panel), "Gmail");
+    key(&panel, &special(Key::Return), Mods::default());
+    assert_eq!(
+        h.clipboard.last(),
+        Some(expected(&h, "Gmail", CopyField::Password))
+    );
+}
+
+#[test]
+fn a_new_query_starts_at_the_top_again() {
+    let (_h, panel) = open(true);
+    key(&panel, &special(Key::DownArrow), Mods::default());
+    type_into(&panel, "Quick search", "g");
+    assert_eq!(panel.get_selected(), 0);
+}
+
+#[test]
+fn the_master_password_is_cleared_after_an_inline_unlock() {
+    let (h, panel) = open(false);
+    type_into(&panel, "Master password", MOCK_MASTER_PASSWORD);
+    panel.invoke_unlock(panel.get_password());
+    pump();
+    let panel = h.app.quick_panel().expect("still open after unlock");
+    assert!(!panel.get_locked());
+    assert_eq!(panel.get_password(), "");
+}
+
+#[test]
+fn cmd_e_on_a_reprompt_item_asks_for_the_master_password_first() {
+    let (h, panel) = open(true);
+    type_into(&panel, "Quick search", "paypal");
+    key(&panel, "e", CMD);
+    let manager = h.app.manager_window().expect("manager");
+    assert_eq!(manager.get_detail_header().name, "PayPal");
+    assert_eq!(manager.get_detail_mode(), 1, "no edit form yet");
+    assert!(manager.get_reprompt_visible());
+    type_into(&manager, "Reprompt master password", MOCK_MASTER_PASSWORD);
+    common::click(&manager, "Confirm master password");
+    assert_eq!(manager.get_detail_mode(), 2);
+}

@@ -82,8 +82,12 @@ impl From<TokenResponse> for LoginTokens {
     }
 }
 
+/// The server controls `expires_in`; an unbounded value would overflow `Instant` and abort.
+const MAX_TOKEN_LIFETIME: Duration = Duration::from_hours(24);
+
 pub(crate) fn token_expiry(expires_in: u64) -> Instant {
-    Instant::now() + Duration::from_secs(expires_in)
+    let lifetime = Duration::from_secs(expires_in).min(MAX_TOKEN_LIFETIME);
+    Instant::now() + lifetime
 }
 
 impl Inner {
@@ -623,6 +627,18 @@ fn login_error(error: bwl_api::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_expires_in_is_clamped_instead_of_overflowing() {
+        let now = Instant::now();
+        for expires_in in [u64::MAX, u64::MAX / 2, 1 << 40] {
+            let at = token_expiry(expires_in);
+            assert!(at <= now + MAX_TOKEN_LIFETIME + Duration::from_secs(1));
+            assert!(at > now);
+        }
+        let short = token_expiry(60);
+        assert!(short < now + Duration::from_secs(61));
+    }
 
     #[test]
     fn wrong_password_message_maps_to_invalid_password() {

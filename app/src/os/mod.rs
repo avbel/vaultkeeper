@@ -11,9 +11,11 @@ pub mod settings_file;
 
 use std::{path::Path, sync::Arc};
 
-use bwl_ipc::UiNotice;
+use bwl_ipc::{RemoteVault, UiNotice};
 
-pub use biometrics::{INVALIDATED as TOUCH_ID_INVALIDATED, TouchId};
+pub use biometrics::{
+    DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED, TouchId,
+};
 pub use clipboard::SystemClipboard;
 pub use misc::{
     AgentSocket, BrowserOpener, FilePanels, Generator, HotkeyBinding, LaunchAgent, SshKeys, web_url,
@@ -26,13 +28,13 @@ use crate::hooks::{Clipboard, HookError, HookResult, Hooks, SystemClock};
 pub type Notifier = Arc<dyn Fn(UiNotice) + Send + Sync>;
 
 impl Hooks {
-    /// Production hooks for the UI process. `notify` reaches the daemon.
+    /// Production hooks for the UI process. `notify` and Touch ID reach the daemon.
     #[must_use]
-    pub fn system(data_dir: &Path, notify: &Notifier) -> Self {
+    pub fn system(data_dir: &Path, notify: &Notifier, daemon: &Arc<RemoteVault>) -> Self {
         let settings_notify = Arc::clone(notify);
         Self {
             clipboard: system_clipboard(),
-            biometrics: Arc::new(TouchId::new(data_dir.to_owned())),
+            biometrics: Arc::new(DaemonTouchId::new(data_dir.to_owned(), Arc::clone(daemon))),
             autostart: Arc::new(LaunchAgent),
             hotkey: Arc::new(HotkeyBinding),
             opener: Arc::new(BrowserOpener),

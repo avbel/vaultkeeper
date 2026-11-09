@@ -17,8 +17,13 @@ use crate::{
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Upper bound for attachment transfers; `READ_TIMEOUT` still aborts a stalled one early.
+/// Upper bound for attachment transfers. The transfer client has no read timeout because reqwest
+/// applies it to the whole request-body upload until response headers arrive, which aborted any
+/// upload slower than 30 s.
 pub(crate) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(3600);
+/// `/api/sync` of a large vault on a slow link: the server may take long before the first byte
+/// and the body is up to `MAX_BODY_BYTES`.
+pub(crate) const SYNC_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_BODY_BYTES: usize = 256 << 20;
 const MAX_ERROR_BODY_BYTES: usize = 64 << 10;
 
@@ -29,6 +34,7 @@ pub(crate) const CLIENT_VERSION: &str = "2025.12.0";
 pub(crate) struct Transport {
     base: Url,
     http: reqwest::Client,
+    transfer: reqwest::Client,
 }
 
 pub(crate) struct Reply {
@@ -56,17 +62,25 @@ impl Transport {
             HeaderValue::from_static(CLIENT_VERSION),
         );
 
-        let http = reqwest::Client::builder()
-            .tls_backend_rustls()
-            .user_agent(concat!("bw-lite/", env!("CARGO_PKG_VERSION")))
-            .default_headers(headers)
-            .connect_timeout(CONNECT_TIMEOUT)
+        let builder = || {
+            reqwest::Client::builder()
+                .tls_backend_rustls()
+                .user_agent(concat!("bw-lite/", env!("CARGO_PKG_VERSION")))
+                .default_headers(headers.clone())
+                .connect_timeout(CONNECT_TIMEOUT)
+                // Credentials and tokens must only ever go to the address the user configured.
+                .redirect(redirect::Policy::none())
+        };
+        let http = builder()
             .timeout(REQUEST_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
-            // Credentials and tokens must only ever go to the address the user configured.
-            .redirect(redirect::Policy::none())
             .build()?;
-        Ok(Self { base, http })
+        let transfer = builder().build()?;
+        Ok(Self {
+            base,
+            http,
+            transfer,
+        })
     }
 
     pub(crate) fn endpoint(&self, segments: &[&str]) -> Result<Url> {
@@ -81,16 +95,29 @@ impl Transport {
     /// Resolves an attachment URL that is either relative to the server or absolute on the
     /// configured server's own origin. Anything else is refused before a request is made.
     pub(crate) fn resolve_same_origin(&self, raw: &str) -> Result<Url> {
-        match Url::parse(raw) {
-            Ok(url) if url.origin() == self.base.origin() => Ok(url),
-            Ok(url) => Err(Error::UntrustedUrl(
-                url.host_str().unwrap_or("<none>").to_owned(),
-            )),
+        let url = match Url::parse(raw) {
+            Ok(url) => url,
             Err(ParseError::RelativeUrlWithoutBase) => {
-                Ok(self.base.join(raw.trim_start_matches('/'))?)
+                self.base.join(raw.trim_start_matches('/'))?
             }
-            Err(error) => Err(error.into()),
+            Err(error) => return Err(error.into()),
+        };
+        // Checked after joining: `\\evil/x` and similar relative forms resolve to another host.
+        if url.origin() == self.base.origin() {
+            Ok(url)
+        } else {
+            Err(Error::UntrustedUrl(
+                url.host_str().unwrap_or("<none>").to_owned(),
+            ))
         }
+    }
+
+    pub(crate) fn get_transfer(&self, url: Url) -> RequestBuilder {
+        self.transfer.get(url)
+    }
+
+    pub(crate) fn post_transfer(&self, url: Url) -> RequestBuilder {
+        self.transfer.post(url)
     }
 
     pub(crate) fn get(&self, url: Url) -> RequestBuilder {
@@ -309,6 +336,29 @@ mod tests {
         let t = transport("https://h.example/");
         let url = t.resolve_same_origin("//evil.example/x").unwrap();
         assert_eq!(url.host_str(), Some("h.example"));
+    }
+
+    #[test]
+    fn crafted_relative_urls_never_leave_the_origin() {
+        let t = transport("https://h.example/vw/");
+        for raw in [
+            "\\\\evil.example/x",
+            "\\evil.example/x",
+            " //evil.example/x",
+            "\t//evil.example/x",
+            "\n//evil.example/x",
+            "/\\evil.example/x",
+            "\\/evil.example/x",
+            "http:\\\\evil.example/x",
+        ] {
+            match t.resolve_same_origin(raw) {
+                Ok(url) => assert_eq!(url.origin(), t.base.origin(), "{raw:?} resolved to {url}"),
+                Err(error) => assert!(
+                    matches!(error, Error::UntrustedUrl(_) | Error::Url(_)),
+                    "{raw:?}: {error:?}"
+                ),
+            }
+        }
     }
 
     #[test]

@@ -450,6 +450,7 @@ export component EditForm inherits Rectangle {
     callback add-uri();
     callback save();
     callback cancel();
+    callback folder-selected(int);
 
     background: Theme.surface;
 
@@ -492,6 +493,7 @@ export component EditForm inherits Rectangle {
                     label: field.label;
                     text <=> field.value;
                     mono: field.mono;
+                    password: field.secret;
                 }
             }
             if root.can-add-uri: HorizontalLayout {
@@ -515,6 +517,7 @@ export component EditForm inherits Rectangle {
                     label: "Folder";
                     options: root.folder-options;
                     index <=> root.folder-index;
+                    selected(i) => { root.folder-selected(i); }
                 }
             }
             Check { text: "Favorite"; checked <=> root.favorite; }

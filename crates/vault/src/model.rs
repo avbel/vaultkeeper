@@ -128,6 +128,10 @@ pub struct ItemDraft {
     pub reprompt: bool,
     pub fields: Vec<CustomField>,
     pub data: ItemData,
+    /// `revisionDate` of the stored item this draft was decrypted from; `None` for a new item.
+    /// Saving an update whose revision is no longer the cached one is refused with
+    /// [`crate::Error::Conflict`], so an edit never silently overwrites a change from elsewhere.
+    pub revision_date: Option<Arc<str>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -136,6 +140,8 @@ pub enum ItemData {
         username: String,
         password: Zeroizing<String>,
         totp: Zeroizing<String>,
+        /// Index `i` is the stored item's URI `i`, so its match rule and extras stay with it. A
+        /// cleared URI stays as a blank entry (dropped on save) instead of shifting the rest.
         uris: Vec<String>,
     },
     SecureNote,

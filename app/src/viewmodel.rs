@@ -248,6 +248,7 @@ pub fn error_text(error: &Error) -> String {
         Error::Io(error) => format!("Storage error: {error}"),
         Error::Cache(_) => "The local cache is damaged; sync again".to_owned(),
         Error::Offline => bwl_vault::OFFLINE_MESSAGE.to_owned(),
+        Error::Conflict => bwl_vault::CONFLICT_MESSAGE.to_owned(),
         Error::Logout(errors) => match errors.0.as_slice() {
             [only] => format!("Logged out, but one step failed: {}", error_text(only)),
             steps => format!("Logged out, but {} steps failed", steps.len()),
@@ -264,6 +265,7 @@ fn api_error_text(error: &bwl_api::Error) -> String {
         bwl_api::Error::UntrustedUrl(host) => format!("Blocked a request to untrusted host {host}"),
         bwl_api::Error::Decode(_) => NOT_COMPATIBLE.to_owned(),
         bwl_api::Error::Url(_) => "Not a valid server URL".to_owned(),
+        bwl_api::Error::InvalidServerUrl(reason) => format!("Server URL refused: {reason}"),
         bwl_api::Error::Server { message, .. } => message.clone(),
         bwl_api::Error::Unauthorized => "Session expired; log in again".to_owned(),
     }

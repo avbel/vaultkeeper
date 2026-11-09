@@ -12,7 +12,9 @@ use std::{
 use bwl_gen::generator::{PassphraseOptions, PasswordOptions};
 use zeroize::Zeroizing;
 
-use crate::settings::Settings;
+use bwl_vault::VaultService;
+
+use crate::{mock::MockVault, settings::Settings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
@@ -38,16 +40,17 @@ pub trait Clipboard: Send + Sync {
     }
 }
 
-/// Touch ID, keyed by account so each account has its own Secure Enclave wrap.
+/// Touch ID, keyed by account so each account has its own Secure Enclave wrap. The user key never
+/// passes through here: whoever holds the vault (the daemon) wraps and unwraps it.
 pub trait Biometrics: Send + Sync {
     fn is_available(&self) -> bool;
     fn is_enrolled(&self, account_id: &str) -> bool;
-    fn enroll(&self, account_id: &str, user_key: &[u8]) -> HookResult<()>;
-    /// Shows the Touch ID prompt; blocking, so callers run it off the UI thread.
-    fn unlock(&self, account_id: &str, reason: &str) -> HookResult<Zeroizing<Vec<u8>>>;
+    /// Wraps the unlocked vault's key for the active `account_id`; blocking.
+    fn enroll(&self, account_id: &str) -> HookResult<()>;
+    /// Shows the Touch ID prompt and unlocks the vault for `account_id`; blocking, so callers run
+    /// it off the UI thread.
+    fn unlock(&self, account_id: &str) -> HookResult<()>;
     fn unenroll(&self, account_id: &str) -> HookResult<()>;
-    /// Plain presence check for SSH approvals; blocking.
-    fn authenticate(&self, reason: &str) -> HookResult<()>;
 }
 
 pub trait Autostart: Send + Sync {
@@ -132,11 +135,30 @@ pub struct Hooks {
 
 impl Hooks {
     /// Logging stubs for every side effect; `generator` and `ssh_keys` produce fake values.
+    /// Touch ID enrols but never unlocks: there is no vault to unlock.
     #[must_use]
     pub fn logging() -> Self {
+        Self::with_biometrics(Arc::new(LogBiometrics::default()))
+    }
+
+    /// [`Hooks::logging`] whose Touch ID works against `vault` like the daemon's does: enrol reads
+    /// the vault's user key, unlock hands it back. `enrolled` accounts start enrolled.
+    #[must_use]
+    pub fn mock(vault: &Arc<MockVault>, enrolled: &[&str]) -> Self {
+        let keys = enrolled
+            .iter()
+            .map(|&account| (account.to_owned(), crate::mock::mock_user_key(account)))
+            .collect();
+        Self::with_biometrics(Arc::new(LogBiometrics {
+            enrolled: Mutex::new(keys),
+            vault: Some(Arc::clone(vault)),
+        }))
+    }
+
+    fn with_biometrics(biometrics: Arc<dyn Biometrics>) -> Self {
         Self {
             clipboard: Arc::new(LogClipboard),
-            biometrics: Arc::new(LogBiometrics::default()),
+            biometrics,
             autostart: Arc::new(LogAutostart),
             hotkey: Arc::new(LogHotkey),
             opener: Arc::new(LogOpener),
@@ -191,6 +213,17 @@ impl Clipboard for LogClipboard {
 #[derive(Default)]
 struct LogBiometrics {
     enrolled: Mutex<HashMap<String, Zeroizing<Vec<u8>>>>,
+    vault: Option<Arc<MockVault>>,
+}
+
+impl LogBiometrics {
+    fn keys(&self) -> std::sync::MutexGuard<'_, HashMap<String, Zeroizing<Vec<u8>>>> {
+        self.enrolled.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn vault_error(error: &bwl_vault::Error) -> HookError {
+    HookError::Failed(crate::viewmodel::error_text(error))
 }
 
 impl Biometrics for LogBiometrics {
@@ -199,42 +232,38 @@ impl Biometrics for LogBiometrics {
     }
 
     fn is_enrolled(&self, account_id: &str) -> bool {
-        self.enrolled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(account_id)
+        self.keys().contains_key(account_id)
     }
 
-    fn enroll(&self, account_id: &str, user_key: &[u8]) -> HookResult<()> {
+    fn enroll(&self, account_id: &str) -> HookResult<()> {
         tracing::info!(account_id, "Touch ID enroll (stub)");
-        self.enrolled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(account_id.to_owned(), Zeroizing::new(user_key.to_vec()));
+        let key = match &self.vault {
+            Some(vault) => vault.user_key().map_err(|error| vault_error(&error))?,
+            None => Zeroizing::new(Vec::new()),
+        };
+        self.keys().insert(account_id.to_owned(), key);
         Ok(())
     }
 
-    fn unlock(&self, account_id: &str, reason: &str) -> HookResult<Zeroizing<Vec<u8>>> {
-        tracing::info!(account_id, reason, "Touch ID unlock (stub)");
-        self.enrolled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn unlock(&self, account_id: &str) -> HookResult<()> {
+        tracing::info!(account_id, "Touch ID unlock (stub)");
+        let key = self
+            .keys()
             .get(account_id)
             .cloned()
-            .ok_or(HookError::Unavailable("Touch ID enrolment"))
+            .ok_or(HookError::Unavailable("Touch ID enrolment"))?;
+        let vault = self
+            .vault
+            .as_ref()
+            .ok_or(HookError::Unavailable("Touch ID"))?;
+        vault
+            .unlock_with_user_key(key)
+            .map_err(|error| vault_error(&error))
     }
 
     fn unenroll(&self, account_id: &str) -> HookResult<()> {
         tracing::info!(account_id, "Touch ID unenroll (stub)");
-        self.enrolled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(account_id);
-        Ok(())
-    }
-
-    fn authenticate(&self, reason: &str) -> HookResult<()> {
-        tracing::info!(reason, "Touch ID authenticate (stub)");
+        self.keys().remove(account_id);
         Ok(())
     }
 }
@@ -327,18 +356,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stub_biometrics_round_trips_enrolled_key() {
+    fn stub_biometrics_without_a_vault_enrols_but_cannot_unlock() {
         let bio = LogBiometrics::default();
         assert!(!bio.is_enrolled("a"));
-        assert!(matches!(
-            bio.unlock("a", "r"),
-            Err(HookError::Unavailable(_))
-        ));
-        bio.enroll("a", &[1, 2, 3]).expect("enroll");
+        assert!(matches!(bio.unlock("a"), Err(HookError::Unavailable(_))));
+        bio.enroll("a").expect("enroll");
         assert!(bio.is_enrolled("a"));
-        assert_eq!(bio.unlock("a", "r").expect("unlock").as_slice(), &[1, 2, 3]);
+        assert!(matches!(bio.unlock("a"), Err(HookError::Unavailable(_))));
         bio.unenroll("a").expect("unenroll");
         assert!(!bio.is_enrolled("a"));
+    }
+
+    #[test]
+    fn mock_biometrics_unlock_the_vault_with_the_key_read_at_enrolment() {
+        let vault = Arc::new(MockVault::new(&crate::mock::MockConfig {
+            latency: Duration::ZERO,
+            ..crate::mock::MockConfig::default()
+        }));
+        let hooks = Hooks::mock(&vault, &[]);
+        let account = vault
+            .accounts()
+            .into_iter()
+            .find(|account| account.active)
+            .expect("active account");
+        assert!(
+            matches!(
+                hooks.biometrics.enroll(&account.id),
+                Err(HookError::Failed(_))
+            ),
+            "a locked vault has no key to enrol"
+        );
+        assert!(!hooks.biometrics.is_enrolled(&account.id));
+        vault
+            .unlock_with_user_key(crate::mock::mock_user_key(&account.id))
+            .expect("unlock");
+        hooks.biometrics.enroll(&account.id).expect("enroll");
+        vault.lock();
+        hooks
+            .biometrics
+            .unlock(&account.id)
+            .expect("Touch ID unlock");
+        assert!(matches!(
+            vault.state(),
+            bwl_vault::model::SessionState::Unlocked { .. }
+        ));
     }
 
     #[test]

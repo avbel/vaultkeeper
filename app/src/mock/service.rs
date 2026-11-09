@@ -377,13 +377,26 @@ impl VaultService for MockVault {
             .last_saved
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(draft.clone());
+        if let Some(id) = &id {
+            let inner = self.guard();
+            let stored = inner.item(id)?;
+            if stored.summary.editable && stored.draft.revision_date != draft.revision_date {
+                return Err(Error::Conflict);
+            }
+        }
+        let draft = saved_form(draft);
         self.write(call, |inner| {
+            let revision = Some(Arc::from(format!("mock-rev-{}", inner.tick())));
             if let Some(id) = id {
                 let item = inner.item_mut(&id)?;
                 if !item.summary.editable {
                     return Err(Error::ReadOnly);
                 }
                 let last_used = item.last_used;
+                let draft = ItemDraft {
+                    revision_date: revision,
+                    ..draft
+                };
                 *item = MockItem::new(&id, draft, true, item.summary.deleted);
                 item.last_used = last_used;
                 Ok(id)
@@ -391,6 +404,10 @@ impl VaultService for MockVault {
                 inner.next_id += 1;
                 let id = ItemId(Arc::from(format!("mock-new-{}", inner.next_id)));
                 let now = inner.tick();
+                let draft = ItemDraft {
+                    revision_date: revision,
+                    ..draft
+                };
                 let mut item = MockItem::new(&id, draft, true, false);
                 item.last_used = now;
                 inner.data_mut()?.items.push(item);
@@ -582,6 +599,14 @@ impl VaultService for MockVault {
             })
             .collect())
     }
+}
+
+/// What the vault stores: blank URI rows the edit form kept for pairing are dropped.
+fn saved_form(mut draft: ItemDraft) -> ItemDraft {
+    if let ItemData::Login { uris, .. } = &mut draft.data {
+        uris.retain(|uri| !uri.trim().is_empty());
+    }
+    draft
 }
 
 #[cfg(test)]

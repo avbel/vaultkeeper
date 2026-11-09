@@ -20,11 +20,13 @@ use std::{
 };
 
 use bw_lite::{
-    os::settings_file::SettingsFile,
+    os::{DaemonBiometrics, settings_file::SettingsFile},
     settings::{LockTimeout, Settings, SshApproval},
 };
 use bwl_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
-use bwl_ipc::{EventStream, RemoteVault, SshDecision, UiEvent};
+use bwl_ipc::{
+    EventStream, RemoteVault, SshDecision, TouchIdBackend, TouchIdFailure, UiCommand, UiEvent,
+};
 use bwl_vault::{
     VaultService,
     model::{
@@ -171,28 +173,38 @@ impl Drop for Sandbox {
     }
 }
 
-/// Answers every SSH approval with `approve` (ticking "remember" when `remember`) and counts them.
-fn auto_approver(
-    mut events: EventStream,
-    approve: Arc<AtomicBool>,
-    remember: bool,
-) -> Arc<AtomicUsize> {
-    let asked = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&asked);
+/// What the stand-in UI saw: SSH approvals answered and unlock prompts asked for.
+#[derive(Clone, Default)]
+struct UiSeen {
+    approvals: Arc<AtomicUsize>,
+    unlock_prompts: Arc<AtomicUsize>,
+}
+
+/// Answers every SSH approval with `approve` (ticking "remember" when `remember`) and counts them
+/// and the `UnlockInTray` commands.
+fn auto_approver(mut events: EventStream, approve: Arc<AtomicBool>, remember: bool) -> UiSeen {
+    let seen = UiSeen::default();
+    let counters = seen.clone();
     tokio::spawn(async move {
         while let Some(event) = events.next().await {
-            if let UiEvent::SshApproval(approval) = event {
-                counter.fetch_add(1, Ordering::SeqCst);
-                let decision = if approve.load(Ordering::SeqCst) {
-                    SshDecision::approve(remember)
-                } else {
-                    SshDecision::DENY
-                };
-                let _ = approval.reply.send(decision);
+            match event {
+                UiEvent::SshApproval(approval) => {
+                    counters.approvals.fetch_add(1, Ordering::SeqCst);
+                    let decision = if approve.load(Ordering::SeqCst) {
+                        SshDecision::approve(remember)
+                    } else {
+                        SshDecision::DENY
+                    };
+                    let _ = approval.reply.send(decision);
+                }
+                UiEvent::Command(UiCommand::UnlockInTray) => {
+                    counters.unlock_prompts.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
             }
         }
     });
-    asked
+    seen
 }
 
 async fn log_in(vault: &impl VaultService, server: &Url, account: &Account) {
@@ -273,6 +285,7 @@ fn login_draft(name: &str, password: &str) -> ItemDraft {
             totp: Zeroizing::new(String::new()),
             uris: vec!["https://github.com".to_owned()],
         },
+        revision_date: None,
     }
 }
 
@@ -311,7 +324,8 @@ async fn daemon_login_sync_search_reveal_lock_unlock_ssh_and_logout_wipe() {
     let daemon = sandbox.daemon();
     let (vault, events) = sandbox.connect().await;
     let approve = Arc::new(AtomicBool::new(true));
-    let approvals = auto_approver(events, Arc::clone(&approve), false);
+    let seen = auto_approver(events, Arc::clone(&approve), false);
+    let approvals = Arc::clone(&seen.approvals);
     assert_eq!(vault.state(), SessionState::LoggedOut);
 
     let probe = vault.probe_server(&server).await.unwrap();
@@ -391,24 +405,34 @@ async fn daemon_login_sync_search_reveal_lock_unlock_ssh_and_logout_wipe() {
     );
     assert_eq!(approvals.load(Ordering::SeqCst), 2);
 
-    // Locking keeps the key loaded, so a sign request still reaches the UI (which unlocks
-    // first), but the daemon never lets a locked vault sign, whatever the UI answers.
+    // Locking clears the agent: a list request now asks the UI to unlock and waits for it, and
+    // the keys come back with the unlock.
     vault.lock();
-    assert!(ssh_add_list(&socket).await.contains(&fingerprint));
-    approve.store(true, Ordering::SeqCst);
-    assert!(
-        !sign_with_agent(&socket, &sandbox.dir, &public_key).await,
-        "no signature while locked"
-    );
-    assert_eq!(
-        approvals.load(Ordering::SeqCst),
-        3,
-        "the request reached the UI"
-    );
+    let listing = {
+        let socket = socket.clone();
+        tokio::spawn(async move { ssh_add_list(&socket).await })
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while seen.unlock_prompts.load(Ordering::SeqCst) == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no unlock prompt for `ssh-add -l` while locked"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!listing.is_finished(), "the list waits for the unlock");
     vault
         .unlock_with_password(Zeroizing::new(account.password.clone()))
         .await
         .unwrap();
+    let listed = listing.await.unwrap();
+    assert!(listed.contains(&fingerprint), "after the unlock: {listed}");
+    assert_eq!(seen.unlock_prompts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        approvals.load(Ordering::SeqCst),
+        2,
+        "listing asked no sign approval"
+    );
 
     // Log out wipes the account.
     vault.logout().await.unwrap();
@@ -455,7 +479,7 @@ async fn remember_until_lock_is_kept_by_the_daemon_and_forgotten_on_lock() {
     .unwrap();
     let daemon = sandbox.daemon();
     let (vault, events) = sandbox.connect().await;
-    let approvals = auto_approver(events, Arc::new(AtomicBool::new(true)), true);
+    let approvals = auto_approver(events, Arc::new(AtomicBool::new(true)), true).approvals;
     log_in(&vault, &server, &account).await;
     let (key_draft, public_key, fingerprint) = ssh_draft("remembered-key");
     vault.save(None, key_draft).await.unwrap();
@@ -555,6 +579,131 @@ async fn sleep_and_screen_lock_lock_only_when_the_timeout_says_so() {
     daemon.shutdown().await;
 }
 
+/// Stands in for the Secure Enclave in an in-process daemon: sealed keys in memory, the finger
+/// "present" or not, and a count of presence checks.
+#[derive(Default)]
+struct FakeTouchId {
+    sealed: std::sync::Mutex<Option<(String, Vec<u8>)>>,
+    present: AtomicBool,
+    checks: AtomicUsize,
+}
+
+impl TouchIdBackend for FakeTouchId {
+    fn enroll(&self, account_id: &str, user_key: &[u8]) -> Result<(), TouchIdFailure> {
+        *self.sealed.lock().unwrap() = Some((account_id.to_owned(), user_key.to_vec()));
+        Ok(())
+    }
+
+    fn unlock(&self, account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+        match self.sealed.lock().unwrap().as_ref() {
+            Some((sealed_for, key)) if sealed_for == account_id => Ok(Zeroizing::new(key.clone())),
+            _ => Err(TouchIdFailure::Unavailable),
+        }
+    }
+}
+
+impl DaemonBiometrics for FakeTouchId {
+    fn authenticate(&self, _reason: &str) -> Result<(), TouchIdFailure> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        if self.present.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(TouchIdFailure::Cancelled)
+        }
+    }
+}
+
+/// The daemon core in-process with a fake Touch ID: enrolment and unlock happen in the daemon
+/// (the UI never holds the user key), and "SSH requires Touch ID" is checked by the daemon after
+/// the UI approved, so an approval alone cannot sign.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn touch_id_unlock_and_ssh_presence_are_checked_by_the_daemon() {
+    use bw_lite::daemon::{Daemon, DaemonConfig, Peers};
+
+    let server = server();
+    let account = register(&server).await;
+    let sandbox = Sandbox::new();
+    SettingsFile::write(
+        &sandbox.dir.join("settings.json"),
+        &Settings {
+            ssh_touch_id: true,
+            ssh_approval: SshApproval::RememberUntilLock,
+            ..Settings::default()
+        },
+    )
+    .unwrap();
+    let touch_id = Arc::new(FakeTouchId::default());
+    let mut config = DaemonConfig::new(
+        sandbox.dir.clone(),
+        Arc::new(bwl_vault::MemorySecretStore::new()),
+    );
+    config.peers = Peers::AnyOfThisUser;
+    config.touch_id = Arc::clone(&touch_id) as Arc<dyn DaemonBiometrics>;
+    let daemon = Daemon::start(config).await.unwrap();
+    let (client, events) = sandbox.connect().await;
+    let client = Arc::new(client);
+    let approvals = auto_approver(events, Arc::new(AtomicBool::new(true)), true).approvals;
+    log_in(client.as_ref(), &server, &account).await;
+    let account_id = client.accounts()[0].id.to_string();
+
+    assert!(
+        client.user_key().is_err(),
+        "the user key stays in the daemon"
+    );
+    let touch = |unlock: bool| {
+        let client = Arc::clone(&client);
+        let account_id = account_id.clone();
+        tokio::task::spawn_blocking(move || {
+            if unlock {
+                client.unlock_with_touch_id(&account_id)
+            } else {
+                client.enroll_touch_id(&account_id)
+            }
+        })
+    };
+    assert_eq!(touch(false).await.unwrap().unwrap(), Ok(()));
+    let sealed = touch_id.sealed.lock().unwrap().clone().expect("sealed");
+    assert_eq!(sealed.0, account_id);
+    assert_eq!(sealed.1.len(), 64, "the daemon sealed its own user key");
+    client.lock();
+    assert!(matches!(client.state(), SessionState::Locked { .. }));
+    assert_eq!(touch(true).await.unwrap().unwrap(), Ok(()));
+    assert!(matches!(client.state(), SessionState::Unlocked { .. }));
+
+    let (key_draft, public_key, fingerprint) = ssh_draft("touch-id-key");
+    client.save(None, key_draft).await.unwrap();
+    let socket = sandbox.agent_socket();
+    eventually_listed(&socket, &fingerprint).await;
+
+    assert!(
+        !sign_with_agent(&socket, &sandbox.dir, &public_key).await,
+        "approved by the UI, refused by Touch ID"
+    );
+    assert_eq!(approvals.load(Ordering::SeqCst), 1);
+    assert_eq!(touch_id.checks.load(Ordering::SeqCst), 1);
+
+    touch_id.present.store(true, Ordering::SeqCst);
+    assert!(sign_with_agent(&socket, &sandbox.dir, &public_key).await);
+    assert_eq!(
+        approvals.load(Ordering::SeqCst),
+        2,
+        "the refused approval was not remembered"
+    );
+    assert_eq!(touch_id.checks.load(Ordering::SeqCst), 2);
+
+    assert!(sign_with_agent(&socket, &sandbox.dir, &public_key).await);
+    assert_eq!(approvals.load(Ordering::SeqCst), 2, "remembered: no prompt");
+    assert_eq!(
+        touch_id.checks.load(Ordering::SeqCst),
+        2,
+        "remembered keys skip Touch ID until lock"
+    );
+
+    client.logout().await.unwrap();
+    drop(client);
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_launch_forwards_to_the_running_daemon() {
     let sandbox = Sandbox::new();
@@ -568,10 +717,7 @@ async fn a_second_launch_forwards_to_the_running_daemon() {
     assert!(second.success(), "the second instance exits at once");
     let event = tokio::time::timeout(WAIT, events.next()).await.unwrap();
     assert!(
-        matches!(
-            event,
-            Some(UiEvent::Command(bwl_ipc::UiCommand::ShowQuickPanel))
-        ),
+        matches!(event, Some(UiEvent::Command(UiCommand::ShowQuickPanel))),
         "{event:?}"
     );
     terminate(daemon).await;

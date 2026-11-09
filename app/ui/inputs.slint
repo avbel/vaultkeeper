@@ -110,6 +110,10 @@ export component MultiField inherits Rectangle {
     in property <string> label;
     in property <bool> mono: false;
     in property <bool> enabled: true;
+    // A secret (an SSH private key) shows a mask until the eye button reveals it.
+    in property <bool> password: false;
+    in-out property <bool> revealed: false;
+    property <bool> masked: root.password && !root.revealed;
     callback edited(string);
 
     forward-focus: input;
@@ -120,13 +124,17 @@ export component MultiField inherits Rectangle {
     border-color: input.has-focus ? Theme.accent : Theme.border;
     clip: true;
 
+    // The eye sits on the left: a long key line can make the field wider than the pane.
+    property <length> inset: root.password ? Theme.control-height + 8px : 10px;
+
     input := TextInput {
-        x: 10px;
+        x: root.inset;
         y: Theme.s2;
-        width: parent.width - 20px;
+        width: parent.width - root.inset - 10px;
         height: parent.height - 2 * Theme.s2;
+        visible: !root.masked;
         text <=> root.text;
-        enabled: root.enabled;
+        enabled: root.enabled && !root.masked;
         single-line: false;
         wrap: word-wrap;
         color: Theme.text;
@@ -135,12 +143,29 @@ export component MultiField inherits Rectangle {
         selection-background-color: Theme.selection-hover;
         accessible-role: text-input;
         accessible-label: root.label;
-        accessible-value: self.text;
+        accessible-value: root.masked ? "" : self.text;
         accessible-action-set-value(value) => {
             self.text = value;
             root.edited(value);
         }
         edited => { root.edited(self.text); }
+    }
+    if root.masked: Text {
+        x: root.inset;
+        y: Theme.s2;
+        text: root.text == "" ? "" : "••••••••";
+        color: Theme.text;
+        font-size: Theme.font-body;
+        font-family: Theme.mono;
+    }
+    if root.password: IconBtn {
+        width: self.preferred-width;
+        height: self.preferred-height;
+        x: 4px;
+        y: 4px;
+        icon: root.revealed ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg");
+        label: root.revealed ? "Hide " + root.label : "Show " + root.label;
+        clicked => { root.revealed = !root.revealed; }
     }
 }
 

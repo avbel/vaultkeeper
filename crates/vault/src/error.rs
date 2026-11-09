@@ -21,6 +21,9 @@ pub enum Error {
     /// A write refused because the server is unreachable; the cached vault stays readable.
     #[error("{OFFLINE_MESSAGE}")]
     Offline,
+    /// The item changed elsewhere since the draft was read; nothing was saved.
+    #[error("{CONFLICT_MESSAGE}")]
+    Conflict,
     #[error(transparent)]
     Api(#[from] bwl_api::Error),
     #[error(transparent)]
@@ -35,6 +38,10 @@ pub enum Error {
     #[error(transparent)]
     Logout(LogoutErrors),
 }
+
+/// What [`Error::Conflict`] displays.
+pub const CONFLICT_MESSAGE: &str =
+    "This item was changed elsewhere since you opened it; your edits were not saved";
 
 /// What [`Error::Offline`] displays.
 pub const OFFLINE_MESSAGE: &str = "Offline: the vault is read-only until the server is reachable";

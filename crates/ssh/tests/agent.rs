@@ -490,6 +490,32 @@ async fn replace_keys_swaps_the_served_set_and_skips_unservable_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_keys_drops_the_keys_and_asks_the_ui_on_the_next_list() {
+    let approved = Harness::start(Verdict::Approve);
+    let denied = Harness::start(Verdict::Deny);
+    approved.load(&[&ED25519]);
+    denied.load(&[&ED25519]);
+    assert!(text(&approved.list().await).contains(ED25519.fingerprint));
+    assert_eq!(approved.ui().list_count(), 0, "loaded keys list freely");
+
+    approved.agent.clear_keys();
+    denied.agent.clear_keys();
+    let empty = approved.list().await;
+    let refused = denied.list().await;
+    let listed_by_ui = approved.ui().list_count();
+
+    assert!(approved.agent.is_running(), "clearing keeps serving");
+    assert!(text(&empty).contains("no identities"), "{}", text(&empty));
+    assert_eq!(listed_by_ui, 1, "the list went to the UI");
+    assert!(
+        text(&refused).contains("agent refused operation"),
+        "{}",
+        text(&refused)
+    );
+    assert_eq!(denied.ui().list_count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socket_is_private_to_the_user() {
     let harness = Harness::start(Verdict::Approve);
 

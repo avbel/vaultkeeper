@@ -12,12 +12,13 @@ use uuid::Uuid;
 
 use crate::{
     Error, Result,
-    http::{Reply, TRANSFER_TIMEOUT, Transport},
+    http::{Reply, SYNC_TIMEOUT, TRANSFER_TIMEOUT, Transport},
     login::{classify_bad_request, is_invalid_grant},
     models::{
         Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, PreloginResponse,
         SyncResponse, TokenResponse,
     },
+    server_url::validate_server_url,
     token,
 };
 
@@ -110,6 +111,10 @@ pub struct Client {
 
 impl Client {
     pub fn new(base: Url, device: DeviceInfo) -> Result<Self> {
+        if base.cannot_be_a_base() {
+            return Err(url::ParseError::RelativeUrlWithCannotBeABaseBase.into());
+        }
+        validate_server_url(&base)?;
         let transport = Transport::new(base, device.device_type)?;
         Ok(Self {
             transport,
@@ -200,8 +205,12 @@ impl Client {
     pub async fn sync(&self, access_token: &str) -> Result<SyncResponse> {
         let mut url = self.transport.endpoint(&["api", "sync"])?;
         url.set_query(Some("excludeDomains=true"));
-        self.call(self.transport.get(url).bearer_auth(access_token))
-            .await
+        let request = self
+            .transport
+            .get_transfer(url)
+            .bearer_auth(access_token)
+            .timeout(SYNC_TIMEOUT);
+        self.call(request).await
     }
 
     /// `POST /api/ciphers` (personal) or `POST /api/ciphers/create` with `collectionIds` (org).
@@ -313,10 +322,21 @@ impl Client {
     pub async fn download_attachment(
         &self,
         url: &str,
+        writer: impl AsyncWrite + Unpin,
+    ) -> Result<u64> {
+        self.download_attachment_capped(url, writer, u64::MAX).await
+    }
+
+    /// [`Self::download_attachment`] that fails with a server error once the body exceeds
+    /// `max_bytes`, so a hostile server cannot stream unbounded data to disk.
+    pub async fn download_attachment_capped(
+        &self,
+        url: &str,
         mut writer: impl AsyncWrite + Unpin,
+        max_bytes: u64,
     ) -> Result<u64> {
         let url = self.transport.resolve_same_origin(url)?;
-        let request = self.transport.get(url).timeout(TRANSFER_TIMEOUT);
+        let request = self.transport.get_transfer(url).timeout(TRANSFER_TIMEOUT);
         let mut response = self.transport.open_sensitive(request).await?;
 
         let mut written = 0_u64;
@@ -325,8 +345,14 @@ impl Client {
             .await
             .map_err(reqwest::Error::without_url)?
         {
-            writer.write_all(&chunk).await?;
             written += chunk.len() as u64;
+            if written > max_bytes {
+                return Err(Error::Server {
+                    status: 200,
+                    message: "attachment is larger than the server announced".into(),
+                });
+            }
+            writer.write_all(&chunk).await?;
         }
         writer.flush().await?;
         Ok(written)
@@ -370,7 +396,7 @@ impl Client {
             .mime_str("application/octet-stream")?;
         let request = self
             .transport
-            .post(url)
+            .post_transfer(url)
             .bearer_auth(access_token)
             .multipart(Form::new().part("data", part))
             .timeout(TRANSFER_TIMEOUT);

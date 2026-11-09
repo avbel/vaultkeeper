@@ -1,8 +1,6 @@
 //! Validation and normalisation of the login screen's server URL.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
-
-use url::{Host, Url};
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServerUrlError {
@@ -46,12 +44,15 @@ pub fn normalize(input: &str) -> Result<ServerUrl, ServerUrlError> {
         .ok_or(ServerUrlError::Invalid)?;
     let warning = match url.scheme() {
         "https" => None,
-        "http" if is_local(&host) => Some(HTTP_WARNING),
+        "http" if bwl_api::is_local_host(&host) => Some(HTTP_WARNING),
         "http" => return Err(ServerUrlError::InsecurePublic),
         _ => return Err(ServerUrlError::UnsupportedScheme),
     };
     url.set_fragment(None);
     url.set_query(None);
+    if bwl_api::validate_server_url(&url).is_err() {
+        return Err(ServerUrlError::Invalid);
+    }
     let path = url.path().trim_end_matches('/').to_owned();
     url.set_path(&path);
     Ok(ServerUrl { url, warning })
@@ -61,30 +62,6 @@ pub fn normalize(input: &str) -> Result<ServerUrl, ServerUrlError> {
 #[must_use]
 pub fn display(url: &Url) -> String {
     url.as_str().trim_end_matches('/').to_owned()
-}
-
-fn is_local(host: &Host<String>) -> bool {
-    match host {
-        Host::Domain(name) => {
-            let name = name.to_ascii_lowercase();
-            name == "localhost"
-                || std::path::Path::new(&name)
-                    .extension()
-                    .is_some_and(|tld| tld == "local" || tld == "localhost")
-        }
-        Host::Ipv4(ip) => is_private_v4(*ip),
-        Host::Ipv6(ip) => is_private_v6(*ip),
-    }
-}
-
-fn is_private_v4(ip: Ipv4Addr) -> bool {
-    ip.is_loopback() || ip.is_private() || ip.is_link_local()
-}
-
-fn is_private_v6(ip: Ipv6Addr) -> bool {
-    let first = ip.segments()[0];
-    // fc00::/7 unique local, fe80::/10 link local.
-    ip.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
 }
 
 #[cfg(test)]
@@ -174,5 +151,9 @@ mod tests {
             Err(ServerUrlError::Invalid)
         );
         assert_eq!(normalize("https://[::zz]"), Err(ServerUrlError::Invalid));
+        assert_eq!(
+            normalize("https://user:pw@vault.example.com"),
+            Err(ServerUrlError::Invalid)
+        );
     }
 }

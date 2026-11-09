@@ -190,6 +190,10 @@ async fn a_logged_out_agent_serves_no_keys() {
     let stdout = String::from_utf8_lossy(&listed.stdout);
     assert!(!listed.status.success(), "no identities: {stdout}");
     assert!(!stdout.contains("SHA256:"), "{stdout}");
+    assert!(
+        stdout.contains("no identities"),
+        "an empty list without a prompt, not a refusal: {stdout}"
+    );
     daemon.shutdown().await;
 }
 

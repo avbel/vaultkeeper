@@ -14,7 +14,9 @@ mod login;
 pub mod models;
 mod normalize;
 pub mod notifications;
+mod server_url;
 mod token;
 
 pub use client::{Client, DeviceInfo, LoginOutcome, TwoFactorProvider, TwoFactorToken};
 pub use error::{Error, Result};
+pub use server_url::{is_local_host, validate_server_url};

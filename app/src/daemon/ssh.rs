@@ -1,9 +1,9 @@
 //! The daemon's SSH agent: which keys it serves, the labels its prompts show, and the approvals
 //! remembered until the vault locks.
 //!
-//! Keys stay loaded while the same account is locked: the vendored agent only asks for approval
-//! for keys it holds, and a sign request while locked must reach the UI, which unlocks first.
-//! Log out and account switch clear them.
+//! The agent holds keys only while the active account is unlocked. Lock, log out and account
+//! switch clear them and mark the agent's store uninitialized, so the next `ssh-add -l` or
+//! connection asks for list approval, which opens the lock screen (`approve_list`).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -26,21 +26,14 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
     Serve,
-    Keep,
     Clear,
 }
 
-/// What the agent should hold for this session state; `served_for` is the account whose keys it
-/// holds now.
+/// What the agent should hold for this session state.
 #[must_use]
-pub fn key_action(
-    state: &SessionState,
-    active: Option<&str>,
-    served_for: Option<&str>,
-) -> KeyAction {
+pub const fn key_action(state: &SessionState) -> KeyAction {
     match state {
         SessionState::Unlocked { .. } => KeyAction::Serve,
-        SessionState::Locked { .. } if active.is_some() && active == served_for => KeyAction::Keep,
         SessionState::Locked { .. } | SessionState::LoggedOut => KeyAction::Clear,
     }
 }
@@ -64,17 +57,12 @@ pub struct KeyLabel {
     pub fingerprint: String,
 }
 
-#[derive(Default)]
-struct Served {
-    account: Option<Arc<str>>,
-    labels: HashMap<String, KeyLabel>,
-}
-
 pub struct SshControl {
     socket: PathBuf,
     approvals: mpsc::Sender<ApprovalRequest>,
     agent: Mutex<Option<SshAgent>>,
-    served: Mutex<Served>,
+    /// Name and fingerprint per served cipher id, for the approval prompt.
+    labels: Mutex<HashMap<String, KeyLabel>>,
     /// Cipher ids approved with "Remember for this key until lock".
     remembered: Mutex<HashSet<String>>,
 }
@@ -90,7 +78,7 @@ impl SshControl {
             socket,
             approvals,
             agent: Mutex::new(None),
-            served: Mutex::new(Served::default()),
+            labels: Mutex::new(HashMap::new()),
             remembered: Mutex::new(HashSet::new()),
         }
     }
@@ -124,7 +112,7 @@ impl SshControl {
                 if let Some(mut stopped) = agent.take() {
                     stopped.stop();
                 }
-                *guard(&self.served) = Served::default();
+                guard(&self.labels).clear();
                 tracing::info!("SSH agent stopped");
                 Ok(false)
             }
@@ -144,23 +132,13 @@ impl SshControl {
         if !self.is_running() {
             return;
         }
-        let state = vault.state();
-        let active = vault.active_account_id();
-        let served_for = guard(&self.served).account.clone();
-        match key_action(&state, active.as_deref(), served_for.as_deref()) {
-            KeyAction::Keep => {}
-            KeyAction::Clear => self.replace(Vec::new(), Served::default()),
+        match key_action(&vault.state()) {
+            KeyAction::Clear => self.clear(),
             KeyAction::Serve => {
                 let source = Arc::clone(vault);
                 let loaded = tokio::task::spawn_blocking(move || load_keys(&source)).await;
                 match loaded {
-                    Ok(Ok((keys, labels))) => self.replace(
-                        keys,
-                        Served {
-                            account: active,
-                            labels,
-                        },
-                    ),
+                    Ok(Ok((keys, labels))) => self.replace(keys, labels),
                     Ok(Err(error)) => tracing::warn!(%error, "cannot read SSH keys from the vault"),
                     Err(error) => tracing::error!(%error, "SSH key task failed"),
                 }
@@ -168,7 +146,16 @@ impl SshControl {
         }
     }
 
-    fn replace(&self, keys: Vec<AgentKey>, served: Served) {
+    /// Drops every key at once; also called straight from the state loop on lock, so the keys do
+    /// not wait for the key refresh task.
+    pub fn clear(&self) {
+        if let Some(agent) = guard(&self.agent).as_ref() {
+            agent.clear_keys();
+        }
+        guard(&self.labels).clear();
+    }
+
+    fn replace(&self, keys: Vec<AgentKey>, labels: HashMap<String, KeyLabel>) {
         let count = keys.len();
         if let Some(agent) = guard(&self.agent).as_ref()
             && let Err(error) = agent.replace_keys(keys)
@@ -177,12 +164,12 @@ impl SshControl {
             return;
         }
         tracing::debug!(count, "SSH agent keys replaced");
-        *guard(&self.served) = served;
+        *guard(&self.labels) = labels;
     }
 
     #[must_use]
     pub fn label(&self, cipher_id: &str) -> Option<KeyLabel> {
-        guard(&self.served).labels.get(cipher_id).cloned()
+        guard(&self.labels).get(cipher_id).cloned()
     }
 
     #[must_use]
@@ -199,7 +186,7 @@ impl SshControl {
     }
 }
 
-/// The agent's key list plus a name and fingerprint per cipher, for prompts shown while locked.
+/// The agent's key list plus a name and fingerprint per cipher, for the approval prompt.
 /// The fingerprint is the SSH item's list subtitle, so no key is parsed here.
 fn load_keys(vault: &Vault) -> bwl_vault::Result<(Vec<AgentKey>, HashMap<String, KeyLabel>)> {
     let filter = Filter {
@@ -245,28 +232,36 @@ mod tests {
     }
 
     #[test]
-    fn keys_follow_the_session() {
+    fn keys_are_served_only_while_unlocked() {
         let unlocked = SessionState::Unlocked {
             server: Url::parse("https://vault.example.com").expect("url"),
             email: "a@example.com".to_owned(),
         };
-        assert_eq!(key_action(&unlocked, Some("a"), None), KeyAction::Serve);
-        assert_eq!(
-            key_action(&locked(), Some("a"), Some("a")),
-            KeyAction::Keep,
-            "lock keeps them"
+        assert_eq!(key_action(&unlocked), KeyAction::Serve);
+        assert_eq!(key_action(&locked()), KeyAction::Clear, "lock clears them");
+        assert_eq!(key_action(&SessionState::LoggedOut), KeyAction::Clear);
+    }
+
+    #[test]
+    fn clearing_a_stopped_agent_forgets_the_labels() {
+        let (approvals, _rx) = mpsc::channel(1);
+        let control = SshControl::new(PathBuf::from("/tmp/unused.sock"), approvals);
+        control.replace(
+            Vec::new(),
+            HashMap::from([(
+                "c1".to_owned(),
+                KeyLabel {
+                    name: "deploy".to_owned(),
+                    fingerprint: "SHA256:abc".to_owned(),
+                },
+            )]),
         );
         assert_eq!(
-            key_action(&locked(), Some("b"), Some("a")),
-            KeyAction::Clear,
-            "another account became active"
+            control.label("c1").map(|label| label.name),
+            Some("deploy".to_owned())
         );
-        assert_eq!(key_action(&locked(), Some("a"), None), KeyAction::Clear);
-        assert_eq!(
-            key_action(&SessionState::LoggedOut, None, Some("a")),
-            KeyAction::Clear,
-            "log out"
-        );
+        control.clear();
+        assert_eq!(control.label("c1"), None);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use bwl_ipc::{
     dto::{SessionStateDto, WireError},
     frame::{HEADER_LEN, MAX_FRAME_LEN, encode},
     ipc_error,
-    protocol::{DaemonMessage, Refusal, Snapshot, UiMessage, Welcome},
+    protocol::{DaemonMessage, Event, Refusal, Snapshot, UiMessage, Welcome},
     serve,
 };
 use bwl_vault::{VaultService, model::CopyField, model::ItemId};
@@ -152,6 +152,99 @@ async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
             .expect("in time"),
         Ok(SshDecision::DENY),
         "dropping the reply denies"
+    );
+}
+
+/// Blocking: the raw client reads with std I/O.
+fn next_approval_id(raw: &mut RawClient) -> u64 {
+    loop {
+        match raw.recv() {
+            Some(DaemonMessage::Event(Event::SshApproval { request_id, .. })) => return request_id,
+            Some(_) => {}
+            None => panic!("the daemon closed the connection"),
+        }
+    }
+}
+
+fn reply_to(raw: &mut RawClient, request_id: u64, approved: bool) {
+    raw.send(&UiMessage::SshApprovalReply {
+        request_id,
+        approved,
+        remember: false,
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_or_repeated_reply_never_answers_another_request() {
+    let daemon = Daemon::start(FakeVault::new(unlocked(), 0)).await;
+    let socket = daemon.socket();
+    let mut raw = tokio::task::spawn_blocking(move || {
+        let mut raw = RawClient::connect(&socket);
+        raw.hello();
+        raw
+    })
+    .await
+    .expect("connect");
+
+    let (reply, first) = oneshot::channel();
+    daemon
+        .events
+        .send(DaemonEvent::SshApproval {
+            prompt: prompt(),
+            reply,
+        })
+        .await
+        .expect("send");
+    let (first_id, raw_back) = tokio::task::spawn_blocking(move || {
+        let id = next_approval_id(&mut raw);
+        reply_to(&mut raw, id, false);
+        (id, raw)
+    })
+    .await
+    .expect("first");
+    raw = raw_back;
+    assert_eq!(
+        tokio::time::timeout(EVENT_WAIT, first)
+            .await
+            .expect("in time"),
+        Ok(SshDecision::DENY)
+    );
+
+    let (reply, mut second) = oneshot::channel();
+    daemon
+        .events
+        .send(DaemonEvent::SshApproval {
+            prompt: prompt(),
+            reply,
+        })
+        .await
+        .expect("send");
+    let (second_id, raw_back) = tokio::task::spawn_blocking(move || {
+        let id = next_approval_id(&mut raw);
+        // A late approve for the answered request, and one for an id never issued.
+        reply_to(&mut raw, first_id, true);
+        reply_to(&mut raw, id + 100, true);
+        (id, raw)
+    })
+    .await
+    .expect("second");
+    raw = raw_back;
+    assert_ne!(first_id, second_id, "every request gets its own id");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        second.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty),
+        "stale replies did not answer the pending request"
+    );
+    tokio::task::spawn_blocking(move || reply_to(&mut raw, second_id, false))
+        .await
+        .expect("answer");
+    assert_eq!(
+        tokio::time::timeout(EVENT_WAIT, second)
+            .await
+            .expect("in time"),
+        Ok(SshDecision::DENY),
+        "only its own reply decides it"
     );
 }
 

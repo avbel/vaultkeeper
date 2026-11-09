@@ -87,6 +87,12 @@ impl<S: VaultService> App<S> {
 
     fn fill_codes(&self, rows: &RowsModel, range: Range<usize>, now: i32, unix: u64) {
         for (row, id) in rows.stale_totp_rows(range, now) {
+            if rows
+                .item(row)
+                .is_some_and(|item| !self.reprompt_cleared(&item))
+            {
+                continue;
+            }
             match self.vault.totp(&id, unix) {
                 Ok(code) => rows.set_totp(
                     row,

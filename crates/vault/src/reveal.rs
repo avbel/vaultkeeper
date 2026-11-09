@@ -159,6 +159,7 @@ pub(crate) fn draft(cipher: &Cipher, keys: &KeyRing) -> Result<ItemDraft> {
         reprompt: cipher.reprompt == 1,
         fields,
         data,
+        revision_date: Some(Arc::from(cipher.revision_date.as_str())),
     })
 }
 

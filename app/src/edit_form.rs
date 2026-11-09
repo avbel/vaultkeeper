@@ -195,8 +195,7 @@ fn data_fields(data: &ItemData, out: &mut Vec<EditField>) {
         } => {
             let private = Spec {
                 multiline: true,
-                mono: true,
-                ..TEXT
+                ..SECRET
             };
             out.push(field("private_key", "Private key", private_key, private));
             out.push(field("public_key", "Public key", public_key, MONO));
@@ -289,7 +288,8 @@ fn apply_data(data: &mut ItemData, key: &str, value: &str) {
     }
 }
 
-/// Applies the form's `(key, value)` pairs to `draft`. Empty URI rows are dropped.
+/// Applies the form's `(key, value)` pairs to `draft`. A cleared URI row stays as a blank entry
+/// so every URI keeps its position, and with it its stored match rule; the vault drops blanks.
 pub fn apply<'a>(
     mut draft: ItemDraft,
     values: impl IntoIterator<Item = (&'a str, &'a str)>,
@@ -308,9 +308,6 @@ pub fn apply<'a>(
                 }
             }
         }
-    }
-    if let ItemData::Login { uris, .. } = &mut draft.data {
-        uris.retain(|uri| !uri.is_empty());
     }
     if draft.name.is_empty() {
         return Err(EditError::NameRequired);
@@ -357,6 +354,7 @@ pub fn new_draft(
         reprompt: false,
         fields: Vec::new(),
         data,
+        revision_date: None,
     })
 }
 
@@ -424,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn edits_are_applied_and_empty_uris_dropped() {
+    fn edits_are_applied_and_cleared_uris_keep_their_position() {
         let mut pairs = values(&edit_fields(&login()));
         for (key, value) in &mut pairs {
             match key.as_str() {
@@ -443,7 +441,14 @@ mod tests {
             panic!("login expected");
         };
         assert_eq!(password.as_str(), "correct horse");
-        assert_eq!(uris, &["https://github.com", "https://gist.github.com"]);
+        assert_eq!(uris, &["https://github.com", "", "https://gist.github.com"]);
+
+        let cleared = vec![("uri:0".to_owned(), "  ".to_owned())];
+        let applied = apply_owned(applied, &cleared).expect("apply");
+        let ItemData::Login { uris, .. } = &applied.data else {
+            panic!("login expected");
+        };
+        assert_eq!(uris, &["", "", "https://gist.github.com"]);
     }
 
     #[test]
@@ -495,5 +500,16 @@ mod tests {
     fn uri_field_is_numbered_from_one() {
         let uri = uri_field(2);
         assert_eq!((uri.key.as_str(), uri.label.as_str()), ("uri:2", "URI 3"));
+    }
+
+    #[test]
+    fn the_ssh_private_key_field_is_a_masked_multiline_secret() {
+        let draft = new_draft(ItemKind::SshKey, None).expect("draft");
+        let fields = edit_fields(&draft);
+        let private = fields
+            .iter()
+            .find(|field| field.key == "private_key")
+            .expect("private key field");
+        assert!(private.secret && private.multiline && private.mono);
     }
 }

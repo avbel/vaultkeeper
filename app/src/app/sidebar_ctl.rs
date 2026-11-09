@@ -59,6 +59,8 @@ impl<S: VaultService> App<S> {
         manager.counts = counts;
         manager.folders = folders;
         manager.folder_choices = choices;
+        drop(guard);
+        self.resync_edit_folder();
     }
 
     fn select_sidebar_index(&self, index: i32) {

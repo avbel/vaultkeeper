@@ -150,7 +150,50 @@ fn touch_id_setting_gates_the_approval() {
     let prompt = h.app.ssh_prompt().expect("prompt");
     assert!(prompt.get_touch_id_required());
     click(&prompt, "Approve");
-    assert_eq!(answer(rx), Some(true), "the stub's Touch ID check succeeds");
+    assert_eq!(
+        answer(rx),
+        Some(true),
+        "the UI answers at once; the daemon asks for Touch ID itself"
+    );
+    assert!(h.app.ssh_prompt().is_none());
+}
+
+#[test]
+fn a_late_event_from_a_closed_prompt_never_decides_the_next_request() {
+    let h = harness(remember_mode());
+    let (first, rx1) = request("SHA256:old");
+    let (second, mut rx2) = request("SHA256:new");
+    h.app.request_ssh_approval(first);
+    h.app.request_ssh_approval(second);
+    let old_prompt = h.app.ssh_prompt().expect("first prompt");
+    elapse(Duration::from_secs(31));
+    pump();
+    assert_eq!(answer(rx1), Some(false), "the first timed out");
+    let current = h.app.ssh_prompt().expect("second prompt");
+    assert_eq!(current.get_fingerprint(), "SHA256:new");
+
+    // The first prompt's window handle still fires its callbacks (a late click, Esc, or a
+    // result that was in flight), but they belong to the first request.
+    old_prompt.invoke_approve(true);
+    old_prompt.invoke_deny();
+    pump();
+    assert!(
+        rx2.try_recv().is_err(),
+        "the second request is still waiting for its own answer"
+    );
+    assert_eq!(h.app.pending_ssh_requests(), 1);
+    let (repeat, repeat_rx) = request("SHA256:new");
+    current.invoke_approve(false);
+    pump();
+    assert_eq!(answer(rx2), Some(true));
+    h.app.request_ssh_approval(repeat);
+    assert!(
+        h.app
+            .ssh_prompt()
+            .is_some_and(|prompt| prompt.get_fingerprint() == "SHA256:new"),
+        "the late approve with remember did not remember the second key"
+    );
+    drop(repeat_rx);
 }
 
 #[test]

@@ -28,7 +28,7 @@ mod vault;
 pub use bwl_api::{DeviceInfo, TwoFactorProvider};
 pub use bwl_gen::totp::TotpCode;
 pub use config::{Timings, VaultConfig};
-pub use error::{Error, LogoutErrors, OFFLINE_MESSAGE, Result};
+pub use error::{CONFLICT_MESSAGE, Error, LogoutErrors, OFFLINE_MESSAGE, Result};
 pub use secrets::{MemorySecretStore, SecretStore, SecretStoreError};
 pub use service::VaultService;
 pub use vault::{BackgroundStatus, Vault};

@@ -19,6 +19,8 @@ pub(super) enum Pending {
     Copy(CopyField),
     CopyDetail(i32),
     Reveal(i32),
+    /// The edit form shows every secret unmasked-on-demand and can untick the re-prompt.
+    Edit,
 }
 
 #[must_use]
@@ -27,6 +29,7 @@ pub const fn is_secret(field: CopyField) -> bool {
         field,
         CopyField::Password
             | CopyField::Totp
+            | CopyField::Notes
             | CopyField::CardNumber
             | CopyField::CardCode
             | CopyField::SshPrivateKey
@@ -137,7 +140,10 @@ impl<S: VaultService> App<S> {
                 self.copy_detail_field(index);
             }
             Pending::Reveal(index) => self.toggle_reveal(index),
+            Pending::Edit => self.start_edit(),
         }
+        // Codes held back for this item until now.
+        self.refresh_totp();
     }
 
     /// Lock, logout and switch forget every confirmation.
@@ -160,13 +166,13 @@ mod tests {
             CopyField::CardCode,
             CopyField::SshPrivateKey,
             CopyField::Custom(0),
+            CopyField::Notes,
         ] {
             assert!(is_secret(field), "{field:?}");
         }
         for field in [
             CopyField::Username,
             CopyField::Uri,
-            CopyField::Notes,
             CopyField::Email,
             CopyField::Phone,
             CopyField::SshPublicKey,

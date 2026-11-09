@@ -119,8 +119,12 @@ fn empty_draft(name: &str, data: ItemData) -> ItemDraft {
         reprompt: false,
         fields: Vec::new(),
         data,
+        revision_date: Some(Arc::from(SEED_REVISION)),
     }
 }
+
+/// The revision every seeded item starts at; saves move it on like the server's `revisionDate`.
+pub const SEED_REVISION: &str = "2026-01-01T00:00:00.000Z";
 
 fn secret(text: &str) -> Zeroizing<String> {
     Zeroizing::new(text.to_owned())
@@ -311,6 +315,13 @@ fn push_logins(data: &mut AccountData, prng: &mut Prng, ids: &mut Ids, folders: 
             draft.folder_id = prng.chance(70).then(|| Arc::clone(&prng.pick(folders).id));
             draft.favorite = round == 0 && prng.chance(15);
             draft.reprompt = round == 0 && site == "PayPal";
+            if draft.reprompt {
+                // A re-prompt item with every gated kind of field: notes and a TOTP.
+                draft.notes = Zeroizing::new("Security answer: blue heron".to_owned());
+                if let ItemData::Login { totp, .. } = &mut draft.data {
+                    *totp = Zeroizing::new("JBSWY3DPEHPK3PXP".to_owned());
+                }
+            }
             if prng.chance(10) {
                 draft.fields.push(CustomField {
                     name: "Recovery PIN".to_owned(),

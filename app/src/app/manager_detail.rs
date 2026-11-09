@@ -217,16 +217,25 @@ impl<S: VaultService> App<S> {
     /// Recomputes the detail pane's TOTP code when it is missing or expired.
     pub(super) fn refresh_detail_totp(&self) {
         let now = self.ui_now();
-        let id = self.manager.borrow().as_ref().and_then(|manager| {
+        let summary = self.manager.borrow().as_ref().and_then(|manager| {
             manager
                 .detail
                 .as_ref()
                 .filter(|detail| detail.has_totp && detail.totp_expires <= now)
-                .map(|detail| detail.summary.id.clone())
+                .map(|detail| detail.summary.clone())
         });
-        let Some(id) = id else {
+        let Some(summary) = summary else {
             return;
         };
+        if !self.reprompt_cleared(&summary) {
+            if let Some(manager) = self.manager.borrow().as_ref() {
+                manager
+                    .window
+                    .set_detail_totp_code(detail::TOTP_MASK.into());
+            }
+            return;
+        }
+        let id = summary.id;
         let code = self.vault.totp(&id, self.hooks.clock.unix_now());
         if let Some(manager) = self.manager.borrow_mut().as_mut()
             && let Some(detail) = manager.detail.as_mut()

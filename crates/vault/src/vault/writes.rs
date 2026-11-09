@@ -10,6 +10,18 @@ use crate::{
     util::now_rfc3339,
 };
 
+/// Vaultwarden's refusal of a `lastKnownRevisionDate` older than its copy (`ciphers.rs`:
+/// "The client copy of this cipher is out of date. Resync the client and try again.").
+fn stale_revision_as_conflict(error: Error) -> Error {
+    match &error {
+        Error::Api(bwl_api::Error::Server {
+            status: 400,
+            message,
+        }) if message.contains("out of date") => Error::Conflict,
+        _ => error,
+    }
+}
+
 impl Inner {
     /// Writes need the server; while offline they are refused before anything is encrypted.
     pub(crate) fn writable_ctx(&self) -> Result<Ctx> {
@@ -85,10 +97,19 @@ impl Inner {
                 .await?
             }
             Some(id) => {
-                self.call(&ctx, |client, token| async move {
-                    client.update_cipher(&token, &id.0, &prepared.request).await
-                })
-                .await?
+                let updated = self
+                    .call(&ctx, |client, token| async move {
+                        client.update_cipher(&token, &id.0, &prepared.request).await
+                    })
+                    .await;
+                match updated.map_err(stale_revision_as_conflict) {
+                    Err(Error::Conflict) => {
+                        drop(serial);
+                        self.request_sync();
+                        return Err(Error::Conflict);
+                    }
+                    other => other?,
+                }
             }
         };
         let saved = ItemId(Arc::from(cipher.id.as_str()));
@@ -209,5 +230,33 @@ impl Inner {
                 Err(Error::NotFound)
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(status: u16, message: &str) -> Error {
+        Error::Api(bwl_api::Error::Server {
+            status,
+            message: message.to_owned(),
+        })
+    }
+
+    #[test]
+    fn only_the_out_of_date_refusal_is_a_conflict() {
+        let stale = server(
+            400,
+            "The client copy of this cipher is out of date. Resync the client and try again.",
+        );
+        assert!(matches!(stale_revision_as_conflict(stale), Error::Conflict));
+        let other = stale_revision_as_conflict(server(400, "Invalid folder"));
+        assert!(matches!(
+            other,
+            Error::Api(bwl_api::Error::Server { status: 400, .. })
+        ));
+        let gone = stale_revision_as_conflict(server(404, "out of date"));
+        assert!(matches!(gone, Error::Api(_)));
     }
 }

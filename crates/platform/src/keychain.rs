@@ -52,6 +52,11 @@ pub fn delete(account: &str) -> Result<()> {
 /// Deletes every item whose account starts with `account_prefix` (e.g. `"<user_id>."` on
 /// logout) and returns how many were removed.
 pub fn delete_all_for(account_prefix: &str) -> Result<usize> {
+    if account_prefix.is_empty() {
+        return Err(crate::Error::Keychain(
+            "refusing to delete every item with an empty prefix".into(),
+        ));
+    }
     #[cfg(target_os = "macos")]
     {
         macos::delete_all_for(SERVICE, account_prefix)
@@ -61,6 +66,26 @@ pub fn delete_all_for(account_prefix: &str) -> Result<usize> {
         let _ = account_prefix;
         Err(crate::Error::Unsupported)
     }
+}
+
+/// Attempts every delete even after one fails, so a single locked or damaged item cannot leave
+/// the rest of an account's secrets behind; reports the first error once all were tried.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn delete_each<'a>(
+    accounts: impl IntoIterator<Item = &'a str>,
+    mut delete: impl FnMut(&str) -> Result<()>,
+) -> Result<usize> {
+    let mut deleted = 0;
+    let mut first_error = None;
+    for account in accounts {
+        match delete(account) {
+            Ok(()) => deleted += 1,
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(deleted), Err)
 }
 
 #[cfg(target_os = "macos")]
@@ -105,15 +130,13 @@ mod macos {
 
     pub(super) fn delete_all_for(service: &str, account_prefix: &str) -> Result<usize> {
         let accounts = accounts(service)?;
-        let mut deleted = 0;
-        for account in accounts
-            .iter()
-            .filter(|account| account.starts_with(account_prefix))
-        {
-            delete(service, account)?;
-            deleted += 1;
-        }
-        Ok(deleted)
+        super::delete_each(
+            accounts
+                .iter()
+                .map(String::as_str)
+                .filter(|account| account.starts_with(account_prefix)),
+            |account| delete(service, account),
+        )
     }
 
     /// Reads attributes only, which never needs the item's ACL and so never prompts.
@@ -191,5 +214,37 @@ mod tests {
         }
         assert!(get(&theirs).expect("get other").is_some());
         delete(&theirs).expect("cleanup");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod delete_each_tests {
+    use super::*;
+
+    #[test]
+    fn every_item_is_attempted_and_the_first_error_is_reported() {
+        let mut tried = Vec::new();
+        let result = delete_each(["a", "b", "c", "d"], |account| {
+            tried.push(account.to_owned());
+            if account == "b" || account == "c" {
+                Err(crate::Error::Keychain(format!("failed {account}")))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(tried, ["a", "b", "c", "d"]);
+        assert!(matches!(result, Err(crate::Error::Keychain(m)) if m == "failed b"));
+    }
+
+    #[test]
+    fn success_counts_deleted_items() {
+        assert_eq!(delete_each(["a", "b"], |_| Ok(())).unwrap(), 2);
+        assert_eq!(delete_each([], |_| Ok(())).unwrap(), 0);
+    }
+
+    #[test]
+    fn empty_prefix_is_refused() {
+        assert!(matches!(delete_all_for(""), Err(crate::Error::Keychain(_))));
     }
 }

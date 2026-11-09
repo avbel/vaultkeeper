@@ -21,6 +21,20 @@ pub(super) struct Edit {
     /// The draft the form started from; fields not shown in the form are kept from it.
     base: ItemDraft,
     pub(super) fields: Rc<VecModel<EditField>>,
+    /// The picked folder by id: the picker's index points into a list rebuilt in name order on
+    /// every folder change.
+    pub(super) folder_id: Option<std::sync::Arc<str>>,
+}
+
+fn folder_index(
+    choices: &[Option<std::sync::Arc<str>>],
+    folder_id: Option<&std::sync::Arc<str>>,
+) -> i32 {
+    choices
+        .iter()
+        .position(|choice| choice.as_ref() == folder_id)
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(0)
 }
 
 impl<S: VaultService> App<S> {
@@ -30,28 +44,37 @@ impl<S: VaultService> App<S> {
         window.on_edit_add_uri(handler!(self, |app| app.add_uri_field()));
         window.on_edit_save(handler!(self, |app| app.save_edit()));
         window.on_edit_cancel(handler!(self, |app| app.cancel_edit()));
+        window.on_edit_folder_selected(handler!(self, |app, index| app.pick_edit_folder(index)));
     }
 
+    /// Every way into the editor (button, ⌘E, double-click, Quick Panel ⌘E) ends here, so the
+    /// re-prompt is asked here: the form reveals every secret and can untick the re-prompt.
     pub(super) fn start_edit(&self) {
-        let start = self.manager.borrow().as_ref().and_then(|manager| {
+        let editable = |detail: &&super::manager_detail::Detail| {
+            detail.summary.editable && !detail.summary.deleted
+        };
+        let summary = self.manager.borrow().as_ref().and_then(|manager| {
             manager
                 .detail
                 .as_ref()
-                .filter(|detail| detail.summary.editable && !detail.summary.deleted)
-                .map(|detail| {
-                    (
-                        detail.summary.id.clone(),
-                        detail.draft.clone(),
-                        detail.summary.kind,
-                    )
-                })
+                .filter(editable)
+                .map(|detail| detail.summary.clone())
         });
-        if let Some((id, draft, kind)) = start {
-            self.open_edit(
-                Some(id),
-                draft,
-                &format!("Edit {}", kind_label(kind).to_lowercase()),
-            );
+        let Some(summary) = summary else {
+            return;
+        };
+        if !self.reprompt_cleared(&summary) {
+            self.request_reprompt(&summary, super::reprompt::Pending::Edit);
+            return;
+        }
+        let draft = self
+            .manager
+            .borrow()
+            .as_ref()
+            .and_then(|manager| manager.detail.as_ref().map(|detail| detail.draft.clone()));
+        if let Some(draft) = draft {
+            let title = format!("Edit {}", kind_label(summary.kind).to_lowercase());
+            self.open_edit(Some(summary.id), draft, &title);
         }
     }
 
@@ -104,12 +127,7 @@ impl<S: VaultService> App<S> {
             return;
         };
         let fields = Rc::new(VecModel::from(edit_form::edit_fields(&draft)));
-        let folder_index = manager
-            .folder_choices
-            .iter()
-            .position(|choice| choice == &draft.folder_id)
-            .and_then(|index| i32::try_from(index).ok())
-            .unwrap_or(0);
+        let folder_index = folder_index(&manager.folder_choices, draft.folder_id.as_ref());
         let window = &manager.window;
         window.set_edit_title(title.into());
         window.set_edit_fields(ModelRc::from(Rc::clone(&fields)));
@@ -122,6 +140,7 @@ impl<S: VaultService> App<S> {
         window.set_detail_mode(2);
         manager.edit = Some(Edit {
             id,
+            folder_id: draft.folder_id.clone(),
             base: draft,
             fields,
         });
@@ -129,6 +148,8 @@ impl<S: VaultService> App<S> {
         self.update_ticker();
     }
 
+    /// The detail pane was not reloaded while the form was open; re-read it so it shows any
+    /// change that arrived meanwhile (and the version a conflicting save was refused against).
     pub(super) fn cancel_edit(&self) {
         if let Some(manager) = self.manager.borrow_mut().as_mut() {
             manager.edit = None;
@@ -137,7 +158,31 @@ impl<S: VaultService> App<S> {
                 .window
                 .set_detail_mode(i32::from(manager.detail.is_some()));
         }
+        self.reload_detail();
         self.update_ticker();
+    }
+
+    fn pick_edit_folder(&self, index: i32) {
+        if let Some(manager) = self.manager.borrow_mut().as_mut() {
+            let choice = usize::try_from(index)
+                .ok()
+                .and_then(|index| manager.folder_choices.get(index).cloned());
+            if let (Some(edit), Some(folder_id)) = (manager.edit.as_mut(), choice) {
+                edit.folder_id = folder_id;
+            }
+        }
+    }
+
+    /// After the folder list was rebuilt: point the picker at the stored folder again.
+    pub(super) fn resync_edit_folder(&self) {
+        if let Some(manager) = self.manager.borrow().as_ref()
+            && let Some(edit) = manager.edit.as_ref()
+        {
+            manager.window.set_edit_folder_index(folder_index(
+                &manager.folder_choices,
+                edit.folder_id.as_ref(),
+            ));
+        }
     }
 
     /// A pasted private key in another format becomes OpenSSH with its public key and
@@ -179,10 +224,7 @@ impl<S: VaultService> App<S> {
         let edit = manager.edit.as_ref()?;
         let window = &manager.window;
         let values: Vec<EditField> = edit.fields.iter().collect();
-        let folder_id = usize::try_from(window.get_edit_folder_index())
-            .ok()
-            .and_then(|index| manager.folder_choices.get(index).cloned())
-            .unwrap_or_else(|| edit.base.folder_id.clone());
+        let folder_id = edit.folder_id.clone();
         let draft = edit_form::apply(
             edit.base.clone(),
             values
@@ -242,6 +284,15 @@ impl<S: VaultService> App<S> {
                 // `on_vault_changed` runs next and reloads the detail in view mode.
                 manager.window.set_detail_mode(1);
             }
+            // The form stays open with the user's values so nothing typed is lost; saving it
+            // again is refused the same way, and Cancel shows the version from elsewhere.
+            Err(bwl_vault::Error::Conflict) => manager.window.set_edit_error(
+                format!(
+                    "{} · Cancel to load the latest version",
+                    bwl_vault::CONFLICT_MESSAGE
+                )
+                .into(),
+            ),
             Err(error) => manager
                 .window
                 .set_edit_error(crate::viewmodel::error_text(error).into()),

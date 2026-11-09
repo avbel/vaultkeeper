@@ -1,8 +1,12 @@
-//! SSH sign approvals: one prompt at a time, auto-deny after 30 s, optional Touch ID. A request
-//! that arrives while the vault is locked shows the lock screen first and its prompt after the
-//! unlock.
+//! SSH sign approvals: one prompt at a time, auto-deny after 30 s. A request that arrives while
+//! the vault is locked shows the lock screen first and its prompt after the unlock.
+//!
+//! "SSH requires Touch ID" is enforced by the daemon after it gets the approval, so a decision
+//! here is final the moment it is made. Every queued request gets its own id, and each prompt's
+//! buttons and timer answer only that id: an event from an old prompt can never decide a newer
+//! request.
 
-use std::{collections::HashSet, collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::HashSet, collections::VecDeque, time::Duration};
 
 use bwl_ipc::SshDecision;
 use bwl_vault::{VaultService, model::SessionState};
@@ -27,10 +31,16 @@ pub struct SshApprovalRequest {
     pub reply: oneshot::Sender<SshDecision>,
 }
 
+struct Queued {
+    id: u64,
+    request: SshApprovalRequest,
+}
+
 #[derive(Default)]
 pub(super) struct SshQueue {
-    pending: VecDeque<SshApprovalRequest>,
-    current: Option<SshApprovalRequest>,
+    next_id: u64,
+    pending: VecDeque<Queued>,
+    current: Option<Queued>,
     /// Fingerprints approved with "Remember for this key until lock".
     remembered: HashSet<String>,
     timeout: Option<Timer>,
@@ -53,6 +63,16 @@ fn reply(request: SshApprovalRequest, decision: SshDecision) {
     }
 }
 
+impl SshQueue {
+    fn enqueue(&mut self, request: SshApprovalRequest) {
+        self.next_id += 1;
+        self.pending.push_back(Queued {
+            id: self.next_id,
+            request,
+        });
+    }
+}
+
 impl<S: VaultService> App<S> {
     /// Entry point for the agent's approval channel.
     pub fn request_ssh_approval(&self, request: SshApprovalRequest) {
@@ -68,13 +88,13 @@ impl<S: VaultService> App<S> {
                 return;
             }
             SessionState::Locked { .. } => {
-                self.ssh.borrow_mut().pending.push_back(request);
+                self.ssh.borrow_mut().enqueue(request);
                 self.open_lock_window();
                 return;
             }
             SessionState::Unlocked { .. } => {}
         }
-        self.ssh.borrow_mut().pending.push_back(request);
+        self.ssh.borrow_mut().enqueue(request);
         self.show_next_ssh_prompt();
     }
 
@@ -85,7 +105,7 @@ impl<S: VaultService> App<S> {
         {
             return;
         }
-        let Some(request) = self.ssh.borrow_mut().pending.pop_front() else {
+        let Some(Queued { id, request }) = self.ssh.borrow_mut().pending.pop_front() else {
             return;
         };
         let window = match SshPrompt::new() {
@@ -112,54 +132,44 @@ impl<S: VaultService> App<S> {
         let seconds = i32::try_from(SSH_TIMEOUT.as_secs()).unwrap_or(30);
         window.set_timeout(seconds);
         window.set_seconds_left(seconds);
-        window.on_approve(handler!(self, |app, remember| app.approve_ssh(remember)));
-        window.on_deny(handler!(self, |app| app.finish_ssh(false, false)));
+        window.on_approve(handler!(self, |app, remember| app.finish_ssh(id, true, remember)));
+        window.on_deny(handler!(self, |app| app.finish_ssh(id, false, false)));
         let timeout = Timer::default();
         timeout.start(
             slint::TimerMode::SingleShot,
             SSH_TIMEOUT,
             handler!(self, |app| {
                 tracing::info!("SSH approval timed out");
-                app.finish_ssh(false, false);
+                app.finish_ssh(id, false, false);
             }),
         );
         {
             let mut queue = self.ssh.borrow_mut();
-            queue.current = Some(request);
+            queue.current = Some(Queued { id, request });
             queue.timeout = Some(timeout);
         }
         show(&window, "SSH prompt");
         *self.ssh_prompt.borrow_mut() = Some(window);
     }
 
-    fn approve_ssh(&self, remember: bool) {
-        if !self.settings.borrow().ssh_touch_id {
-            self.finish_ssh(true, remember);
-            return;
-        }
-        if let Some(window) = self.ssh_prompt.borrow().as_ref() {
-            window.set_busy(true);
-        }
-        let biometrics = Arc::clone(&self.hooks.biometrics);
-        self.exec.spawn_blocking(
-            move || biometrics.authenticate("approve an SSH signature"),
-            handler!(self, |app, result| {
-                if let Err(error) = &result {
-                    tracing::warn!(%error, "Touch ID refused the SSH approval");
-                }
-                app.finish_ssh(result.is_ok(), remember);
-            }),
-        );
-    }
-
-    fn finish_ssh(&self, approved: bool, remember: bool) {
+    /// Answers request `id` if it is still the one on screen; anything else is a late event from
+    /// a prompt that is already gone and is dropped.
+    fn finish_ssh(&self, id: u64, approved: bool, remember: bool) {
         let remember = approved
             && remember
             && self.settings.borrow().ssh_approval == SshApproval::RememberUntilLock;
         let request = {
             let mut queue = self.ssh.borrow_mut();
+            if queue
+                .current
+                .as_ref()
+                .is_none_or(|current| current.id != id)
+            {
+                tracing::debug!(id, "SSH decision for a prompt that is gone; ignored");
+                return;
+            }
             stop_timer(queue.timeout.take());
-            let request = queue.current.take();
+            let request = queue.current.take().map(|current| current.request);
             if let Some(request) = &request
                 && remember
             {
@@ -189,6 +199,7 @@ impl<S: VaultService> App<S> {
                 .take()
                 .into_iter()
                 .chain(queue.pending.drain(..))
+                .map(|queued| queued.request)
                 .collect()
         };
         for request in requests {
@@ -206,7 +217,13 @@ impl<S: VaultService> App<S> {
         if matches!(self.vault.state(), SessionState::Unlocked { .. }) {
             return;
         }
-        let waiting: Vec<SshApprovalRequest> = self.ssh.borrow_mut().pending.drain(..).collect();
+        let waiting: Vec<SshApprovalRequest> = self
+            .ssh
+            .borrow_mut()
+            .pending
+            .drain(..)
+            .map(|queued| queued.request)
+            .collect();
         for request in waiting {
             reply(request, SshDecision::DENY);
         }

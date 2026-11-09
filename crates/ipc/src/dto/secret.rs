@@ -33,6 +33,8 @@ pub struct ItemDraftDto {
     pub reprompt: bool,
     pub fields: Vec<CustomFieldDto>,
     pub data: ItemDataDto,
+    #[zeroize(skip)]
+    pub revision_date: Option<Arc<str>>,
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -103,6 +105,7 @@ impl From<ItemDraft> for ItemDraftDto {
             reprompt: draft.reprompt,
             fields: draft.fields.into_iter().map(CustomFieldDto::from).collect(),
             data: draft.data.into(),
+            revision_date: draft.revision_date,
         }
     }
 }
@@ -122,6 +125,7 @@ impl From<ItemDraftDto> for ItemDraft {
                 .map(CustomField::from)
                 .collect(),
             data: mem::take(&mut draft.data).into(),
+            revision_date: draft.revision_date.take(),
         }
     }
 }
@@ -438,6 +442,7 @@ mod tests {
                 },
             ],
             data,
+            revision_date: Some("2026-11-08T17:00:59.321Z".into()),
         }
     }
 
@@ -511,6 +516,7 @@ mod tests {
             reprompt: false,
             fields: Vec::new(),
             data: ItemData::SecureNote,
+            revision_date: None,
         };
         let back = ItemDraft::from(over_the_wire(&ItemDraftDto::from(draft.clone())));
         assert!(back == draft);

@@ -71,6 +71,7 @@ pub enum WireError {
     Io(IoErrorDto),
     Cache(String),
     Offline,
+    Conflict,
     Logout(Vec<WireError>),
 }
 
@@ -157,6 +158,7 @@ impl From<&Error> for WireError {
             Error::Io(io) => Self::Io(io.into()),
             Error::Cache(json) => Self::Cache(json.to_string()),
             Error::Offline => Self::Offline,
+            Error::Conflict => Self::Conflict,
             Error::Logout(errors) => Self::Logout(errors.0.iter().map(Self::from).collect()),
         }
     }
@@ -171,6 +173,7 @@ impl From<WireError> for Error {
             WireError::NotFound => Self::NotFound,
             WireError::NoSuchField => Self::NoSuchField,
             WireError::ReadOnly => Self::ReadOnly,
+            WireError::Conflict => Self::Conflict,
             WireError::Offline | WireError::Api(ApiErrorDto::Http { offline: true, .. }) => {
                 Self::Offline
             }
@@ -230,6 +233,10 @@ impl From<&bwl_api::Error> for ApiErrorDto {
             bwl_api::Error::Unauthorized => Self::Unauthorized,
             bwl_api::Error::Io(io) => Self::Io(io.into()),
             bwl_api::Error::UntrustedUrl(host) => Self::UntrustedUrl(host.clone()),
+            bwl_api::Error::InvalidServerUrl(_) => Self::Server {
+                status: 400,
+                message: error.to_string(),
+            },
         }
     }
 }
@@ -409,6 +416,13 @@ mod tests {
                 std::mem::discriminant(&error)
             );
         }
+    }
+
+    #[test]
+    fn edit_conflict_round_trips_with_its_message() {
+        let back = proxied(&Error::Conflict);
+        assert!(matches!(back, Error::Conflict), "{back:?}");
+        assert_eq!(back.to_string(), bwl_vault::CONFLICT_MESSAGE);
     }
 
     #[test]

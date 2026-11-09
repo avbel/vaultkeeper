@@ -5,6 +5,11 @@
 # scripts/make-signing-cert.sh) when it exists, otherwise an ad-hoc signature. A stable identity
 # keeps keychain items (refresh token) readable across rebuilds without "allow access" prompts;
 # with ad-hoc signing every rebuild is a new code identity.
+#
+# Both signatures use the hardened runtime (`--options runtime`) with no entitlements: dyld then
+# ignores DYLD_* variables and library validation refuses dylibs signed by anyone else, so another
+# process of this user cannot run the bundled binary with injected code. That matters because the
+# daemon admits a UI process by its code signature (cdhash), see crates/ipc/src/peer.rs.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -20,7 +25,7 @@ cargo build --release --locked --target "$TARGET" -p bw-lite
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "target/$TARGET/release/bw-lite" "$APP/Contents/MacOS/bw-lite"
+cp "${CARGO_TARGET_DIR:-target}/$TARGET/release/bw-lite" "$APP/Contents/MacOS/bw-lite"
 sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
 
 if command -v rsvg-convert >/dev/null && command -v iconutil >/dev/null; then
@@ -36,11 +41,16 @@ else
 fi
 
 if security find-identity -v -p codesigning | grep -q "\"$IDENTITY\""; then
-  codesign --force --sign "$IDENTITY" --identifier org.bw-lite.desktop "$APP"
+  codesign --force --options runtime --sign "$IDENTITY" --identifier org.bw-lite.desktop "$APP"
   echo "signed with \"$IDENTITY\""
 else
-  codesign --force --sign - --identifier org.bw-lite.desktop "$APP"
+  codesign --force --options runtime --sign - --identifier org.bw-lite.desktop "$APP"
   echo "ad-hoc signed (run scripts/make-signing-cert.sh once for a stable identity)"
 fi
 codesign --verify --strict "$APP"
+SIGNATURE=$(codesign --display --verbose "$APP" 2>&1)
+if [[ "$SIGNATURE" != *"flags="*"runtime"* ]]; then
+  echo "the bundle is not signed with the hardened runtime" >&2
+  exit 1
+fi
 echo "built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/bw-lite"))"

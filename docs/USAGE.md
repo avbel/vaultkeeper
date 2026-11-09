@@ -18,13 +18,16 @@ keychain item (the refresh token) after each rebuild.
 The app has no Dock icon. It lives in the menu bar; a Dock icon appears only while the vault
 window is open.
 
-Update: quit bw-lite from the tray menu, rebuild, `ditto` it again and open it.
+Update: quit bw-lite from the tray menu **first**, then rebuild, `ditto` it again and open it.
+The background process only accepts a window process with exactly its own code signature, so
+a running old version refuses the new one's windows until it is quit.
 
 ## First login
 
 1. Open the app; the login window appears.
 2. Enter the **server URL** of your Vaultwarden (e.g. `https://vault.example.com`), email and master
-   password. Use `http://` only for `localhost`.
+   password. Plain `http://` is accepted only for localhost and private-network addresses
+   (10.x, 172.16–31.x, 192.168.x, `*.local`).
 3. If the account has email 2FA, enter the code from the email. If the server asks for a new-device
    code, enter that.
 4. The vault syncs and the Manager window opens.
@@ -39,6 +42,8 @@ clipboard if it holds a copied secret.
   - Enter copies the password;
   - ⇧Enter copies the username;
   - ⌘Enter copies the TOTP code.
+- **Edit conflicts:** if the item changed on another device while you were editing, saving is
+  refused with a message; your typed values stay in the form, Cancel loads the latest version.
 - **Manager window:** every row has one-click copy buttons for username, password and TOTP (with a
   countdown ring). The sidebar has folders (create, rename, delete), organizations and collections,
   and kinds. The detail pane edits items and attachments.
@@ -89,10 +94,12 @@ ssh -o IdentityAgent="~/Library/Application Support/bw-lite/ssh-agent.sock" -T g
 ```
 
 Each sign request opens an approval window (process and key fingerprint, auto-deny after 30 s).
-- *SSH requires Touch ID* asks for a fingerprint instead.
+- *SSH requires Touch ID* asks for a fingerprint after you click Approve.
 - *SSH requires approval* can be set to *Remember until lock*, or tick *Remember for this key until lock*
   in the prompt; that key is then not asked again until the vault locks.
-- While the vault is locked a request shows the unlock window first.
+- The agent holds keys only while the vault is unlocked. While it is locked, `ssh-add -l` or a
+  connection shows the unlock window first and continues after you unlock. While logged out the
+  agent lists no keys.
 
 ## Start at login
 

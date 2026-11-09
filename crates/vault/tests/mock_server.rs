@@ -284,6 +284,7 @@ fn note_draft(name: &str) -> ItemDraft {
         reprompt: false,
         fields: Vec::new(),
         data: ItemData::SecureNote,
+        revision_date: None,
     }
 }
 
@@ -1075,4 +1076,75 @@ async fn probe_of_a_dead_or_failing_server_is_an_error() {
     let dead = Url::parse("http://127.0.0.1:9/").unwrap();
     let refused = harness.vault.probe_server(&dead).await.unwrap_err();
     assert!(refused.is_offline(), "{refused:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_a_draft_after_a_sync_brought_a_remote_edit_is_a_conflict() {
+    let fake = Fake::start().await;
+    let original = fake.login("c1", "GitHub", "pw");
+    let harness = logged_in(&fake, vec![original.clone()]).await;
+    let vault = &harness.vault;
+    let id = bwl_vault::model::ItemId("c1".into());
+    let mut draft = vault.draft(&id).unwrap();
+    assert_eq!(
+        draft.revision_date.as_deref(),
+        Some(original.revision_date.as_str())
+    );
+
+    let mut remote = fake.login("c1", "GitHub (phone)", "pw");
+    remote.revision_date = "2026-11-08T17:05:00.000Z".into();
+    Mock::given(method("GET"))
+        .and(path("/api/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fake.sync_body(vec![remote])))
+        .with_priority(1)
+        .mount(&fake.server)
+        .await;
+    vault.sync().await.unwrap();
+    assert_eq!(names(vault), ["GitHub (phone)"]);
+
+    draft.name = "GitHub (desktop)".into();
+    let refused = vault.save(Some(id.clone()), draft).await.unwrap_err();
+    assert!(matches!(refused, Error::Conflict), "{refused:?}");
+    assert_eq!(refused.to_string(), bwl_vault::CONFLICT_MESSAGE);
+    assert!(
+        fake.requests_to("/api/ciphers/c1").await.is_empty(),
+        "nothing was sent"
+    );
+    assert_eq!(names(vault), ["GitHub (phone)"]);
+
+    let fresh = vault.draft(&id).unwrap();
+    assert_eq!(fresh.name, "GitHub (phone)");
+    assert_eq!(
+        fresh.revision_date.as_deref(),
+        Some("2026-11-08T17:05:00.000Z")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_servers_out_of_date_refusal_is_a_conflict_and_asks_for_a_sync() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, vec![fake.login("c1", "GitHub", "pw")]).await;
+    let vault = &harness.vault;
+    Mock::given(method("PUT"))
+        .and(path("/api/ciphers/c1"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "message": "The client copy of this cipher is out of date. Resync the client and try again.",
+            "errorModel": { "message": "The client copy of this cipher is out of date. Resync the client and try again." },
+        })))
+        .mount(&fake.server)
+        .await;
+    let syncs = fake.requests_to("/api/sync").await.len();
+    let id = bwl_vault::model::ItemId("c1".into());
+    let mut draft = vault.draft(&id).unwrap();
+    draft.name = "Renamed".into();
+    let refused = vault.save(Some(id), draft).await.unwrap_err();
+    assert!(matches!(refused, Error::Conflict), "{refused:?}");
+    let sent = fake.requests_to("/api/ciphers/c1").await;
+    let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body["lastKnownRevisionDate"], "2026-11-08T17:00:59.321Z");
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while fake.requests_to("/api/sync").await.len() == syncs {
+        assert!(tokio::time::Instant::now() < deadline, "no sync requested");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

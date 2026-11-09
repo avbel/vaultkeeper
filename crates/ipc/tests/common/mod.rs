@@ -17,7 +17,7 @@ use std::{
 };
 
 use bwl_ipc::{
-    DaemonEvent, RemoteVault, ServeOptions, ServerHandle,
+    DaemonEvent, RemoteVault, ServeOptions, ServerHandle, TouchIdBackend, TouchIdFailure,
     frame::{HEADER_LEN, decode, encode},
     protocol::{DaemonMessage, PROTOCOL_VERSION, UiMessage, Welcome},
     serve, serve_with,
@@ -41,8 +41,11 @@ pub const OTHER_EMAIL: &str = "bob@example.com";
 pub const PASSWORD: &str = "correct horse battery staple";
 /// Makes `verify_master_password` take 50 ms, for the concurrency test.
 pub const SLOW_PASSWORD: &str = "slow";
-/// A draft with this name takes 200 ms to save, logged only once the save finished.
+/// A draft with this name takes [`SLOW_SAVE_TIME`] to save, logged only once the save finished.
+/// Long enough to outlast a reconnect: each connect runs the code-signature peer check, which
+/// under a parallel test run took longer than the 200 ms this used to be.
 pub const SLOW_SAVE: &str = "slow save";
+const SLOW_SAVE_TIME: Duration = Duration::from_secs(2);
 pub const USER_KEY: [u8; 64] = [7; 64];
 pub const SSH_PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----\n";
 const SLOW_CALL: Duration = Duration::from_millis(50);
@@ -184,6 +187,7 @@ pub fn draft() -> ItemDraft {
             totp: secret("JBSWY3DPEHPK3PXP"),
             uris: vec!["https://bank.example".to_owned()],
         },
+        revision_date: Some("2026-11-08T17:00:59.321Z".into()),
     }
 }
 
@@ -487,7 +491,7 @@ impl VaultService for FakeVault {
 
     async fn save(&self, id: Option<ItemId>, draft: ItemDraft) -> Result<ItemId> {
         if draft.name == SLOW_SAVE {
-            tokio::time::sleep(SLOW_CALL * 4).await;
+            tokio::time::sleep(SLOW_SAVE_TIME).await;
         }
         let password = match &draft.data {
             ItemData::Login { password, .. } => password.as_str().to_owned(),
@@ -584,6 +588,62 @@ impl VaultService for FakeVault {
 }
 
 /// A fresh directory under /tmp: macOS caps socket paths at 104 bytes and `$TMPDIR` is long.
+/// Stands in for the Secure Enclave: keeps the sealed key in memory; `refuse` makes the next
+/// unlocks fail like a cancelled prompt would.
+#[derive(Default)]
+pub struct FakeTouchId {
+    sealed: Mutex<Option<(String, Vec<u8>)>>,
+    refusal: Mutex<Option<TouchIdFailure>>,
+    unlocks: Mutex<Vec<String>>,
+}
+
+impl FakeTouchId {
+    pub fn sealed(&self) -> Option<(String, Vec<u8>)> {
+        self.sealed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn refuse(&self, failure: Option<TouchIdFailure>) {
+        *self.refusal.lock().unwrap_or_else(PoisonError::into_inner) = failure;
+    }
+
+    pub fn unlocks(&self) -> Vec<String> {
+        self.unlocks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl TouchIdBackend for FakeTouchId {
+    fn enroll(&self, account_id: &str, user_key: &[u8]) -> std::result::Result<(), TouchIdFailure> {
+        *self.sealed.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((account_id.to_owned(), user_key.to_vec()));
+        Ok(())
+    }
+
+    fn unlock(&self, account_id: &str) -> std::result::Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+        self.unlocks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(account_id.to_owned());
+        if let Some(failure) = self
+            .refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            return Err(failure);
+        }
+        match self.sealed() {
+            Some((sealed_for, key)) if sealed_for == account_id => Ok(Zeroizing::new(key)),
+            _ => Err(TouchIdFailure::Unavailable),
+        }
+    }
+}
+
 pub struct SocketDir(PathBuf);
 
 impl SocketDir {

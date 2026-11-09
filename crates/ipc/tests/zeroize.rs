@@ -94,6 +94,7 @@ fn draft() -> ItemDraftDto {
             totp: secret(),
             uris: vec![plain()],
         },
+        revision_date: None,
     }
 }
 
@@ -186,13 +187,12 @@ fn secrets_leave_no_plaintext_in_freed_memory() {
             }),
         ),
         (
-            "user key reply frame",
+            "verify master password request frame",
             Box::new(|| {
-                let message = DaemonMessage::Response {
+                round_trip_ui(&UiMessage::Request {
                     id: 3,
-                    result: Ok(Reply::UserKey(Zeroizing::new(SENTINEL.as_bytes().to_vec()))),
-                };
-                round_trip_daemon(&message);
+                    call: Call::VerifyMasterPassword(secret()),
+                });
             }),
         ),
         (

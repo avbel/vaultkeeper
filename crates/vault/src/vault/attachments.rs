@@ -180,7 +180,10 @@ impl Inner {
         let temp = TempFile::new_in(&self.store.temp_dir(&ctx.account_id)?);
         {
             let mut file = tokio::fs::File::from_std(create_private_file(temp.path())?);
-            let downloaded = ctx.client.download_attachment(url, &mut file).await;
+            let downloaded = ctx
+                .client
+                .download_attachment_capped(url, &mut file, download_limit(info.size.as_deref()))
+                .await;
             if let Err(error) = &downloaded
                 && error.is_offline()
             {
@@ -319,5 +322,35 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 2, "{names:?}");
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// The server announces the stored (encrypted) size; 65 bytes of slack covers a rounded or
+/// slightly different figure without letting a hostile server stream without bound.
+fn download_limit(announced: Option<&str>) -> u64 {
+    announced
+        .and_then(|size| size.trim().parse::<u64>().ok())
+        .map_or(UNANNOUNCED_LIMIT, |size| size.saturating_add(65))
+}
+
+/// Used only when the server gave no usable size.
+const UNANNOUNCED_LIMIT: u64 = 4 << 30;
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn limit_is_the_announced_size_plus_65() {
+        assert_eq!(download_limit(Some("1000")), 1065);
+        assert_eq!(download_limit(Some(" 7 ")), 72);
+        assert_eq!(download_limit(Some(&u64::MAX.to_string())), u64::MAX);
+    }
+
+    #[test]
+    fn unusable_sizes_fall_back_to_the_ceiling() {
+        for size in [None, Some(""), Some("big"), Some("-1")] {
+            assert_eq!(download_limit(size), UNANNOUNCED_LIMIT, "{size:?}");
+        }
     }
 }

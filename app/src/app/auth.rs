@@ -208,17 +208,13 @@ impl<S: VaultService> App<S> {
         self.set_lock_busy(true);
         let biometrics = Arc::clone(&self.hooks.biometrics);
         self.exec.spawn_blocking(
-            move || biometrics.unlock(&account.id, "unlock your vault"),
+            move || biometrics.unlock(&account.id),
             handler!(self, |app, result| app.touch_id_unlocked(result)),
         );
     }
 
-    fn touch_id_unlocked(&self, result: crate::hooks::HookResult<Zeroizing<Vec<u8>>>) {
-        let result = result.map_err(|error| error.to_string()).and_then(|key| {
-            self.vault
-                .unlock_with_user_key(key)
-                .map_err(|error| viewmodel::error_text(&error))
-        });
+    fn touch_id_unlocked(&self, result: crate::hooks::HookResult<()>) {
+        let result = result.map_err(|error| error.to_string());
         self.set_lock_busy(false);
         match result {
             Ok(()) => self.on_vault_changed(),

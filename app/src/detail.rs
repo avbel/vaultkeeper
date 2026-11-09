@@ -5,6 +5,8 @@ use bwl_vault::model::{CopyField, IdentityData, ItemData, ItemDraft};
 use crate::{ui::DetailField, viewmodel::copy_code};
 
 pub const MASK: &str = "••••••••";
+/// Stands in for the code of an item whose master password re-prompt is not cleared yet.
+pub const TOTP_MASK: &str = "••• •••";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {
@@ -35,6 +37,8 @@ pub enum Secret {
     Passport,
     License,
     PrivateKey,
+    /// Notes of an item that asks for the master password.
+    Notes,
     Custom(usize),
 }
 
@@ -111,6 +115,7 @@ pub fn secret_value(draft: &ItemDraft, secret: Secret) -> Option<&str> {
         (ItemData::Identity(identity), Secret::Passport) => identity.passport_number.as_str(),
         (ItemData::Identity(identity), Secret::License) => identity.license_number.as_str(),
         (ItemData::SshKey { private_key, .. }, Secret::PrivateKey) => private_key.as_str(),
+        (_, Secret::Notes) => draft.notes.as_str(),
         (_, Secret::Custom(index)) => draft.fields.get(index)?.value.as_str(),
         _ => return None,
     };
@@ -286,10 +291,17 @@ pub fn fields(draft: &ItemDraft) -> Vec<FieldSpec> {
     let mut out = Vec::new();
     data_fields(&mut out, &draft.data);
     if !draft.notes.is_empty() {
-        out.push(
+        let notes = if draft.reprompt {
+            FieldSpec::secret(
+                "Notes",
+                Secret::Notes,
+                Some(CopyField::Notes),
+                MASK.to_owned(),
+            )
+        } else {
             FieldSpec::plain("Notes", &draft.notes, Some(CopyField::Notes))
-                .with_kind(FieldKind::Multiline),
-        );
+        };
+        out.push(notes.with_kind(FieldKind::Multiline));
     }
     for (index, field) in draft.fields.iter().enumerate() {
         let copy = Some(CopyField::Custom(index));
@@ -337,6 +349,7 @@ mod tests {
             reprompt: false,
             fields: Vec::new(),
             data,
+            revision_date: None,
         }
     }
 
@@ -466,5 +479,22 @@ mod tests {
         assert_eq!(location(Some("Work"), Some("Acme")), "Acme · Work");
         assert_eq!(location(None, Some("Acme")), "Acme");
         assert_eq!(location(None, None), "");
+    }
+
+    #[test]
+    fn notes_are_masked_only_for_reprompt_items() {
+        let mut item = draft(ItemData::SecureNote);
+        item.notes = Zeroizing::new("door code 4711".to_owned());
+        let plain = fields(&item);
+        assert_eq!(plain[0].value, "door code 4711");
+        assert_eq!(plain[0].secret, None);
+
+        item.reprompt = true;
+        let gated = fields(&item);
+        assert_eq!(gated[0].value, MASK);
+        assert_eq!(gated[0].secret, Some(Secret::Notes));
+        assert_eq!(gated[0].kind, FieldKind::Multiline);
+        assert_eq!(gated[0].copy, Some(CopyField::Notes));
+        assert_eq!(secret_value(&item, Secret::Notes), Some("door code 4711"));
     }
 }

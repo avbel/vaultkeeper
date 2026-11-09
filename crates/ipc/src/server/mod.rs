@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::{
-    IpcError, PeerVerifier, SameExecutable,
+    IpcError, PeerVerifier, SameExecutable, TouchIdBackend,
     peer::own_uid,
     protocol::{SshDecision, SshPrompt, UiCommand, UiNotice},
 };
@@ -63,6 +63,9 @@ pub struct ServeOptions {
     pub handshake_timeout: Duration,
     /// Where [`UiNotice`]s from the UI process go; dropped when `None` or when the channel is full.
     pub notices: Option<mpsc::Sender<UiNotice>>,
+    /// Serves `EnrollTouchId` / `UnlockWithTouchId`; without it they answer
+    /// [`crate::TouchIdFailure::Unavailable`].
+    pub touch_id: Option<Arc<dyn TouchIdBackend>>,
 }
 
 impl ServeOptions {
@@ -77,6 +80,15 @@ impl ServeOptions {
             max_concurrent_calls: DEFAULT_MAX_CALLS,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             notices: None,
+            touch_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_touch_id(self, backend: Arc<dyn TouchIdBackend>) -> Self {
+        Self {
+            touch_id: Some(backend),
+            ..self
         }
     }
 
@@ -141,6 +153,7 @@ struct Shared<S> {
     max_concurrent_calls: usize,
     handshake_timeout: Duration,
     notices: Option<mpsc::Sender<UiNotice>>,
+    touch_id: Option<Arc<dyn TouchIdBackend>>,
     /// One permit: the connected UI process.
     slot: Arc<Semaphore>,
 }
@@ -176,6 +189,7 @@ pub async fn serve_with<S: VaultService>(
         max_concurrent_calls: options.max_concurrent_calls.max(1),
         handshake_timeout: options.handshake_timeout,
         notices: options.notices,
+        touch_id: options.touch_id,
         slot: Arc::clone(&slot),
     });
     let task = tokio::spawn(accept_loop(listener, shared, stop_rx));

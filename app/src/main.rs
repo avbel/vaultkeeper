@@ -5,7 +5,7 @@ use bw_lite::{
     SshApprovalRequest, UiCommand,
     cli::{self, Mode},
     hooks::Hooks,
-    mock::{MOCK_MASTER_PASSWORD, MockConfig, MockVault, mock_user_key},
+    mock::{MOCK_MASTER_PASSWORD, MockConfig, MockVault},
     run::{Backend, UiOptions, run_ui, select_backend},
 };
 use tokio::sync::{mpsc, oneshot};
@@ -46,14 +46,8 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
     };
     tracing::info!(password = MOCK_MASTER_PASSWORD, "mock vault");
     let vault = Arc::new(MockVault::new(&config));
-    let hooks = Hooks::logging();
     // The mock pretends Touch ID is enrolled for its logged-in accounts.
-    for account in ["acc-alice", "acc-bob"] {
-        hooks
-            .biometrics
-            .enroll(account, &mock_user_key(account))
-            .context("pre-enrol mock Touch ID")?;
-    }
+    let hooks = Hooks::mock(&vault, &["acc-alice", "acc-bob"]);
     let mut settings = hooks.settings.load();
     if let Some(theme) = args.theme {
         settings.theme = theme;

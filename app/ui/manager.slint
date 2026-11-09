@@ -195,7 +195,8 @@ export component ManagerWindow inherits Window {
     callback switch-account(int);
     callback add-account();
     callback logout-confirmed();
-    callback reprompt-submit(string);
+    callback edit-folder-selected(int);
+        callback reprompt-submit(string);
     callback reprompt-cancel();
     callback copy-field(int) -> bool;
     callback reveal-field(int);
@@ -428,6 +429,7 @@ export component ManagerWindow inherits Window {
                         add-uri => { root.edit-add-uri(); }
                         save => { root.edit-save(); }
                         cancel => { root.edit-cancel(); }
+                        folder-selected(i) => { root.edit-folder-selected(i); }
                     }
                     if root.detail-mode == 3: GeneratorView {
                         closable: true;

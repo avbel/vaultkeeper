@@ -11,14 +11,15 @@ use zeroize::Zeroizing;
 
 use crate::dto::{
     AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemDraftDto,
-    ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SessionStateDto, SshKeyDto,
-    TotpCodeDto, TwoFactorAnswerDto, WireError,
+    ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SessionStateDto, TotpCodeDto,
+    TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Login waits on the KDF and the server, sync and attachments on transfers.
+/// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
+/// on the user.
 const LONG_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// UI -> daemon.
@@ -173,7 +174,28 @@ pub struct SshPrompt {
     pub purpose: Option<String>,
 }
 
-/// One variant per `VaultService` method. Paths travel as raw OS bytes.
+/// Why a Touch ID enrolment or unlock in the daemon did not happen. Vault errors (locked, wrong
+/// key) travel as [`WireError`] instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum TouchIdFailure {
+    #[error("Touch ID is not available")]
+    Unavailable,
+    #[error("cancelled")]
+    Cancelled,
+    /// The enrolment can never work again (fingerprints changed, corrupt file); the daemon has
+    /// already removed it.
+    #[error("fingerprints changed since enrolment")]
+    Invalidated,
+    /// The UI asked for an account that is no longer the active one.
+    #[error("the active account changed")]
+    AccountChanged,
+    #[error("{0}")]
+    Failed(String),
+}
+
+/// One variant per `VaultService` method, except that key material never crosses the socket:
+/// Touch ID enrolment and unlock run inside the daemon, and SSH keys stay with its agent.
+/// Paths travel as raw OS bytes.
 #[derive(Serialize, Deserialize)]
 pub enum Call {
     State,
@@ -185,8 +207,15 @@ pub enum Call {
     },
     SendEmailCode,
     UnlockWithPassword(Zeroizing<String>),
-    UnlockWithUserKey(Zeroizing<Vec<u8>>),
-    UserKey,
+    /// Wraps the unlocked vault's user key for `account_id` (which must be the active account)
+    /// in the Secure Enclave. Never prompts.
+    EnrollTouchId {
+        account_id: String,
+    },
+    /// The daemon shows the Touch ID prompt, unwraps the key and unlocks `account_id`.
+    UnlockWithTouchId {
+        account_id: String,
+    },
     VerifyMasterPassword(Zeroizing<String>),
     Lock,
     Logout,
@@ -238,7 +267,6 @@ pub enum Call {
         name: String,
     },
     DeleteFolder(String),
-    SshKeys,
     ProbeServer(String),
 }
 
@@ -248,6 +276,7 @@ impl Call {
     pub const fn timeout(&self) -> Duration {
         match self {
             Self::Login { .. }
+            | Self::UnlockWithTouchId { .. }
             | Self::Sync
             | Self::DownloadAttachment { .. }
             | Self::UploadAttachment { .. }
@@ -264,7 +293,7 @@ impl Call {
             self,
             Self::State
                 | Self::Changes
-                | Self::UserKey
+                | Self::EnrollTouchId { .. }
                 | Self::VerifyMasterPassword(_)
                 | Self::Accounts
                 | Self::IsOffline
@@ -277,7 +306,6 @@ impl Call {
                 | Self::Draft(_)
                 | Self::Attachments(_)
                 | Self::DownloadAttachment { .. }
-                | Self::SshKeys
                 | Self::ProbeServer(_)
         )
     }
@@ -291,7 +319,7 @@ pub enum Reply {
     Revision(u64),
     State(SessionStateDto),
     LoginStep(LoginStepDto),
-    UserKey(Zeroizing<Vec<u8>>),
+    TouchId(Result<(), TouchIdFailure>),
     Accounts(Vec<AccountDto>),
     Items(Vec<ItemSummaryDto>),
     Folders(Vec<FolderDto>),
@@ -304,7 +332,6 @@ pub enum Reply {
     Attachments(Vec<AttachmentDto>),
     Attachment(AttachmentDto),
     Folder(FolderDto),
-    SshKeys(Vec<SshKeyDto>),
     ServerProbe { version: Option<String> },
 }
 
@@ -336,6 +363,14 @@ mod tests {
             .timeout(),
             LONG_TIMEOUT
         );
+        assert_eq!(
+            Call::UnlockWithTouchId {
+                account_id: "a".to_owned()
+            }
+            .timeout(),
+            LONG_TIMEOUT,
+            "the user may take a while to touch the sensor"
+        );
         assert_eq!(Call::Folders.timeout(), DEFAULT_TIMEOUT);
         assert_eq!(Call::Lock.timeout(), DEFAULT_TIMEOUT);
     }
@@ -355,6 +390,14 @@ mod tests {
         assert!(Call::SwitchAccount("a".to_owned()).changes_state());
         assert!(Call::CreateFolder("x".to_owned()).changes_state());
         assert!(!Call::ProbeServer("https://vault.example".to_owned()).changes_state());
+        let account_id = "a".to_owned();
+        assert!(
+            !Call::EnrollTouchId {
+                account_id: account_id.clone()
+            }
+            .changes_state()
+        );
+        assert!(Call::UnlockWithTouchId { account_id }.changes_state());
     }
 
     #[test]

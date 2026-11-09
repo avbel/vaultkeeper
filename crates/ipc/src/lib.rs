@@ -10,6 +10,8 @@
 //! - **Frames:** a u32 little-endian length (at most [`frame::MAX_FRAME_LEN`]), then a postcard
 //!   body: [`protocol::UiMessage`] one way, [`protocol::DaemonMessage`] the other. Frame buffers
 //!   are exactly sized `Zeroizing` vectors, and secret DTOs wipe themselves on drop.
+//! - **No key material on the wire:** Touch ID enrolment and unlock run in the daemon through a
+//!   [`TouchIdBackend`]; the UI never receives the user key or SSH private keys.
 //! - **Calls** are multiplexed by id, so a slow sync does not hold up a search; the daemon runs
 //!   up to 8 at once per connection.
 //! - **Notices** ([`UiNotice`]: settings saved, user activity) go the other way without an answer,
@@ -34,11 +36,13 @@ pub mod frame;
 mod peer;
 pub mod protocol;
 mod server;
+mod touch_id;
 
 pub use client::{EventStream, RemoteVault, SshApproval, UiEvent};
 pub use error::{ConvertError, IpcError, ipc_error};
 pub use peer::{PeerCredentials, PeerVerifier, SameExecutable};
 pub use protocol::{
-    PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt, UiCommand, UiNotice,
+    PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt, TouchIdFailure, UiCommand, UiNotice,
 };
 pub use server::{DaemonEvent, ServeOptions, ServerHandle, serve, serve_with};
+pub use touch_id::TouchIdBackend;
