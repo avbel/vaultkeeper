@@ -66,12 +66,20 @@ pub fn system_dark() -> Option<bool> {
     }
 }
 
+/// How often the Dock icon is matched to the system appearance while it is shown. Slint follows
+/// the theme on its own, so nothing tells this code when it changes; one AppKit read per tick.
+#[cfg(target_os = "macos")]
+const ICON_THEME_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct AppKitDock;
 
 impl DockIcon for AppKitDock {
     fn set_visible(&self, visible: bool) {
         #[cfg(target_os = "macos")]
-        macos::set_regular(visible);
+        {
+            macos::set_regular(visible);
+            macos::follow_theme_in_dock(visible);
+        }
         #[cfg(not(target_os = "macos"))]
         let _ = visible;
     }
@@ -103,14 +111,65 @@ impl WindowPlacement for CursorScreen {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use objc2::MainThreadMarker;
+    use std::cell::{Cell, RefCell};
+
+    use objc2::{AllocAnyThread, MainThreadMarker};
     use objc2_app_kit::{
         NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
-        NSApplicationActivationPolicy, NSEvent, NSScreen,
+        NSApplicationActivationPolicy, NSEvent, NSImage, NSScreen,
     };
-    use objc2_foundation::NSArray;
+    use objc2_foundation::{NSArray, NSData};
 
-    use super::ScreenRect;
+    use super::{ICON_THEME_POLL, ScreenRect};
+
+    // Light: white background, dark: black (packaging/macos/icon*.svg rendered at 512 px). The
+    // bundle's .icns stays light, so Finder shows that one; only the running app's Dock and
+    // app-switcher icon follow the theme.
+    const ICON_LIGHT: &[u8] = include_bytes!("../../resources/app-icon-light.png");
+    const ICON_DARK: &[u8] = include_bytes!("../../resources/app-icon-dark.png");
+
+    thread_local! {
+        static ICON_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+        static ICON_DARK_SHOWN: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn follow_theme_in_dock(visible: bool) {
+        if !visible {
+            ICON_TIMER.with_borrow_mut(|timer| *timer = None);
+            return;
+        }
+        match_icon_to_theme();
+        ICON_TIMER.with_borrow_mut(|timer| {
+            let poll = timer.get_or_insert_with(slint::Timer::default);
+            if !poll.running() {
+                poll.start(
+                    slint::TimerMode::Repeated,
+                    ICON_THEME_POLL,
+                    match_icon_to_theme,
+                );
+            }
+        });
+    }
+
+    fn match_icon_to_theme() {
+        let Some(dark) = system_dark() else {
+            return;
+        };
+        if ICON_DARK_SHOWN.get() == Some(dark) {
+            return;
+        }
+        let Some(mtm) = main_thread() else {
+            return;
+        };
+        let data = NSData::with_bytes(if dark { ICON_DARK } else { ICON_LIGHT });
+        let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+            tracing::warn!("embedded app icon did not decode");
+            return;
+        };
+        // SAFETY: called on the main thread (checked above) with a valid image.
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+        ICON_DARK_SHOWN.set(Some(dark));
+    }
 
     /// Every caller is a Slint callback, which runs on the main thread; elsewhere this is a no-op.
     fn main_thread() -> Option<MainThreadMarker> {
