@@ -282,3 +282,28 @@ fn the_ssh_config_lines_are_shown_and_copied() {
     assert!(window.invoke_copy_ssh_config());
     assert_eq!(h.clipboard.last().as_deref(), Some(lines.as_str()));
 }
+
+#[test]
+fn generator_options_are_saved_and_the_next_generator_opens_with_them() {
+    let (h, window) = open_generator();
+    find_slider(&window).set_accessible_value("32");
+    pump();
+    click(&window, "0-9");
+    let saved = h.settings.load().generator;
+    assert_eq!(saved.length, 32);
+    assert!(!saved.numbers);
+
+    let next = harness(Setup {
+        settings: h.settings.load(),
+        ..Setup::default()
+    });
+    next.app.open_generator_window();
+    pump();
+    let next_window = next.app.generator_window().expect("generator");
+    let state = next_window.global::<GeneratorState>();
+    assert_eq!(state.get_length(), 32);
+    assert!(!state.get_numbers());
+    let value = state.get_result().to_string();
+    assert_eq!(value.chars().count(), 32);
+    assert!(!value.chars().any(|c| c.is_ascii_digit()), "{value}");
+}

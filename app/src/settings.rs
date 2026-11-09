@@ -131,6 +131,8 @@ pub struct Settings {
     pub show_shortcuts: bool,
     /// Start the Touch ID unlock as soon as something needs the vault, before any lock window.
     pub touch_id_right_away: bool,
+    #[serde(deserialize_with = "lenient_generator")]
+    pub generator: GeneratorPrefs,
     /// Sealed by [`crate::last_login`]; never plain text. A value of the wrong type reads as
     /// `None` instead of failing the whole file.
     #[serde(deserialize_with = "lenient_string")]
@@ -157,8 +159,58 @@ impl Default for Settings {
             show_shortcuts: true,
             touch_id_right_away: false,
             last_login: None,
+            generator: GeneratorPrefs::default(),
         }
     }
+}
+
+/// The generator's last options, so the next generator opens with them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneratorPrefs {
+    pub passphrase_mode: bool,
+    pub length: u8,
+    pub uppercase: bool,
+    pub lowercase: bool,
+    pub numbers: bool,
+    pub special: bool,
+    pub min_numbers: u8,
+    pub min_special: u8,
+    pub avoid_ambiguous: bool,
+    pub words: u8,
+    pub separator: String,
+    pub capitalize: bool,
+    pub include_number: bool,
+}
+
+impl Default for GeneratorPrefs {
+    fn default() -> Self {
+        let password = bwl_gen::generator::PasswordOptions::default();
+        let passphrase = bwl_gen::generator::PassphraseOptions::default();
+        Self {
+            passphrase_mode: false,
+            length: password.length,
+            uppercase: password.uppercase,
+            lowercase: password.lowercase,
+            numbers: password.numbers,
+            special: password.special,
+            min_numbers: password.min_numbers,
+            min_special: password.min_special,
+            avoid_ambiguous: password.avoid_ambiguous,
+            words: passphrase.words,
+            separator: passphrase.separator,
+            capitalize: passphrase.capitalize,
+            include_number: passphrase.include_number,
+        }
+    }
+}
+
+/// A damaged `generator` entry falls back to the defaults instead of failing the whole file.
+fn lenient_generator<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<GeneratorPrefs, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 fn lenient_string<'de, D: serde::Deserializer<'de>>(
@@ -437,6 +489,16 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_generator_entry_falls_back_to_the_defaults_only() {
+        let json = r#"{"theme":"dark","generator":{"length":"long"}}"#;
+        let settings: Settings = serde_json::from_str(json).expect(json);
+        assert_eq!(settings.theme, ThemeChoice::Dark);
+        assert_eq!(settings.generator, GeneratorPrefs::default());
+        let missing: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("missing");
+        assert_eq!(missing.generator, GeneratorPrefs::default());
+    }
+
+    #[test]
     fn json_round_trips_every_field() {
         let settings = Settings {
             theme: ThemeChoice::Dark,
@@ -462,6 +524,14 @@ mod tests {
             show_shortcuts: false,
             touch_id_right_away: true,
             last_login: Some("2.sealed".to_owned()),
+            generator: GeneratorPrefs {
+                passphrase_mode: true,
+                length: 40,
+                special: true,
+                words: 8,
+                separator: "_".to_owned(),
+                ..GeneratorPrefs::default()
+            },
         };
         let json = serde_json::to_string(&settings).expect("encode");
         let back: Settings = serde_json::from_str(&json).expect("decode");

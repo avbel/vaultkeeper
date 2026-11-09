@@ -156,6 +156,7 @@ pub struct App<S: VaultService> {
 impl<S: VaultService> App<S> {
     pub fn new(vault: Arc<S>, exec: Exec, hooks: Hooks) -> Rc<Self> {
         let settings = hooks.settings.load();
+        let settings_generator = settings.generator.clone();
         let epoch = hooks.clock.unix_now();
         let phase = Phase::of(&vault.state());
         Rc::new_cyclic(|me| Self {
@@ -180,7 +181,7 @@ impl<S: VaultService> App<S> {
             login: RefCell::new(None),
             settings_window: RefCell::new(None),
             generator_window: RefCell::new(None),
-            generator: RefCell::new(GeneratorCore::default()),
+            generator: RefCell::new(GeneratorCore::from_prefs(&settings_generator)),
             ssh: RefCell::new(SshQueue::default()),
             ssh_prompt: RefCell::new(None),
             ticker: Ticker::default(),

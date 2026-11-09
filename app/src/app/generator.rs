@@ -6,7 +6,10 @@ use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};
-use crate::ui::{GeneratorState, GeneratorWindow};
+use crate::{
+    settings::GeneratorPrefs,
+    ui::{GeneratorState, GeneratorWindow},
+};
 
 #[derive(Default)]
 pub(super) struct GeneratorCore {
@@ -36,6 +39,50 @@ impl GeneratorCore {
 
     fn push(&mut self, value: Zeroizing<String>) {
         self.current = value;
+    }
+}
+
+impl GeneratorCore {
+    /// Starts from the options saved last time, clamped like options read from the view.
+    pub(super) fn from_prefs(prefs: &GeneratorPrefs) -> Self {
+        Self {
+            passphrase_mode: prefs.passphrase_mode,
+            password: PasswordOptions {
+                length: clamp_u8(i32::from(prefs.length), 5, 128),
+                uppercase: prefs.uppercase,
+                lowercase: prefs.lowercase,
+                numbers: prefs.numbers,
+                special: prefs.special,
+                min_numbers: clamp_u8(i32::from(prefs.min_numbers), 0, 9),
+                min_special: clamp_u8(i32::from(prefs.min_special), 0, 9),
+                avoid_ambiguous: prefs.avoid_ambiguous,
+            },
+            passphrase: PassphraseOptions {
+                words: clamp_u8(i32::from(prefs.words), 3, 20),
+                separator: prefs.separator.clone(),
+                capitalize: prefs.capitalize,
+                include_number: prefs.include_number,
+            },
+            current: Zeroizing::new(String::new()),
+        }
+    }
+
+    pub(super) fn prefs(&self) -> GeneratorPrefs {
+        GeneratorPrefs {
+            passphrase_mode: self.passphrase_mode,
+            length: self.password.length,
+            uppercase: self.password.uppercase,
+            lowercase: self.password.lowercase,
+            numbers: self.password.numbers,
+            special: self.password.special,
+            min_numbers: self.password.min_numbers,
+            min_special: self.password.min_special,
+            avoid_ambiguous: self.password.avoid_ambiguous,
+            words: self.passphrase.words,
+            separator: self.passphrase.separator.clone(),
+            capitalize: self.passphrase.capitalize,
+            include_number: self.passphrase.include_number,
+        }
     }
 }
 
@@ -122,10 +169,17 @@ impl<S: VaultService> App<S> {
                     .map(|window| read_options(&window.global::<GeneratorState>()))
             });
         if let Some((passphrase_mode, password, passphrase)) = options {
-            let mut core = self.generator.borrow_mut();
-            core.passphrase_mode = passphrase_mode;
-            core.password = password;
-            core.passphrase = passphrase;
+            let prefs = {
+                let mut core = self.generator.borrow_mut();
+                core.passphrase_mode = passphrase_mode;
+                core.password = password;
+                core.passphrase = passphrase;
+                core.prefs()
+            };
+            // Kept for the next generator, also after this UI process has exited.
+            if self.settings.borrow().generator != prefs {
+                self.update_settings(|settings| settings.generator = prefs);
+            }
         }
         self.regenerate();
     }
@@ -222,6 +276,31 @@ mod tests {
         assert_eq!(core.strings(), ["v14"]);
         core.clear();
         assert_eq!(core.strings(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn saved_options_round_trip_and_are_clamped_on_load() {
+        let prefs = GeneratorPrefs {
+            passphrase_mode: true,
+            length: 200,
+            min_numbers: 42,
+            words: 1,
+            separator: "+".to_owned(),
+            ..GeneratorPrefs::default()
+        };
+        let core = GeneratorCore::from_prefs(&prefs);
+        assert!(core.passphrase_mode);
+        assert_eq!(core.password.length, 128);
+        assert_eq!(core.password.min_numbers, 9);
+        assert_eq!(core.passphrase.words, 3);
+        assert_eq!(core.passphrase.separator, "+");
+        let back = core.prefs();
+        assert_eq!(
+            (back.length, back.min_numbers, back.words),
+            (128, 9, 3),
+            "the clamped values are what gets saved"
+        );
+        assert_eq!(GeneratorCore::from_prefs(&back).prefs(), back);
     }
 
     #[test]
