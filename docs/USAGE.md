@@ -170,8 +170,8 @@ Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *D
 
 Settings → Shortcuts → *Show keyboard shortcuts* (on by default). Off hides the shortcut hints:
 button suffixes such as *Lock ⌘⇧L*, key caps in fields (*⌘F*, *Esc*), *Settings ⌘,* on the lock
-window, the hotkey after *Quick search* in the tray menu and *⌘⇧↩* next to the Quick Panel's
-Auto-type button. Every open window follows at once. The
+window and *⌘⇧↩* next to the Quick Panel's Auto-type button. The tray menu never shows
+shortcuts. Every open window follows at once. The
 shortcuts keep working, and the key legends stay: the Quick Panel footer (Enter, ⇧Enter, ⌘Enter…)
 and the Manager's empty detail pane.
 

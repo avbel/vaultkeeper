@@ -64,9 +64,6 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         })
         .collect();
     tray.set_accounts(ModelRc::new(VecModel::from(labels)));
-    let settings = daemon.settings();
-    tray.set_quick_hotkey(hotkey_hint(&settings, &settings.hotkey).into());
-    tray.set_generator_hotkey(hotkey_hint(&settings, &settings.generator_hotkey).into());
     // Re-read on every refresh: a system appearance switch shows on the next vault or settings
     // change (a sync runs at least every 30 minutes).
     tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {
@@ -74,15 +71,6 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         Some(false) => ColorScheme::Light,
         None => ColorScheme::Unknown,
     });
-}
-
-/// The hotkey suffix of a tray item; empty (no suffix) with "Show keyboard shortcuts" off.
-fn hotkey_hint(settings: &crate::settings::Settings, accelerator: &str) -> String {
-    if settings.show_shortcuts {
-        crate::settings::hotkey_symbols(accelerator)
-    } else {
-        String::new()
-    }
 }
 
 fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
@@ -104,28 +92,4 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
         }
     })?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::settings::Settings;
-
-    #[test]
-    fn tray_items_show_their_hotkeys_only_while_shortcuts_are_shown() {
-        let shown = Settings {
-            hotkey: "Cmd+Shift+Space".to_owned(),
-            generator_hotkey: "Cmd+Alt+G".to_owned(),
-            ..Settings::default()
-        };
-        assert_eq!(hotkey_hint(&shown, &shown.hotkey), "⇧⌘Space");
-        assert_eq!(hotkey_hint(&shown, &shown.generator_hotkey), "⌥⌘G");
-        assert_eq!(hotkey_hint(&shown, ""), "", "no Generator hotkey set");
-        let hidden = Settings {
-            show_shortcuts: false,
-            ..shown
-        };
-        assert_eq!(hotkey_hint(&hidden, &hidden.hotkey), "");
-        assert_eq!(hotkey_hint(&hidden, &hidden.generator_hotkey), "");
-    }
 }

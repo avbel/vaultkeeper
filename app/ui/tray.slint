@@ -8,9 +8,6 @@ export component TrayIcon inherits SystemTrayIcon {
     in property <bool> locked: true;
     in property <bool> logged-in: true;
     in property <[string]> accounts;
-    // The global Quick Panel shortcut as shown to the user, e.g. "⇧⌘Space"; empty hides the hint.
-    in property <string> quick-hotkey;
-    in property <string> generator-hotkey;
     in property <ColorScheme> menu-bar-scheme: ColorScheme.unknown;
     icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
@@ -28,7 +25,7 @@ export component TrayIcon inherits SystemTrayIcon {
 
     Menu {
         MenuItem {
-            title: root.quick-hotkey == "" ? "Quick search" : "Quick search    " + root.quick-hotkey;
+            title: "Quick search";
             activated => { root.quick-search(); }
         }
         MenuItem {
@@ -36,7 +33,7 @@ export component TrayIcon inherits SystemTrayIcon {
             activated => { root.open-vault(); }
         }
         MenuItem {
-            title: root.generator-hotkey == "" ? "Generator" : "Generator    " + root.generator-hotkey;
+            title: "Generator";
             activated => { root.generator(); }
         }
         MenuItem {
