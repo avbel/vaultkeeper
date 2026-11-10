@@ -263,6 +263,16 @@ export component ManagerWindow inherits Window {
 
     FocusScope {
         capture-key-pressed(event) => {
+            if root.detail-mode == 3 {
+                if event.text == Key.Escape {
+                    root.close-generator();
+                    return accept;
+                }
+                if event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.meta && (event.text == "c" || event.text == "C") {
+                    GeneratorState.copy-result();
+                    return accept;
+                }
+            }
             // While a folder name is being typed, keys belong to that field; Esc cancels it.
             if sidebar.editing {
                 if event.text == Key.Escape {

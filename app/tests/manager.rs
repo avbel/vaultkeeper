@@ -379,6 +379,22 @@ fn the_password_generate_button_opens_the_generator_whose_use_fills_the_field() 
 }
 
 #[test]
+fn generator_shortcuts_copy_and_return_to_the_editor() {
+    let (h, manager) = open();
+    manager.invoke_new_item(0);
+    pump();
+    click(&manager, "Generate Password");
+    let generated = manager
+        .global::<vaultkeeper::ui::GeneratorState>()
+        .get_result()
+        .to_string();
+    key(&manager, "c", CMD);
+    assert_eq!(h.clipboard.last(), Some(generated));
+    key(&manager, &special(Key::Escape), common::Mods::default());
+    assert_eq!(manager.get_detail_mode(), 2);
+}
+
+#[test]
 fn new_item_requires_a_name_and_saves_into_the_selected_folder() {
     let (h, manager) = open();
     click(&manager, "Dev");

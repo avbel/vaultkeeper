@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{Harness, Setup, click, harness, pump, type_into};
-use slint::ComponentHandle;
+use common::{CMD, Harness, Mods, Setup, click, harness, key, pump, special, type_into};
+use slint::{ComponentHandle, platform::Key};
 use vaultkeeper::hooks::SettingsStore;
 use vaultkeeper::{
     settings::{Settings, TextScale, ThemeChoice},
@@ -66,6 +66,16 @@ fn copying_the_generated_value_uses_the_clipboard() {
     let value = window.global::<GeneratorState>().get_result().to_string();
     click(&window, "Copy generated value");
     assert_eq!(h.clipboard.last(), Some(value));
+}
+
+#[test]
+fn generator_shortcuts_copy_and_close_the_window() {
+    let (h, window) = open_generator();
+    let value = window.global::<GeneratorState>().get_result().to_string();
+    key(&window, "c", CMD);
+    assert_eq!(h.clipboard.last(), Some(value));
+    key(&window, &special(Key::Escape), Mods::default());
+    assert!(h.app.generator_window().is_none());
 }
 
 fn open_settings(h: &Harness) -> vaultkeeper::ui::SettingsWindow {

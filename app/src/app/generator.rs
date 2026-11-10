@@ -242,24 +242,60 @@ impl<S: VaultService> App<S> {
         };
         self.apply_theme(&window);
         self.bind_generator(&window.global::<GeneratorState>());
+        window.on_close_generator(handler!(self, |app| app.close_generator_window()));
         window.window().on_close_requested(handler!(
             self,
             CloseRequestResponse::HideWindow,
             |app| {
-                if let Some(window) = app.generator_window.borrow_mut().take() {
-                    hide(&window);
-                    retire(window);
-                    app.window_closed();
-                }
+                app.close_generator_window();
                 CloseRequestResponse::HideWindow
             }
         ));
         show(&window, "generator");
+        #[cfg(target_os = "macos")]
+        hide_generator_window_buttons(&window);
         *self.generator_window.borrow_mut() = Some(window);
         if self.generator.borrow().current().is_empty() {
             self.regenerate();
         }
     }
+    fn close_generator_window(&self) {
+        if let Some(window) = self.generator_window.borrow_mut().take() {
+            hide(&window);
+            retire(window);
+            self.window_closed();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hide_generator_window_buttons(window: &GeneratorWindow) {
+    use objc2_app_kit::{NSView, NSWindowButton};
+    use slint::winit_030::{
+        WinitWindowAccessor,
+        winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
+    };
+
+    let _ = window.window().with_winit_window(|native| {
+        let Ok(handle) = native.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return;
+        };
+        // The handle refers to the live NSView owned by this winit window on the UI thread.
+        let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+        if let Some(window) = view.window() {
+            for button in [
+                NSWindowButton::MiniaturizeButton,
+                NSWindowButton::ZoomButton,
+            ] {
+                if let Some(button) = window.standardWindowButton(button) {
+                    button.setHidden(true);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

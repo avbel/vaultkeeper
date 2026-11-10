@@ -1,7 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Btn, BtnKind, CopyBtn, Divider, Segmented, SectionLabel, Select, ShortcutRecorder, Toggle } from "kit.slint";
-import { GeneratorView } from "generator.slint";
+import { GeneratorView, GeneratorState } from "generator.slint";
 
 component SettingRow inherits HorizontalLayout {
     in property <string> text;
@@ -322,22 +322,37 @@ export component GeneratorWindow inherits Window {
     min-height: 240px;
     background: Theme.surface;
     default-font-size: Theme.font-body;
-    VerticalLayout {
-        // The title in the transparent title bar beside the traffic lights, as in Settings.
-        Rectangle {
-            height: 28px;
-            WindowMoveArea { }
-            Text {
-                text: "Generator";
-                color: Theme.text;
-                font-size: Theme.font-body;
-                font-weight: 600;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+    callback close-generator();
+    forward-focus: generator-keys;
+    generator-keys := FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close-generator();
+                return accept;
             }
+            if event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.meta && (event.text == "c" || event.text == "C") {
+                GeneratorState.copy-result();
+                return accept;
+            }
+            return reject;
         }
-        view := GeneratorView {
-            show-title: false;
+        VerticalLayout {
+            // The title in the transparent title bar beside the traffic lights, as in Settings.
+            Rectangle {
+                height: 28px;
+                WindowMoveArea { }
+                Text {
+                    text: "Generator";
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            view := GeneratorView {
+                show-title: false;
+            }
         }
     }
 }
