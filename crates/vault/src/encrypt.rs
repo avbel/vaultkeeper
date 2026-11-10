@@ -21,8 +21,8 @@ use crate::{
 };
 
 const PASSWORD_HISTORY_LIMIT: usize = 5;
-const FIELD_TEXT: u8 = 0;
 const FIELD_HIDDEN: u8 = 1;
+#[cfg(test)]
 const FIELD_BOOLEAN: u8 = 2;
 const FIELD_LINKED: u8 = 3;
 /// Typed on the request; a copy from the stored cipher would be serialized after, and win over,
@@ -448,29 +448,37 @@ fn fields(
     base: Option<&Cipher>,
     item: &ItemKeys,
 ) -> Result<Option<Vec<Field>>> {
-    if fields.is_empty() {
-        return Ok(None);
-    }
     let key = &item.key;
     let base_fields = base
         .and_then(|base| base.fields.as_deref())
         .unwrap_or_default();
     let masked = base.is_some_and(|base| !base.view_password);
+    if fields.is_empty() {
+        return Ok(None);
+    }
     fields
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            let known = base_fields.get(index);
+            let known = field.source_index.and_then(|index| base_fields.get(index));
             if masked
                 && field.hidden
                 && field.value.is_empty()
-                && let Some(stored) = stored_hidden_field(field, index, base_fields, item)?
+                && let Some(stored) = stored_hidden_field(
+                    field,
+                    field.source_index.unwrap_or(index),
+                    base_fields,
+                    item,
+                )?
             {
                 return Ok(Field {
                     name: encrypt_opt(&field.name, key)?,
                     extra: item.carry(Some(&stored.extra))?,
                     ..stored.clone()
                 });
+            }
+            if masked && field.hidden {
+                return Err(Error::ReadOnly);
             }
             if masked
                 && field.value.is_empty()
@@ -480,11 +488,12 @@ fn fields(
                 // draft would erase it. Upstream disables these fields for such members.
                 return Err(Error::ReadOnly);
             }
-            let kept = known.filter(|known| matches!(known.r#type, FIELD_BOOLEAN | FIELD_LINKED));
-            let r#type = match (field.hidden, kept) {
-                (true, _) => FIELD_HIDDEN,
-                (false, Some(known)) => known.r#type,
-                (false, None) => FIELD_TEXT,
+            let kept = known
+                .filter(|known| known.r#type == FIELD_LINKED && field.field_type == FIELD_LINKED);
+            let r#type = if field.hidden {
+                FIELD_HIDDEN
+            } else {
+                field.field_type
             };
             Ok(Field {
                 r#type,
@@ -600,6 +609,9 @@ mod tests {
                 name: "pin".into(),
                 value: Zeroizing::new("1".into()),
                 hidden: true,
+                field_type: 1,
+                source_index: None,
+                withheld: false,
             }],
             data: ItemData::Login {
                 username: "me".into(),
@@ -664,8 +676,45 @@ mod tests {
         if let ItemData::Login { uris, .. } = &mut expected.data {
             uris.truncate(1);
         }
+        for (index, field) in expected.fields.iter_mut().enumerate() {
+            field.source_index = Some(index);
+        }
         expected.revision_date = Some(Arc::from("2026-11-08T18:00:00.000Z"));
         assert!(back == expected);
+    }
+
+    #[test]
+    fn custom_field_types_and_positions_survive_removal() {
+        let keys = ring();
+        let base = login("l1", "GitHub", "octocat", "secret", &keys);
+        let mut draft = reveal::draft(&base, &keys).unwrap();
+        draft.fields.remove(0);
+        draft.fields.push(CustomField {
+            name: "note".into(),
+            value: Zeroizing::new("line one\nline two".into()),
+            hidden: false,
+            field_type: 0,
+            source_index: None,
+            withheld: false,
+        });
+        draft.fields.push(CustomField {
+            name: "secret".into(),
+            value: Zeroizing::new("hidden\nvalue".into()),
+            hidden: true,
+            field_type: 1,
+            source_index: None,
+            withheld: false,
+        });
+        let request = prepare(&draft, Some(&base), &keys).unwrap().request;
+        let fields = request.fields.as_ref().unwrap();
+        assert_eq!(
+            fields.iter().map(|field| field.r#type).collect::<Vec<_>>(),
+            [2, 0, 1]
+        );
+        let reread = reveal::draft(&stored(&request, "l1"), &keys).unwrap();
+        assert_eq!(reread.fields[0].value.as_str(), "true");
+        assert_eq!(reread.fields[1].value.as_str(), "line one\nline two");
+        assert_eq!(reread.fields[2].value.as_str(), "hidden\nvalue");
     }
 
     #[test]

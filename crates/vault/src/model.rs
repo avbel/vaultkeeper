@@ -114,6 +114,9 @@ pub struct CustomField {
     pub name: String,
     pub value: Zeroizing<String>,
     pub hidden: bool,
+    pub field_type: u8,
+    pub source_index: Option<usize>,
+    pub withheld: bool,
 }
 
 /// Fully decrypted item for the detail pane and the edit form. Drop it when the pane closes.

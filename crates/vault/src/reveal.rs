@@ -140,7 +140,8 @@ pub(crate) fn draft(cipher: &Cipher, keys: &KeyRing) -> Result<ItemDraft> {
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|field| {
+        .enumerate()
+        .map(|(index, field)| {
             let hidden = field.r#type == FIELD_HIDDEN;
             // Like the password: "can edit, except passwords" members never see hidden values;
             // `encrypt` keeps the stored ciphertext for them.
@@ -153,6 +154,9 @@ pub(crate) fn draft(cipher: &Cipher, keys: &KeyRing) -> Result<ItemDraft> {
                 name: plain(field.name.as_deref(), &key)?,
                 value,
                 hidden,
+                field_type: field.r#type,
+                source_index: Some(index),
+                withheld: hidden && !cipher.view_password,
             })
         })
         .collect::<Result<Vec<_>>>()?;

@@ -333,6 +333,9 @@ fn push_logins(data: &mut AccountData, prng: &mut Prng, ids: &mut Ids, folders: 
                     name: "Recovery PIN".to_owned(),
                     value: Zeroizing::new(format!("{:04}", prng.below(10_000))),
                     hidden: true,
+                    field_type: 1,
+                    source_index: None,
+                    withheld: false,
                 });
             }
             data.items

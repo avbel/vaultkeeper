@@ -606,11 +606,17 @@ pub mod drafts {
                 name: "pin".into(),
                 value: Zeroizing::new("4321".into()),
                 hidden: true,
+                field_type: 1,
+                source_index: None,
+                withheld: false,
             },
             CustomField {
                 name: "plain".into(),
                 value: Zeroizing::new("visible".into()),
                 hidden: false,
+                field_type: 0,
+                source_index: None,
+                withheld: false,
             },
         ];
         draft

@@ -46,6 +46,10 @@ export struct EditField {
     multiline: bool,
     mono: bool,
     generate: bool,
+    custom: bool,
+    custom-type: int,
+    custom-name: string,
+    withheld: bool,
 }
 
 component DetailFieldRow inherits Rectangle {
@@ -602,6 +606,8 @@ export component EditForm inherits Rectangle {
     // A multi-line field changed (the SSH private key: its public key and fingerprint follow).
     callback field-edited(int, string);
     callback add-uri();
+    callback add-custom(int);
+    callback remove-custom(int);
     callback save();
     callback cancel();
     callback folder-selected(int);
@@ -661,13 +667,23 @@ export component EditForm inherits Rectangle {
             }
             for field[i] in root.fields: VerticalLayout {
                 spacing: Theme.s1;
-                Text {
+                if !field.custom: Text {
                     text: field.label;
                     color: Theme.text-muted;
                     font-size: Theme.font-hint;
                     font-weight: 500;
                 }
-                if !field.multiline: HorizontalLayout {
+                if field.custom: HorizontalLayout {
+                    spacing: Theme.s1;
+                    Field { label: "Custom field name"; text <=> field.custom-name; horizontal-stretch: 1; enabled: !field.withheld; }
+                    Btn { text: "Remove"; enabled: !field.withheld; clicked => { root.remove-custom(i); } }
+                }
+                if field.custom && field.custom-type == 2: Check {
+                    text: "Checked";
+                    checked: field.value == "true";
+                    toggled => { field.value = self.checked ? "true" : "false"; }
+                }
+                if !field.multiline && !field.custom: HorizontalLayout {
                     spacing: Theme.s1;
                     Field {
                         label: field.label;
@@ -683,11 +699,12 @@ export component EditForm inherits Rectangle {
                         clicked => { root.generate(i); }
                     }
                 }
-                if field.multiline: MultiField {
+                if field.multiline && (!field.custom || field.custom-type != 2): MultiField {
                     label: field.label;
                     text <=> field.value;
                     mono: field.mono;
                     password: field.secret;
+                    enabled: !field.withheld;
                     edited(text) => { root.field-edited(i, text); }
                 }
             }
@@ -698,6 +715,13 @@ export component EditForm inherits Rectangle {
                     kind: BtnKind.ghost;
                     clicked => { root.add-uri(); }
                 }
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: Theme.s1;
+                Btn { text: "+ Text field"; clicked => { root.add-custom(0); } }
+                Btn { text: "+ Hidden field"; clicked => { root.add-custom(1); } }
+                Btn { text: "+ Checkbox"; clicked => { root.add-custom(2); } }
             }
             Text {
                 text: "Folder";

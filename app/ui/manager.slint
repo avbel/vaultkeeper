@@ -231,6 +231,8 @@ export component ManagerWindow inherits Window {
     callback edit-generate(int);
     callback edit-field-edited(int, string);
     callback edit-add-uri();
+    callback edit-add-custom(int);
+    callback edit-remove-custom(int);
     callback edit-save();
     callback edit-cancel();
     callback leave-save();
@@ -476,6 +478,8 @@ export component ManagerWindow inherits Window {
                         generate(i) => { root.edit-generate(i); }
                         field-edited(i, text) => { root.edit-field-edited(i, text); }
                         add-uri => { root.edit-add-uri(); }
+                        add-custom(kind) => { root.edit-add-custom(kind); }
+                        remove-custom(i) => { root.edit-remove-custom(i); }
                         save => { root.edit-save(); }
                         cancel => { root.edit-cancel(); }
                         folder-selected(i) => { root.edit-folder-selected(i); }

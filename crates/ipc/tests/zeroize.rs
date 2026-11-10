@@ -87,6 +87,9 @@ fn draft() -> ItemDraftDto {
             name: plain(),
             value: secret(),
             hidden: true,
+            field_type: 1,
+            source_index: None,
+            withheld: false,
         }],
         data: ItemDataDto::Login {
             username: plain(),

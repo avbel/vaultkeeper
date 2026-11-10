@@ -45,6 +45,8 @@ impl<S: VaultService> App<S> {
             app.edit_field_edited(index, &text);
         }));
         window.on_edit_add_uri(handler!(self, |app| app.add_uri_field()));
+        window.on_edit_add_custom(handler!(self, |app, kind| app.add_custom_field(kind)));
+        window.on_edit_remove_custom(handler!(self, |app, index| app.remove_custom_field(index)));
         window.on_edit_save(handler!(self, |app| app.save_edit()));
         window.on_edit_cancel(handler!(self, |app| app.cancel_edit()));
         window.on_leave_save(handler!(self, |app| app.leave_save()));
@@ -266,17 +268,48 @@ impl<S: VaultService> App<S> {
         let window = &manager.window;
         let values: Vec<EditField> = edit.fields.iter().collect();
         let folder_id = edit.folder_id.clone();
+        let missing_custom_name = values
+            .iter()
+            .any(|row| row.custom && row.custom_name.trim().is_empty());
         let draft = edit_form::apply(
             edit.base.clone(),
             values
                 .iter()
                 .map(|field| (field.key.as_str(), field.value.as_str())),
         )
-        .map(|draft| ItemDraft {
-            favorite: window.get_edit_favorite(),
-            reprompt: window.get_edit_reprompt(),
-            folder_id,
-            ..draft
+        .and_then(|draft| {
+            if missing_custom_name {
+                Err(edit_form::EditError::CustomNameRequired)
+            } else {
+                Ok(draft)
+            }
+        })
+        .map(|mut draft| {
+            draft.fields = values
+                .iter()
+                .filter(|row| row.custom)
+                .map(|row| {
+                    let old = row
+                        .key
+                        .strip_prefix("custom:")
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .and_then(|i| edit.base.fields.get(i));
+                    vk_vault::model::CustomField {
+                        name: row.custom_name.to_string(),
+                        value: zeroize::Zeroizing::new(row.value.to_string()),
+                        hidden: row.custom_type == 1,
+                        field_type: u8::try_from(row.custom_type).unwrap_or(0),
+                        source_index: old.and_then(|field| field.source_index),
+                        withheld: old.is_some_and(|field| field.withheld),
+                    }
+                })
+                .collect();
+            ItemDraft {
+                favorite: window.get_edit_favorite(),
+                reprompt: window.get_edit_reprompt(),
+                folder_id,
+                ..draft
+            }
         });
         Some((edit.id.clone(), draft))
     }
@@ -431,6 +464,28 @@ impl<S: VaultService> App<S> {
             edit.fields.set_row_data(index, field);
         }
         true
+    }
+
+    fn add_custom_field(&self, kind: i32) {
+        if !(0..=2).contains(&kind) {
+            return;
+        }
+        let guard = self.manager.borrow();
+        if let Some(edit) = guard.as_ref().and_then(|manager| manager.edit.as_ref()) {
+            edit.fields.push(edit_form::custom_field(kind));
+        }
+    }
+
+    fn remove_custom_field(&self, index: i32) {
+        let guard = self.manager.borrow();
+        if let Some(edit) = guard.as_ref().and_then(|manager| manager.edit.as_ref())
+            && let Ok(index) = usize::try_from(index)
+            && let Some(row) = edit.fields.row_data(index)
+            && row.custom
+            && !row.withheld
+        {
+            edit.fields.remove(index);
+        }
     }
 
     fn add_uri_field(&self) {

@@ -42,6 +42,12 @@ pub struct CustomFieldDto {
     pub name: String,
     pub value: Zeroizing<String>,
     pub hidden: bool,
+    #[serde(default)]
+    pub field_type: u8,
+    #[serde(default)]
+    pub source_index: Option<usize>,
+    #[serde(default)]
+    pub withheld: bool,
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -136,6 +142,9 @@ impl From<CustomField> for CustomFieldDto {
             name: field.name,
             value: field.value,
             hidden: field.hidden,
+            field_type: field.field_type,
+            source_index: field.source_index,
+            withheld: field.withheld,
         }
     }
 }
@@ -146,6 +155,9 @@ impl From<CustomFieldDto> for CustomField {
             name: mem::take(&mut field.name),
             value: mem::take(&mut field.value),
             hidden: field.hidden,
+            field_type: field.field_type,
+            source_index: field.source_index,
+            withheld: field.withheld,
         }
     }
 }
@@ -434,11 +446,17 @@ mod tests {
                     name: "recovery".to_owned(),
                     value: secret("alpha-beta"),
                     hidden: true,
+                    field_type: 1,
+                    source_index: None,
+                    withheld: false,
                 },
                 CustomField {
                     name: "branch".to_owned(),
                     value: secret("Main St"),
                     hidden: false,
+                    field_type: 0,
+                    source_index: None,
+                    withheld: false,
                 },
             ],
             data,

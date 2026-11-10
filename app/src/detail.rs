@@ -312,19 +312,31 @@ pub fn fields(draft: &ItemDraft) -> Vec<FieldSpec> {
     }
     for (index, field) in draft.fields.iter().enumerate() {
         let copy = Some(CopyField::Custom(index));
-        if field.hidden && field.value.is_empty() {
+        if field.hidden && field.withheld {
             // The vault withholds hidden values from members without viewPassword (it returns
             // them empty, and `reveal` refuses), so there is nothing to reveal or copy.
             out.push(locked(&field.name));
         } else if field.hidden {
-            out.push(FieldSpec::secret(
+            out.push(
+                FieldSpec::secret(&field.name, Secret::Custom(index), copy, MASK.to_owned())
+                    .with_kind(FieldKind::Multiline),
+            );
+        } else if field.field_type == 2 {
+            let mut checkbox = FieldSpec::plain(
                 &field.name,
-                Secret::Custom(index),
-                copy,
-                MASK.to_owned(),
-            ));
+                if field.value.as_str() == "true" {
+                    "Checked"
+                } else {
+                    "Unchecked"
+                },
+                None,
+            );
+            checkbox.copyable = false;
+            out.push(checkbox);
         } else {
-            out.push(FieldSpec::plain(&field.name, &field.value, copy));
+            out.push(
+                FieldSpec::plain(&field.name, &field.value, copy).with_kind(FieldKind::Multiline),
+            );
         }
     }
     out
@@ -438,11 +450,17 @@ mod tests {
                 name: "PIN".to_owned(),
                 value: Zeroizing::new("0000".to_owned()),
                 hidden: true,
+                field_type: 1,
+                source_index: None,
+                withheld: false,
             },
             CustomField {
                 name: "Region".to_owned(),
                 value: Zeroizing::new("eu-west-1".to_owned()),
                 hidden: false,
+                field_type: 0,
+                source_index: None,
+                withheld: false,
             },
         ];
         let specs = fields(&item);
@@ -465,11 +483,17 @@ mod tests {
                 name: "PIN".to_owned(),
                 value: Zeroizing::new(String::new()),
                 hidden: true,
+                field_type: 1,
+                source_index: None,
+                withheld: true,
             },
             CustomField {
                 name: "Token".to_owned(),
                 value: Zeroizing::new("abc".to_owned()),
                 hidden: true,
+                field_type: 1,
+                source_index: None,
+                withheld: false,
             },
         ];
         let specs = fields(&item);

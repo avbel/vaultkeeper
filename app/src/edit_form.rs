@@ -9,6 +9,8 @@ use crate::ui::EditField;
 pub enum EditError {
     #[error("Name is required")]
     NameRequired,
+    #[error("Custom field name is required")]
+    CustomNameRequired,
     #[error("Unsupported items cannot be edited")]
     Unsupported,
 }
@@ -47,6 +49,10 @@ fn field(key: &str, label: &str, value: &str, spec: Spec) -> EditField {
         multiline: spec.multiline,
         mono: spec.mono,
         generate: spec.generate,
+        custom: false,
+        custom_type: 0,
+        custom_name: "".into(),
+        withheld: false,
     }
 }
 
@@ -214,13 +220,22 @@ pub fn edit_fields(draft: &ItemDraft) -> Vec<EditField> {
     let mut out = vec![field("name", "Name", &draft.name, TEXT)];
     data_fields(&draft.data, &mut out);
     for (index, custom) in draft.fields.iter().enumerate() {
-        let spec = if custom.hidden { SECRET } else { TEXT };
-        out.push(field(
+        let spec = Spec {
+            multiline: true,
+            ..if custom.hidden { SECRET } else { TEXT }
+        };
+        let mut row = field(
             &format!("custom:{index}"),
             &custom.name,
             &custom.value,
             spec,
-        ));
+        );
+        row.mono = false;
+        row.withheld = custom.withheld;
+        row.custom = true;
+        row.custom_type = i32::from(custom.field_type);
+        row.custom_name = custom.name.as_str().into();
+        out.push(row);
     }
     out.push(field("notes", "Notes", &draft.notes, MULTILINE));
     out
@@ -235,6 +250,23 @@ pub fn uri_field(index: usize) -> EditField {
         "",
         TEXT,
     )
+}
+
+#[must_use]
+pub fn custom_field(kind: i32) -> EditField {
+    let mut row = field(
+        "custom:new",
+        "Custom field",
+        if kind == 2 { "false" } else { "" },
+        Spec {
+            multiline: true,
+            ..if kind == 1 { SECRET } else { TEXT }
+        },
+    );
+    row.mono = false;
+    row.custom = true;
+    row.custom_type = kind;
+    row
 }
 
 fn indexed(key: &str, prefix: &str) -> Option<usize> {
@@ -381,6 +413,9 @@ mod tests {
             name: "PIN".to_owned(),
             value: Zeroizing::new("1234".to_owned()),
             hidden: true,
+            field_type: 1,
+            source_index: None,
+            withheld: false,
         }];
         draft
     }

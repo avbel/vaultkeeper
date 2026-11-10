@@ -180,6 +180,9 @@ pub fn draft() -> ItemDraft {
             name: "recovery".to_owned(),
             value: secret("alpha-beta-gamma"),
             hidden: true,
+            field_type: 1,
+            source_index: None,
+            withheld: false,
         }],
         data: ItemData::Login {
             username: "alice".to_owned(),
