@@ -11,6 +11,8 @@ export component TrayIcon inherits SystemTrayIcon {
     in property <bool> syncing;
     // "Last synced 12:04", or why the last "Sync now" failed; empty hides the line.
     in property <string> sync-label;
+    // "Browser connected: Firefox", empty when no browser session is paired; hides the line.
+    in property <string> browser-label;
     in property <ColorScheme> menu-bar-scheme: ColorScheme.unknown;
     icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
@@ -56,6 +58,10 @@ export component TrayIcon inherits SystemTrayIcon {
         }
         if root.sync-label != "" && root.logged-in: MenuItem {
             title: root.sync-label;
+            enabled: false;
+        }
+        if root.browser-label != "": MenuItem {
+            title: root.browser-label;
             enabled: false;
         }
         Menu {

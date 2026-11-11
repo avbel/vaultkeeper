@@ -7,6 +7,8 @@
 pub mod app;
 pub mod assign;
 pub mod autotype;
+pub mod browser_host;
+pub mod browser_status;
 pub mod cli;
 pub mod daemon;
 pub mod detail;

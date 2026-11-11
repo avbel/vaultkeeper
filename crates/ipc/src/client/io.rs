@@ -12,11 +12,14 @@ use tokio::{
     task::JoinSet,
 };
 
-use super::{Cache, Frame, Shared, SshApproval, UiEvent};
+use super::{BrowserPromptEvent, Cache, Frame, Shared, SshApproval, UiEvent};
 use crate::{
     IpcError,
     frame::{decode, encode, read_frame},
-    protocol::{DaemonMessage, Event, PROTOCOL_VERSION, Refusal, SshDecision, UiMessage, Welcome},
+    protocol::{
+        BrowserReply, DaemonMessage, Event, PROTOCOL_VERSION, Refusal, SshDecision, UiMessage,
+        Welcome,
+    },
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -254,6 +257,24 @@ fn on_event(
                 reply,
             }));
         }
+        Event::BrowserPrompt {
+            seq,
+            request_id,
+            prompt,
+        } => {
+            let (reply, decision) = oneshot::channel();
+            approvals.spawn(send_browser_decision(
+                shared.outbox.clone(),
+                request_id,
+                decision,
+            ));
+            let _ = events.send(UiEvent::BrowserPrompt(BrowserPromptEvent {
+                seq,
+                request_id,
+                prompt,
+                reply,
+            }));
+        }
         Event::Skipped(seq) => {
             let _ = events.send(UiEvent::Skipped(seq));
         }
@@ -262,6 +283,20 @@ fn on_event(
         }
     }
     Ok(())
+}
+
+async fn send_browser_decision(
+    outbox: mpsc::UnboundedSender<Frame>,
+    request_id: u64,
+    decision: oneshot::Receiver<BrowserReply>,
+) {
+    let reply = decision.await.unwrap_or(BrowserReply::Dismissed);
+    match encode(&UiMessage::BrowserPromptReply { request_id, reply }) {
+        Ok(frame) => {
+            let _ = outbox.send(frame);
+        }
+        Err(error) => tracing::error!(%error, "cannot encode a browser prompt reply"),
+    }
 }
 
 /// A dropped `reply` sender counts as deny, as with the SSH agent's own approval channel.

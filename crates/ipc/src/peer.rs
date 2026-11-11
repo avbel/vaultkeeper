@@ -106,6 +106,37 @@ impl PeerVerifier for SameExecutable {
     }
 }
 
+/// Checks a running process against a macOS code-signing requirement.
+#[cfg(target_os = "macos")]
+pub fn check_pid(pid: i32, requirement: &str) -> io::Result<()> {
+    code_identity::check_pid(pid, requirement)
+}
+
+/// Whether this process is signed with the macOS hardened runtime.
+#[must_use]
+pub fn has_hardened_runtime() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        code_identity::has_hardened_runtime()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// The caller's current parent PID.
+#[must_use]
+pub fn parent_pid() -> i32 {
+    // SAFETY: getppid has no preconditions.
+    unsafe { libc::getppid() }
+}
+
+/// Returns the executable path for diagnostics, not identity verification.
+pub fn process_executable(pid: i32) -> io::Result<PathBuf> {
+    executable_of(pid)
+}
+
 pub fn own_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() }
@@ -200,6 +231,7 @@ mod code_identity {
         base::{CFType, TCFType},
         data::CFData,
         dictionary::{CFDictionary, CFDictionaryRef},
+        number::CFNumber,
         string::{CFString, CFStringRef},
         url::CFURL,
     };
@@ -213,6 +245,7 @@ mod code_identity {
     #[link(name = "Security", kind = "framework")]
     unsafe extern "C" {
         static kSecCodeInfoUnique: CFStringRef;
+        static kSecCodeInfoFlags: CFStringRef;
         // Takes a SecStaticCodeRef; Apple documents that a SecCodeRef is accepted too.
         fn SecCodeCopySigningInformation(
             code: *const c_void,
@@ -223,6 +256,30 @@ mod code_identity {
 
     fn os_error(what: &str, error: impl std::fmt::Display) -> io::Error {
         io::Error::other(format!("{what}: {error}"))
+    }
+
+    pub(super) fn has_hardened_runtime() -> bool {
+        const CS_RUNTIME: i64 = 0x1_0000;
+        let Ok(code) = SecCode::for_self(Flags::NONE) else {
+            return false;
+        };
+        let mut info: CFDictionaryRef = std::ptr::null();
+        // SAFETY: code is live and info is a writable out pointer for the returned dictionary.
+        let status = unsafe {
+            SecCodeCopySigningInformation(code.as_CFTypeRef(), SIGNING_INFORMATION, &raw mut info)
+        };
+        if status != 0 || info.is_null() {
+            return false;
+        }
+        // SAFETY: a successful copy returned an owned dictionary and a live framework constant.
+        let info: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_create_rule(info) };
+        // SAFETY: framework constants remain valid for the life of the process.
+        let key = unsafe { CFString::wrap_under_get_rule(kSecCodeInfoFlags) };
+        info.find(&key)
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|value| value.to_i64())
+            .is_some_and(|flags| flags & CS_RUNTIME != 0)
     }
 
     pub(super) fn own_requirement() -> io::Result<String> {
@@ -271,6 +328,19 @@ mod code_identity {
         }
         text.push('"');
         text
+    }
+
+    pub(super) fn check_pid(pid: i32, requirement: &str) -> io::Result<()> {
+        let mut attributes = GuestAttributes::new();
+        attributes.set_pid(pid);
+        let guest = SecCode::copy_guest_with_attribues(None, &attributes, Flags::NONE)
+            .map_err(|error| os_error("SecCodeCopyGuestWithAttributes", error))?;
+        let requirement: SecRequirement = requirement
+            .parse()
+            .map_err(|error| os_error("SecRequirementCreateWithString", error))?;
+        guest
+            .check_validity(Flags::NONE, &requirement)
+            .map_err(|error| os_error("SecCodeCheckValidity", error))
     }
 
     /// Looks the peer up by audit token (no pid race) and checks that its running code is valid

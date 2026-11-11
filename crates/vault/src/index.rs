@@ -51,6 +51,7 @@ pub(crate) fn kind_of(raw: u8) -> ItemKind {
 pub(crate) struct Entry {
     pub cipher: Cipher,
     pub summary: ItemSummary,
+    pub match_uris: Box<[(Zeroizing<String>, Option<u8>)]>,
     /// Lowercase `name \0 subtitle \0 uri \0 uri ...`, precomputed so search does no allocation.
     hay: Zeroizing<String>,
     name_end: usize,
@@ -70,7 +71,11 @@ impl Entry {
 
         let capacity = fields.name.len()
             + fields.subtitle.len()
-            + fields.uris.iter().map(|uri| uri.len() + 1).sum::<usize>()
+            + fields
+                .uris
+                .iter()
+                .map(|(uri, _)| uri.len() + 1)
+                .sum::<usize>()
             + 1;
         let mut hay = Zeroizing::new(String::with_capacity(capacity));
         push_lowercase(&mut hay, &fields.name);
@@ -78,7 +83,7 @@ impl Entry {
         hay.push(FIELD_SEPARATOR);
         push_lowercase(&mut hay, &fields.subtitle);
         let subtitle_end = hay.len();
-        for uri in &fields.uris {
+        for (uri, _) in &fields.uris {
             hay.push(FIELD_SEPARATOR);
             push_lowercase(&mut hay, uri);
         }
@@ -92,7 +97,7 @@ impl Entry {
             favorite: cipher.favorite,
             folder_id: cipher.folder_id.as_deref().map(|id| ids.get(id)),
             organization_id: cipher.organization_id.as_deref().map(|id| ids.get(id)),
-            primary_uri: fields.uris.first().map(|uri| Arc::from(uri.as_str())),
+            primary_uri: fields.uris.first().map(|(uri, _)| Arc::from(uri.as_str())),
             has_password: login.is_some_and(|login| is_set(login.password.as_deref())),
             has_totp: login.is_some_and(|login| is_set(login.totp.as_deref())),
             reprompt: cipher.reprompt == 1,
@@ -102,6 +107,7 @@ impl Entry {
         Self {
             cipher,
             summary,
+            match_uris: fields.uris.into_boxed_slice(),
             hay,
             name_end,
             subtitle_end,
@@ -211,7 +217,7 @@ fn fold_query(query: &str) -> String {
 struct ListFields {
     name: Zeroizing<String>,
     subtitle: Zeroizing<String>,
-    uris: Vec<Zeroizing<String>>,
+    uris: Vec<(Zeroizing<String>, Option<u8>)>,
 }
 
 fn list_fields(cipher: &Cipher, keys: &KeyRing) -> Result<ListFields> {
@@ -226,7 +232,7 @@ fn list_fields(cipher: &Cipher, keys: &KeyRing) -> Result<ListFields> {
                 for uri in list {
                     let text = decrypt_text(uri.uri.as_deref(), &key)?;
                     if !text.is_empty() {
-                        uris.push(text);
+                        uris.push((text, uri.r#match));
                     }
                 }
                 decrypt_text(login.username.as_deref(), &key)?
@@ -402,6 +408,12 @@ impl VaultData {
             ids.0.insert(view.id.to_string(), Arc::clone(&view.id));
         }
         ids
+    }
+
+    pub(crate) fn browser_entries(&self) -> impl Iterator<Item = &Entry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.summary.kind == ItemKind::Login && !entry.summary.deleted)
     }
 
     pub(crate) fn entry(&self, id: &str) -> Option<&Entry> {

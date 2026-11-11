@@ -1,0 +1,25 @@
+{
+  "name": "vaultkeeper-browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vaultkeeper browser extension (thin client for the Vaultkeeper app)",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "gen-theme": "node scripts/gen-theme.mjs",
+    "check": "vp check",
+    "test": "vp test",
+    "typecheck": "tsc --noEmit",
+    "run:firefox": "web-ext run --source-dir dist/firefox --firefox /Applications/Firefox.app/Contents/MacOS/firefox",
+    "sign:firefox": "web-ext sign --source-dir dist/firefox --channel unlisted"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "@types/node": "^24.0.0",
+    "jsdom": "^31.0.0",
+    "typescript": "^7.0.2",
+    "vite-plus": "^1.5.1",
+    "web-ext": "^10.8.0"
+  },
+  "packageManager": "pnpm@12.18.0"
+}

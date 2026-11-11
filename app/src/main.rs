@@ -13,7 +13,12 @@ use vaultkeeper::{
 
 fn main() -> anyhow::Result<()> {
     vk_platform::hardening::harden_process();
-    let args = cli::parse(std::env::args().skip(1));
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(caller) = cli::browser_host_caller(&raw_args) {
+        init_logging(Some("browser-host"));
+        return vaultkeeper::browser_host::run(caller);
+    }
+    let args = cli::parse(raw_args);
     let log_name = match args.as_ref().map(cli::Args::mode) {
         Ok(Mode::Daemon(_)) => Some("daemon"),
         Ok(Mode::Ui { .. }) => Some("ui"),
@@ -27,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     }
     match args.mode() {
         Mode::Mock => run_mock(args),
-        Mode::Ui { first_unlock } => vaultkeeper::ui_process::run(first_unlock),
+        Mode::Ui { first_unlock } => vaultkeeper::ui_process::run(first_unlock, args.no_activate),
         Mode::Daemon(launch) => vaultkeeper::daemon::run(launch),
     }
 }
@@ -59,7 +64,11 @@ fn init_logging(file_name: Option<&str>) {
             .with_filter(filter())
     });
     let subscriber = tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(filter()))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(filter()),
+        )
         .with(file_layer);
     if tracing::subscriber::set_global_default(subscriber).is_err() {
         tracing::warn!("a logger was already installed");
@@ -119,6 +128,41 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
     if args.demo_ssh {
         send_demo_ssh_request(commands.clone(), runtime.handle());
     }
+    for (enabled, prompt) in [
+        (
+            args.demo_browser_fill,
+            vk_ipc::BrowserPrompt::Fill {
+                browser: "Firefox".into(),
+                host: "github.com".into(),
+                insecure: false,
+                matches: vec![],
+                touch_id: false,
+                return_to: None,
+            },
+        ),
+        (
+            args.demo_browser_pair,
+            vk_ipc::BrowserPrompt::Pair {
+                browser: "Firefox".into(),
+                fingerprint: "A1B2-C3D4-E5F6-0718".into(),
+            },
+        ),
+        (
+            args.demo_browser_save,
+            vk_ipc::BrowserPrompt::Save {
+                browser: "Firefox".into(),
+                host: "github.com".into(),
+                username: "octocat".into(),
+                update_of: None,
+                choices: vec![],
+                return_to: None,
+            },
+        ),
+    ] {
+        if enabled {
+            send_demo_browser_prompt(commands.clone(), runtime.handle(), prompt);
+        }
+    }
     select_backend(Backend::Standalone)?;
     run_ui(
         vault,
@@ -137,6 +181,26 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
     drop(commands);
     runtime.shutdown_timeout(Duration::from_secs(1));
     Ok(())
+}
+
+fn send_demo_browser_prompt(
+    commands: mpsc::UnboundedSender<UiCommand>,
+    runtime: &tokio::runtime::Handle,
+    prompt: vk_ipc::BrowserPrompt,
+) {
+    runtime.spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let (reply, answer) = oneshot::channel();
+        if commands
+            .send(UiCommand::ShowBrowserPrompt(
+                vaultkeeper::app::BrowserPromptRequest { prompt, reply },
+            ))
+            .is_ok()
+        {
+            let result = answer.await;
+            tracing::info!(?result, "demo browser prompt answered");
+        }
+    });
 }
 
 /// Simulates the daemon forwarding an SSH sign request a few seconds after start.

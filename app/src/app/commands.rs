@@ -3,7 +3,7 @@
 
 use vk_vault::{VaultService, model::SessionState};
 
-use super::{App, SshApprovalRequest, Target};
+use super::{App, BrowserPromptRequest, SshApprovalRequest, Target};
 use crate::hooks::TypingTarget;
 
 /// What the daemon can ask the UI process to show.
@@ -20,6 +20,7 @@ pub enum UiCommand {
         target: Option<TypingTarget>,
     },
     ShowSshApproval(SshApprovalRequest),
+    ShowBrowserPrompt(BrowserPromptRequest),
     ShowUnlock,
     ShowLogin,
     ShowSettings,
@@ -39,6 +40,11 @@ pub enum UiCommand {
     OfflineChanged(bool),
     /// The tray's "Sync now" ended, with the error text when it failed.
     SyncFinished(Option<String>),
+    /// A daemon-side message; shown now when a window is open, otherwise with the next one.
+    Toast {
+        text: String,
+        error: bool,
+    },
 }
 
 impl<S: VaultService> App<S> {
@@ -64,6 +70,7 @@ impl<S: VaultService> App<S> {
             }
             UiCommand::ToggleQuickPanel { .. } => self.toggle_quick_panel(),
             UiCommand::ShowSshApproval(request) => self.request_ssh_approval(request),
+            UiCommand::ShowBrowserPrompt(request) => self.request_browser_prompt(request),
             UiCommand::ShowUnlock => match self.vault.state() {
                 SessionState::Locked { .. } => {
                     self.target.set(Target::Manager);
@@ -85,6 +92,7 @@ impl<S: VaultService> App<S> {
             UiCommand::ReloadSettings => self.reload_settings(),
             UiCommand::OfflineChanged(offline) => self.offline_changed(offline),
             UiCommand::SyncFinished(error) => self.sync_finished(error.as_deref()),
+            UiCommand::Toast { text, error } => self.daemon_toast(text, error),
         }
     }
 
@@ -98,6 +106,14 @@ impl<S: VaultService> App<S> {
             Some(error) => self.toast(&format!("Sync failed: {error}"), true),
         }
         self.refresh_status();
+    }
+
+    fn daemon_toast(&self, text: String, error: bool) {
+        if self.manager.borrow().is_some() || self.quick.borrow().is_some() {
+            self.toast(&text, error);
+        } else {
+            self.pending_notice.replace(Some(text));
+        }
     }
 
     fn offline_changed(&self, offline: bool) {
@@ -134,6 +150,9 @@ impl<S: VaultService> App<S> {
             self.settings_window.borrow().is_some(),
             self.generator_window.borrow().is_some(),
             self.ssh_prompt.borrow().is_some(),
+            self.browser_pair_prompt.borrow().is_some(),
+            self.browser_save_prompt.borrow().is_some(),
+            self.browser_picker.borrow().is_some(),
             // Counted like a window, so the process does not linger out under the system prompt.
             self.right_away_pending(),
             self.autotyping.get(),
@@ -184,6 +203,35 @@ impl UiCommand {
                 | Self::ReloadSettings
                 | Self::OfflineChanged(_)
                 | Self::SyncFinished(_)
+                | Self::Toast { .. }
+                | Self::ShowBrowserPrompt(BrowserPromptRequest {
+                    prompt: vk_ipc::BrowserPrompt::Save { .. },
+                    ..
+                })
         )
+    }
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+    use tokio::sync::oneshot;
+    use vk_ipc::BrowserPrompt;
+
+    #[test]
+    fn save_prompts_do_not_request_activation() {
+        let (reply, _receiver) = oneshot::channel();
+        let command = UiCommand::ShowBrowserPrompt(BrowserPromptRequest {
+            prompt: BrowserPrompt::Save {
+                browser: "Firefox".into(),
+                host: "example.com".into(),
+                username: "user".into(),
+                update_of: None,
+                choices: vec![],
+                return_to: None,
+            },
+            reply,
+        });
+        assert!(!command.shows_a_window());
     }
 }

@@ -107,6 +107,7 @@ impl<S: VaultService> App<S> {
                 app.target.set(super::Target::None);
                 app.close_lock_window();
                 app.deny_ssh_waiting_for_unlock();
+                app.deny_browser_waiting_for_unlock();
                 CloseRequestResponse::HideWindow
             }
         ));

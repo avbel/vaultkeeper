@@ -1,0 +1,110 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: var(--font-body) / 1.4 var(--font);
+}
+body {
+  width: 320px;
+}
+main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding: var(--padding);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  font-size: var(--font-title);
+  font-weight: 600;
+}
+.icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+}
+header .icon {
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+}
+.message {
+  display: flex;
+  gap: var(--gap);
+  align-items: flex-start;
+  margin: 0;
+}
+.message.warn {
+  color: var(--warn-text);
+}
+.message.danger {
+  color: var(--danger-small);
+}
+.hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-hint);
+}
+.code {
+  align-self: center;
+  padding: var(--gap) var(--padding);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  font: 15px / 1.2 var(--mono);
+  letter-spacing: 0.04em;
+}
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+button {
+  height: var(--control-height);
+  padding: 0 var(--padding);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: var(--hover);
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+footer {
+  padding-top: var(--gap);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--font-meta);
+}
+footer .mono {
+  font-family: var(--mono);
+}

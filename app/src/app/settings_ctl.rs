@@ -102,6 +102,7 @@ impl<S: VaultService> App<S> {
         window.set_ssh_touch_id(settings.ssh_touch_id);
         window.set_touch_id_right_away(settings.touch_id_right_away);
         super::settings_hotkeys::show_hotkeys(window, &settings);
+        self.fill_browser_settings(window, &settings);
     }
 
     fn bind_ssh_settings(&self, window: &SettingsWindow) {
@@ -182,6 +183,7 @@ impl<S: VaultService> App<S> {
             app.update_settings(|settings| settings.touch_id_right_away = enabled);
         }));
         self.bind_hotkeys(window);
+        self.bind_browser_settings(window);
     }
 
     /// Re-reads the store after the daemon changed it and applies what is visible.

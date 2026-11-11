@@ -1,0 +1,5 @@
+{
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0F7o1uHaFHOalirURv6XCg3mmlhCDPzD6vdhMJZr6iYe7Vho0sZCigA3I/903vdW/s2/f5W/6+oDeMW+Sgcggc3l3ejOqlQt//6KlbHYNPMrIdczf6ciR9LDWodpxCDavVCxKpo49xPZCNnoxymfCfXISZqeARbBsbcAddMGq36CKhLxYQGJmlKfrwkPjSINQGlMlL2LVNPPWRWvn/M9lWvZZeTQmZ/y6LFZnW0dS0LmfoeUrfluvJTIQBJKznQQgb4qAFXNoFVDDeWJmp5N9sONkzYoeoKkYuu3Fr50kWn+rPXzUD/l4f6zY9sj5+LiclDjSXmeRvi3cCXuG53hawIDAQAB",
+  "background": { "service_worker": "background.js", "type": "module" }
+}

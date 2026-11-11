@@ -40,6 +40,14 @@ pub enum SshApproval {
     RememberUntilLock,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserMatch {
+    #[default]
+    Domain,
+    Host,
+}
+
 /// Large-text setting: multiplies every font size and row height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +131,14 @@ pub struct Settings {
     pub ssh_agent: bool,
     pub ssh_approval: SshApproval,
     pub ssh_touch_id: bool,
+    pub browser_integration: bool,
+    /// Per-browser install switches; they only matter while `browser_integration` is on.
+    pub browser_chrome: bool,
+    pub browser_firefox: bool,
+    pub browser_touch_id: bool,
+    pub browser_save_prompts: bool,
+    pub browser_copy_totp: bool,
+    pub browser_default_match: BrowserMatch,
     pub hotkey: String,
     /// Opens the Generator window from anywhere; empty means no shortcut.
     pub generator_hotkey: String,
@@ -151,6 +167,13 @@ impl Default for Settings {
             ssh_agent: true,
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
+            browser_integration: false,
+            browser_chrome: true,
+            browser_firefox: true,
+            browser_touch_id: false,
+            browser_save_prompts: true,
+            browser_copy_totp: true,
+            browser_default_match: BrowserMatch::Domain,
             hotkey: "Cmd+Shift+Space".to_owned(),
             generator_hotkey: String::new(),
             touch_id_right_away: false,
@@ -403,6 +426,30 @@ mod tests {
     }
 
     #[test]
+    fn browser_settings_default_and_survive_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
+        assert!(!old.browser_integration);
+        assert!(old.browser_chrome);
+        assert!(old.browser_firefox);
+        assert!(!old.browser_touch_id);
+        assert!(old.browser_save_prompts);
+        assert!(old.browser_copy_totp);
+        assert_eq!(old.browser_default_match, BrowserMatch::Domain);
+        let settings = Settings {
+            browser_integration: true,
+            browser_chrome: false,
+            browser_firefox: false,
+            browser_default_match: BrowserMatch::Host,
+            ..old
+        };
+        let json = serde_json::to_string(&settings).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<Settings>(&json).expect("deserialize"),
+            settings
+        );
+    }
+
+    #[test]
     fn option_lists_round_trip() {
         for (index, option) in LOCK_OPTIONS.iter().enumerate() {
             let index = i32::try_from(index).expect("small");
@@ -515,6 +562,13 @@ mod tests {
             ssh_agent: false,
             ssh_approval: SshApproval::RememberUntilLock,
             ssh_touch_id: true,
+            browser_integration: true,
+            browser_chrome: false,
+            browser_firefox: false,
+            browser_touch_id: true,
+            browser_save_prompts: false,
+            browser_copy_totp: false,
+            browser_default_match: BrowserMatch::Host,
             hotkey: "Cmd+Alt+K".to_owned(),
             generator_hotkey: "Cmd+Alt+G".to_owned(),
             touch_id_right_away: true,

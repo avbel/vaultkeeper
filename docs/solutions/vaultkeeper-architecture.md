@@ -31,12 +31,12 @@ The repo `vaultkeeper` is empty (no commits yet). Step 1 copies this document to
   - PIN comes later.
 - **SSH + Touch ID:** an optional setting, global or per key, that makes a sign request need Touch ID
   (an `LAContext` biometrics check) instead of or as well as the Approve button.
-- **Browser-extension bridge:** a later, optional module.
-  - It would collide with the official app's native-messaging name `com.8bit.bitwarden`.
-  - It sends the raw user key to the extension.
-  - The extension does no fingerprint check.
-  - It is about 1.5–2.5k lines.
-  - Nothing in v1 depends on it.
+- **Browser integration (Chrome, Firefox):** see `BROWSERS.md` for the plan and verified facts.
+  - D1: the native messaging host is the same `vaultkeeper` binary in a host mode, so the daemon admits it by cdhash.
+  - D2: a second socket, `browser.sock`, with its own narrow protocol; `ui.sock` is never exposed to browsers.
+  - D3: the picker is a native window; the extension never receives a list of logins and a credential leaves the app only after a click there.
+  - D4: a credential is released for one item, one origin and one request; there is no list, search or get-by-id.
+  - D5: pairing per browser profile with a P-256 key made in the extension; the app stores only public keys.
 - **No sdk-internal dependency.** The crypto and API code is our own, ported from rbw (MIT, which can be relicensed under GPL).
   The sdk-internal crates are marked "internal, unstable", and their models follow the official server.
 

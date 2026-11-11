@@ -22,6 +22,7 @@ mod service;
 mod store;
 #[cfg(test)]
 mod testutil;
+pub mod uri_match;
 mod util;
 mod vault;
 
@@ -31,6 +32,8 @@ pub use error::{
 };
 pub use secrets::{MemorySecretStore, SecretStore, SecretStoreError};
 pub use service::VaultService;
-pub use vault::{BackgroundStatus, Vault};
+pub use vault::{
+    BackgroundStatus, BrowserCredentials, BrowserFields, BrowserSnapshot, LoginMatch, Vault,
+};
 pub use vk_api::{DeviceInfo, TwoFactorProvider};
 pub use vk_gen::totp::TotpCode;

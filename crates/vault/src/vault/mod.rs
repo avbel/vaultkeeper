@@ -8,6 +8,7 @@
 
 mod attachments;
 mod background;
+mod browser;
 mod collections;
 mod logout;
 mod probe;
@@ -30,6 +31,7 @@ use vk_api::Client;
 use zeroize::Zeroizing;
 
 pub use self::background::BackgroundStatus;
+pub use self::browser::{BrowserCredentials, BrowserFields, BrowserSnapshot, LoginMatch};
 use self::{background::Tasks, session::PendingLogin};
 use crate::{
     Error, Result,
@@ -92,6 +94,8 @@ pub(crate) struct Active {
 pub(crate) struct Unlocked {
     keys: Arc<KeyRing>,
     data: VaultData,
+    /// Changes whenever the decrypted index changes, invalidating pending browser approvals.
+    revision: u64,
     mru: Mutex<VecDeque<ItemId>>,
     ssh_digest: u64,
 }
@@ -102,6 +106,7 @@ impl Unlocked {
             ssh_digest: data.ssh_digest(),
             keys: Arc::new(keys),
             data,
+            revision: 0,
             mru: Mutex::new(VecDeque::new()),
         }
     }
@@ -332,6 +337,7 @@ impl Inner {
                 return;
             };
             change(&mut unlocked.data, &unlocked.keys);
+            unlocked.revision = unlocked.revision.wrapping_add(1);
             let digest = unlocked.data.ssh_digest();
             let changed = digest != unlocked.ssh_digest;
             unlocked.ssh_digest = digest;

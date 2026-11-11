@@ -25,8 +25,8 @@ use crate::{
     frame::{decode, encode, read_frame},
     peer,
     protocol::{
-        DaemonMessage, Event, PROTOCOL_VERSION, Refusal, Snapshot, SshDecision, UiMessage,
-        UiNotice, Welcome,
+        BrowserReply, DaemonMessage, Event, PROTOCOL_VERSION, Refusal, Snapshot, SshDecision,
+        UiMessage, UiNotice, Welcome,
     },
 };
 
@@ -249,6 +249,9 @@ async fn read_requests<S: VaultService>(
             } => requests
                 .approvals
                 .resolve(request_id, SshDecision { approved, remember }),
+            UiMessage::BrowserPromptReply { request_id, reply } => {
+                requests.approvals.resolve_browser(request_id, reply);
+            }
             UiMessage::Notice(notice) => {
                 // Notices are hints (a settings reload, activity); dropping one under load is fine.
                 if let Some(notices) = &requests.notices
@@ -333,6 +336,14 @@ async fn forward_events<S: VaultService>(
                 request_id: approvals.register(reply),
                 prompt,
             },
+            DaemonEvent::BrowserPrompt { seq, reply, .. } if reply.is_closed() => {
+                Event::Skipped(seq)
+            }
+            DaemonEvent::BrowserPrompt { seq, prompt, reply } => Event::BrowserPrompt {
+                seq,
+                request_id: approvals.register_browser(reply),
+                prompt,
+            },
         };
         if publisher.send_event(event).await.is_err() {
             break;
@@ -349,6 +360,7 @@ struct Approvals {
 struct ApprovalTable {
     next_id: u64,
     pending: HashMap<u64, oneshot::Sender<SshDecision>>,
+    browser: HashMap<u64, oneshot::Sender<BrowserReply>>,
 }
 
 impl Approvals {
@@ -359,6 +371,27 @@ impl Approvals {
         let id = table.next_id;
         table.pending.insert(id, reply);
         id
+    }
+
+    fn register_browser(&self, reply: oneshot::Sender<BrowserReply>) -> u64 {
+        let mut table = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        table.browser.retain(|_, reply| !reply.is_closed());
+        table.next_id += 1;
+        let id = table.next_id;
+        table.browser.insert(id, reply);
+        id
+    }
+
+    fn resolve_browser(&self, id: u64, decision: BrowserReply) {
+        let reply = self
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .browser
+            .remove(&id);
+        if let Some(reply) = reply {
+            let _ = reply.send(decision);
+        }
     }
 
     fn resolve(&self, id: u64, decision: SshDecision) {

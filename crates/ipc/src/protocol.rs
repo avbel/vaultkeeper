@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -41,6 +41,10 @@ pub enum UiMessage {
     },
     /// Fire-and-forget news from the UI process; never answered.
     Notice(UiNotice),
+    BrowserPromptReply {
+        request_id: u64,
+        reply: BrowserReply,
+    },
 }
 
 /// What the UI process tells the daemon outside of `VaultService` calls.
@@ -132,6 +136,11 @@ pub enum Event {
     Skipped(u64),
     /// The daemon is quitting; the UI process should exit.
     Shutdown,
+    BrowserPrompt {
+        seq: u64,
+        request_id: u64,
+        prompt: BrowserPrompt,
+    },
 }
 
 /// The app that was in front when the user asked for the Quick Panel; auto-type gives the focus
@@ -170,6 +179,12 @@ pub enum UiCommand {
     /// shows it if a window is open.
     SyncFinished {
         error: Option<String>,
+    },
+    /// A message from a daemon-side flow (a browser save that failed). Never opens a window on
+    /// its own: it waits for the next one.
+    Toast {
+        text: String,
+        error: bool,
     },
 }
 
@@ -217,6 +232,45 @@ pub struct SshPrompt {
     /// The app in front when the request arrived (usually the terminal running ssh); it gets
     /// the front back once the prompt is answered.
     pub return_to: Option<TypingTarget>,
+}
+
+/// Browser prompt content is supplied by the daemon, not by a web page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BrowserPrompt {
+    Pair {
+        browser: String,
+        fingerprint: String,
+    },
+    Fill {
+        browser: String,
+        host: String,
+        insecure: bool,
+        matches: Vec<ItemSummaryDto>,
+        touch_id: bool,
+        return_to: Option<TypingTarget>,
+    },
+    Save {
+        browser: String,
+        host: String,
+        username: String,
+        update_of: Option<ItemSummaryDto>,
+        choices: Vec<ItemSummaryDto>,
+        return_to: Option<TypingTarget>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BrowserReply {
+    Dismissed,
+    PairApproved,
+    Fill {
+        item_id: Arc<str>,
+        confirmed_other_site: bool,
+    },
+    Save {
+        target: Option<Arc<str>>,
+    },
+    NeverForSite,
 }
 
 /// Why a Touch ID enrolment or unlock in the daemon did not happen. Vault errors (locked, wrong

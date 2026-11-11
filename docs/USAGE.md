@@ -162,6 +162,54 @@ Each sign request opens an approval window (process and key fingerprint, auto-de
   connection shows the unlock window first and continues after you unlock. While logged out the
   agent lists no keys.
 
+## Browsers
+
+Chrome and Firefox can fill logins from Vaultkeeper and offer to save new or changed passwords. The
+browser extension is a thin client: it holds no password, key or copy of the vault. Matching, every
+decision and every prompt are in Vaultkeeper's own windows.
+
+1. Settings → Browsers → turn on *Browser integration*, and leave *Install for …* on for the browsers
+   you use. This writes the native messaging connection file for each installed browser
+   (`~/Library/Application Support/<browser>/NativeMessagingHosts/org.vaultkeeper.browser.json`).
+   Integration starts only with the signed app build; otherwise the state line says why.
+2. Install the extension (see `browsers/README.md`) and open its popup. The first connection opens a
+   *Connect <browser>?* window with a code. Check that it matches the code in the extension popup,
+   then click *Connect*. *Deny* is the default; Return does not approve.
+3. **Fill:** click the Vaultkeeper icon in a login field, press ⌘⇧L, or use the popup's *Fill this
+   page*. A native window lists the logins saved for the site; pick one with the arrows and Return.
+   Later fills of the same site in the same browser session need no window until the vault locks, the
+   Mac sleeps or the screen locks. *Choose another login…* in the popup always shows the window.
+   Picking a login saved for a different site asks for a second confirmation (the default is *Cancel*).
+   Logins that require the master password ask for it in the window.
+4. **Locked vault:** a fill shows the unlock window first and continues after you unlock.
+5. **Save:** after you sign in with a new account or a changed password, a small *Save login?* or
+   *Update password?* window appears in the top-right corner without taking focus from the browser,
+   so answer it with the mouse. It also times out after 30 s (*Not now*). *Never for this site*
+   stops the offers for that site. Nothing is offered in private windows, on unencrypted sites other
+   than local ones, or when the stored password is already the same.
+6. **Settings:** *Require Touch ID to fill*, *Offer to save logins*, *Copy TOTP code after filling*
+   (the code goes to the clipboard and is cleared like other copies) and *Match sites by* (*Domain*
+   or *Exact host*, for saved addresses without their own rule; a saved address's own match
+   rule from the Bitwarden web vault always wins). *Paired browsers* lists each connection with its
+   fingerprint and a *Remove* button; removing it closes that browser's live connection.
+
+The activity log is `~/Library/Logs/vaultkeeper/browser.log`: time, browser, host and item id of
+every fill, never a secret.
+
+Known limits:
+
+- Malware running as your macOS user can drive a real browser with a copied profile, so pairing and
+  the browser signature check are barriers, not guarantees. Nothing is released without a click in a
+  Vaultkeeper window, and remembered approvals belong to one live connection.
+- A filled password can be read by scripts of the page it was filled into (for example after XSS).
+- JavaScript strings cannot be wiped; the extension keeps a credential only for one message hand-off.
+- The parent-process check can be bypassed by starting the host and then replacing its parent.
+- Equivalent-domain lists and filling on page load are not supported; autofill needs a click or the
+  shortcut on purpose.
+
+To remove a browser, turn off *Install for …* (the connection file is deleted), remove the pairing,
+and remove the extension in the browser.
+
 ## Start at login
 
 Settings → Security → *Start at login*. This installs `~/Library/LaunchAgents/vaultkeeper.plist`, which
@@ -194,9 +242,10 @@ another app or macOS holds as a global shortcut still never reaches the recorder
 | Path | Content |
 |---|---|
 | `~/Library/Application Support/vaultkeeper/` | settings, encrypted vault cache per account, sockets (mode 0600) |
+| `…/vaultkeeper/browsers.json`, `browser.sock` | browser pairings (public keys only) and the browser socket |
 | login keychain, items prefixed `vaultkeeper` | refresh tokens |
 | `~/Library/LaunchAgents/vaultkeeper.plist` | only with *Start at login* |
-| `~/Library/Logs/vaultkeeper/daemon.log`, `ui.log` | logs of the two processes, at most 1 MiB each plus one older `.1` file; not meant to hold secrets |
+| `~/Library/Logs/vaultkeeper/daemon.log`, `ui.log`, `browser.log` | logs of the two processes, at most 1 MiB each plus one older `.1` file; not meant to hold secrets |
 
 To uninstall:
 1. Log out of each account in the app, then quit it.

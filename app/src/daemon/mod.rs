@@ -2,6 +2,7 @@
 //! SSH agent, the lock timer, power events, the tray and the global hotkey. It runs the Slint
 //! event loop on the main thread for the tray alone; windows live in the `--ui` process.
 
+pub mod browser;
 mod core;
 pub mod device;
 mod hotkey;

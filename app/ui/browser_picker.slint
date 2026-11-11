@@ -1,0 +1,117 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, EmptyState, Field, Icon } from "kit.slint";
+
+export struct BrowserPickerRow { name: string, username: string, other-site: bool }
+
+export component BrowserPicker inherits Window {
+    title: "Fill login";
+    no-frame: true;
+    always-on-top: true;
+    width: 480px;
+    height: 360px;
+    out property <length> panel-width: self.width;
+    out property <length> panel-height: self.height;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+    in property <string> browser;
+    in property <string> host;
+    in property <bool> insecure;
+    in property <bool> touch-id;
+    in property <[BrowserPickerRow]> rows;
+    in-out property <string> query;
+    in-out property <int> selected: 0;
+    in-out property <bool> confirm-other: false;
+    in property <string> confirm-text;
+    in-out property <bool> reprompt: false;
+    in-out property <string> password;
+    in property <string> password-error;
+    in-out property <int> seconds-left: 60;
+    callback search-edited(string);
+    callback pick(int);
+    callback confirm();
+    callback cancel-confirm();
+    callback submit-password(string);
+    callback dismiss();
+
+    Timer { interval: 1s; running: root.seconds-left > 0; triggered => { root.seconds-left -= 1; } }
+    Rectangle {
+        border-width: 1px; border-color: Theme.border; border-radius: Theme.radius-popup; clip: true;
+        FocusScope {
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape { root.dismiss(); return accept; }
+                if event.text == Key.Return && root.confirm-other { root.cancel-confirm(); return accept; }
+                if !root.confirm-other && !root.reprompt && event.text == Key.Return { root.pick(root.selected); return accept; }
+                if !root.confirm-other && !root.reprompt && event.text == Key.DownArrow { root.selected = min(root.selected + 1, max(0, root.rows.length - 1)); return accept; }
+                if !root.confirm-other && !root.reprompt && event.text == Key.UpArrow { root.selected = max(0, root.selected - 1); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 18px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Icon { width: 20px; height: 20px; source: @image-url("icons/key.svg"); tint: Theme.accent; }
+                    Text { text: "Fill login"; color: Theme.text; font-size: Theme.font-title; font-weight: 600; }
+                }
+                Text { text: root.browser + " · " + root.host; color: Theme.text-muted; }
+                if root.insecure: HorizontalLayout {
+                    spacing: 6px;
+                    Icon { width: 14px; height: 14px; y: 2px; source: @image-url("icons/warning.svg"); tint: Theme.warn-text; }
+                    Text { text: "Not encrypted (http)"; color: Theme.warn-text; }
+                }
+                if root.confirm-other: FocusScope {
+                    init => { self.focus(); }
+                    VerticalLayout {
+                        spacing: 8px;
+                        Text { text: root.confirm-text; color: Theme.text; wrap: word-wrap; }
+                        HorizontalLayout {
+                            alignment: end; spacing: Theme.gap;
+                            Btn { text: "Cancel"; label: "Cancel"; clicked => { root.cancel-confirm(); } }
+                            Btn { text: "Fill anyway"; label: "Fill anyway"; kind: BtnKind.primary; clicked => { root.confirm(); } }
+                        }
+                    }
+                }
+                if root.reprompt: VerticalLayout {
+                    spacing: 8px;
+                    Field {
+                        init => { self.focus-input(); }
+                        placeholder: "Master password"; label: "Master password"; password: true;
+                        text <=> root.password;
+                        accepted(text) => { root.submit-password(text); }
+                    }
+                    Text { text: root.password-error; color: Theme.warn-text; }
+                    Btn { text: "Confirm"; label: "Confirm password"; kind: BtnKind.primary; clicked => { root.submit-password(root.password); } }
+                }
+                if !root.confirm-other && !root.reprompt: VerticalLayout {
+                    spacing: 8px;
+                    Field { init => { self.focus-input(); } placeholder: "Search vault"; label: "Search vault"; text <=> root.query; edited(text) => { root.search-edited(text); } }
+                    if root.rows.length == 0: EmptyState { title: root.query == "" ? "No login saved for " + root.host : "No matches"; body: root.query == "" ? "Type to search the vault" : ""; }
+                    if root.rows.length > 0: ScrollView {
+                        height: 155px;
+                        content-width: self.visible-width;
+                        VerticalLayout {
+                            alignment: start;
+                            for row[index] in root.rows: Rectangle {
+                                height: Theme.row-height;
+                                background: index == root.selected ? Theme.selection : transparent;
+                                TouchArea { clicked => { root.pick(index); } }
+                                HorizontalLayout {
+                                    padding-left: 8px; padding-right: 8px; spacing: 8px;
+                                    Text { text: row.name; color: Theme.text; vertical-alignment: center; }
+                                    Text { text: row.username; color: Theme.text-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                                    if row.other-site: Text { text: "other site"; color: Theme.text-muted; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+                Text { text: root.touch-id ? "Return · then Touch ID" : "Return · fill"; color: Theme.text-muted; font-size: Theme.font-meta; }
+                Rectangle {
+                    height: 3px; border-radius: 1.5px; background: Theme.surface-raised;
+                    Rectangle { width: parent.width * max(0, root.seconds-left) / 60; height: 100%; border-radius: 1.5px; background: root.seconds-left < 6 ? Theme.warn : Theme.accent; animate width { duration: 1s; easing: linear; } }
+                }
+            }
+        }
+    }
+}

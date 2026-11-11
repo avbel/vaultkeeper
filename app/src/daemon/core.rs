@@ -4,6 +4,8 @@
 //! Every method may be called from any thread. Background tasks hold an `Arc<Daemon>` until
 //! [`Daemon::shutdown`] aborts them.
 
+mod browser_glue;
+
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -122,6 +124,7 @@ pub struct Daemon {
     presence: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     tray_sync: watch::Sender<TraySync>,
+    browser: browser_glue::BrowserState,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -186,6 +189,7 @@ impl Daemon {
             presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
             tray_sync: watch::Sender::new(TraySync::default()),
+            browser: browser_glue::BrowserState::new(),
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -193,6 +197,7 @@ impl Daemon {
             tracing::error!(%error, "SSH agent not started");
         }
         daemon.spawn_tasks(notices_rx, approvals_rx);
+        daemon.reconcile_browser();
         Ok(daemon)
     }
 
@@ -338,19 +343,27 @@ impl Daemon {
     /// Queues the event `numbered` builds with its number, makes sure a UI process is on its
     /// way to read it, and that it answers in time.
     fn send(self: &Arc<Self>, numbered: impl FnOnce(u64) -> DaemonEvent) -> bool {
-        let seq = {
+        let (seq, no_activate) = {
             // Numbering and queueing under one lock keeps the queue in number order with no
             // gaps, which `ui_exited` relies on.
             let mut sent = guard(&self.hang.sent);
             let seq = *sent + 1;
-            if let Err(error) = self.events.try_send(numbered(seq)) {
+            let event = numbered(seq);
+            let no_activate = matches!(
+                &event,
+                DaemonEvent::BrowserPrompt {
+                    prompt: vk_ipc::BrowserPrompt::Save { .. },
+                    ..
+                }
+            );
+            if let Err(error) = self.events.try_send(event) {
                 tracing::warn!(%error, "UI event dropped");
                 return false;
             }
             *sent = seq;
-            seq
+            (seq, no_activate)
         };
-        self.ensure_ui();
+        self.ensure_ui(no_activate);
         if self.launcher.can_start() {
             drop(self.runtime.spawn(watch_answer(Arc::clone(self), seq)));
         }
@@ -362,7 +375,7 @@ impl Daemon {
         u64::try_from(queued).unwrap_or(u64::MAX)
     }
 
-    fn ensure_ui(self: &Arc<Self>) {
+    fn ensure_ui(self: &Arc<Self>, no_activate: bool) {
         if self.quitting.load(Ordering::SeqCst) {
             return;
         }
@@ -371,6 +384,7 @@ impl Daemon {
         self.launcher.ensure(
             self.ui_connected(),
             !self.unlocked_once.load(Ordering::SeqCst),
+            no_activate,
             move |ran_for| daemon.ui_exited(ran_for),
         );
     }
@@ -392,13 +406,14 @@ impl Daemon {
         let killed = self.hang.respawn.swap(false, Ordering::SeqCst);
         if restart_after_exit(queued > 0, ran_for, quitting) || (killed && !quitting) {
             tracing::debug!("starting a new UI process after the last one left");
-            self.ensure_ui();
+            self.ensure_ui(true);
         }
     }
 
     async fn reload_settings(self: &Arc<Self>) {
         let fresh = read_settings(self.data_dir.join(SETTINGS_FILE)).await;
         self.apply_settings(fresh);
+        self.reload_browser_pairings().await;
     }
 
     fn apply_settings(self: &Arc<Self>, fresh: Settings) {
@@ -425,18 +440,25 @@ impl Daemon {
         if previous.lock_timeout != current.lock_timeout {
             self.lock_wake.notify_one();
         }
+        if browser_settings_changed(&previous, &current) {
+            self.reconcile_browser();
+        }
     }
 
     pub fn power_event(&self, event: PowerEvent) {
         match event {
-            PowerEvent::WillSleep => self.vault.on_sleep(),
+            PowerEvent::WillSleep => {
+                self.vault.on_sleep();
+                self.forget_browser_approvals();
+            }
             PowerEvent::DidWake => {
                 self.vault.on_wake();
                 // Tokio's timers stop while asleep; the wall clock decides on wake.
                 self.lock_wake.notify_one();
                 self.clipboard.recheck();
             }
-            PowerEvent::ScreenLocked | PowerEvent::ScreenUnlocked => {}
+            PowerEvent::ScreenLocked => self.forget_browser_approvals(),
+            PowerEvent::ScreenUnlocked => {}
         }
         if lock::locks_on(event, self.settings().lock_on_sleep) {
             tracing::info!(?event, "locking on sleep / screen lock");
@@ -462,6 +484,7 @@ impl Daemon {
         self.vault.lock();
         self.clipboard.clear_if_ours();
         self.ssh.stop();
+        self.stop_browser();
         let server = guard(&self.server).take();
         if let Some(server) = server {
             server.shutdown().await;
@@ -473,7 +496,7 @@ impl Daemon {
         }
     }
 
-    fn on_state(&self) {
+    fn on_state(self: &Arc<Self>) {
         let identity = match self.vault.state() {
             SessionState::Unlocked { server, email } => Some(Identity { server, email }),
             SessionState::Locked { .. } | SessionState::LoggedOut => None,
@@ -484,12 +507,17 @@ impl Daemon {
         if left_session(previous.as_ref(), identity.as_ref()) {
             self.clipboard.clear_if_ours();
             self.ssh.forget_approvals();
+            self.forget_browser_approvals();
+        }
+        if matches!(self.vault.state(), SessionState::LoggedOut) {
+            self.clear_browser_saves();
         }
         let was = self.was_unlocked.swap(unlocked, Ordering::SeqCst);
         if unlocked && !was {
             self.unlocked_once.store(true, Ordering::SeqCst);
             self.activity.touch();
             self.lock_wake.notify_one();
+            self.browser_unlocked();
         }
         if !unlocked && was {
             self.ssh.forget_approvals();
@@ -641,6 +669,12 @@ impl Daemon {
             }
         }
     }
+}
+
+const fn browser_settings_changed(previous: &Settings, current: &Settings) -> bool {
+    previous.browser_integration != current.browser_integration
+        || previous.browser_chrome != current.browser_chrome
+        || previous.browser_firefox != current.browser_firefox
 }
 
 /// Losing the network needs nothing: the next request finds out on its own.

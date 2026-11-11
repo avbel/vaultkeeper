@@ -37,7 +37,10 @@ pub enum Backend {
     Daemon,
     /// No Dock icon until the Manager opens; activates when launched; `on_input` runs on every
     /// key press, click and scroll in its windows.
-    Ui { on_input: Box<dyn FnMut()> },
+    Ui {
+        on_input: Box<dyn FnMut()>,
+        activate_at_launch: bool,
+    },
 }
 
 /// Software renderer only (see the step 0 RAM numbers); on macOS the title bar is transparent with
@@ -75,7 +78,10 @@ fn macos_backend(selector: slint::BackendSelector, backend: Backend) -> slint::B
     let (activate_at_launch, on_input) = match backend {
         Backend::Standalone => return selector,
         Backend::Daemon => (false, None),
-        Backend::Ui { on_input } => (true, Some(on_input)),
+        Backend::Ui {
+            on_input,
+            activate_at_launch,
+        } => (activate_at_launch, Some(on_input)),
     };
     // winit applies the policy in applicationDidFinishLaunching; setting it later through AppKit
     // would be overridden there, and the Dock icon would flash.

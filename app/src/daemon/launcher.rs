@@ -41,10 +41,13 @@ pub fn restart_after_exit(commands_queued: bool, ran_for: Duration, quitting: bo
 /// The arguments of the UI process; `first_unlock` tells it that no unlock happened since the
 /// daemon started, for "Require master password on app start".
 #[must_use]
-pub fn ui_args(first_unlock: bool) -> Vec<&'static str> {
+pub fn ui_args(first_unlock: bool, no_activate: bool) -> Vec<&'static str> {
     let mut args = vec!["--ui"];
     if first_unlock {
         args.push("--first-unlock");
+    }
+    if no_activate {
+        args.push("--no-activate");
     }
     args
 }
@@ -124,6 +127,7 @@ impl Launcher {
         &self,
         ui_connected: bool,
         first_unlock: bool,
+        no_activate: bool,
         on_exit: impl FnOnce(Duration) + Send + 'static,
     ) {
         let Some(exe) = &self.exe else {
@@ -134,7 +138,7 @@ impl Launcher {
             return;
         }
         let child = tokio::process::Command::new(exe)
-            .args(ui_args(first_unlock))
+            .args(ui_args(first_unlock, no_activate))
             .stdin(Stdio::null())
             .kill_on_drop(false)
             .spawn();
@@ -227,8 +231,9 @@ mod tests {
 
     #[test]
     fn the_first_unlock_flag_is_passed_only_when_set() {
-        assert_eq!(ui_args(false), ["--ui"]);
-        assert_eq!(ui_args(true), ["--ui", "--first-unlock"]);
+        assert_eq!(ui_args(false, false), ["--ui"]);
+        assert_eq!(ui_args(true, false), ["--ui", "--first-unlock"]);
+        assert_eq!(ui_args(false, true), ["--ui", "--no-activate"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -236,12 +241,14 @@ mod tests {
         let launcher = std::sync::Arc::new(Launcher::new(Some(PathBuf::from("/usr/bin/true"))));
         let (done, exited) = tokio::sync::oneshot::channel();
         let reaper = std::sync::Arc::clone(&launcher);
-        launcher.ensure(false, false, move |ran| {
+        launcher.ensure(false, false, false, move |ran| {
             reaper.exited();
             let _ = done.send(ran);
         });
         assert!(launcher.is_running());
-        launcher.ensure(false, false, |_| panic!("a second UI must not start"));
+        launcher.ensure(false, false, false, |_| {
+            panic!("a second UI must not start")
+        });
         let ran = tokio::time::timeout(Duration::from_secs(5), exited)
             .await
             .expect("exits")
@@ -276,7 +283,7 @@ mod tests {
         for _ in 0..20 {
             let reaper = std::sync::Arc::clone(&launcher);
             let done = done.clone();
-            launcher.ensure(false, false, move |ran| {
+            launcher.ensure(false, false, false, move |ran| {
                 reaper.exited();
                 let _ = done.send(ran);
             });
@@ -301,7 +308,7 @@ mod tests {
     #[test]
     fn without_an_executable_nothing_starts() {
         let launcher = Launcher::new(None);
-        launcher.ensure(false, false, |_| panic!("disabled"));
+        launcher.ensure(false, false, false, |_| panic!("disabled"));
         assert!(!launcher.is_running());
     }
 }

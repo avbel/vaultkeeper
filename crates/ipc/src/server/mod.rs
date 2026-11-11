@@ -28,7 +28,7 @@ use vk_vault::VaultService;
 use crate::{
     ClipboardHost, IpcError, PeerVerifier, SameExecutable, TouchIdBackend,
     peer::own_uid,
-    protocol::{SshDecision, SshPrompt, UiCommand, UiNotice},
+    protocol::{BrowserPrompt, BrowserReply, SshDecision, SshPrompt, UiCommand, UiNotice},
 };
 
 const DIR_MODE: u32 = 0o700;
@@ -58,6 +58,11 @@ pub enum DaemonEvent {
     },
     /// Tells the connected UI process to exit.
     Shutdown,
+    BrowserPrompt {
+        seq: u64,
+        prompt: BrowserPrompt,
+        reply: oneshot::Sender<BrowserReply>,
+    },
 }
 
 pub struct ServeOptions {
@@ -228,7 +233,7 @@ pub async fn serve_with<S: VaultService>(
     })
 }
 
-fn prepare_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn prepare_directory(path: &Path) -> io::Result<()> {
     let dir = path
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
@@ -250,7 +255,7 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn remove_stale_socket(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_stale_socket(path: &Path) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -274,7 +279,7 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 
 /// The 0700 directory keeps others out between `bind` and the `chmod`, so the process umask is
 /// left alone.
-fn bind(path: &Path) -> io::Result<UnixListener> {
+pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     if let Err(error) = fs::set_permissions(path, Permissions::from_mode(SOCKET_MODE)) {
         drop(listener);

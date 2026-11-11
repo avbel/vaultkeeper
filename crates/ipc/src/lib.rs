@@ -31,6 +31,7 @@
 #[cfg(not(unix))]
 compile_error!("vk-ipc talks over a unix domain socket; only unix targets are supported");
 
+pub mod browser;
 mod client;
 mod clipboard;
 pub mod dto;
@@ -41,13 +42,18 @@ pub mod protocol;
 mod server;
 mod touch_id;
 
-pub use client::{EventStream, RemoteVault, SshApproval, UiEvent};
+pub use client::{BrowserPromptEvent, EventStream, RemoteVault, SshApproval, UiEvent};
 pub use clipboard::ClipboardHost;
 pub use error::{ConvertError, IpcError, ipc_error};
-pub use peer::{PeerCredentials, PeerVerifier, SameExecutable};
+#[cfg(target_os = "macos")]
+pub use peer::check_pid;
+pub use peer::{
+    PeerCredentials, PeerVerifier, SameExecutable, has_hardened_runtime, parent_pid,
+    process_executable,
+};
 pub use protocol::{
-    PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt, TouchIdFailure, TypingTarget,
-    UiCommand, UiNotice,
+    BrowserPrompt, BrowserReply, PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt,
+    TouchIdFailure, TypingTarget, UiCommand, UiNotice,
 };
 pub use server::{DaemonEvent, ServeOptions, ServerHandle, serve, serve_with};
 pub use touch_id::TouchIdBackend;

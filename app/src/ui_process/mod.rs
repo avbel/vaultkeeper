@@ -29,7 +29,7 @@ use crate::{
 /// Activity notices reset the daemon's lock timer, which counts in minutes.
 const ACTIVITY_EVERY: Duration = Duration::from_secs(30);
 
-pub fn run(first_unlock: bool) -> anyhow::Result<()> {
+pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
     let data_dir = crate::os::layout::data_dir().context("locate the data directory")?;
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -50,6 +50,7 @@ pub fn run(first_unlock: bool) -> anyhow::Result<()> {
     let notify = notifier(&remote);
     select_backend(Backend::Ui {
         on_input: activity_reporter(Arc::clone(&notify)),
+        activate_at_launch: !no_activate,
     })?;
     let hooks = Hooks::system(&data_dir, &notify, &remote);
     let linger = Rc::new(LingerTimer {

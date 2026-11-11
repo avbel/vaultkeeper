@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use vk_vault::model::{AccountView, CollectionView, FolderView, OrganizationView, SessionState};
 use zeroize::Zeroizing;
 
-pub use events::{EventStream, SshApproval, UiEvent};
+pub use events::{BrowserPromptEvent, EventStream, SshApproval, UiEvent};
 
 use crate::{
     ConvertError, IpcError,

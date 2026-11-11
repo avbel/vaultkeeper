@@ -2,9 +2,11 @@
 
 use vk_ipc::{SshApprovalKind, UiEvent};
 
-use crate::app::{SshApprovalRequest, UiCommand};
+use crate::app::{BrowserPromptRequest, SshApprovalRequest, UiCommand};
 
 #[derive(Debug)]
+// Avoid a heap allocation for every UI event; commands are short-lived.
+#[allow(clippy::large_enum_variant)]
 pub enum Bridged {
     Command(UiCommand),
     /// The daemon is quitting: exit now.
@@ -32,6 +34,12 @@ pub fn bridge(event: UiEvent) -> Bridged {
             // The daemon settles list requests itself; dropping the reply denies a stray one.
             SshApprovalKind::List => Bridged::Ignore,
         },
+        UiEvent::BrowserPrompt(event) => {
+            Bridged::Command(UiCommand::ShowBrowserPrompt(BrowserPromptRequest {
+                prompt: event.prompt,
+                reply: event.reply,
+            }))
+        }
         UiEvent::OfflineChanged(offline) => Bridged::Command(UiCommand::OfflineChanged(offline)),
         UiEvent::Skipped(_) => Bridged::Ignore,
         UiEvent::Shutdown => Bridged::Quit,
@@ -51,6 +59,7 @@ pub fn command_for(command: vk_ipc::UiCommand) -> UiCommand {
         vk_ipc::UiCommand::UnlockInTray => UiCommand::UnlockInTray,
         vk_ipc::UiCommand::ReloadSettings => UiCommand::ReloadSettings,
         vk_ipc::UiCommand::SyncFinished { error } => UiCommand::SyncFinished(error),
+        vk_ipc::UiCommand::Toast { text, error } => UiCommand::Toast { text, error },
     }
 }
 
@@ -104,6 +113,13 @@ mod tests {
                     error: Some("offline".to_owned()),
                 },
                 r#"SyncFinished(Some("offline"))"#,
+            ),
+            (
+                vk_ipc::UiCommand::Toast {
+                    text: "saved".to_owned(),
+                    error: true,
+                },
+                r#"Toast { text: "saved", error: true }"#,
             ),
         ];
         for (daemon, app) in pairs {

@@ -1,0 +1,96 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Icon, SectionLabel } from "kit.slint";
+
+export component BrowserPairPrompt inherits Window {
+    title: "Connect browser";
+    icon: @image-url("icons/tray-dark.svg");
+    no-frame: true;
+    always-on-top: true;
+    width: 420px;
+    height: 260px;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+
+    in property <string> browser;
+    in property <string> fingerprint;
+    in-out property <int> seconds-left: 60;
+    in property <int> timeout: 60;
+    callback approve();
+    callback deny();
+
+    Timer {
+        interval: 1s;
+        running: root.seconds-left > 0;
+        triggered => { root.seconds-left -= 1; }
+    }
+
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-popup;
+        clip: true;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.deny();
+                    return accept;
+                }
+                // Return must not authorize a new browser.
+                if event.text == Key.Return { return accept; }
+                return reject;
+            }
+            init => { self.focus(); }
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Icon {
+                        width: 20px;
+                        height: 20px;
+                        source: @image-url("icons/key.svg");
+                        tint: Theme.accent;
+                    }
+                    Text {
+                        text: "Connect " + root.browser + "?";
+                        color: Theme.text;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                    }
+                }
+                Text {
+                    text: "The Vaultkeeper extension in " + root.browser + " wants to connect. Check that this code matches the one in the extension:";
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    wrap: word-wrap;
+                }
+                SectionLabel { text: "FINGERPRINT"; }
+                Text {
+                    text: root.fingerprint;
+                    font-family: Theme.mono;
+                    font-size: Theme.font-totp;
+                    color: Theme.text;
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    alignment: end;
+                    Btn { text: "Deny"; hint: "Esc"; label: "Deny"; clicked => { root.deny(); } }
+                    Btn { text: "Connect"; label: "Connect"; kind: BtnKind.primary; clicked => { root.approve(); } }
+                }
+                Rectangle {
+                    height: 3px;
+                    border-radius: 1.5px;
+                    background: Theme.surface-raised;
+                    Rectangle {
+                        width: parent.width * max(0, root.seconds-left) / max(1, root.timeout);
+                        height: 100%;
+                        border-radius: 1.5px;
+                        background: root.seconds-left < 6 ? Theme.warn : Theme.accent;
+                        animate width { duration: 1s; easing: linear; }
+                    }
+                }
+            }
+        }
+    }
+}

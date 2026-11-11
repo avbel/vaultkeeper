@@ -37,6 +37,16 @@ pub fn encode<T: Serialize + ?Sized>(message: &T) -> Result<Zeroizing<Vec<u8>>, 
 pub async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<Option<Zeroizing<Vec<u8>>>, IpcError> {
+    read_frame_with_limit(reader, MAX_FRAME_LEN).await
+}
+
+/// Reads a frame with a caller-specific size limit, checked before allocation.
+///
+/// Not cancel-safe: dropping the future mid-frame loses the stream position.
+pub async fn read_frame_with_limit<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    limit: usize,
+) -> Result<Option<Zeroizing<Vec<u8>>>, IpcError> {
     let mut header = [0; HEADER_LEN];
     match reader.read_exact(&mut header).await {
         Ok(_) => {}
@@ -44,7 +54,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
         Err(error) => return Err(error.into()),
     }
     let len = usize::try_from(u32::from_le_bytes(header)).unwrap_or(usize::MAX);
-    if len > MAX_FRAME_LEN {
+    if len > limit.min(MAX_FRAME_LEN) {
         return Err(IpcError::FrameTooLarge { len });
     }
     let mut body = Zeroizing::new(vec![0; len]);

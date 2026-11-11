@@ -4,6 +4,7 @@
 pub mod appkit;
 pub mod autotype;
 mod biometrics;
+mod browser;
 mod clipboard;
 pub mod fs;
 pub mod layout;
@@ -51,6 +52,11 @@ impl Hooks {
                 Arc::new(move || settings_notify(UiNotice::SettingsChanged)),
             )),
             dock: Arc::new(appkit::AppKitDock),
+            browsers: Arc::new(browser::BrowserFiles {
+                app_support: data_dir.parent().unwrap_or(data_dir).to_owned(),
+                store: data_dir.join(layout::BROWSER_PAIRINGS_FILE),
+                notify: Arc::clone(notify),
+            }),
             ssh_agent: Arc::new(AgentSocket {
                 path: data_dir.join(layout::SSH_SOCKET),
             }),

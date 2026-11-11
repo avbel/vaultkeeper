@@ -82,6 +82,7 @@ impl Inner {
                 _ => None,
             };
             let previous = std::mem::replace(&mut unlocked.data, data);
+            unlocked.revision = unlocked.revision.wrapping_add(1);
             (previous, ssh_changed, record)
         };
         drop(previous);

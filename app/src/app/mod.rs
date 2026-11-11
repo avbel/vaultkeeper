@@ -6,6 +6,7 @@
 
 mod auth;
 mod autotype_ctl;
+mod browser;
 mod commands;
 mod copy;
 mod generator;
@@ -15,6 +16,7 @@ mod manager_detail;
 mod manager_edit;
 mod quick;
 mod reprompt;
+mod settings_browser;
 mod settings_ctl;
 mod settings_hotkeys;
 mod sidebar_ctl;
@@ -33,6 +35,7 @@ use std::{
 use slint::{ComponentHandle, Global, SharedString};
 use vk_vault::{VaultService, model::SessionState};
 
+pub use browser::BrowserPromptRequest;
 pub use commands::UiCommand;
 pub use ssh::SshApprovalRequest;
 
@@ -41,14 +44,14 @@ use crate::{
     hooks::Hooks,
     settings::{Settings, ThemeChoice},
     ui::{
-        GeneratorWindow, LockWindow, ManagerWindow, QuickPanel, SettingsWindow, SshPrompt, Theme,
-        ThemeMode, TrayIcon,
+        BrowserPairPrompt, BrowserPicker, BrowserSavePrompt, GeneratorWindow, LockWindow,
+        ManagerWindow, QuickPanel, SettingsWindow, SshPrompt, Theme, ThemeMode, TrayIcon,
     },
 };
 
 use self::{
-    auth::LoginState, generator::GeneratorCore, manager::Manager, quick::Quick, ssh::SshQueue,
-    ticker::Ticker,
+    auth::LoginState, browser::BrowserQueue, generator::GeneratorCore, manager::Manager,
+    quick::Quick, ssh::SshQueue, ticker::Ticker,
 };
 
 /// Builds a Slint callback that upgrades the app's `Weak` and runs `$body`, or returns
@@ -138,6 +141,10 @@ pub struct App<S: VaultService> {
     generator: RefCell<GeneratorCore>,
     ssh: RefCell<SshQueue>,
     ssh_prompt: RefCell<Option<SshPrompt>>,
+    browser: RefCell<BrowserQueue>,
+    browser_pair_prompt: RefCell<Option<BrowserPairPrompt>>,
+    browser_save_prompt: RefCell<Option<BrowserSavePrompt>>,
+    browser_picker: RefCell<Option<BrowserPicker>>,
     ticker: Ticker,
     tray: RefCell<Option<TrayIcon>>,
     /// A sync started by the UI is in flight (the list shows skeleton rows while empty).
@@ -186,6 +193,10 @@ impl<S: VaultService> App<S> {
             generator: RefCell::new(GeneratorCore::from_prefs(&settings_generator)),
             ssh: RefCell::new(SshQueue::default()),
             ssh_prompt: RefCell::new(None),
+            browser: RefCell::new(BrowserQueue::default()),
+            browser_pair_prompt: RefCell::new(None),
+            browser_save_prompt: RefCell::new(None),
+            browser_picker: RefCell::new(None),
             ticker: Ticker::default(),
             tray: RefCell::new(None),
             syncing: Cell::new(false),
@@ -276,6 +287,7 @@ impl<S: VaultService> App<S> {
             Target::None => {}
         }
         self.show_next_ssh_prompt();
+        self.show_next_browser_prompt();
         self.show_pending_notices();
         self.sync_now();
     }
@@ -286,6 +298,7 @@ impl<S: VaultService> App<S> {
         self.close_manager();
         self.close_quick_panel();
         self.deny_all_ssh();
+        self.deny_all_browser();
         self.forget_reprompts();
         self.hooks.autotype.cancel();
         if had_window && self.target.get() == Target::None {
@@ -454,6 +467,15 @@ impl<S: VaultService> App<S> {
         if let Some(window) = self.ssh_prompt.borrow().as_ref() {
             self.apply_theme(window);
         }
+        if let Some(window) = self.browser_pair_prompt.borrow().as_ref() {
+            self.apply_theme(window);
+        }
+        if let Some(window) = self.browser_save_prompt.borrow().as_ref() {
+            self.apply_theme(window);
+        }
+        if let Some(window) = self.browser_picker.borrow().as_ref() {
+            self.apply_theme(window);
+        }
     }
 
     /// Persists and applies a theme choice from the Settings window.
@@ -507,6 +529,30 @@ impl<S: VaultService> App<S> {
     #[must_use]
     pub fn generator_window(&self) -> Option<GeneratorWindow> {
         self.generator_window
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong)
+    }
+
+    #[must_use]
+    pub fn browser_picker(&self) -> Option<BrowserPicker> {
+        self.browser_picker
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong)
+    }
+
+    #[must_use]
+    pub fn browser_save_prompt(&self) -> Option<BrowserSavePrompt> {
+        self.browser_save_prompt
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong)
+    }
+
+    #[must_use]
+    pub fn browser_pair_prompt(&self) -> Option<BrowserPairPrompt> {
+        self.browser_pair_prompt
             .borrow()
             .as_ref()
             .map(ComponentHandle::clone_strong)

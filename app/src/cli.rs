@@ -2,6 +2,36 @@
 
 use crate::settings::ThemeChoice;
 
+pub const FIREFOX_EXTENSION_ID: &str = "browser-extension@vaultkeeper";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostCaller {
+    Chromium { origin: String },
+    Firefox { extension_id: String },
+}
+
+#[must_use]
+pub fn browser_host_caller(args: &[String]) -> Option<HostCaller> {
+    let first = args.first()?;
+    if let Some(id) = first.strip_prefix("chrome-extension://") {
+        let id = id.strip_suffix('/').unwrap_or(id);
+        if id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte)) {
+            return Some(HostCaller::Chromium {
+                origin: format!("chrome-extension://{id}/"),
+            });
+        }
+    }
+    if args.len() == 2
+        && first.ends_with("/org.vaultkeeper.browser.json")
+        && args[1] == FIREFOX_EXTENSION_ID
+    {
+        return Some(HostCaller::Firefox {
+            extension_id: args[1].clone(),
+        });
+    }
+    None
+}
+
 pub const USAGE: &str = "usage: vaultkeeper [--daemon | --tray | --quick]
        vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
                [--size WxH] [--select QUERY] [--quick]
@@ -27,11 +57,15 @@ pub struct Args {
     pub ui: bool,
     /// With `--ui`: no unlock happened since the daemon started.
     pub first_unlock: bool,
+    pub no_activate: bool,
     pub tray: bool,
     pub offline: bool,
     pub unlocked: bool,
     pub theme: Option<ThemeChoice>,
     pub demo_ssh: bool,
+    pub demo_browser_fill: bool,
+    pub demo_browser_pair: bool,
+    pub demo_browser_save: bool,
     pub size: Option<(u32, u32)>,
     pub select: Option<String>,
     pub quick: bool,
@@ -69,10 +103,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--daemon" => parsed.daemon = true,
             "--ui" => parsed.ui = true,
             "--first-unlock" => parsed.first_unlock = true,
+            "--no-activate" => parsed.no_activate = true,
             "--tray" => parsed.tray = true,
             "--offline" => parsed.offline = true,
             "--unlocked" => parsed.unlocked = true,
             "--demo-ssh" => parsed.demo_ssh = true,
+            "--demo-browser-fill" => parsed.demo_browser_fill = true,
+            "--demo-browser-pair" => parsed.demo_browser_pair = true,
+            "--demo-browser-save" => parsed.demo_browser_save = true,
             "--quick" => parsed.quick = true,
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
             "--select" => parsed.select = Some(args.next().ok_or(CliError::Select)?),
@@ -97,6 +135,32 @@ mod tests {
 
     fn args(list: &[&str]) -> Result<Args, CliError> {
         parse(list.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn detects_browser_host_arguments() {
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        let chrome = vec![format!("chrome-extension://{id}")];
+        assert_eq!(
+            browser_host_caller(&chrome),
+            Some(HostCaller::Chromium {
+                origin: format!("chrome-extension://{id}/")
+            })
+        );
+        assert!(browser_host_caller(&["chrome-extension://invalid/".into()]).is_none());
+        assert_eq!(
+            browser_host_caller(&[
+                "/tmp/org.vaultkeeper.browser.json".into(),
+                FIREFOX_EXTENSION_ID.into()
+            ]),
+            Some(HostCaller::Firefox {
+                extension_id: FIREFOX_EXTENSION_ID.into()
+            })
+        );
+        assert!(
+            browser_host_caller(&["/tmp/org.vaultkeeper.browser.json".into(), "other".into()])
+                .is_none()
+        );
     }
 
     #[test]

@@ -1119,6 +1119,32 @@ async fn probe_of_a_dead_or_failing_server_is_an_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn browser_snapshot_does_not_survive_lock_and_unlock() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, vec![fake.login("c1", "GitHub", "pw")]).await;
+    let vault = &harness.vault;
+    let snapshot = vault.browser_snapshot().unwrap();
+    vault.lock();
+    vault
+        .unlock_with_password(Zeroizing::new(PASSWORD.into()))
+        .await
+        .unwrap();
+    let page = vk_vault::uri_match::PageUrl::new("https://example.com", "/").unwrap();
+    let result = vault.browser_reveal(
+        snapshot,
+        &vk_vault::model::ItemId("c1".into()),
+        &page,
+        vk_vault::uri_match::DefaultMatch::Domain,
+        true,
+        vk_vault::BrowserFields {
+            username: true,
+            password: true,
+        },
+    );
+    assert!(matches!(result, Err(Error::Conflict)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn saving_a_draft_after_a_sync_brought_a_remote_edit_is_a_conflict() {
     let fake = Fake::start().await;
     let original = fake.login("c1", "GitHub", "pw");
@@ -1126,6 +1152,7 @@ async fn saving_a_draft_after_a_sync_brought_a_remote_edit_is_a_conflict() {
     let vault = &harness.vault;
     let id = vk_vault::model::ItemId("c1".into());
     let mut draft = vault.draft(&id).unwrap();
+    let browser_snapshot = vault.browser_snapshot().unwrap();
     assert_eq!(
         draft.revision_date.as_deref(),
         Some(original.revision_date.as_str())
@@ -1141,6 +1168,21 @@ async fn saving_a_draft_after_a_sync_brought_a_remote_edit_is_a_conflict() {
         .await;
     vault.sync().await.unwrap();
     assert_eq!(names(vault), ["GitHub (phone)"]);
+    let page = vk_vault::uri_match::PageUrl::new("https://example.com", "/").unwrap();
+    assert!(matches!(
+        vault.browser_reveal(
+            browser_snapshot,
+            &id,
+            &page,
+            vk_vault::uri_match::DefaultMatch::Domain,
+            true,
+            vk_vault::BrowserFields {
+                username: true,
+                password: true
+            }
+        ),
+        Err(Error::Conflict)
+    ));
 
     draft.name = "GitHub (desktop)".into();
     let refused = vault.save(Some(id.clone()), draft).await.unwrap_err();

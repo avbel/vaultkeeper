@@ -16,8 +16,9 @@ use common::{
 };
 use tokio::sync::{mpsc, oneshot};
 use vk_ipc::{
-    DaemonEvent, IpcError, PROTOCOL_VERSION, PeerCredentials, RemoteVault, ServeOptions,
-    SshApprovalKind, SshDecision, SshPrompt, TypingTarget, UiCommand, UiEvent, UiNotice,
+    BrowserPrompt, BrowserReply, DaemonEvent, IpcError, PROTOCOL_VERSION, PeerCredentials,
+    RemoteVault, ServeOptions, SshApprovalKind, SshDecision, SshPrompt, TypingTarget, UiCommand,
+    UiEvent, UiNotice,
     dto::{SessionStateDto, WireError},
     frame::{HEADER_LEN, MAX_FRAME_LEN, encode},
     ipc_error,
@@ -204,6 +205,57 @@ async fn ssh_approvals_reach_the_ui_and_its_answer_reaches_the_agent() {
             .expect("in time"),
         Ok(SshDecision::DENY),
         "dropping the reply denies"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_prompt_round_trip_and_dismissal() {
+    let daemon = Daemon::start(FakeVault::new(unlocked(), 0)).await;
+    let (_vault, mut events) = daemon.connect().await;
+    let prompt = BrowserPrompt::Pair {
+        browser: "Firefox".into(),
+        fingerprint: "A1B2-C3D4-E5F6-0718".into(),
+    };
+    let (reply, result) = oneshot::channel();
+    daemon
+        .events
+        .send(DaemonEvent::BrowserPrompt {
+            seq: 1,
+            prompt: prompt.clone(),
+            reply,
+        })
+        .await
+        .expect("send prompt");
+    let Some(UiEvent::BrowserPrompt(event)) = next_event(&mut events).await else {
+        panic!("expected browser prompt")
+    };
+    assert_eq!(event.prompt, prompt);
+    event.reply.send(BrowserReply::PairApproved).expect("reply");
+    assert_eq!(
+        tokio::time::timeout(EVENT_WAIT, result)
+            .await
+            .expect("reply in time"),
+        Ok(BrowserReply::PairApproved)
+    );
+    let (reply, result) = oneshot::channel();
+    daemon
+        .events
+        .send(DaemonEvent::BrowserPrompt {
+            seq: 2,
+            prompt,
+            reply,
+        })
+        .await
+        .expect("send prompt");
+    let Some(UiEvent::BrowserPrompt(event)) = next_event(&mut events).await else {
+        panic!("expected browser prompt")
+    };
+    drop(event);
+    assert_eq!(
+        tokio::time::timeout(EVENT_WAIT, result)
+            .await
+            .expect("reply in time"),
+        Ok(BrowserReply::Dismissed)
     );
 }
 

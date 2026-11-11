@@ -14,7 +14,12 @@ use zeroize::Zeroizing;
 
 use vk_vault::VaultService;
 
-use crate::{autotype::Stroke, mock::MockVault, settings::Settings};
+use crate::{
+    autotype::Stroke,
+    daemon::browser::{manifests::ManifestBrowser, pairing::PairingEntry},
+    mock::MockVault,
+    settings::Settings,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
@@ -104,6 +109,15 @@ pub trait SshAgentControl: Send + Sync {
     fn socket_path(&self) -> String;
 }
 
+/// Browser integration state that lives outside the settings file: which browsers are installed
+/// and the pairings in the daemon's `browsers.json`.
+pub trait BrowserPairings: Send + Sync {
+    fn installed(&self) -> Vec<ManifestBrowser>;
+    fn paired(&self) -> Vec<PairingEntry>;
+    /// Removes the pairing with `public_key` (base64) and tells the daemon to drop its sessions.
+    fn remove(&self, public_key: &str) -> HookResult<()>;
+}
+
 /// "New SSH key" support: `(private OpenSSH PEM, public key line, SHA256 fingerprint)`.
 pub trait SshKeyTool: Send + Sync {
     fn generate(&self) -> HookResult<(Zeroizing<String>, String, String)>;
@@ -164,6 +178,7 @@ pub struct Hooks {
     pub settings: Arc<dyn SettingsStore>,
     pub dock: Arc<dyn DockIcon>,
     pub ssh_agent: Arc<dyn SshAgentControl>,
+    pub browsers: Arc<dyn BrowserPairings>,
     pub ssh_keys: Arc<dyn SshKeyTool>,
     pub placement: Arc<dyn WindowPlacement>,
     pub clock: Arc<dyn Clock>,
@@ -204,6 +219,7 @@ impl Hooks {
             settings: Arc::new(MemorySettings::default()),
             dock: Arc::new(LogDock),
             ssh_agent: Arc::new(LogSshAgent),
+            browsers: Arc::new(LogBrowserPairings::default()),
             ssh_keys: Arc::new(crate::mock::MockSshKeys),
             placement: Arc::new(OsPlacement),
             clock: Arc::new(SystemClock),
@@ -373,6 +389,61 @@ struct LogDock;
 impl DockIcon for LogDock {
     fn set_visible(&self, visible: bool) {
         tracing::debug!(visible, "dock icon (stub)");
+    }
+}
+
+/// Two fake pairings so the Settings section can be tried in `--mock` and in UI tests.
+struct LogBrowserPairings {
+    paired: Mutex<Vec<PairingEntry>>,
+}
+
+impl Default for LogBrowserPairings {
+    fn default() -> Self {
+        let entry = |browser, caller: &str, fingerprint: &str, added| PairingEntry {
+            public_key: fingerprint.to_owned(),
+            browser,
+            caller: caller.to_owned(),
+            added,
+            fingerprint: fingerprint.to_owned(),
+        };
+        Self {
+            paired: Mutex::new(vec![
+                entry(
+                    vk_ipc::browser::protocol::KnownBrowser::Firefox,
+                    "browser-extension@vaultkeeper",
+                    "A1B2-C3D4-E5F6-0718",
+                    1,
+                ),
+                entry(
+                    vk_ipc::browser::protocol::KnownBrowser::Chrome,
+                    "chrome-extension://stub/",
+                    "1F2E-3D4C-5B6A-7089",
+                    2,
+                ),
+            ]),
+        }
+    }
+}
+
+impl BrowserPairings for LogBrowserPairings {
+    fn installed(&self) -> Vec<ManifestBrowser> {
+        vec![ManifestBrowser::Chrome, ManifestBrowser::Firefox]
+    }
+
+    fn paired(&self) -> Vec<PairingEntry> {
+        self.paired
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn remove(&self, public_key: &str) -> HookResult<()> {
+        tracing::info!(public_key, "browser pairing remove (stub)");
+        self.paired
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|entry| entry.public_key != public_key);
+        Ok(())
     }
 }
 

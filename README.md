@@ -37,6 +37,7 @@ spike's window was dropped). See the "Step 0 result" section of
 - Password and passphrase generator, from the tray or its own hotkey
 - Auto-type of username and password into the previous app (key presses, no clipboard)
 - SSH agent for the vault's SSH keys, with approval prompts and optional Touch ID
+- Chrome and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
 - Touch ID unlock (key wrapped to the Secure Enclave)
 - Multiple accounts
 - Offline mode from an encrypted local cache

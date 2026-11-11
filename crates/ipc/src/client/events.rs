@@ -1,6 +1,6 @@
 use tokio::sync::{mpsc, oneshot};
 
-use crate::protocol::{SshDecision, SshPrompt, UiCommand};
+use crate::protocol::{BrowserPrompt, BrowserReply, SshDecision, SshPrompt, UiCommand};
 
 /// What the daemon pushes to the UI process, besides cache refreshes (those surface through
 /// `VaultService::changes`).
@@ -11,6 +11,7 @@ pub enum UiEvent {
         command: UiCommand,
     },
     SshApproval(SshApproval),
+    BrowserPrompt(BrowserPromptEvent),
     /// The daemon withdrew its event `seq` before it got here; nothing to show.
     Skipped(u64),
     /// The UI shows or dismisses the "Offline mode" toast.
@@ -27,6 +28,7 @@ impl UiEvent {
         match self {
             Self::Command { seq, .. } | Self::Skipped(seq) => Some(*seq),
             Self::SshApproval(approval) => Some(approval.seq),
+            Self::BrowserPrompt(prompt) => Some(prompt.seq),
             Self::OfflineChanged(_) | Self::Shutdown => None,
         }
     }
@@ -40,6 +42,14 @@ pub struct SshApproval {
     pub prompt: SshPrompt,
     /// Dropping it counts as deny.
     pub reply: oneshot::Sender<SshDecision>,
+}
+
+#[derive(Debug)]
+pub struct BrowserPromptEvent {
+    pub seq: u64,
+    pub request_id: u64,
+    pub prompt: BrowserPrompt,
+    pub reply: oneshot::Sender<BrowserReply>,
 }
 
 /// Events from the daemon. Ends (`next` returns `None`) when the connection is gone, which is

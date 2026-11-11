@@ -3,6 +3,9 @@ import { Theme } from "theme.slint";
 import { Btn, BtnKind, CopyBtn, Divider, Segmented, SectionLabel, Select, ShortcutRecorder, Toggle } from "kit.slint";
 import { GeneratorView, GeneratorState } from "generator.slint";
 
+// `key` is the stored public key, which identifies the pairing to remove.
+export struct PairedBrowserRow { name: string, fingerprint: string, key: string }
+
 component SettingRow inherits HorizontalLayout {
     in property <string> text;
     spacing: Theme.gap;
@@ -57,6 +60,18 @@ export component SettingsWindow inherits Window {
     // Which recorder waits for a key: 0 none, 1 Quick Panel, 2 Generator. Read by the winit key
     // filter, which records by physical key.
     out property <int> recording-slot: quick-recorder.recording ? 1 : generator-recorder.recording ? 2 : 0;
+    in-out property <bool> browser-integration;
+    // The muted line under the master switch: "Off", "On" or why it cannot start.
+    in property <string> browser-state;
+    in property <bool> chrome-installed;
+    in property <bool> firefox-installed;
+    in-out property <bool> browser-chrome;
+    in-out property <bool> browser-firefox;
+    in-out property <bool> browser-touch-id;
+    in-out property <bool> browser-save-prompts;
+    in-out property <bool> browser-copy-totp;
+    in-out property <int> browser-match-index;
+    in property <[PairedBrowserRow]> paired-browsers;
     in property <string> error-text;
 
     callback theme-selected(int);
@@ -75,6 +90,14 @@ export component SettingsWindow inherits Window {
     callback ssh-approval-selected(int);
     callback ssh-touch-id-toggled(bool);
     callback touch-id-right-away-toggled(bool);
+    callback browser-integration-toggled(bool);
+    callback browser-chrome-toggled(bool);
+    callback browser-firefox-toggled(bool);
+    callback browser-touch-id-toggled(bool);
+    callback browser-save-prompts-toggled(bool);
+    callback browser-copy-totp-toggled(bool);
+    callback browser-match-selected(int);
+    callback paired-browser-removed(string);
     // Both save paths validate and save an accelerator; an empty one clears the Generator's.
     callback hotkey-accepted(string);
     callback generator-hotkey-accepted(string);
@@ -270,6 +293,68 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 Toggle { text: "SSH requires Touch ID"; checked <=> root.ssh-touch-id; toggled(v) => { root.ssh-touch-id-toggled(v); } }
+                Divider { }
+                SectionLabel { text: "BROWSERS"; }
+                Toggle {
+                    text: "Browser integration";
+                    description: root.browser-state;
+                    checked <=> root.browser-integration;
+                    toggled(v) => { root.browser-integration-toggled(v); }
+                }
+                if root.chrome-installed: Toggle {
+                    text: "Install for Google Chrome";
+                    enabled: root.browser-integration;
+                    checked <=> root.browser-chrome;
+                    toggled(v) => { root.browser-chrome-toggled(v); }
+                }
+                if root.firefox-installed: Toggle {
+                    text: "Install for Firefox";
+                    enabled: root.browser-integration;
+                    checked <=> root.browser-firefox;
+                    toggled(v) => { root.browser-firefox-toggled(v); }
+                }
+                if root.touch-id-available: Toggle {
+                    text: "Require Touch ID to fill";
+                    checked <=> root.browser-touch-id;
+                    toggled(v) => { root.browser-touch-id-toggled(v); }
+                }
+                Toggle { text: "Offer to save logins"; checked <=> root.browser-save-prompts; toggled(v) => { root.browser-save-prompts-toggled(v); } }
+                Toggle { text: "Copy TOTP code after filling"; checked <=> root.browser-copy-totp; toggled(v) => { root.browser-copy-totp-toggled(v); } }
+                SettingRow {
+                    text: "Match sites by";
+                    Segmented {
+                        width: 220px;
+                        label: "Match sites by";
+                        options: ["Domain", "Exact host"];
+                        index <=> root.browser-match-index;
+                        selected(i) => { root.browser-match-selected(i); }
+                    }
+                }
+                SectionLabel { text: "PAIRED BROWSERS"; }
+                if root.paired-browsers.length == 0: Text {
+                    text: "No browser is connected yet";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                }
+                for paired in root.paired-browsers: SettingRow {
+                    text: paired.name;
+                    Text {
+                        text: paired.fingerprint;
+                        font-family: Theme.mono;
+                        font-size: Theme.font-meta;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: paired.name + " fingerprint";
+                        accessible-value: self.text;
+                    }
+                    Btn {
+                        text: "Remove";
+                        label: "Remove " + paired.name;
+                        kind: BtnKind.danger;
+                        clicked => { root.paired-browser-removed(paired.key); }
+                    }
+                }
                 Divider { }
                 SectionLabel { text: "SHORTCUTS"; }
                 SettingRow {

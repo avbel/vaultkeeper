@@ -5,6 +5,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 pub const UI_SOCKET: &str = "ui.sock";
+pub const BROWSER_SOCKET: &str = "browser.sock";
+pub const BROWSER_PAIRINGS_FILE: &str = "browsers.json";
 pub const SSH_SOCKET: &str = "ssh-agent.sock";
 pub const SETTINGS_FILE: &str = "settings.json";
 pub const DEVICE_FILE: &str = "device.json";

@@ -1,0 +1,74 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Icon, Select } from "kit.slint";
+
+export component BrowserSavePrompt inherits Window {
+    title: "Save login";
+    icon: @image-url("icons/tray-dark.svg");
+    no-frame: true;
+    always-on-top: true;
+    width: 380px;
+    height: 240px;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+
+    in property <string> browser;
+    in property <string> host;
+    in property <string> username;
+    in property <bool> update;
+    in property <[string]> choices;
+    in-out property <int> choice-index: 0;
+    in-out property <int> seconds-left: 30;
+    callback save(int);
+    callback dismiss();
+    callback never();
+
+    Timer {
+        interval: 1s;
+        running: root.seconds-left > 0;
+        triggered => { root.seconds-left -= 1; }
+    }
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-popup;
+        clip: true;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.dismiss(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Icon { width: 20px; height: 20px; source: @image-url("icons/key.svg"); tint: Theme.accent; }
+                    Text { text: root.update ? "Update password?" : "Save login?"; color: Theme.text; font-size: Theme.font-title; font-weight: 600; }
+                }
+                Text { text: root.browser + " · " + root.host; color: Theme.text-muted; }
+                Text { text: "Username from the page"; color: Theme.text-muted; font-size: Theme.font-meta; }
+                Text { text: root.username; color: Theme.text; font-family: Theme.mono; overflow: elide; }
+                if root.choices.length > 0: Select {
+                    options: root.choices;
+                    index <=> root.choice-index;
+                    label: "Login to update";
+                }
+                Rectangle { vertical-stretch: 1; }
+                Text { text: "Click to answer"; color: Theme.text-muted; font-size: Theme.font-meta; }
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    alignment: end;
+                    Btn { text: "Never for this site"; label: "Never for this site"; clicked => { root.never(); } }
+                    Btn { text: "Not now"; label: "Not now"; clicked => { root.dismiss(); } }
+                    Btn { text: root.update ? "Update" : "Save"; label: root.update ? "Update" : "Save"; kind: BtnKind.primary; clicked => { root.save(root.choice-index); } }
+                }
+                Rectangle {
+                    height: 3px;
+                    border-radius: 1.5px;
+                    background: Theme.surface-raised;
+                    Rectangle { width: parent.width * max(0, root.seconds-left) / 30; height: 100%; border-radius: 1.5px; background: root.seconds-left < 6 ? Theme.warn : Theme.accent; animate width { duration: 1s; easing: linear; } }
+                }
+            }
+        }
+    }
+}
