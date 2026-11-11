@@ -20,7 +20,7 @@ pnpm exec vp check          # format, lint, type-aware lint
 pnpm exec vp test           # vp test is non-watch by default
 pnpm exec tsc --noEmit
 pnpm run gen-theme          # regenerate src/ui/theme.css from ../app/ui/theme.slint
-node scripts/gen-icons.mjs  # regenerate the PNG icons
+node scripts/gen-icons.mjs  # PNG icons from ../packaging/macos/icon.svg (needs rsvg-convert)
 ```
 
 `src/ui/theme.css` is generated and committed; `test/theme.test.ts` fails when `app/ui/theme.slint` changed and the CSS

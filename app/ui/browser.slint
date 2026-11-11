@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, Icon, SectionLabel } from "kit.slint";
+import { Btn, BtnKind, PromptHeader, SectionLabel } from "kit.slint";
 
 export component BrowserPairPrompt inherits Window {
     title: "Connect browser";
@@ -43,21 +43,7 @@ export component BrowserPairPrompt inherits Window {
             VerticalLayout {
                 padding: 18px;
                 spacing: 8px;
-                HorizontalLayout {
-                    spacing: 10px;
-                    Icon {
-                        width: 20px;
-                        height: 20px;
-                        source: @image-url("icons/key.svg");
-                        tint: Theme.accent;
-                    }
-                    Text {
-                        text: "Connect " + root.browser + "?";
-                        color: Theme.text;
-                        font-size: Theme.font-title;
-                        font-weight: 600;
-                    }
-                }
+                PromptHeader { glyph: @image-url("icons/shield.svg"); title: "Connect " + root.browser + "?"; }
                 Text {
                     text: "The Vaultkeeper extension in " + root.browser + " wants to connect. Check that this code matches the one in the extension:";
                     color: Theme.text;

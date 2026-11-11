@@ -135,4 +135,36 @@ describe("Session handshake", () => {
     native.disconnect(); // the host closes the port after announcing why
     await assertion;
   });
+
+  it("adopts the vault state from unlock and status replies when no state event follows", async () => {
+    resetKeyPairCache();
+    const port = fakePort();
+    const native = new NativeClient({ connectNative: () => port });
+    const session = new Session({
+      native,
+      keys: () => getOrCreateKeyPair(store()),
+      caller: "c",
+      extensionVersion: "0.1.0",
+      onChange: () => undefined,
+    });
+    const ready = session.ensureReady();
+    await flush();
+    port.emit({ id: 1, ok: true, result: { challenge: btoa("x".repeat(32)), known: true } });
+    await flush();
+    port.emit({ id: 2, ok: true, result: { state: "locked", theme: "dark", fingerprint: "x" } });
+    await ready;
+    expect(session.status.state).toBe("locked");
+
+    const unlock = session.request("unlock", {});
+    await flush();
+    port.emit({ id: 3, ok: true, result: { state: "unlocked" } });
+    await unlock;
+    expect(session.status).toMatchObject({ state: "unlocked", theme: "dark" });
+
+    const refresh = session.refresh();
+    await flush();
+    port.emit({ id: 4, ok: true, result: { state: "locked", theme: "light" } });
+    await refresh;
+    expect(session.status).toMatchObject({ state: "locked", theme: "light" });
+  });
 });

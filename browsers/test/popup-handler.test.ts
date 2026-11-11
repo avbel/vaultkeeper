@@ -19,6 +19,7 @@ function setup(options: { tabId?: number | undefined; fill?: BeginFillResult } =
   );
   const request = vi.fn(async () => ({}));
   const ensureReady = vi.fn(async () => undefined);
+  const refresh = vi.fn(async () => undefined);
   const deps: PopupDeps = {
     runtimeId: "ext-id",
     popupUrl: POPUP_URL,
@@ -27,10 +28,11 @@ function setup(options: { tabId?: number | undefined; fill?: BeginFillResult } =
     session: {
       status: STATUS,
       ensureReady,
+      refresh,
       request: request as unknown as PopupDeps["session"]["request"],
     },
   };
-  return { handle: createPopupHandler(deps), beginFill, request, ensureReady };
+  return { handle: createPopupHandler(deps), beginFill, request, ensureReady, refresh };
 }
 
 const FROM_POPUP = { id: "ext-id", url: POPUP_URL };
@@ -71,9 +73,10 @@ describe("popup handler", () => {
   });
 
   it("returns the status snapshot and kicks off the connection", async () => {
-    const { handle, ensureReady } = setup();
+    const { handle, ensureReady, refresh } = setup();
     expect(await handle({ kind: "popup_status" }, FROM_POPUP)).toEqual({ status: STATUS });
     expect(ensureReady).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
   });
 
   it("forwards unlock and open_app to the app", async () => {

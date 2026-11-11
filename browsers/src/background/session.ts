@@ -59,7 +59,26 @@ export class Session {
     fields: RequestMap[T]["fields"],
   ): Promise<RequestMap[T]["result"]> {
     await this.ensureReady();
-    return this.#deps.native.request(type, fields);
+    const result = await this.#deps.native.request(type, fields);
+    this.#adoptState(type, result);
+    return result;
+  }
+
+  /** Asks the app for the current vault state, which is the source of truth for the popup. */
+  async refresh(): Promise<void> {
+    await this.request("status", {});
+  }
+
+  // The app tells a client about a state change once: if its reply to `unlock` or `status`
+  // already carried the new state, no `state` event follows, so the reply must be applied here.
+  #adoptState<T extends RequestType>(type: T, result: RequestMap[T]["result"]): void {
+    if (type !== "status" && type !== "unlock") {
+      return;
+    }
+    const { state, theme } = result as { state?: PopupStatus["state"]; theme?: Theme };
+    if (state) {
+      this.#set(theme ? { state, theme } : { state });
+    }
   }
 
   async #runHandshake(): Promise<void> {

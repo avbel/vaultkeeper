@@ -1,6 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, EmptyState, Field, Icon } from "kit.slint";
+import { Btn, BtnKind, EmptyState, Field, Icon, PromptHeader } from "kit.slint";
 
 export struct BrowserPickerRow { name: string, username: string, other-site: bool }
 
@@ -48,11 +48,7 @@ export component BrowserPicker inherits Window {
             }
             VerticalLayout {
                 padding: 18px; spacing: 8px;
-                HorizontalLayout {
-                    spacing: 10px;
-                    Icon { width: 20px; height: 20px; source: @image-url("icons/key.svg"); tint: Theme.accent; }
-                    Text { text: "Fill login"; color: Theme.text; font-size: Theme.font-title; font-weight: 600; }
-                }
+                PromptHeader { glyph: @image-url("icons/shield.svg"); title: "Fill login"; }
                 Text { text: root.browser + " · " + root.host; color: Theme.text-muted; }
                 if root.insecure: HorizontalLayout {
                     spacing: 6px;

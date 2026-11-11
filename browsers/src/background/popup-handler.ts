@@ -10,6 +10,7 @@ export interface PopupDeps {
   session: {
     readonly status: PopupStatus;
     ensureReady(): Promise<void>;
+    refresh(): Promise<void>;
     request<T extends RequestType>(
       type: T,
       fields: RequestMap[T]["fields"],
@@ -31,7 +32,10 @@ export function createPopupHandler(deps: PopupDeps) {
     switch (message.kind) {
       case "popup_status": {
         // The reply carries the current snapshot; progress is pushed as it changes.
-        deps.session.ensureReady().catch(() => undefined);
+        deps.session
+          .ensureReady()
+          .then(() => deps.session.refresh())
+          .catch(() => undefined);
         return { status: deps.session.status };
       }
       case "popup_fill": {

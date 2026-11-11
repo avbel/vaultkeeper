@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, Icon, Select } from "kit.slint";
+import { Btn, BtnKind, PromptHeader, Select } from "kit.slint";
 
 export component BrowserSavePrompt inherits Window {
     title: "Save login";
@@ -40,11 +40,7 @@ export component BrowserSavePrompt inherits Window {
             VerticalLayout {
                 padding: 18px;
                 spacing: 8px;
-                HorizontalLayout {
-                    spacing: 10px;
-                    Icon { width: 20px; height: 20px; source: @image-url("icons/key.svg"); tint: Theme.accent; }
-                    Text { text: root.update ? "Update password?" : "Save login?"; color: Theme.text; font-size: Theme.font-title; font-weight: 600; }
-                }
+                PromptHeader { glyph: @image-url("icons/shield.svg"); title: root.update ? "Update password?" : "Save login?"; }
                 Text { text: root.browser + " · " + root.host; color: Theme.text-muted; }
                 Text { text: "Username from the page"; color: Theme.text-muted; font-size: Theme.font-meta; }
                 Text { text: root.username; color: Theme.text; font-family: Theme.mono; overflow: elide; }

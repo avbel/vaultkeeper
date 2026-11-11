@@ -1,0 +1,4 @@
+// Path of the app's shield glyph (app/ui/icons/tray-dark.svg, 16x16 viewBox, evenodd with a person cut-out).
+// src/ui/icons/shield.svg is the same shape for the popup; test/shield.test.ts keeps them equal.
+export const SHIELD_PATH =
+  "M 3.58 1.50 H 12.42 Q 13.29 1.50 13.29 2.37 V 7.61 C 13.29 10.81 10.92 13.09 8.00 14.50 C 5.08 13.09 2.71 10.81 2.71 7.61 V 2.37 Q 2.71 1.50 3.58 1.50 Z M 8.00 5.06 A 1.41 1.41 0 0 1 8.82 7.61 L 9.37 10.35 H 6.63 L 7.18 7.61 A 1.41 1.41 0 0 1 8.00 5.06 Z";

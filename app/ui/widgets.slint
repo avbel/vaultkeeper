@@ -10,6 +10,33 @@ export component Icon inherits Image {
     image-fit: contain;
 }
 
+// Window title row of the native browser prompts. Both children are centred on the row's own
+// height instead of relying on layout stretching, which left the glyph below the text.
+export component PromptHeader inherits Rectangle {
+    in property <image> glyph;
+    in property <string> title;
+    height: 24px;
+    Icon {
+        x: 0px;
+        y: (parent.height - self.height) / 2;
+        width: 20px;
+        height: 20px;
+        source: root.glyph;
+        tint: Theme.accent;
+    }
+    Text {
+        x: 30px;
+        width: parent.width - 30px;
+        height: parent.height;
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.font-title;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 // Kind glyph on a tinted square: 22 px in rows, 14 px in the sidebar, 28 px in the detail header.
 export component KindChip inherits Rectangle {
     in property <int> kind;

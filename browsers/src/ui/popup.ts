@@ -215,7 +215,7 @@ function render(): void {
     document.documentElement.dataset.theme = theme;
   }
   const nodes: Node[] = [
-    el("header", {}, [icon("key"), el("span", { text: "Vaultkeeper" })]),
+    el("header", {}, [icon("shield"), el("span", { text: "Vaultkeeper" })]),
     ...body(status),
   ];
   if (status?.fingerprint) {

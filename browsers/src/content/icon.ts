@@ -1,4 +1,5 @@
 import type { Theme } from "../shared/messages.ts";
+import { SHIELD_PATH } from "../shared/shield.ts";
 import { SHADOW_TOKENS } from "./theme-css.ts";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -13,11 +14,11 @@ ${SHADOW_TOKENS}
 button {
   all: unset; box-sizing: border-box; position: fixed; width: ${BUTTON_SIZE}px; height: ${BUTTON_SIZE}px;
   display: none; align-items: center; justify-content: center; cursor: pointer; pointer-events: auto;
-  color: var(--text-muted); background: var(--surface); border: 1px solid var(--border);
+  color: var(--accent); background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
 button[data-shown] { display: flex; }
-button:hover { color: var(--accent); background: var(--hover); }
+button:hover { background: var(--hover); }
 button:focus-visible { outline: 2px solid var(--accent); }
 .toast {
   position: fixed; right: var(--padding); bottom: var(--padding); max-width: 320px; pointer-events: none;
@@ -27,28 +28,21 @@ button:focus-visible { outline: 2px solid var(--accent); }
 }
 `;
 
-function keySvg(): SVGSVGElement {
+function shieldSvg(): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
   for (const [name, value] of Object.entries({
-    width: "14",
-    height: "14",
+    width: "16",
+    height: "16",
     viewBox: "0 0 16 16",
-    fill: "none",
-    stroke: "currentColor",
-    "stroke-width": "1.5",
-    "stroke-linecap": "round",
-    "stroke-linejoin": "round",
+    fill: "currentColor",
     "aria-hidden": "true",
   })) {
     svg.setAttribute(name, value);
   }
-  const circle = document.createElementNS(SVG_NS, "circle");
-  circle.setAttribute("cx", "5");
-  circle.setAttribute("cy", "8");
-  circle.setAttribute("r", "2.8");
   const path = document.createElementNS(SVG_NS, "path");
-  path.setAttribute("d", "M7.8 8H14M12 8v2.5M14 8v2");
-  svg.append(circle, path);
+  path.setAttribute("fill-rule", "evenodd");
+  path.setAttribute("d", SHIELD_PATH);
+  svg.append(path);
   return svg;
 }
 
@@ -77,7 +71,7 @@ export function createIcon(options: IconOptions = {}): Icon {
   const button = document.createElement("button");
   button.type = "button";
   button.setAttribute("aria-label", "Fill with Vaultkeeper");
-  button.append(keySvg());
+  button.append(shieldSvg());
   const toastEl = document.createElement("div");
   toastEl.className = "toast";
   toastEl.setAttribute("role", "status");
