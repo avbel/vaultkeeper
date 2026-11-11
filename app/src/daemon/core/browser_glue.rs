@@ -23,6 +23,7 @@ use super::{Daemon, guard};
 use crate::{
     daemon::browser::{
         activity::ActivityLog,
+        address::{AddressOffer, AddressOffers},
         control::BrowserControl,
         dispatch::{BrowserHost, Candidate, FillRecord, RealFills, serve},
         fill::Via,
@@ -51,6 +52,7 @@ pub(super) struct BrowserState {
     sessions: std::sync::Mutex<HashMap<&'static str, usize>>,
     sessions_changed: watch::Sender<u64>,
     saves: Arc<AsyncMutex<SaveManager>>,
+    address_offers: Arc<AsyncMutex<AddressOffers>>,
     /// Moves on every stop, ending save work started for the listener that went away.
     stopped: watch::Sender<u64>,
     /// The run task of the last stop, awaited before the next bind so its socket cleanup cannot
@@ -72,6 +74,7 @@ impl BrowserState {
             sessions: std::sync::Mutex::new(HashMap::new()),
             sessions_changed: watch::Sender::new(0),
             saves: Arc::new(AsyncMutex::new(SaveManager::default())),
+            address_offers: Arc::new(AsyncMutex::new(AddressOffers::default())),
             stopped: watch::Sender::new(0),
             stopping: std::sync::Mutex::new(None),
             log: ActivityLog::new(),
@@ -403,7 +406,43 @@ impl Daemon {
         (state, theme)
     }
 
-    fn browser_filled(&self, record: &FillRecord) {
+    /// After a confirmed other-site fill, asks whether to add this site's address to the login.
+    fn offer_address(self: &Arc<Self>, record: &FillRecord) {
+        let Some(origin) = record.unsaved_address.clone() else {
+            return;
+        };
+        let offer = AddressOffer {
+            browser: record.browser.clone(),
+            item: record.item.clone(),
+            origin,
+        };
+        let enabled = self.settings().browser_save_prompts;
+        let daemon = Arc::clone(self);
+        let mut stopped = daemon.browser.stopped.subscribe();
+        drop(self.runtime.spawn(async move {
+            let host = DaemonBrowser(Arc::clone(&daemon));
+            let offers = Arc::clone(&daemon.browser.address_offers);
+            let run = async {
+                offers
+                    .lock()
+                    .await
+                    .offer(&daemon.vault, offer, enabled, |prompt| host.prompt(prompt))
+                    .await
+            };
+            tokio::select! {
+                result = run => match result {
+                    Ok(outcome) => tracing::debug!(?outcome, "address offer finished"),
+                    Err(error) => daemon.send_command(UiCommand::Toast {
+                        text: error.to_string(),
+                        error: true,
+                    }),
+                },
+                _ = stopped.changed() => {}
+            }
+        }));
+    }
+
+    fn browser_filled(self: &Arc<Self>, record: &FillRecord) {
         self.browser.log.record(&format!(
             "fill browser={} host={} item={} via={}",
             record.browser,
@@ -415,6 +454,7 @@ impl Daemon {
                 Via::Single => "single",
             },
         ));
+        self.offer_address(record);
         let settings = self.settings();
         if !record.has_totp || !settings.browser_copy_totp {
             return;

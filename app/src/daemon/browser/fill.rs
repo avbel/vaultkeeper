@@ -46,6 +46,9 @@ pub struct Filled {
     pub remember: bool,
     pub via: Via,
     pub has_totp: bool,
+    /// Set when the user filled a login saved for another site: this site's address, which the
+    /// daemon may offer to add to the login.
+    pub unsaved_address: Option<String>,
 }
 
 impl Filled {
@@ -59,6 +62,7 @@ impl Filled {
             remember: false,
             via: Via::Picker,
             has_totp: false,
+            unsaved_address: None,
         }
     }
 }
@@ -200,6 +204,7 @@ fn silent_item(
 
 fn filled(revealed: BrowserCredentials, item: ItemId, page: &PageUrl, via: Via) -> Filled {
     Filled {
+        unsaved_address: (!revealed.matched).then(|| page.origin()),
         remember: revealed.matched && !revealed.reprompt,
         has_totp: revealed.has_totp,
         result: FillResult {

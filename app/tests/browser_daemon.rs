@@ -30,7 +30,10 @@ use vaultkeeper::{
     settings::Settings,
 };
 use vk_ipc::{BrowserPrompt, BrowserReply, UiCommand, UiNotice};
-use vk_vault::{VaultService, model::Filter};
+use vk_vault::{
+    VaultService,
+    model::{Filter, ItemData, ItemId},
+};
 
 const GITHUB: &str = "https://github.com";
 
@@ -243,6 +246,8 @@ fn a_confirmed_item_of_another_site_is_released_but_not_remembered() {
             credentials(&host.response(id).await),
             (Some("carol"), Some("carol-pw"))
         );
+        // github.com is not the bank's site name, so no address is offered.
+        rig.ui.no_prompt().await;
 
         let reply = host.picked_fill(&mut rig.ui, GITHUB, ALICE).await;
         assert_eq!(credentials(&reply), (Some("alice"), Some("alice-pw")));
@@ -722,6 +727,176 @@ fn manifests_are_written_for_installed_browsers_only_and_restored_when_changed()
         write_settings(&rig.dir, &Settings::default());
         rig.ui.remote.notify(UiNotice::SettingsChanged).unwrap();
         eventually(|| !chrome.exists() && !firefox.exists()).await;
+        rig.shutdown().await;
+    });
+}
+
+const OTHER_SITE: &str = "https://login.example.net";
+
+fn uris_of(rig: &Rig, id: &str) -> Vec<String> {
+    let draft = rig.daemon.vault().draft(&ItemId(id.into())).unwrap();
+    let ItemData::Login { uris, .. } = draft.data else {
+        panic!("{id} is not a login");
+    };
+    uris
+}
+
+/// The user picks `item` for `origin` and confirms "Fill anyway"; returns the fill's response.
+async fn confirmed_fill(
+    host: &mut harness::Host,
+    ui: &mut harness::Ui,
+    origin: &str,
+    item: &str,
+) -> Value {
+    let id = host.submit_fill(origin, false).await;
+    ui.prompt().await.fill_with(item, true);
+    host.response(id).await
+}
+
+#[test]
+fn an_other_site_fill_offers_the_address_and_adding_it_makes_the_next_fill_silent() {
+    run(async {
+        let settings = Settings {
+            browser_fill_single: true,
+            ..integration_on()
+        };
+        let mut rig = Rig::start_with(&settings, &items()).await;
+        let extension = Extension::chrome(24);
+        let mut host = rig.open(&extension).await;
+
+        let reply = confirmed_fill(&mut host, &mut rig.ui, OTHER_SITE, BANK).await;
+        assert_eq!(credentials(&reply), (Some("carol"), Some("carol-pw")));
+        let asked = rig.ui.prompt().await;
+        let BrowserPrompt::AddAddress {
+            browser,
+            host: shown,
+            item,
+        } = &asked.prompt
+        else {
+            panic!("expected the add-address prompt, got {:?}", asked.prompt);
+        };
+        assert_eq!(browser, "Google Chrome");
+        assert_eq!(shown, "login.example.net");
+        assert_eq!((&*item.id, &*item.name), (BANK, "bank"));
+        assert_eq!(uris_of(&rig, BANK), ["https://bank.example.org/"]);
+        asked.answer(BrowserReply::Save {
+            target: Some(BANK.into()),
+        });
+
+        eventually(|| uris_of(&rig, BANK).len() == 2).await;
+        assert_eq!(
+            uris_of(&rig, BANK),
+            ["https://bank.example.org/", OTHER_SITE]
+        );
+        assert_eq!(rig.fake.writes().await, 1);
+
+        // A new connection has no remembered approval: only the match itself releases it.
+        let mut second = rig.open(&extension).await;
+        let id = second.submit_fill(OTHER_SITE, false).await;
+        assert_eq!(
+            credentials(&second.response(id).await),
+            (Some("carol"), Some("carol-pw"))
+        );
+        rig.ui.no_prompt().await;
+        rig.shutdown().await;
+    });
+}
+
+#[test]
+fn a_dismissed_address_offer_writes_nothing_and_is_not_repeated_for_the_pair() {
+    run(async {
+        let mut rig = Rig::start().await;
+        let mut host = rig.open(&Extension::chrome(25)).await;
+
+        confirmed_fill(&mut host, &mut rig.ui, OTHER_SITE, BANK).await;
+        let asked = rig.ui.prompt().await;
+        assert!(matches!(asked.prompt, BrowserPrompt::AddAddress { .. }));
+        asked.answer(BrowserReply::Dismissed);
+        tokio::time::sleep(harness::QUIET).await;
+        assert_eq!(rig.fake.writes().await, 0);
+        assert_eq!(uris_of(&rig, BANK), ["https://bank.example.org/"]);
+
+        // Same login, same registrable domain, another host: already asked.
+        let reply = confirmed_fill(&mut host, &mut rig.ui, "https://www.example.net", BANK).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        rig.ui.no_prompt().await;
+
+        // Another site is a new pair.
+        confirmed_fill(&mut host, &mut rig.ui, "https://login.example.io", BANK).await;
+        let asked = rig.ui.prompt().await;
+        assert!(matches!(
+            &asked.prompt,
+            BrowserPrompt::AddAddress { host, .. } if host == "login.example.io"
+        ));
+        asked.answer(BrowserReply::Dismissed);
+        assert_eq!(rig.fake.writes().await, 0);
+        rig.shutdown().await;
+    });
+}
+
+#[test]
+fn no_address_offer_when_save_prompts_are_off() {
+    run(async {
+        let settings = Settings {
+            browser_save_prompts: false,
+            ..integration_on()
+        };
+        let mut rig = Rig::start_with(&settings, &items()).await;
+        let mut host = rig.open(&Extension::chrome(26)).await;
+        let reply = confirmed_fill(&mut host, &mut rig.ui, OTHER_SITE, BANK).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        rig.ui.no_prompt().await;
+        assert_eq!(rig.fake.writes().await, 0);
+        rig.shutdown().await;
+    });
+}
+
+#[test]
+fn an_address_answer_for_another_item_writes_nothing() {
+    run(async {
+        let mut rig = Rig::start().await;
+        let mut host = rig.open(&Extension::chrome(27)).await;
+        confirmed_fill(&mut host, &mut rig.ui, OTHER_SITE, BANK).await;
+        rig.ui.prompt().await.answer(BrowserReply::Save {
+            target: Some(ALICE.into()),
+        });
+        tokio::time::sleep(harness::QUIET).await;
+        assert_eq!(rig.fake.writes().await, 0);
+        assert_eq!(uris_of(&rig, BANK), ["https://bank.example.org/"]);
+        assert_eq!(uris_of(&rig, ALICE), ["https://github.com/login"]);
+        rig.shutdown().await;
+    });
+}
+
+/// Sites that merely look like the bank's name (`example`) are released on confirmation but
+/// never offered as an address to save.
+#[test]
+fn lookalike_and_unrelated_sites_are_never_offered_as_an_address() {
+    run(async {
+        let mut rig = Rig::start().await;
+        let mut host = rig.open(&Extension::chrome(28)).await;
+        for origin in [
+            "https://login.another.net",
+            // "exаmple.net" with a Cyrillic "а", as the browser sends it.
+            "https://xn--exmple-4nf.net",
+            "https://example.another.net",
+        ] {
+            let reply = confirmed_fill(&mut host, &mut rig.ui, origin, BANK).await;
+            assert_eq!(
+                credentials(&reply),
+                (Some("carol"), Some("carol-pw")),
+                "{origin}"
+            );
+            rig.ui.no_prompt().await;
+        }
+        assert_eq!(rig.fake.writes().await, 0);
+        assert_eq!(uris_of(&rig, BANK), ["https://bank.example.org/"]);
+
+        // The same name under another suffix is still offered, so the silence above is the rule.
+        confirmed_fill(&mut host, &mut rig.ui, OTHER_SITE, BANK).await;
+        let asked = rig.ui.prompt().await;
+        assert!(matches!(asked.prompt, BrowserPrompt::AddAddress { .. }));
+        asked.answer(BrowserReply::Dismissed);
         rig.shutdown().await;
     });
 }

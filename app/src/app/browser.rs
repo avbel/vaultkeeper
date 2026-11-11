@@ -84,7 +84,10 @@ impl<S: VaultService> App<S> {
             self.show_browser_picker(queued);
             return;
         }
-        if matches!(&queued.request.prompt, BrowserPrompt::Save { .. }) {
+        if matches!(
+            &queued.request.prompt,
+            BrowserPrompt::Save { .. } | BrowserPrompt::AddAddress { .. }
+        ) {
             self.show_browser_save(queued);
             return;
         }
@@ -439,16 +442,45 @@ impl<S: VaultService> App<S> {
     }
 
     fn show_browser_save(&self, queued: Queued) {
-        let BrowserPrompt::Save {
-            browser,
-            host,
-            username,
-            update_of,
-            choices,
-            ..
-        } = &queued.request.prompt
-        else {
-            return;
+        let (browser, host, username, update, labels, item_name): (
+            _,
+            _,
+            _,
+            _,
+            Vec<SharedString>,
+            _,
+        ) = match &queued.request.prompt {
+            BrowserPrompt::Save {
+                browser,
+                host,
+                username,
+                update_of,
+                choices,
+                ..
+            } => (
+                browser,
+                host,
+                username.chars().take(64).collect::<String>(),
+                update_of.is_some() || !choices.is_empty(),
+                choices
+                    .iter()
+                    .map(|item| item.name.as_ref().into())
+                    .collect(),
+                None,
+            ),
+            BrowserPrompt::AddAddress {
+                browser,
+                host,
+                item,
+            } => (
+                browser,
+                host,
+                String::new(),
+                false,
+                Vec::new(),
+                Some(item.name.to_string()),
+            ),
+            BrowserPrompt::Pair { .. } | BrowserPrompt::Fill { .. } => return,
         };
         let window = match BrowserSavePrompt::new() {
             Ok(window) => window,
@@ -462,12 +494,10 @@ impl<S: VaultService> App<S> {
         self.apply_theme(&window);
         window.set_browser(browser.as_str().into());
         window.set_host(host.as_str().into());
-        window.set_username(username.chars().take(64).collect::<String>().into());
-        window.set_update(update_of.is_some() || !choices.is_empty());
-        let labels: Vec<SharedString> = choices
-            .iter()
-            .map(|item| item.name.as_ref().into())
-            .collect();
+        window.set_username(username.into());
+        window.set_update(update);
+        window.set_address(item_name.is_some());
+        window.set_item_name(item_name.unwrap_or_default().into());
         window.set_choices(ModelRc::new(VecModel::from(labels)));
         let id = queued.id;
         window.on_save(handler!(self, |app, index| app.save_browser(id, index)));
@@ -494,14 +524,7 @@ impl<S: VaultService> App<S> {
             let queue = self.browser.borrow();
             let Some(Queued {
                 id: current,
-                request:
-                    BrowserPromptRequest {
-                        prompt:
-                            BrowserPrompt::Save {
-                                update_of, choices, ..
-                            },
-                        ..
-                    },
+                request: BrowserPromptRequest { prompt, .. },
             }) = queue.current.as_ref()
             else {
                 return;
@@ -509,6 +532,18 @@ impl<S: VaultService> App<S> {
             if *current != id {
                 return;
             }
+            let (update_of, choices) = match prompt {
+                BrowserPrompt::Save {
+                    update_of, choices, ..
+                } => (update_of, choices),
+                BrowserPrompt::AddAddress { item, .. } => {
+                    let target = Some(item.id.clone());
+                    drop(queue);
+                    self.finish_browser(id, BrowserReply::Save { target });
+                    return;
+                }
+                BrowserPrompt::Pair { .. } | BrowserPrompt::Fill { .. } => return,
+            };
             if choices.is_empty() {
                 update_of.as_ref().map(|item| item.id.clone())
             } else {
@@ -553,7 +588,7 @@ impl<S: VaultService> App<S> {
             BrowserPrompt::Save { return_to, .. } | BrowserPrompt::Fill { return_to, .. } => {
                 return_to.clone()
             }
-            BrowserPrompt::Pair { .. } => None,
+            BrowserPrompt::Pair { .. } | BrowserPrompt::AddAddress { .. } => None,
         });
         if let Some(request) = request {
             let _ = request.reply.send(reply);

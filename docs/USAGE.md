@@ -181,6 +181,13 @@ decision and every prompt are in Vaultkeeper's own windows.
    Later fills of the same site in the same browser session need no window until the vault locks, the
    Mac sleeps or the screen locks. *Choose another login…* in the popup always shows the window.
    Picking a login saved for a different site asks for a second confirmation (the default is *Cancel*).
+   After you confirm, a small *Add this address?* window may offer to add the site to that login so
+   it matches (and fills at once) next time. It is offered only when one of the login's saved
+   addresses has exactly the same site name under another ending: `site.com` and `site.io`, or
+   `example.co.uk` and `example.com`. A different name such as `site.another.com`, a lookalike with a
+   different letter (`sitе.com` with a Cyrillic "е") and sites on shared hosts such as `github.io`
+   are never offered. Nothing is changed unless you click *Add*, and *Not now* is not asked again
+   for that login and site until Vaultkeeper restarts.
    Logins that require the master password ask for it in the window.
 4. **Locked vault:** a fill shows the unlock window first and continues after you unlock.
 5. **Save:** after you sign in with a new account or a changed password, a small *Save login?* or

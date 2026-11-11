@@ -182,6 +182,17 @@ fn answer(event: UiEvent, policy: &Policy) {
                         _ => BrowserReply::Dismissed,
                     }
                 }
+                BrowserPrompt::AddAddress {
+                    browser,
+                    host,
+                    item,
+                } => {
+                    emit(
+                        &json!({ "event": "prompt", "kind": "add_address", "browser": browser,
+                        "host": host, "item": &*item.name }),
+                    );
+                    BrowserReply::Dismissed
+                }
             };
             let _ = prompt.reply.send(reply);
         }

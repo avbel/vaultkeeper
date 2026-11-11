@@ -47,6 +47,11 @@ impl PageUrl {
     pub fn host_ascii(&self) -> &str {
         self.url.host_str().unwrap_or_default()
     }
+    /// `scheme://host[:port]` in ASCII form, the address to store for this site.
+    #[must_use]
+    pub fn origin(&self) -> String {
+        self.url.origin().ascii_serialization()
+    }
     #[must_use]
     pub fn is_https(&self) -> bool {
         self.url.scheme() == "https"
@@ -57,6 +62,42 @@ impl PageUrl {
     pub fn registrable_domain(&self) -> String {
         domain_key(&self.url).to_ascii_lowercase()
     }
+    /// The site's own name: the registrable domain without its public suffix, in ASCII form
+    /// (`example` for `login.example.co.uk`). `None` for addresses, `localhost`, unknown suffixes
+    /// and the private section of the suffix list (`bob.github.io` names a tenant of a host,
+    /// not a site that anyone can claim the same name for elsewhere).
+    #[must_use]
+    pub fn site_label(&self) -> Option<String> {
+        site_label_of(&self.url)
+    }
+}
+
+/// [`PageUrl::site_label`] for a stored address; the scheme may be missing, as for `matches`.
+#[must_use]
+pub fn saved_site_label(saved_uri: &str) -> Option<String> {
+    let parsed = if saved_uri.contains("://") {
+        Url::parse(saved_uri)
+    } else {
+        Url::parse(&format!("https://{saved_uri}"))
+    }
+    .ok()?;
+    web_url(&parsed).then(|| site_label_of(&parsed)).flatten()
+}
+
+fn site_label_of(url: &Url) -> Option<String> {
+    if !matches!(url.host(), Some(Host::Domain(_))) {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.');
+    let suffix = psl::suffix(host.as_bytes())?;
+    if !suffix.is_known() || suffix.typ() != Some(psl::Type::Icann) {
+        return None;
+    }
+    let domain = psl::domain_str(host)?;
+    let label = domain
+        .strip_suffix(std::str::from_utf8(suffix.as_bytes()).ok()?)?
+        .trim_end_matches('.');
+    (!label.is_empty()).then(|| label.to_ascii_lowercase())
 }
 fn web_url(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https") && url.host().is_some()
@@ -310,6 +351,30 @@ mod downgrade_tests {
                 matches(pattern, Some(4), DefaultMatch::Domain, &page),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn site_labels_link_only_the_same_name_under_another_public_suffix() {
+        let page = |origin: &str| PageUrl::new(origin, "/").expect("page");
+        // (saved address, page, may the page's address be linked to the login)
+        for (saved, origin, linked) in [
+            ("https://site.com", "https://site.io", true),
+            ("site.com", "https://login.site.io", true),
+            ("https://example.co.uk", "https://example.com", true),
+            ("https://2ip.ru/login", "https://2ip.io", true),
+            ("https://site.com", "https://site.another.com", false),
+            ("https://site.com", "https://another.site-login.com", false),
+            ("https://site.com", "https://sitе.com", false),
+            ("https://site.com", "https://xn--site-9nd.com", false),
+            ("https://bob.github.io", "https://bob.gitlab.io", false),
+            ("https://nas.local", "https://nas.example.com", false),
+            ("http://192.168.1.2", "https://192.168.1.2", false),
+            ("https://localhost", "http://localhost", false),
+        ] {
+            let page = page(origin);
+            let same = page.site_label().is_some() && saved_site_label(saved) == page.site_label();
+            assert_eq!(same, linked, "{saved} vs {origin}");
         }
     }
 }

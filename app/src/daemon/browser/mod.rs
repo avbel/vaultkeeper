@@ -1,6 +1,7 @@
 //! Browser integration primitives; session handling lives in the daemon.
 
 pub mod activity;
+pub mod address;
 pub mod auth;
 #[cfg(test)]
 mod auth_tests;

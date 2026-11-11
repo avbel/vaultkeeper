@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -256,6 +256,14 @@ pub enum BrowserPrompt {
         update_of: Option<ItemSummaryDto>,
         choices: Vec<ItemSummaryDto>,
         return_to: Option<TypingTarget>,
+    },
+    /// After an other-site fill the user confirmed: offer to add this site's address to the
+    /// login, so it matches next time. The answer is `Save { target: Some(item) }` to add it and
+    /// `Dismissed` otherwise. Shown without taking focus, like `Save`.
+    AddAddress {
+        browser: String,
+        host: String,
+        item: ItemSummaryDto,
     },
 }
 

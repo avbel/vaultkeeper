@@ -86,6 +86,8 @@ pub struct FillRecord {
     pub item: ItemId,
     pub via: Via,
     pub has_totp: bool,
+    /// This site's address when the login was saved for another site.
+    pub unsaved_address: Option<String>,
 }
 
 /// What the connection may ask of the daemon. Implemented by the daemon; tests use a stub.
@@ -476,6 +478,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             host: filled.host.clone(),
             item: filled.item.clone(),
             via: filled.via,
+            unsaved_address: filled.unsaved_address.clone(),
             has_totp: filled.has_totp,
         });
     }

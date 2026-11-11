@@ -205,7 +205,8 @@ impl UiCommand {
                 | Self::SyncFinished(_)
                 | Self::Toast { .. }
                 | Self::ShowBrowserPrompt(BrowserPromptRequest {
-                    prompt: vk_ipc::BrowserPrompt::Save { .. },
+                    prompt: vk_ipc::BrowserPrompt::Save { .. }
+                        | vk_ipc::BrowserPrompt::AddAddress { .. },
                     ..
                 })
         )

@@ -352,7 +352,8 @@ impl Daemon {
             let no_activate = matches!(
                 &event,
                 DaemonEvent::BrowserPrompt {
-                    prompt: vk_ipc::BrowserPrompt::Save { .. },
+                    prompt: vk_ipc::BrowserPrompt::Save { .. }
+                        | vk_ipc::BrowserPrompt::AddAddress { .. },
                     ..
                 }
             );

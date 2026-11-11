@@ -430,3 +430,94 @@ fn every_prompt_window_follows_a_theme_change() {
     h.app.set_theme(ThemeChoice::Dark);
     assert_eq!(save_prompt.global::<Theme>().get_mode(), ThemeMode::Dark);
 }
+
+fn address_item(h: &common::Harness) -> ItemSummaryDto {
+    let items = h
+        .vault
+        .search("github", &Filter::default())
+        .expect("search");
+    ItemSummaryDto::from(items.first().expect("GitHub"))
+}
+
+fn address_request(
+    item: &ItemSummaryDto,
+) -> (BrowserPromptRequest, oneshot::Receiver<BrowserReply>) {
+    let (reply, receiver) = oneshot::channel();
+    (
+        BrowserPromptRequest {
+            prompt: BrowserPrompt::AddAddress {
+                browser: "Firefox".into(),
+                host: "gist.github.com".into(),
+                item: item.clone(),
+            },
+            reply,
+        },
+        receiver,
+    )
+}
+
+#[test]
+fn address_offer_adds_to_the_named_item() {
+    let h = harness(Setup::default());
+    let item = address_item(&h);
+    let (request, mut answer) = address_request(&item);
+    h.app.request_browser_prompt(request);
+    let prompt = h.app.browser_save_prompt().expect("address prompt");
+    assert!(prompt.get_address());
+    assert_eq!(prompt.get_item_name(), item.name.as_ref());
+    assert_eq!(prompt.get_host(), "gist.github.com");
+    assert!(!common::control_exists(&prompt, "Never for this site"));
+    click(&prompt, "Add");
+    assert_eq!(
+        answer.try_recv(),
+        Ok(BrowserReply::Save {
+            target: Some(item.id.clone())
+        })
+    );
+    assert!(h.app.browser_save_prompt().is_none());
+}
+
+#[test]
+fn address_offer_not_now_escape_and_timeout_dismiss() {
+    let h = harness(Setup::default());
+    let item = address_item(&h);
+    let (request, mut answer) = address_request(&item);
+    h.app.request_browser_prompt(request);
+    click(&h.app.browser_save_prompt().expect("prompt"), "Not now");
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
+    let (request, mut answer) = address_request(&item);
+    h.app.request_browser_prompt(request);
+    key(
+        &h.app.browser_save_prompt().expect("prompt"),
+        &special(Key::Escape),
+        Mods::default(),
+    );
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
+    let (request, mut answer) = address_request(&item);
+    h.app.request_browser_prompt(request);
+    elapse(Duration::from_secs(29));
+    assert!(answer.try_recv().is_err(), "still waiting at 29 s");
+    elapse(Duration::from_secs(2));
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
+}
+
+#[test]
+fn address_offer_stays_in_the_background_and_follows_the_theme() {
+    let h = harness(Setup {
+        settings: Settings {
+            theme: ThemeChoice::Light,
+            ..Settings::default()
+        },
+        ..Setup::default()
+    });
+    let item = address_item(&h);
+    let (request, mut answer) = address_request(&item);
+    h.app.handle(UiCommand::ShowBrowserPrompt(request));
+    let prompt = h.app.browser_save_prompt().expect("address prompt");
+    assert_eq!(activations(&h), 0, "the offer must not take focus");
+    h.app.set_theme(ThemeChoice::Dark);
+    assert_eq!(prompt.global::<Theme>().get_mode(), ThemeMode::Dark);
+    h.app.lock();
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
+    assert!(h.app.browser_save_prompt().is_none());
+}

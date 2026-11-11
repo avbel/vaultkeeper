@@ -395,7 +395,7 @@ async fn create(
         .map_err(|error| write_error(&error))
 }
 
-fn write_error(error: &Error) -> SaveError {
+pub(super) fn write_error(error: &Error) -> SaveError {
     let reason = match error {
         Error::Conflict => CONFLICT_MESSAGE,
         Error::Locked => "the vault is locked",
