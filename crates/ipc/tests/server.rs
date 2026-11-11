@@ -716,6 +716,7 @@ async fn calls_in_flight_finish_after_the_ui_leaves_and_a_new_ui_can_connect_mea
         Vec::<String>::new(),
         "the new UI got in before the old save finished"
     );
+    daemon.fake.finish_slow_save();
     let finished = format!("save i1 {SLOW_SAVE} hunter2 fields=1");
     let deadline = Instant::now() + EVENT_WAIT;
     while !daemon.fake.log().contains(&finished) {

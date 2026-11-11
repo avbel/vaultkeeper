@@ -41,11 +41,13 @@ pub const OTHER_EMAIL: &str = "bob@example.com";
 pub const PASSWORD: &str = "correct horse battery staple";
 /// Makes `verify_master_password` take 50 ms, for the concurrency test.
 pub const SLOW_PASSWORD: &str = "slow";
-/// A draft with this name takes [`SLOW_SAVE_TIME`] to save, logged only once the save finished.
+/// A draft with this name saves only after [`FakeVault::finish_slow_save`] (or [`SLOW_SAVE_LIMIT`]
+/// as a safety net), logged once the save finished. An explicit release keeps tests that need the
+/// save still in flight independent of how loaded the machine is.
 /// Long enough to outlast a reconnect: each connect runs the code-signature peer check, which
 /// under a parallel test run took longer than the 200 ms this used to be.
 pub const SLOW_SAVE: &str = "slow save";
-const SLOW_SAVE_TIME: Duration = Duration::from_secs(2);
+const SLOW_SAVE_LIMIT: Duration = Duration::from_secs(30);
 pub const USER_KEY: [u8; 64] = [7; 64];
 pub const SSH_PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----\n";
 const SLOW_CALL: Duration = Duration::from_millis(50);
@@ -206,6 +208,7 @@ pub struct FakeVault {
     log: Mutex<Vec<String>>,
     in_flight: AtomicUsize,
     max_in_flight: AtomicUsize,
+    slow_save_gate: tokio::sync::Notify,
 }
 
 impl FakeVault {
@@ -222,7 +225,13 @@ impl FakeVault {
             log: Mutex::new(Vec::new()),
             in_flight: AtomicUsize::new(0),
             max_in_flight: AtomicUsize::new(0),
+            slow_save_gate: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Lets a pending (or the next) [`SLOW_SAVE`] save complete.
+    pub fn finish_slow_save(&self) {
+        self.slow_save_gate.notify_one();
     }
 
     pub fn log(&self) -> Vec<String> {
@@ -494,7 +503,7 @@ impl VaultService for FakeVault {
 
     async fn save(&self, id: Option<ItemId>, draft: ItemDraft) -> Result<ItemId> {
         if draft.name == SLOW_SAVE {
-            tokio::time::sleep(SLOW_SAVE_TIME).await;
+            let _ = tokio::time::timeout(SLOW_SAVE_LIMIT, self.slow_save_gate.notified()).await;
         }
         let password = match &draft.data {
             ItemData::Login { password, .. } => password.as_str().to_owned(),
