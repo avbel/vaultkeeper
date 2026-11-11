@@ -25,6 +25,7 @@ pub mod run;
 pub mod server_url;
 pub mod settings;
 pub mod sidebar;
+pub mod site_icon;
 pub mod ui_process;
 pub mod viewmodel;
 

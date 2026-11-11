@@ -234,6 +234,13 @@ window at launch.
 
 Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *Dark*. Text size is there too.
 
+**Show site icons** (Appearance, on by default) puts each login's website icon in place of its type glyph. The
+icons come from your server's `/icons/<host>/icon.png`, as in the official clients, so the server learns which sites
+you have logins for. A server set up with an external icon service (Vaultwarden's `ICON_SERVICE`) redirects there,
+so that service learns the site names too; only https redirects to public hosts are followed, with no `Referer`.
+Switch the setting off to keep your sites to yourself. Icons load only for the rows on screen, after scrolling or
+typing pauses, and stay in memory only: the daemon keeps them until the vault locks, and nothing is written to disk.
+
 Settings → Shortcuts → *Quick Panel hotkey* / *Generator hotkey* are shortcut recorders: click one,
 it shows *Press a shortcut…*, then press the combination. It needs ⌘, ⌥ or ⌃ (⇧ can be added, but
 not on its own) plus a letter, digit, Space, F1–F12, Return, Tab, an arrow or one of

@@ -131,7 +131,8 @@ The UI has two surfaces that share one vault core:
   only for passwords, TOTP, fingerprints and card numbers.
 - **Spacing and shape:** 4 px grid; rows 36 px; panel padding 12; gap between fields 8. Radius 6 for controls, 10 for
   pop-ups, 0 for the list. No shadows except on the Quick Panel and the SSH prompt.
-- **Icons:** one monochrome 16 px stroke set. Type glyphs: ● login, ▤ note, ▮ card, ⌂ identity, ⚿ SSH. No favicons.
+- **Icons:** one monochrome 16 px stroke set. Type glyphs: ● login, ▤ note, ▮ card, ⌂ identity, ⚿ SSH.
+  Logins show the site's icon in the glyph's slot once it has loaded (Settings → Show site icons, on by default).
 - **Copy feedback:** the button shows ✓, and the footer reads "Copied password · clears in 30s" with a 2 px drain bar.
   No toast windows and no system notifications for copies.
 

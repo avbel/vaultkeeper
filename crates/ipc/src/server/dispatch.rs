@@ -25,6 +25,7 @@ pub(super) async fn dispatch<S: VaultService>(
     let Backends {
         touch_id,
         clipboard,
+        site_icons,
     } = backends;
     match call {
         Call::State => Ok(Reply::State(service.state().into())),
@@ -98,6 +99,10 @@ pub(super) async fn dispatch<S: VaultService>(
         call @ (Call::CopyToClipboard { .. } | Call::ClearClipboard) => {
             clipboard_call(clipboard, call).await
         }
+        Call::SiteIcon(host) => Ok(Reply::SiteIcon(match site_icons {
+            Some(site_icons) => site_icons.icon(host).await,
+            None => crate::SiteIcon::Missing,
+        })),
     }
 }
 

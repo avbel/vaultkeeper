@@ -14,6 +14,8 @@
 //!   [`TouchIdBackend`]; the UI never receives the user key or SSH private keys.
 //! - **Clipboard:** copies go to the daemon ([`ClipboardHost`]), which owns the auto-clear timer
 //!   and the "still ours" digest, so a clear survives the UI process exiting or being killed.
+//! - **Site icons:** fetched and cached by the daemon ([`SiteIconHost`]), so the short-lived UI
+//!   process does not refetch them every time it starts.
 //! - **Calls** are multiplexed by id, so a slow sync does not hold up a search; the daemon runs
 //!   up to 8 at once per connection.
 //! - **Notices** ([`UiNotice`]: settings saved, user activity) go the other way without an answer,
@@ -40,6 +42,7 @@ pub mod frame;
 mod peer;
 pub mod protocol;
 mod server;
+mod site_icons;
 mod touch_id;
 
 pub use client::{BrowserPromptEvent, EventStream, RemoteVault, SshApproval, UiEvent};
@@ -56,4 +59,5 @@ pub use protocol::{
     TouchIdFailure, TypingTarget, UiCommand, UiNotice,
 };
 pub use server::{DaemonEvent, ServeOptions, ServerHandle, serve, serve_with};
+pub use site_icons::{IconFuture, SiteIcon, SiteIconHost};
 pub use touch_id::TouchIdBackend;

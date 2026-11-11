@@ -45,6 +45,8 @@ directories = "6.0.0"
 global-hotkey = "0.9.0"
 hkdf = "0.13.0"
 hmac = "0.13.0"
+# Site icons: raster favicon formats only, decoded off the UI thread.
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "webp"] }
 interprocess = "2.4.8"
 objc2-local-authentication = "0.3.2"
 psl = "2.1.250"

@@ -338,6 +338,14 @@ impl RemoteVault {
     pub fn clear_clipboard(&self) -> Result<()> {
         unit(&self.call_blocking(Call::ClearClipboard)?)
     }
+
+    /// The daemon's cached or freshly fetched icon of `host`.
+    pub async fn site_icon(&self, host: &str) -> Result<crate::SiteIcon> {
+        match self.call(Call::SiteIcon(host.to_owned())).await? {
+            Reply::SiteIcon(icon) => Ok(icon),
+            _ => Err(unexpected()),
+        }
+    }
 }
 
 fn touch_id(reply: &Reply) -> Result<Result<(), TouchIdFailure>> {

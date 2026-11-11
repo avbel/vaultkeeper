@@ -71,7 +71,7 @@ impl<S: VaultService> App<S> {
             }
         };
         self.apply_theme(&window);
-        let rows = RowsModel::new(Some(QUICK_ROWS));
+        let rows = RowsModel::new(Some(QUICK_ROWS), Rc::clone(&self.site_icons.cache));
         window.set_rows(ModelRc::from(Rc::clone(&rows)));
         self.bind_quick(&window);
         window.set_locked(locked);
@@ -198,6 +198,7 @@ impl<S: VaultService> App<S> {
                         .and_then(|row| quick.rows.item(row))
                         .map(|item| item.id);
                     quick.rows.set_items(items);
+                    self.schedule_site_icons();
                     let row = kept
                         .and_then(|id| quick.rows.position(&id))
                         .and_then(|row| i32::try_from(row).ok())

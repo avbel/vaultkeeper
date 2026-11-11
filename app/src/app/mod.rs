@@ -20,6 +20,7 @@ mod settings_browser;
 mod settings_ctl;
 mod settings_hotkeys;
 mod sidebar_ctl;
+mod site_icons;
 mod ssh;
 mod ticker;
 mod tray;
@@ -51,7 +52,7 @@ use crate::{
 
 use self::{
     auth::LoginState, browser::BrowserQueue, generator::GeneratorCore, manager::Manager,
-    quick::Quick, ssh::SshQueue, ticker::Ticker,
+    quick::Quick, site_icons::SiteIcons, ssh::SshQueue, ticker::Ticker,
 };
 
 /// Builds a Slint callback that upgrades the app's `Weak` and runs `$body`, or returns
@@ -146,6 +147,7 @@ pub struct App<S: VaultService> {
     browser_save_prompt: RefCell<Option<BrowserSavePrompt>>,
     browser_picker: RefCell<Option<BrowserPicker>>,
     ticker: Ticker,
+    site_icons: SiteIcons,
     tray: RefCell<Option<TrayIcon>>,
     /// A sync started by the UI is in flight (the list shows skeleton rows while empty).
     syncing: Cell<bool>,
@@ -198,6 +200,7 @@ impl<S: VaultService> App<S> {
             browser_save_prompt: RefCell::new(None),
             browser_picker: RefCell::new(None),
             ticker: Ticker::default(),
+            site_icons: SiteIcons::default(),
             tray: RefCell::new(None),
             syncing: Cell::new(false),
             on_last_window_closed: RefCell::new(None),
@@ -297,6 +300,7 @@ impl<S: VaultService> App<S> {
         let had_window = self.manager.borrow().is_some() || self.quick.borrow().is_some();
         self.close_manager();
         self.close_quick_panel();
+        self.forget_site_icons();
         self.deny_all_ssh();
         self.deny_all_browser();
         self.forget_reprompts();
@@ -443,6 +447,7 @@ impl<S: VaultService> App<S> {
         let theme = component.global::<Theme>();
         theme.set_mode(theme_mode(settings.theme));
         theme.set_scale(settings.text_scale.factor());
+        theme.set_site_icons(settings.show_site_icons);
     }
 
     fn apply_theme_everywhere(&self) {

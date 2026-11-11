@@ -11,6 +11,7 @@ pub mod launcher;
 pub mod lock;
 pub mod routing;
 pub mod secrets;
+mod site_icons;
 pub mod ssh;
 pub mod target;
 mod tray;

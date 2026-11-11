@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -390,6 +390,8 @@ pub enum Call {
     },
     /// Clears the clipboard if it still holds the daemon's last copy.
     ClearClipboard,
+    /// The website icon of a host, as encoded image bytes.
+    SiteIcon(String),
 }
 
 impl Call {
@@ -431,6 +433,7 @@ impl Call {
                 | Self::ProbeServer(_)
                 | Self::CopyToClipboard { .. }
                 | Self::ClearClipboard
+                | Self::SiteIcon(_)
         )
     }
 }
@@ -457,6 +460,7 @@ pub enum Reply {
     Attachment(AttachmentDto),
     Folder(FolderDto),
     ServerProbe { version: Option<String> },
+    SiteIcon(crate::SiteIcon),
 }
 
 #[cfg(test)]

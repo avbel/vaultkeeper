@@ -120,6 +120,8 @@ impl WindowGeometry {
 pub struct Settings {
     pub theme: ThemeChoice,
     pub text_scale: TextScale,
+    /// Website icons on login rows, fetched through the account's server.
+    pub show_site_icons: bool,
     pub manager_geometry: Option<WindowGeometry>,
     pub lock_timeout: LockTimeout,
     /// Lock when the Mac sleeps or the screen locks, whatever the timeout.
@@ -159,6 +161,7 @@ impl Default for Settings {
         Self {
             theme: ThemeChoice::System,
             text_scale: TextScale::Default,
+            show_site_icons: true,
             manager_geometry: None,
             lock_timeout: LockTimeout::Minutes(15),
             lock_on_sleep: true,
@@ -550,6 +553,7 @@ mod tests {
         let settings = Settings {
             theme: ThemeChoice::Dark,
             text_scale: TextScale::Larger,
+            show_site_icons: false,
             manager_geometry: Some(WindowGeometry {
                 x: 10,
                 y: 20,
@@ -627,6 +631,10 @@ mod tests {
         let settings: Settings =
             serde_json::from_str(r#"{"theme":"dark","hotkey":"Cmd+Alt+K"}"#).expect("decode");
         assert!(!settings.touch_id_right_away, "Touch ID waits for a click");
+        assert!(
+            settings.show_site_icons,
+            "site icons are on until switched off"
+        );
         assert_eq!(settings.theme, ThemeChoice::Dark);
     }
 

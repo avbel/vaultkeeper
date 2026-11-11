@@ -25,7 +25,7 @@ pub use misc::{
 };
 pub use settings_file::SettingsFile;
 
-use crate::hooks::{Hooks, SystemClock};
+use crate::hooks::{Hooks, IconLookup, SiteIcon, SiteIconSource, SystemClock};
 
 /// Sends a notice to the daemon; failures are only logged (the daemon re-reads on its own start).
 pub type Notifier = Arc<dyn Fn(UiNotice) + Send + Sync>;
@@ -64,6 +64,23 @@ impl Hooks {
             placement: Arc::new(appkit::CursorScreen),
             clock: Arc::new(SystemClock),
             autotype: Arc::new(autotype::SystemAutoType),
+            site_icons: Arc::new(DaemonSiteIcons(Arc::clone(daemon))),
         }
+    }
+}
+
+struct DaemonSiteIcons(Arc<RemoteVault>);
+
+impl SiteIconSource for DaemonSiteIcons {
+    fn fetch(&self, host: &str) -> IconLookup {
+        let daemon = Arc::clone(&self.0);
+        let host = host.to_owned();
+        Box::pin(async move {
+            daemon
+                .site_icon(&host)
+                .await
+                .inspect_err(|error| tracing::debug!(%error, "no site icon from the daemon"))
+                .unwrap_or(SiteIcon::Unavailable)
+        })
     }
 }

@@ -10,6 +10,8 @@ export global Theme {
     in-out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
     // 1.0, 1.15 or 1.3: multiplies fonts and row heights.
     in-out property <float> scale: 1.0;
+    // "Show site icons": rows draw a loaded icon in place of the kind chip.
+    in-out property <bool> site-icons: true;
     out property <bool> dark: mode == ThemeMode.dark || (mode == ThemeMode.system && system-dark);
 
     out property <color> bg: dark ? #141518 : #F6F7F9;

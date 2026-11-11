@@ -150,7 +150,7 @@ fn button(field: Option<CopyField>) -> (i32, SharedString) {
 }
 
 #[must_use]
-pub fn to_row(item: &ItemSummary, totp: Option<&TotpCell>) -> RowData {
+pub fn to_row(item: &ItemSummary, totp: Option<&TotpCell>, icon: Option<slint::Image>) -> RowData {
     let [first, second] = row_buttons(item);
     let (b1, b1_label) = button(first);
     let (b2, b2_label) = button(second);
@@ -169,6 +169,7 @@ pub fn to_row(item: &ItemSummary, totp: Option<&TotpCell>) -> RowData {
         totp_expires: totp.map_or(0, |cell| cell.expires),
         totp_period: totp.map_or(30, |cell| cell.period),
         auto_type: crate::autotype::can_auto_type(item),
+        icon: icon.unwrap_or_default(),
     }
 }
 
@@ -528,7 +529,7 @@ mod tests {
     #[test]
     fn to_row_maps_fields_and_totp_overlay() {
         let login = item(ItemKind::Login, "octocat", true, true);
-        let row = to_row(&login, None);
+        let row = to_row(&login, None, None);
         assert_eq!(row.name, "GitHub");
         assert_eq!(row.subtitle, "octocat");
         assert_eq!((row.b1, row.b2), (0, 1));
@@ -541,10 +542,10 @@ mod tests {
             expires: 40,
             period: 30,
         };
-        let row = to_row(&login, Some(&cell));
+        let row = to_row(&login, Some(&cell), None);
         assert_eq!(row.totp_code, "482 913");
         assert_eq!((row.totp_expires, row.totp_period), (40, 30));
-        let card = to_row(&item(ItemKind::Card, "Visa", false, true), None);
+        let card = to_row(&item(ItemKind::Card, "Visa", false, true), None, None);
         assert!(!card.has_totp, "only logins show a TOTP cell");
         assert_eq!(card.kind, 2);
     }

@@ -35,6 +35,7 @@ use super::{
     launcher::{Hang, Launcher, judge, restart_after_exit},
     lock::{self, Activity, LockCheck, LockWatch},
     routing::Effect,
+    site_icons::{IconHost, SiteIcons},
     ssh::{SshControl, purpose},
     target::{FrontmostApp, SystemFrontmost, outside},
     tray_sync::{self, TraySync},
@@ -125,6 +126,7 @@ pub struct Daemon {
     tasks: Mutex<Vec<JoinHandle<()>>>,
     tray_sync: watch::Sender<TraySync>,
     browser: browser_glue::BrowserState,
+    site_icons: Arc<SiteIcons>,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -153,13 +155,21 @@ impl Daemon {
         let vault = Arc::new(Vault::open(vault_config, secrets).context("open the vault")?);
         let (events, queue) = mpsc::channel(EVENT_QUEUE);
         let (notices, notices_rx) = mpsc::channel(NOTICE_QUEUE);
+        let site_icons = SiteIcons::new({
+            let vault = Arc::clone(&vault);
+            move || match vault.state() {
+                SessionState::Unlocked { server, .. } => Some(server),
+                SessionState::Locked { .. } | SessionState::LoggedOut => None,
+            }
+        });
         let options = match peers {
             Peers::SameExecutable => ServeOptions::new().context("identify this executable")?,
             Peers::AnyOfThisUser => ServeOptions::with_verifier(|_: &PeerCredentials| true),
         }
         .with_notices(notices)
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
-        .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>);
+        .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>)
+        .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))));
         let server =
             vk_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
                 .await
@@ -190,6 +200,7 @@ impl Daemon {
             tasks: Mutex::new(Vec::new()),
             tray_sync: watch::Sender::new(TraySync::default()),
             browser: browser_glue::BrowserState::new(),
+            site_icons,
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -509,6 +520,7 @@ impl Daemon {
             self.clipboard.clear_if_ours();
             self.ssh.forget_approvals();
             self.forget_browser_approvals();
+            self.site_icons.clear();
         }
         if matches!(self.vault.state(), SessionState::LoggedOut) {
             self.clear_browser_saves();

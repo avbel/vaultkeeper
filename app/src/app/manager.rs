@@ -87,7 +87,7 @@ impl<S: VaultService> App<S> {
             }
         };
         self.apply_theme(&window);
-        let rows = RowsModel::new(None);
+        let rows = RowsModel::new(None, Rc::clone(&self.site_icons.cache));
         window.set_rows(ModelRc::from(Rc::clone(&rows)));
         let sidebar_model = Rc::new(VecModel::default());
         window.set_sidebar_entries(ModelRc::from(Rc::clone(&sidebar_model)));
@@ -155,7 +155,10 @@ impl<S: VaultService> App<S> {
         }));
         window.on_copy_row(handler!(self, false, |app, row, code| app
             .copy_manager_row(row, code)));
-        window.on_visible_range_changed(handler!(self, |app| app.refresh_totp()));
+        window.on_visible_range_changed(handler!(self, |app| {
+            app.refresh_totp();
+            app.schedule_site_icons();
+        }));
         window.on_key_command(handler!(self, false, |app, text, cmd, shift, alt| {
             keymap::command(&text, Mods { cmd, shift, alt })
                 .is_some_and(|command| app.manager_command(command))
@@ -249,6 +252,7 @@ impl<S: VaultService> App<S> {
         match result {
             Ok(items) => {
                 manager.rows.set_items(items);
+                self.schedule_site_icons();
                 let row = manager
                     .selected
                     .as_ref()

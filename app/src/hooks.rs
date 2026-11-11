@@ -10,6 +10,7 @@ use std::{
 };
 
 use vk_gen::generator::{PassphraseOptions, PasswordOptions};
+pub use vk_ipc::SiteIcon;
 use zeroize::Zeroizing;
 
 use vk_vault::VaultService;
@@ -166,6 +167,13 @@ pub trait AutoType: Send + Sync {
     }
 }
 
+pub type IconLookup = std::pin::Pin<Box<dyn std::future::Future<Output = SiteIcon> + Send>>;
+
+/// Website icons by host. The UI process asks the daemon, which fetches and caches them.
+pub trait SiteIconSource: Send + Sync {
+    fn fetch(&self, host: &str) -> IconLookup;
+}
+
 #[derive(Clone)]
 pub struct Hooks {
     pub clipboard: Arc<dyn Clipboard>,
@@ -183,6 +191,7 @@ pub struct Hooks {
     pub placement: Arc<dyn WindowPlacement>,
     pub clock: Arc<dyn Clock>,
     pub autotype: Arc<dyn AutoType>,
+    pub site_icons: Arc<dyn SiteIconSource>,
 }
 
 impl Hooks {
@@ -224,7 +233,17 @@ impl Hooks {
             placement: Arc::new(OsPlacement),
             clock: Arc::new(SystemClock),
             autotype: Arc::new(LogAutoType),
+            site_icons: Arc::new(NoSiteIcons),
         }
+    }
+}
+
+/// `--mock` and the UI tests stay offline: every host has no icon.
+pub struct NoSiteIcons;
+
+impl SiteIconSource for NoSiteIcons {
+    fn fetch(&self, _host: &str) -> IconLookup {
+        Box::pin(async { SiteIcon::Missing })
     }
 }
 

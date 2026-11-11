@@ -23,7 +23,8 @@ use vaultkeeper::{
     exec::Exec,
     hooks::{
         AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, DockIcon, FileDialogs, GlobalHotkey,
-        HookError, HookResult, Hooks, SettingsStore, SshKeyTool, TypingTarget, WindowPlacement,
+        HookError, HookResult, Hooks, SettingsStore, SiteIconSource, SshKeyTool, TypingTarget,
+        WindowPlacement,
     },
     mock::{MockConfig, MockVault},
     settings::Settings,
@@ -424,6 +425,8 @@ pub struct Setup {
     pub ssh_keys: Option<Arc<dyn SshKeyTool>>,
     /// Replaces the mock Touch ID with [`ScriptedTouchId`].
     pub scripted_touch_id: bool,
+    /// Replaces the offline site icon source, which has no icons.
+    pub site_icons: Option<Arc<dyn SiteIconSource>>,
 }
 
 impl Default for Setup {
@@ -434,6 +437,7 @@ impl Default for Setup {
             settings: Settings::default(),
             ssh_keys: None,
             scripted_touch_id: false,
+            site_icons: None,
         }
     }
 }
@@ -480,6 +484,9 @@ pub fn harness(setup: Setup) -> Harness {
         ssh_keys: setup
             .ssh_keys
             .unwrap_or_else(|| Arc::clone(&defaults.ssh_keys)),
+        site_icons: setup
+            .site_icons
+            .unwrap_or_else(|| Arc::clone(&defaults.site_icons)),
         ..defaults
     };
     let app = App::new(

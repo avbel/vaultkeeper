@@ -26,7 +26,7 @@ use tokio::{
 use vk_vault::VaultService;
 
 use crate::{
-    ClipboardHost, IpcError, PeerVerifier, SameExecutable, TouchIdBackend,
+    ClipboardHost, IpcError, PeerVerifier, SameExecutable, SiteIconHost, TouchIdBackend,
     peer::own_uid,
     protocol::{BrowserPrompt, BrowserReply, SshDecision, SshPrompt, UiCommand, UiNotice},
 };
@@ -79,6 +79,8 @@ pub struct ServeOptions {
     pub touch_id: Option<Arc<dyn TouchIdBackend>>,
     /// Serves `CopyToClipboard` / `ClearClipboard`; without it a copy fails.
     pub clipboard: Option<Arc<dyn ClipboardHost>>,
+    /// Serves `SiteIcon`; without it every host has no icon.
+    pub site_icons: Option<Arc<dyn SiteIconHost>>,
 }
 
 /// The daemon-side services a call may need besides the vault.
@@ -86,6 +88,7 @@ pub struct ServeOptions {
 pub(crate) struct Backends {
     pub(crate) touch_id: Option<Arc<dyn TouchIdBackend>>,
     pub(crate) clipboard: Option<Arc<dyn ClipboardHost>>,
+    pub(crate) site_icons: Option<Arc<dyn SiteIconHost>>,
 }
 
 impl ServeOptions {
@@ -102,6 +105,7 @@ impl ServeOptions {
             notices: None,
             touch_id: None,
             clipboard: None,
+            site_icons: None,
         }
     }
 
@@ -117,6 +121,14 @@ impl ServeOptions {
     pub fn with_clipboard(self, clipboard: Arc<dyn ClipboardHost>) -> Self {
         Self {
             clipboard: Some(clipboard),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_site_icons(self, site_icons: Arc<dyn SiteIconHost>) -> Self {
+        Self {
+            site_icons: Some(site_icons),
             ..self
         }
     }
@@ -221,6 +233,7 @@ pub async fn serve_with<S: VaultService>(
         backends: Backends {
             touch_id: options.touch_id,
             clipboard: options.clipboard,
+            site_icons: options.site_icons,
         },
         slot: Arc::clone(&slot),
     });

@@ -52,6 +52,7 @@ export component SettingsWindow inherits Window {
     in-out property <int> ssh-approval-index;
     in-out property <bool> ssh-touch-id;
     in-out property <bool> touch-id-right-away;
+    in-out property <bool> show-site-icons: true;
     // Saved accelerators ("Cmd+Shift+Space") and the same in symbols ("⇧⌘Space").
     in property <string> hotkey;
     in property <string> generator-hotkey;
@@ -91,6 +92,7 @@ export component SettingsWindow inherits Window {
     callback ssh-approval-selected(int);
     callback ssh-touch-id-toggled(bool);
     callback touch-id-right-away-toggled(bool);
+    callback site-icons-toggled(bool);
     callback browser-integration-toggled(bool);
     callback browser-chrome-toggled(bool);
     callback browser-firefox-toggled(bool);
@@ -172,6 +174,12 @@ export component SettingsWindow inherits Window {
                         index <=> root.scale-index;
                         selected(i) => { root.scale-selected(i); }
                     }
+                }
+                Toggle {
+                    text: "Show site icons";
+                    description: "Loaded through your server, which learns your sites and may pass them to its icon service";
+                    checked <=> root.show-site-icons;
+                    toggled(v) => { root.site-icons-toggled(v); }
                 }
                 Divider { }
                 SectionLabel { text: "SECURITY"; }

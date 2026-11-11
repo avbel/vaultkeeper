@@ -547,3 +547,49 @@ async fn a_daemon_without_a_clipboard_refuses_copies() {
     let (_daemon, vault) = unlocked_pair().await;
     assert!(vault.copy_to_clipboard("hunter2", None).is_err());
 }
+
+use vk_ipc::SiteIcon;
+
+struct FakeIcons;
+
+impl vk_ipc::SiteIconHost for FakeIcons {
+    fn icon(&self, host: String) -> vk_ipc::IconFuture {
+        Box::pin(async move {
+            match host.as_str() {
+                "github.com" => SiteIcon::Found(b"\x89PNG".to_vec()),
+                "down.example" => SiteIcon::Unavailable,
+                _ => SiteIcon::Missing,
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn site_icons_come_from_the_daemon() {
+    let options = ServeOptions::new()
+        .expect("options")
+        .with_site_icons(Arc::new(FakeIcons));
+    let daemon = Daemon::start_with(FakeVault::new(locked(), 0), options).await;
+    let (vault, _events) = daemon.connect().await;
+    assert_eq!(
+        vault.site_icon("github.com").await.expect("icon"),
+        SiteIcon::Found(b"\x89PNG".to_vec())
+    );
+    assert_eq!(
+        vault.site_icon("example.org").await.expect("icon"),
+        SiteIcon::Missing
+    );
+    assert_eq!(
+        vault.site_icon("down.example").await.expect("icon"),
+        SiteIcon::Unavailable
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_without_site_icons_has_none() {
+    let (_daemon, vault) = unlocked_pair().await;
+    assert_eq!(
+        vault.site_icon("github.com").await.expect("icon"),
+        SiteIcon::Missing
+    );
+}

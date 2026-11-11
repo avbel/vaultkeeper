@@ -10,6 +10,7 @@
 mod client;
 mod error;
 mod http;
+mod icons;
 mod login;
 pub mod models;
 mod normalize;
@@ -21,5 +22,6 @@ mod token;
 pub use client::{Client, DeviceInfo, LoginOutcome, TwoFactorProvider, TwoFactorToken};
 pub use error::{Error, Result};
 pub use http::HttpTimeouts;
+pub use icons::{IconFetcher, icon_url};
 pub use probe::Prober;
 pub use server_url::{is_local_host, validate_server_url};

@@ -101,6 +101,7 @@ impl<S: VaultService> App<S> {
         ));
         window.set_ssh_touch_id(settings.ssh_touch_id);
         window.set_touch_id_right_away(settings.touch_id_right_away);
+        window.set_show_site_icons(settings.show_site_icons);
         super::settings_hotkeys::show_hotkeys(window, &settings);
         self.fill_browser_settings(window, &settings);
     }
@@ -151,6 +152,9 @@ impl<S: VaultService> App<S> {
             if let Some(scale) = TextScale::from_index(index) {
                 app.update_settings(|settings| settings.text_scale = scale);
                 app.apply_theme_everywhere();
+                // Icons are decoded at the row size, which follows the text size.
+                app.forget_site_icons();
+                app.schedule_site_icons();
             }
         }));
         window.on_lock_selected(handler!(self, |app, index| {
@@ -182,6 +186,11 @@ impl<S: VaultService> App<S> {
         window.on_touch_id_right_away_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.touch_id_right_away = enabled);
         }));
+        window.on_site_icons_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.show_site_icons = enabled);
+            app.apply_theme_everywhere();
+            app.site_icons_changed();
+        }));
         self.bind_hotkeys(window);
         self.bind_browser_settings(window);
     }
@@ -191,6 +200,7 @@ impl<S: VaultService> App<S> {
         let fresh = self.hooks.settings.load();
         *self.settings.borrow_mut() = fresh;
         self.apply_theme_everywhere();
+        self.site_icons_changed();
         let window = self
             .settings_window
             .borrow()

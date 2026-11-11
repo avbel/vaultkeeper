@@ -21,6 +21,8 @@ export struct RowData {
     totp-period: int,
     // A login with a password: the Quick Panel offers auto-type.
     auto-type: bool,
+    // The site's icon once it has loaded; empty (width 0) until then and for other kinds.
+    icon: image,
 }
 
 export component TotpCell inherits Rectangle {
@@ -166,12 +168,26 @@ export component ItemRow inherits Rectangle {
             padding-left: Theme.s3;
             padding-right: Theme.s2;
             spacing: Theme.s3;
-            KindChip {
+            // One slot for the chip and the icon, so an icon arriving never moves the row.
+            slot := Rectangle {
                 y: (parent.height - self.height) / 2;
-                kind: root.data.kind;
-                size: 22px * Theme.scale;
-                opacity: ta.has-hover || root.selected ? 1 : 0.85;
-                animate opacity { duration: 100ms; }
+                width: 22px * Theme.scale;
+                height: self.width;
+                property <bool> icon-shown: Theme.site-icons && root.data.icon.width > 0;
+                if !slot.icon-shown: KindChip {
+                    kind: root.data.kind;
+                    size: slot.width;
+                    opacity: ta.has-hover || root.selected ? 1 : 0.85;
+                    animate opacity { duration: 100ms; }
+                }
+                // No rounded clip: the software renderer ignores a clip's border radius.
+                if slot.icon-shown: Image {
+                    width: slot.width;
+                    height: slot.height;
+                    source: root.data.icon;
+                    image-fit: contain;
+                    accessible-role: none;
+                }
             }
             HorizontalLayout {
                 horizontal-stretch: 3;

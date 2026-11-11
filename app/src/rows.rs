@@ -4,9 +4,10 @@
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 
 use slint::{Model, ModelNotify, ModelTracker};
-use vk_vault::model::{ItemId, ItemSummary};
+use vk_vault::model::{ItemId, ItemKind, ItemSummary};
 
 use crate::{
+    site_icon::{IconCache, icon_host},
     ui::RowData,
     viewmodel::{TotpCell, to_row},
 };
@@ -15,17 +16,20 @@ pub struct RowsModel {
     items: RefCell<Arc<[ItemSummary]>>,
     limit: usize,
     totp: RefCell<HashMap<usize, TotpCell>>,
+    icons: Rc<IconCache>,
     notify: ModelNotify,
 }
 
 impl RowsModel {
-    /// `limit` caps the rows shown (the Quick Panel shows 8).
+    /// `limit` caps the rows shown (the Quick Panel shows 8). Rows show the icons in `icons`
+    /// that have loaded and never load any themselves.
     #[must_use]
-    pub fn new(limit: Option<usize>) -> Rc<Self> {
+    pub fn new(limit: Option<usize>, icons: Rc<IconCache>) -> Rc<Self> {
         Rc::new(Self {
             items: RefCell::new(Arc::from([])),
             limit: limit.unwrap_or(usize::MAX),
             totp: RefCell::new(HashMap::new()),
+            icons,
             notify: ModelNotify::default(),
         })
     }
@@ -102,6 +106,37 @@ impl RowsModel {
         self.notify.row_changed(row);
     }
 
+    /// Distinct icon hosts of the logins in `range`, top first.
+    #[must_use]
+    pub fn icon_hosts(&self, range: Range<usize>) -> Vec<Arc<str>> {
+        let items = self.items.borrow();
+        let end = range.end.min(self.len());
+        let mut hosts: Vec<Arc<str>> = Vec::new();
+        for host in items[range.start.min(end)..end]
+            .iter()
+            .filter_map(item_host)
+        {
+            if !hosts.iter().any(|known| known.as_ref() == host) {
+                hosts.push(Arc::from(host));
+            }
+        }
+        hosts
+    }
+
+    /// Redraws the rows in `range` whose login has `host`'s icon.
+    pub fn icon_loaded(&self, host: &str, range: Range<usize>) {
+        let rows: Vec<usize> = {
+            let items = self.items.borrow();
+            let end = range.end.min(self.len());
+            (range.start.min(end)..end)
+                .filter(|&row| item_host(&items[row]).is_some_and(|known| known == host))
+                .collect()
+        };
+        for row in rows {
+            self.notify.row_changed(row);
+        }
+    }
+
     /// Strings this model can currently show, for tests that check nothing leaks across accounts.
     #[must_use]
     pub fn visible_strings(&self) -> Vec<String> {
@@ -122,7 +157,12 @@ impl Model for RowsModel {
     fn row_data(&self, row: usize) -> Option<RowData> {
         let items = self.items.borrow();
         let item = items.get(row).filter(|_| row < self.limit)?;
-        Some(to_row(item, self.totp.borrow().get(&row)))
+        let icon = if self.icons.is_empty() {
+            None
+        } else {
+            item_host(item).and_then(|host| self.icons.image(&host))
+        };
+        Some(to_row(item, self.totp.borrow().get(&row), icon))
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -132,6 +172,14 @@ impl Model for RowsModel {
     fn as_any(&self) -> &dyn core::any::Any {
         self
     }
+}
+
+/// Only logins show a site icon, as in the official clients.
+fn item_host(item: &ItemSummary) -> Option<String> {
+    (item.kind == ItemKind::Login)
+        .then_some(item.primary_uri.as_deref())
+        .flatten()
+        .and_then(icon_host)
 }
 
 #[cfg(test)]
@@ -168,7 +216,7 @@ mod tests {
 
     #[test]
     fn limit_caps_rows() {
-        let model = RowsModel::new(Some(2));
+        let model = RowsModel::new(Some(2), Rc::default());
         model.set_items(Arc::from(vec![
             summary("a", false),
             summary("b", false),
@@ -184,7 +232,7 @@ mod tests {
 
     #[test]
     fn stale_totp_rows_are_missing_or_expired_within_range() {
-        let model = RowsModel::new(None);
+        let model = RowsModel::new(None, Rc::default());
         model.set_items(Arc::from(vec![
             summary("a", true),
             summary("b", false),
@@ -205,7 +253,7 @@ mod tests {
 
     #[test]
     fn set_items_drops_totp_cells() {
-        let model = RowsModel::new(None);
+        let model = RowsModel::new(None, Rc::default());
         model.set_items(Arc::from(vec![summary("a", true)]));
         model.set_totp(0, cell(30));
         assert_eq!(model.row_data(0).expect("row").totp_code, "123 456");
