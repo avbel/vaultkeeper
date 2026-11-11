@@ -119,8 +119,6 @@ pub trait BrowserHost: Send + Sync {
     fn candidate(&self, candidate: Candidate);
     fn filled(&self, record: FillRecord);
     fn open_app(&self, view: AppView);
-    /// A paired, authenticated session of `browser` started or ended.
-    fn session(&self, browser: &'static str, active: bool);
     fn note_activity(&self);
     /// Fires on vault state changes and when the pairing store was reloaded.
     fn changes(&self) -> watch::Receiver<u64>;
@@ -182,17 +180,6 @@ impl Remembered {
 
 struct Closed;
 
-struct SessionGuard<H: BrowserHost> {
-    host: Arc<H>,
-    browser: &'static str,
-}
-
-impl<H: BrowserHost> Drop for SessionGuard<H> {
-    fn drop(&mut self) {
-        self.host.session(self.browser, false);
-    }
-}
-
 struct Dispatcher<H, F> {
     outgoing: mpsc::Sender<Zeroizing<Vec<u8>>>,
     store: Arc<Mutex<PairingStore>>,
@@ -245,11 +232,6 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
         Caller::Firefox { extension_id } => (extension_id, KnownBrowser::Firefox),
     };
     let browser = browser_name(browser_kind);
-    host.session(browser, true);
-    let _session = SessionGuard {
-        host: Arc::clone(&host),
-        browser,
-    };
     let (completions, mut completed) = mpsc::channel(1);
     let mut changes = host.changes();
     // The current state goes out with the prove reply; only later changes push events.

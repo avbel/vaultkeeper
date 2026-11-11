@@ -15,7 +15,7 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
   `key` in `manifest.chrome.json`; the private key is outside the repo (`~/.vaultkeeper-secrets/`, see
   `browsers/README.md`). Copy it if the Chrome id must stay the same on another machine.
 - Daemon wiring is in `app/src/daemon/core/browser_glue.rs` (listener lifecycle, `BrowserHost` for the sessions,
-  manifests, Touch ID, TOTP copy, activity log `browser.log`, tray line, save queue). Sessions are in
+  manifests, Touch ID, TOTP copy, activity log `browser.log`, save queue). Sessions are in
   `app/src/daemon/browser/dispatch.rs`; fill in `fill.rs`; save in `save.rs`; manifests in `manifests.rs`.
 - Review fixes applied after an independent read: credential responses are serialised straight into a wiped
   buffer (the host writes stdout unbuffered); cooldown and buckets are per paired key and per canonical origin so a
@@ -862,7 +862,6 @@ Id-consistency test (section 9).
   `pnpm -C browsers build`.
 - Activity log: a bounded log file `browser` through the existing `BoundedLog` (`app/src/os/log_file.rs`), lines as in
   step 9 of the fill flow plus pairings, removals, refused connections and restored manifests.
-- Tray: when at least one browser session is paired and connected, add a disabled menu line "Browser connected: <name>".
 - `docs/USAGE.md`: a new section "Browsers" — enabling, installing the extension, pairing and the code, filling, choosing
   another login, saving, the settings, the known limits of section 4, removing a browser.
 - `docs/solutions/vaultkeeper-architecture.md`: replace the "Browser-extension bridge" bullet under Decisions with a

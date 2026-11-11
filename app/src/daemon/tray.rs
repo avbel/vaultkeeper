@@ -67,7 +67,6 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         })
         .collect();
     tray.set_accounts(ModelRc::new(VecModel::from(labels)));
-    tray.set_browser_label(daemon.browser_label().into());
     let sync = daemon.tray_sync();
     let last_sync = vault.last_sync();
     tray.set_syncing(sync.running);
@@ -92,7 +91,6 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
     let mut changes = daemon.vault().changes();
     let mut settings = daemon.subscribe_settings();
     let mut sync = daemon.subscribe_tray_sync();
-    let mut browsers = daemon.subscribe_browser_sessions();
     let weak = tray.as_weak();
     let daemon = Arc::clone(daemon);
     slint::spawn_local(async move {
@@ -102,7 +100,6 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
                 vault = changes.changed() => if vault.is_err() { break },
                 prefs = settings.changed() => if prefs.is_err() { break },
                 status = sync.changed() => if status.is_err() { break },
-                connected = browsers.changed() => if connected.is_err() { break },
             }
             match weak.upgrade() {
                 Some(tray) => refresh(&tray, &daemon),

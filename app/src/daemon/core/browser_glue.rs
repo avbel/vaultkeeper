@@ -49,8 +49,6 @@ pub(super) struct BrowserState {
     /// Pushed to every session on a vault change or a pairing reload.
     changes: watch::Sender<u64>,
     pairings_changed: Notify,
-    sessions: std::sync::Mutex<HashMap<&'static str, usize>>,
-    sessions_changed: watch::Sender<u64>,
     saves: Arc<AsyncMutex<SaveManager>>,
     address_offers: Arc<AsyncMutex<AddressOffers>>,
     /// Moves on every stop, ending save work started for the listener that went away.
@@ -71,8 +69,6 @@ impl BrowserState {
             epoch: std::sync::atomic::AtomicU64::new(0),
             changes: watch::Sender::new(0),
             pairings_changed: Notify::new(),
-            sessions: std::sync::Mutex::new(HashMap::new()),
-            sessions_changed: watch::Sender::new(0),
             saves: Arc::new(AsyncMutex::new(SaveManager::default())),
             address_offers: Arc::new(AsyncMutex::new(AddressOffers::default())),
             stopped: watch::Sender::new(0),
@@ -135,7 +131,6 @@ impl Daemon {
             *guard(&self.browser.stopping) = Some(task);
         }
         *guard(&self.browser.store) = None;
-        guard(&self.browser.sessions).clear();
         self.forget_browser_approvals();
         self.browser
             .stopped
@@ -259,22 +254,6 @@ impl Daemon {
             }
             Err(error) => tracing::warn!(%error, "cannot reload browser pairings"),
         }
-    }
-
-    /// The tray line, empty when no paired browser is connected.
-    #[must_use]
-    pub fn browser_label(&self) -> String {
-        let mut names: Vec<_> = guard(&self.browser.sessions).keys().copied().collect();
-        if names.is_empty() {
-            return String::new();
-        }
-        names.sort_unstable();
-        format!("Browser connected: {}", names.join(", "))
-    }
-
-    #[must_use]
-    pub fn subscribe_browser_sessions(&self) -> watch::Receiver<u64> {
-        self.browser.sessions_changed.subscribe()
     }
 
     /// Evaluates the candidates held while the vault was locked.
@@ -600,25 +579,6 @@ impl BrowserHost for DaemonBrowser {
             AppView::Manager => UiCommand::ShowManager,
             AppView::Settings => UiCommand::ShowSettings,
         });
-    }
-
-    fn session(&self, browser: &'static str, active: bool) {
-        {
-            let mut sessions = guard(&self.0.browser.sessions);
-            let count = sessions.entry(browser).or_insert(0);
-            if active {
-                *count += 1;
-            } else {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    sessions.remove(browser);
-                }
-            }
-        }
-        self.0
-            .browser
-            .sessions_changed
-            .send_modify(|value| *value = value.wrapping_add(1));
     }
 
     fn note_activity(&self) {

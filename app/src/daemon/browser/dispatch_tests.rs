@@ -125,7 +125,6 @@ impl BrowserHost for StubHost {
     }
     fn candidate(&self, _candidate: Candidate) {}
     fn open_app(&self, _view: AppView) {}
-    fn session(&self, _browser: &'static str, _active: bool) {}
     fn note_activity(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
     }
