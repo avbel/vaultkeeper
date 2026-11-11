@@ -1,10 +1,12 @@
 # Browser integration (Chrome and Firefox) — implementation plan
 
-Status: Phases 0–10 implemented in the working tree (2026-11-11); nothing has been tried in a real browser yet.
+Status: Phases 0–10 implemented and committed (2026-11-11). Chrome was run by hand and the section 11 script passed
+(fill, choose another, lock/unlock, save, update, never for this site, other-site confirmation, picker closing on focus
+loss, no focus theft by the save prompt, theme switching); Firefox passed the automated run in section 15.
 Written 2026-11-10 against commit `d26413c`.
 
-**Handoff: everything is implemented and tested in isolation; the next step is the manual end-to-end run (section 11)
-in Chrome and Firefox, in both themes.**
+**Handoff: everything is implemented, committed and verified by hand in Chrome. Still unverified: Touch ID before a fill,
+real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox add-on, and a Chrome Web Store install.**
 
 - Rust: `scripts/check.sh` (fmt + clippy `-D warnings`) and `cargo test --workspace --no-fail-fast` pass.
   `crates/platform` `single_instance::releasing_the_guard…` is flaky under the full parallel run and passes alone.
