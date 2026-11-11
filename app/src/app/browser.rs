@@ -152,8 +152,11 @@ impl<S: VaultService> App<S> {
         window.set_host(host.as_str().into());
         window.set_insecure(*insecure);
         window.set_touch_id(*touch_id);
-        let rows: Vec<ItemSummary> = matches.iter().cloned().map(Into::into).collect();
+        let mut rows: Vec<ItemSummary> = matches.iter().cloned().map(Into::into).collect();
         let matched = rows.iter().map(|item| Arc::clone(&item.id.0)).collect();
+        if rows.is_empty() {
+            rows = self.site_name_suggestions(host);
+        }
         let id = queued.id;
         window.on_search_edited(handler!(self, |app, text| app.search_browser(id, &text)));
         window.on_pick(handler!(self, |app, index| app.pick_browser(id, index)));
@@ -210,7 +213,7 @@ impl<S: VaultService> App<S> {
                 id: current,
                 request:
                     BrowserPromptRequest {
-                        prompt: BrowserPrompt::Fill { matches, .. },
+                        prompt: BrowserPrompt::Fill { matches, host, .. },
                         ..
                     },
             }) = queue.current.as_ref()
@@ -220,30 +223,61 @@ impl<S: VaultService> App<S> {
             if *current != id {
                 return;
             }
-            matches
+            let initial = matches
                 .iter()
                 .cloned()
                 .map(Into::into)
-                .collect::<Vec<ItemSummary>>()
+                .collect::<Vec<ItemSummary>>();
+            (initial, host.clone())
         };
+        let (initial, host) = initial;
         let rows = if query.is_empty() {
-            initial
-        } else {
-            match self.vault.search(
-                query,
-                &Filter {
-                    kind: Some(ItemKind::Login),
-                    ..Filter::default()
-                },
-            ) {
-                Ok(items) => items.iter().filter(|item| !item.deleted).cloned().collect(),
-                Err(_) => Vec::new(),
+            if initial.is_empty() {
+                self.site_name_suggestions(&host)
+            } else {
+                initial
             }
+        } else {
+            self.matches_first(self.search_logins(query))
         };
         self.browser.borrow_mut().rows = rows;
         if let Some(window) = self.browser_picker.borrow().as_ref() {
             self.render_browser_rows(window);
         }
+    }
+
+    fn search_logins(&self, query: &str) -> Vec<ItemSummary> {
+        match self.vault.search(
+            query,
+            &Filter {
+                kind: Some(ItemKind::Login),
+                ..Filter::default()
+            },
+        ) {
+            Ok(items) => items.iter().filter(|item| !item.deleted).cloned().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Logins saved for this site stay above the rest, whatever the search ranks first.
+    fn matches_first(&self, found: Vec<ItemSummary>) -> Vec<ItemSummary> {
+        let queue = self.browser.borrow();
+        let (mut first, rest): (Vec<_>, Vec<_>) = found
+            .into_iter()
+            .partition(|item| queue.matched.contains(&item.id.0));
+        first.extend(rest);
+        first
+    }
+
+    /// Logins named after the site ("Google" for accounts.google.com) when no saved address
+    /// matches it. Picking one still needs the other-site confirmation.
+    fn site_name_suggestions(&self, host: &str) -> Vec<ItemSummary> {
+        let Some(label) = site_label(host) else {
+            return Vec::new();
+        };
+        let mut found = self.search_logins(&label);
+        found.truncate(SUGGESTIONS);
+        found
     }
 
     fn pick_browser(&self, id: u64, index: i32) {
@@ -576,6 +610,47 @@ impl<S: VaultService> App<S> {
     pub(super) fn deny_browser_waiting_for_unlock(&self) {
         if !matches!(self.vault.state(), SessionState::Unlocked { .. }) {
             self.deny_all_browser();
+        }
+    }
+}
+
+const SUGGESTIONS: usize = 8;
+
+/// The site's own name: "google" for accounts.google.com. `None` for IP addresses, single-label
+/// hosts and names too short to search by.
+fn site_label(host: &str) -> Option<String> {
+    let page = vk_vault::uri_match::PageUrl::new(&format!("https://{host}"), "/")?;
+    let domain = page.registrable_domain();
+    let (label, _) = domain.split_once('.')?;
+    let is_address = domain.parse::<std::net::IpAddr>().is_ok();
+    (!is_address && label.chars().count() >= 3).then(|| label.to_owned())
+}
+
+#[cfg(test)]
+mod site_label_tests {
+    use super::site_label;
+
+    #[test]
+    fn names_a_site_by_its_registrable_domain() {
+        assert_eq!(site_label("accounts.google.com").as_deref(), Some("google"));
+        assert_eq!(site_label("www.example.co.uk").as_deref(), Some("example"));
+        assert_eq!(
+            site_label("xn--e1afmkfd.xn--p1ai").as_deref(),
+            Some("xn--e1afmkfd")
+        );
+    }
+
+    #[test]
+    fn has_no_name_for_addresses_local_hosts_and_short_names() {
+        for host in [
+            "127.0.0.1",
+            "192.168.1.2",
+            "localhost",
+            "nas",
+            "x.io",
+            "[::1]",
+        ] {
+            assert_eq!(site_label(host), None, "{host}");
         }
     }
 }

@@ -59,3 +59,12 @@ Chrome distribution (Web Store or enterprise policy) is an open decision in `BRO
 
 `web-ext lint` warns that `data_collection_permissions` is unsupported below Firefox 140; older versions ignore the key
 and AMO requires it for new add-ons, so it stays.
+
+## Pages opened before the extension loaded
+
+A tab that was open when the extension was installed or reloaded has no content script. The background then injects
+`content.js` into frame 0 with `scripting.executeScript` (permission `scripting`, no install warning) and resends
+`begin_fill` once; it injects only into http(s) tabs and only when the send failed with "Receiving end does not exist".
+The popup stays open with a message when the page has no login form or cannot be reached (for example `chrome://` pages
+or the Web Store). After pulling a change to the manifest, press Reload on `chrome://extensions` (Firefox: reload the
+temporary add-on) and reload the tab you want to test.

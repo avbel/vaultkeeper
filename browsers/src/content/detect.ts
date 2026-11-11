@@ -158,12 +158,34 @@ function toLoginForm(ctx: Ctx, group: Group): LoginForm {
   return form;
 }
 
-function hasSubmitControl(form: Element): boolean {
-  return (
-    form.querySelector(
-      "button:not([type=button]):not([type=reset]), input[type=submit], input[type=image]",
-    ) !== null
-  );
+const MAX_TEXT_INPUTS_IN_STEP = 3;
+const STEP_ACTION =
+  "button, [role=button], input[type=submit], input[type=button], input[type=image]";
+const TEXT_LIKE_TYPES = new Set([...USERNAME_TYPES, "search", "url"]);
+
+function textInputCount(ctx: Ctx, container: Element): number {
+  return ctx.shown.filter((el) => TEXT_LIKE_TYPES.has(el.type) && composedContains(container, el))
+    .length;
+}
+
+// Google-style steps have no <form>: the field and its "Next" control share a plain container.
+// Climbing stops before a container that holds several text inputs, which is a whole page section.
+function stepContainerOf(ctx: Ctx, el: HTMLInputElement): Element {
+  const form = composedClosest(el, "form");
+  if (form) {
+    return form;
+  }
+  let current = composedParent(el);
+  while (current && current.localName !== "body" && current.localName !== "html") {
+    if (textInputCount(ctx, current) > MAX_TEXT_INPUTS_IN_STEP) {
+      break;
+    }
+    if (current.querySelector(STEP_ACTION)) {
+      return current;
+    }
+    current = composedParent(current);
+  }
+  return composedParent(el) ?? el;
 }
 
 function looksLikeUsernameStep(el: HTMLInputElement): boolean {
@@ -183,16 +205,16 @@ function findUsernameSteps(ctx: Ctx, taken: LoginForm[]): LoginForm[] {
     if (isPasswordField(el) || !looksLikeUsernameStep(el)) {
       continue;
     }
-    const form = composedClosest(el, "form");
-    if (!form || !hasSubmitControl(form)) {
+    if (taken.some((f) => composedContains(f.container, el))) {
       continue;
     }
-    const occupied = [...taken, ...steps].some((f) => composedContains(form, f.container));
-    const inside = [...taken, ...steps].some((f) => composedContains(f.container, form));
-    if (occupied || inside) {
-      continue;
+    const container = stepContainerOf(ctx, el);
+    const overlaps = [...taken, ...steps].some(
+      (f) => composedContains(f.container, container) || composedContains(container, f.container),
+    );
+    if (!overlaps) {
+      steps.push({ username: el, newPasswords: [], container });
     }
-    steps.push({ username: el, newPasswords: [], container: form });
   }
   return steps;
 }

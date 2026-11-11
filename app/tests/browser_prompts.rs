@@ -172,6 +172,29 @@ fn picker_requires_confirmation_for_another_site() {
 }
 
 #[test]
+fn a_site_without_a_saved_address_suggests_logins_named_after_it() {
+    let h = harness(Setup::default());
+    let (reply, mut answer) = oneshot::channel();
+    h.app.request_browser_prompt(BrowserPromptRequest {
+        prompt: BrowserPrompt::Fill {
+            browser: "Firefox".into(),
+            host: "login.github.com".into(),
+            insecure: false,
+            matches: vec![],
+            touch_id: false,
+            return_to: None,
+        },
+        reply,
+    });
+    let picker = h.app.browser_picker().expect("picker");
+    // No typing: the GitHub login is already listed, but it is another site's saved address, so
+    // picking it asks for the confirmation first.
+    key(&picker, &special(Key::Return), Mods::default());
+    assert!(picker.get_confirm_other());
+    assert!(answer.try_recv().is_err());
+}
+
+#[test]
 fn save_prompt_returns_action_without_exposing_a_password() {
     let h = harness(Setup::default());
     let (reply, mut answer) = oneshot::channel();

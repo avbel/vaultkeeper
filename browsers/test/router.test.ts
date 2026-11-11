@@ -17,26 +17,35 @@ function sender(overrides: Partial<SenderLike> = {}): SenderLike {
 }
 
 function setup(
-  options: { request?: RouterDeps["session"]["request"]; tabUrl?: string; phase?: string } = {},
+  options: {
+    request?: RouterDeps["session"]["request"];
+    tabUrl?: string;
+    phase?: string;
+    sendToTab?: RouterDeps["sendToTab"];
+  } = {},
 ) {
   const request = vi.fn(
     options.request ??
       (async (type: string) => (type === "fill" ? { username: "alice", password: "s3cret" } : {})),
   );
   const sent: { tabId: number; message: ToContent; frameId: number }[] = [];
+  const injectContent = vi.fn(async (_tabId: number) => undefined);
   const deps: RouterDeps = {
     runtimeId: RUNTIME_ID,
     getTab: async () => ({ url: options.tabUrl ?? PAGE }),
-    sendToTab: async (tabId, message, frameId) => {
-      sent.push({ tabId, message, frameId });
-    },
+    injectContent,
+    sendToTab:
+      options.sendToTab ??
+      (async (tabId, message, frameId) => {
+        sent.push({ tabId, message, frameId });
+      }),
     session: {
       request: request as unknown as RouterDeps["session"]["request"],
       theme: "dark",
       status: { phase: options.phase ?? "ready" },
     },
   };
-  return { router: createRouter(deps), request, sent };
+  return { router: createRouter(deps), request, sent, injectContent };
 }
 
 const FILL = {
@@ -208,9 +217,80 @@ describe("save flow", () => {
 });
 
 describe("begin_fill", () => {
-  it("targets frame 0", async () => {
-    const { router, sent } = setup();
-    await router.beginFill(9, true);
+  const NO_RECEIVER = new Error("Could not establish connection. Receiving end does not exist.");
+
+  it("targets frame 0 and treats a missing reply as found", async () => {
+    const { router, sent, injectContent } = setup();
+    expect(await router.beginFill(9, true)).toEqual({ reached: true, found: true });
     expect(sent).toEqual([{ tabId: 9, frameId: 0, message: { kind: "begin_fill", choose: true } }]);
+    expect(injectContent).not.toHaveBeenCalled();
+  });
+
+  it("passes on found: false from the content script", async () => {
+    const { router } = setup({ sendToTab: async () => ({ found: false }) });
+    expect(await router.beginFill(9, false)).toEqual({ reached: true, found: false });
+  });
+
+  it("injects the content script and resends once when there is no receiver", async () => {
+    let injected = false;
+    const calls: number[] = [];
+    const { router, injectContent } = setup({
+      sendToTab: async (tabId) => {
+        calls.push(tabId);
+        if (!injected) {
+          throw NO_RECEIVER;
+        }
+        return { found: true };
+      },
+    });
+    injectContent.mockImplementation(async () => {
+      injected = true;
+    });
+    expect(await router.beginFill(9, false)).toEqual({ reached: true, found: true });
+    expect(injectContent).toHaveBeenCalledExactlyOnceWith(9);
+    expect(calls).toEqual([9, 9]);
+  });
+
+  it("gives up when the resend still fails", async () => {
+    const { router, injectContent } = setup({
+      sendToTab: async () => {
+        throw NO_RECEIVER;
+      },
+    });
+    expect(await router.beginFill(9, false)).toEqual({ reached: false });
+    expect(injectContent).toHaveBeenCalledOnce();
+  });
+
+  it("reports unreachable when injection is refused (chrome:// pages, the Web Store)", async () => {
+    const { router, injectContent } = setup({
+      sendToTab: async () => {
+        throw NO_RECEIVER;
+      },
+    });
+    injectContent.mockRejectedValue(new Error("Cannot access a chrome:// URL"));
+    expect(await router.beginFill(9, false)).toEqual({ reached: false });
+  });
+
+  it("never injects into tabs that are not http(s)", async () => {
+    for (const tabUrl of ["chrome://extensions/", "file:///a.html", "about:blank"]) {
+      const { router, injectContent } = setup({
+        tabUrl,
+        sendToTab: async () => {
+          throw NO_RECEIVER;
+        },
+      });
+      expect(await router.beginFill(9, false)).toEqual({ reached: false });
+      expect(injectContent).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not inject on errors other than a missing receiver", async () => {
+    const { router, injectContent } = setup({
+      sendToTab: async () => {
+        throw new Error("The message port closed before a response was received.");
+      },
+    });
+    expect(await router.beginFill(9, false)).toEqual({ reached: false });
+    expect(injectContent).not.toHaveBeenCalled();
   });
 });

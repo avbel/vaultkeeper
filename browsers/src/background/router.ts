@@ -16,6 +16,8 @@ export interface RouterDeps {
   runtimeId: string;
   getTab(tabId: number): Promise<{ url?: string | undefined }>;
   sendToTab(tabId: number, message: ToContent, frameId: number): Promise<unknown>;
+  /** Injects the content script into frame 0 of a tab that was open before the extension loaded. */
+  injectContent(tabId: number): Promise<void>;
   session: {
     request<T extends RequestType>(
       type: T,
@@ -35,6 +37,19 @@ interface VerifiedSender {
 }
 
 const MAX_NONCE = 128;
+const NO_RECEIVER = /receiving end does not exist|could not establish connection/i;
+
+export type BeginFillResult = { reached: true; found: boolean } | { reached: false };
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// An older content script replies nothing; treat that as "found" so the popup closes as before.
+function toBeginFillResult(reply: unknown): BeginFillResult {
+  const found = (reply as { found?: unknown } | null | undefined)?.found;
+  return { reached: true, found: found !== false };
+}
 
 export function createRouter(deps: RouterDeps) {
   const inFlight = new Set<Promise<void>>();
@@ -143,8 +158,26 @@ export function createRouter(deps: RouterDeps) {
       return { accepted: true };
     },
 
-    beginFill(tabId: number, choose: boolean): Promise<unknown> {
-      return deps.sendToTab(tabId, { kind: "begin_fill", choose }, 0);
+    async beginFill(tabId: number, choose: boolean): Promise<BeginFillResult> {
+      const send = () => deps.sendToTab(tabId, { kind: "begin_fill", choose }, 0);
+      try {
+        return toBeginFillResult(await send());
+      } catch (error) {
+        // Only a missing receiver justifies injecting; any other failure would double-load the script.
+        if (!NO_RECEIVER.test(messageOf(error))) {
+          return { reached: false };
+        }
+      }
+      const tab = await deps.getTab(tabId).catch(() => null);
+      if (!tab || webOrigin(tab.url) === null) {
+        return { reached: false };
+      }
+      try {
+        await deps.injectContent(tabId);
+        return toBeginFillResult(await send());
+      } catch {
+        return { reached: false };
+      }
     },
 
     async idle(): Promise<void> {

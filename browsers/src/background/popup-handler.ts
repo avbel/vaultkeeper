@@ -1,12 +1,12 @@
-import type { PopupRequest, PopupStatus } from "../shared/popup.ts";
+import type { PopupFillReply, PopupRequest, PopupStatus } from "../shared/popup.ts";
 import type { RequestMap, RequestType } from "../shared/protocol.ts";
-import type { SenderLike } from "./router.ts";
+import type { BeginFillResult, SenderLike } from "./router.ts";
 
 export interface PopupDeps {
   runtimeId: string;
   popupUrl: string;
   activeTabId(): Promise<number | undefined>;
-  beginFill(tabId: number, choose: boolean): Promise<unknown>;
+  beginFill(tabId: number, choose: boolean): Promise<BeginFillResult>;
   session: {
     readonly status: PopupStatus;
     ensureReady(): Promise<void>;
@@ -17,7 +17,7 @@ export interface PopupDeps {
   };
 }
 
-export type PopupReply = { status: PopupStatus } | { ok: boolean };
+export type PopupReply = { status: PopupStatus } | PopupFillReply | { ok: boolean };
 
 export function createPopupHandler(deps: PopupDeps) {
   function fromPopup(sender: SenderLike): boolean {
@@ -37,10 +37,12 @@ export function createPopupHandler(deps: PopupDeps) {
       case "popup_fill": {
         const tabId = await deps.activeTabId();
         if (tabId === undefined) {
-          return { ok: false };
+          return { ok: false, reason: "unreachable" };
         }
-        await deps.beginFill(tabId, message.choose);
-        return { ok: true };
+        const result = await deps.beginFill(tabId, message.choose);
+        return result.reached
+          ? { ok: true, found: result.found }
+          : { ok: false, reason: "unreachable" };
       }
       case "popup_unlock": {
         await deps.session.request("unlock", {});

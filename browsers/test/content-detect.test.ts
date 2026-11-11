@@ -38,9 +38,52 @@ describe("findLoginForms", () => {
     expect(form?.password).toBeUndefined();
   });
 
-  test("username-only step needs a submit control", () => {
+  test("username-only step in a form without a submit control", () => {
     render(`<form><input name="identifier"></form>`);
-    expect(detect()).toEqual([]);
+    expect(detect()[0]?.username).toBe(input("[name=identifier]"));
+  });
+
+  test("Google-style identifier step: no form, role=button Next", () => {
+    render(
+      `<div id="card"><div id="field"><input type="email" id="identifierId" name="identifier" autocomplete="username"></div><div><div role="button" id="next">Next</div></div></div>`,
+    );
+    const [form, ...rest] = detect();
+    expect(rest).toHaveLength(0);
+    expect(form?.username).toBe(input("#identifierId"));
+    expect(form?.password).toBeUndefined();
+    expect(form?.container).toBe(document.getElementById("card"));
+  });
+
+  test("identifier step with a button[type=button] control", () => {
+    render(
+      `<div id="card"><input type="email" id="e" autocomplete="username"><button type="button">Next</button></div>`,
+    );
+    expect(detect()[0]?.container).toBe(document.getElementById("card"));
+  });
+
+  test("Google-style password step has a password and no username", () => {
+    render(
+      `<div id="card"><input type="password" name="Passwd"><div role="button">Next</div></div><input type="email" id="gone" style="display: none">`,
+    );
+    const [form, ...rest] = detect();
+    expect(rest).toHaveLength(0);
+    expect(form?.password).toBe(input("[name=Passwd]"));
+    expect(form?.username).toBeUndefined();
+  });
+
+  test("a username field inside a password form is not counted twice", () => {
+    render(
+      `<div><input type="email" autocomplete="username"><input type="password"><button type="button">Go</button></div>`,
+    );
+    expect(detect()).toHaveLength(1);
+  });
+
+  test("a step container never swallows a whole page section", () => {
+    render(
+      `<section id="page"><input id="a"><input id="b"><input id="c"><input id="d"><div id="step"><input type="email" id="e"></div><button type="button">Send</button></section>`,
+    );
+    const step = detect().find((f) => f.username === input("#e"));
+    expect(step?.container).toBe(document.getElementById("step"));
   });
 
   test("signup with two password fields has only new passwords", () => {

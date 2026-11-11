@@ -1,5 +1,6 @@
 import { api } from "../shared/api.ts";
 import type { Theme, ToBackground, ToContent } from "../shared/messages.ts";
+import { beginFill } from "./begin.ts";
 import { createCapture } from "./capture.ts";
 import { findLoginForms, type LoginForm } from "./detect.ts";
 import { composedContains } from "./dom.ts";
@@ -70,20 +71,6 @@ function main(): void {
     }
   };
 
-  const beginFill = (choose: boolean): void => {
-    rescan();
-    const active = deepActiveElement();
-    const target =
-      (active && forms.find((f) => composedContains(f.container, active))) ??
-      forms.find((f) => f.password) ??
-      forms[0];
-    if (!target) {
-      icon.toast(TOAST.noForm);
-      return;
-    }
-    filler.request(target, choose);
-  };
-
   document.addEventListener(
     "focusin",
     (event) => {
@@ -112,33 +99,44 @@ function main(): void {
   window.addEventListener("resize", icon.reposition);
   window.addEventListener("scroll", icon.reposition, true);
 
-  api.runtime.onMessage.addListener((message: unknown, sender: chrome.runtime.MessageSender) => {
-    if (sender.id !== api.runtime.id || !isToContent(message)) {
-      return;
-    }
-    switch (message.kind) {
-      case "begin_fill":
-        beginFill(message.choose === true);
-        break;
-      case "theme":
-        applyTheme(message.theme);
-        break;
-      case "fill_result": {
-        applyTheme(message.theme);
-        const outcome = filler.applyResult(message);
-        if (outcome.claimed && outcome.filled === 0) {
-          icon.toast(TOAST.generic);
-        }
-        break;
+  api.runtime.onMessage.addListener(
+    (
+      message: unknown,
+      sender: chrome.runtime.MessageSender,
+      sendResponse: (response: { found: boolean }) => void,
+    ) => {
+      if (sender.id !== api.runtime.id || !isToContent(message)) {
+        return;
       }
-      case "fill_error":
-        applyTheme(message.theme);
-        if (filler.applyError(message)) {
-          icon.toast(toastForError(message.code));
+      switch (message.kind) {
+        case "begin_fill":
+          sendResponse({
+            found: beginFill(
+              { rescan, active: deepActiveElement, filler, toast: icon.toast },
+              message.choose === true,
+            ),
+          });
+          break;
+        case "theme":
+          applyTheme(message.theme);
+          break;
+        case "fill_result": {
+          applyTheme(message.theme);
+          const outcome = filler.applyResult(message);
+          if (outcome.claimed && outcome.filled === 0) {
+            icon.toast(TOAST.generic);
+          }
+          break;
         }
-        break;
-    }
-  });
+        case "fill_error":
+          applyTheme(message.theme);
+          if (filler.applyError(message)) {
+            icon.toast(toastForError(message.code));
+          }
+          break;
+      }
+    },
+  );
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   new MutationObserver(() => {
@@ -158,4 +156,11 @@ function main(): void {
   document.documentElement.append(icon.host);
 }
 
-main();
+// A page open before the extension loaded gets the script injected on demand; running it twice
+// in the same isolated world would register every listener and a second icon again.
+const GUARD = "__vaultkeeperContentLoaded";
+const guarded = globalThis as unknown as Record<string, boolean | undefined>;
+if (!guarded[GUARD]) {
+  guarded[GUARD] = true;
+  main();
+}

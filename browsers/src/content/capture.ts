@@ -25,6 +25,7 @@ export interface Capture {
 }
 
 const SUBMIT_TEXT = /log ?in|sign ?in|continue|next|submit|change|update|save/i;
+const MAX_SUBMIT_TEXT = 40;
 const MAX_USERNAME = 512;
 const MAX_PASSWORD = 4096;
 const SUBMIT_INTENT_MS = 2_000;
@@ -38,11 +39,11 @@ function isSubmitLike(el: Element): boolean {
   if (el.localName === "input") {
     return (el as HTMLInputElement).type === "submit";
   }
-  if (el.localName !== "button") {
-    return false;
+  if (el.localName === "button" && (el as HTMLButtonElement).type === "submit") {
+    return true;
   }
-  const button = el as HTMLButtonElement;
-  return button.type === "submit" || SUBMIT_TEXT.test(button.textContent ?? "");
+  const text = el.textContent ?? "";
+  return text.length <= MAX_SUBMIT_TEXT && SUBMIT_TEXT.test(text);
 }
 
 export function createCapture(deps: CaptureDeps, doc: Document = document): Capture {
@@ -155,7 +156,8 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
       return;
     }
     touch(submitIntent, form);
-    if (isInput(el) && passwordFields(form).includes(el)) {
+    const usernameOnly = form.username === el && passwordFields(form).length === 0;
+    if (isInput(el) && (passwordFields(form).includes(el) || usernameOnly)) {
       emitFor(form);
     }
   };
@@ -170,7 +172,7 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
       return;
     }
     touch(interaction, form);
-    const control = el.closest("button, input");
+    const control = el.closest("button, input, [role=button]");
     if (control && isSubmitLike(control)) {
       touch(submitIntent, form);
       emitFor(form);

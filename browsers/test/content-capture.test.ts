@@ -296,4 +296,28 @@ describe("capture", () => {
     window.dispatchEvent(new Event("pagehide"));
     expect(emitted).toEqual([]);
   });
+
+  test("multi-step login without a form: Next click remembers the username", () => {
+    start(
+      `<div id="one"><input id="u" type="email" autocomplete="username"><div role="button" id="next">Next</div></div>`,
+    );
+    typeInto(input("#u"), "alice@example.com");
+    document.getElementById("next")!.dispatchEvent(new Event("click", { bubbles: true }));
+    expect(emitted).toEqual([]);
+    document.body.innerHTML = `<div id="two"><input id="p" type="password"><div role="button">Next</div></div>`;
+    forms = detect();
+    capture!.refresh(forms);
+    typeInto(input("#p"), "pw");
+    pressEnter(input("#p"));
+    expect(emitted).toMatchObject([{ username: "alice@example.com", password: "pw" }]);
+  });
+
+  test("Enter in a username-only field is a safe trigger that emits nothing", () => {
+    start(
+      `<div><input id="u" type="email" autocomplete="username"><button type="button">Next</button></div>`,
+    );
+    typeInto(input("#u"), "alice");
+    pressEnter(input("#u"));
+    expect(emitted).toEqual([]);
+  });
 });

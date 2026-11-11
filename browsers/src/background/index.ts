@@ -57,6 +57,9 @@ const router = createRouter({
   runtimeId: api.runtime.id,
   getTab: (tabId) => api.tabs.get(tabId),
   sendToTab: (tabId, message, frameId) => api.tabs.sendMessage(tabId, message, { frameId }),
+  injectContent: async (tabId) => {
+    await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: ["content.js"] });
+  },
   session,
 });
 

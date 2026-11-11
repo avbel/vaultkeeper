@@ -20,6 +20,7 @@ export interface Filler {
   applyResult: (message: FillResultMessage) => FillOutcome;
   applyError: (message: FillErrorMessage) => boolean;
   cancel: () => void;
+  isPending: () => boolean;
 }
 
 export interface FillOutcome {
@@ -129,6 +130,10 @@ export function createFiller(deps: FillDeps): Filler {
 
     cancel() {
       pending = null;
+    },
+
+    isPending() {
+      return pending !== null && live(pending);
     },
   };
 }

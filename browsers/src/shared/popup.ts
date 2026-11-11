@@ -36,3 +36,5 @@ export const POPUP_KINDS: readonly string[] = [
   "popup_unlock",
   "popup_open_app",
 ];
+
+export type PopupFillReply = { ok: true; found: boolean } | { ok: false; reason: "unreachable" };
