@@ -15,7 +15,7 @@ use crate::dto::{
     TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -279,6 +279,9 @@ pub enum BrowserReply {
         target: Option<Arc<str>>,
     },
     NeverForSite,
+    /// The user moved to another window and the prompt went away on its own. Answered like
+    /// `Dismissed`, but not counted as a cancel by the daemon's per-site cooldown.
+    Abandoned,
 }
 
 /// Why a Touch ID enrolment or unlock in the daemon did not happen. Vault errors (locked, wrong

@@ -30,6 +30,8 @@ struct StubHost {
     unlocked: Mutex<Vec<oneshot::Sender<()>>>,
     activity: AtomicUsize,
     locked: AtomicBool,
+    hold_unlock: AtomicBool,
+    release_unlock: tokio::sync::Notify,
     epoch: AtomicUsize,
     records: Mutex<Vec<String>>,
     limits: Arc<Mutex<super::limits::Limits>>,
@@ -45,6 +47,8 @@ impl StubHost {
             unlocked: Mutex::new(Vec::new()),
             activity: AtomicUsize::new(0),
             locked: AtomicBool::new(false),
+            hold_unlock: AtomicBool::new(false),
+            release_unlock: tokio::sync::Notify::new(),
             epoch: AtomicUsize::new(0),
             records: Mutex::new(Vec::new()),
             limits: Arc::new(Mutex::new(super::limits::Limits::new(
@@ -78,7 +82,12 @@ impl BrowserHost for StubHost {
             let _ = done.send(());
         }
         self.locked.store(false, Ordering::SeqCst);
-        std::future::ready(())
+        let hold = self.hold_unlock.load(Ordering::SeqCst);
+        async move {
+            if hold {
+                self.release_unlock.notified().await;
+            }
+        }
     }
     fn return_to(&self) -> impl Future<Output = Option<vk_ipc::TypingTarget>> + Send {
         std::future::ready(None)
@@ -810,4 +819,121 @@ async fn a_browser_toggled_off_is_not_served() {
     .await
     .expect("serve returns at once");
     assert!(outgoing_rx.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn a_pending_unlock_does_not_block_other_requests() {
+    let (connection, incoming_tx, mut outgoing_rx) = connection();
+    let (host, _changes) = StubHost::new();
+    host.hold_unlock.store(true, Ordering::SeqCst);
+    let pairing = store();
+    let (gate_tx, _gate_rx) = mpsc::channel(1);
+    let task = tokio::spawn(serve(
+        connection,
+        pairing.0,
+        Arc::new(GatedFills::new(gate_tx)),
+        Arc::clone(&host),
+    ));
+    authenticate(&incoming_tx, &mut outgoing_rx, &pairing.1).await;
+    let request =
+        |value: serde_json::Value| Zeroizing::new(serde_json::to_vec(&value).expect("json"));
+    incoming_tx
+        .send(request(serde_json::json!({"type":"unlock","id":7})))
+        .await
+        .expect("send");
+    incoming_tx
+        .send(request(serde_json::json!({"type":"status","id":8})))
+        .await
+        .expect("send");
+    // The status answer must not wait for the user to finish unlocking.
+    assert_eq!(next(&mut outgoing_rx).await["id"], 8);
+    host.release_unlock.notify_one();
+    let reply = next(&mut outgoing_rx).await;
+    assert_eq!(reply["id"], 7);
+    assert_eq!(reply["result"]["state"], "unlocked");
+    drop(incoming_tx);
+    task.await.expect("serve ends");
+}
+
+/// Asks the prompt like the real fill does and cancels unless the user picked something.
+struct PromptingFills;
+
+impl FillFlow for PromptingFills {
+    async fn run<P, PFut, T, TFut, A, AFut>(
+        &self,
+        _request: FillRequest,
+        prompt: P,
+        _presence: T,
+        _authorized: A,
+    ) -> Result<Filled, ErrorCode>
+    where
+        P: FnOnce(BrowserPrompt) -> PFut + Send,
+        PFut: Future<Output = BrowserReply> + Send,
+        T: FnOnce() -> TFut + Send,
+        TFut: Future<Output = bool> + Send,
+        A: FnOnce() -> AFut + Send,
+        AFut: Future<Output = bool> + Send,
+    {
+        let asked = prompt(BrowserPrompt::Pair {
+            browser: "Firefox".into(),
+            fingerprint: "x".into(),
+        })
+        .await;
+        match asked {
+            BrowserReply::Fill { .. } => Ok(filled_login(false)),
+            _ => Err(ErrorCode::Cancelled),
+        }
+    }
+}
+
+fn filled_login(remember: bool) -> Filled {
+    Filled {
+        remember,
+        ..Filled::bare(FillResult {
+            username: Some(Zeroizing::new("user".into())),
+            password: Some(Zeroizing::new("secret".into())),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_picker_the_user_walked_away_from_does_not_count_toward_the_cooldown() {
+    let (connection, incoming_tx, mut outgoing_rx) = connection();
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let task = tokio::spawn(serve(
+        connection,
+        pairing.0,
+        Arc::new(PromptingFills),
+        Arc::clone(&host),
+    ));
+    authenticate(&incoming_tx, &mut outgoing_rx, &pairing.1).await;
+    for id in 1..=4 {
+        host.reply(BrowserReply::Abandoned);
+        incoming_tx
+            .send(fill_request(id, "https://example.com"))
+            .await
+            .expect("send");
+        let reply = next(&mut outgoing_rx).await;
+        assert_eq!(
+            reply["error"], "cancelled",
+            "fill {id} is cancelled, not rate limited"
+        );
+    }
+    // Three real dismissals still trigger it.
+    for id in 5..=7 {
+        host.reply(BrowserReply::Dismissed);
+        incoming_tx
+            .send(fill_request(id, "https://example.com"))
+            .await
+            .expect("send");
+        assert_eq!(next(&mut outgoing_rx).await["error"], "cancelled");
+    }
+    incoming_tx
+        .send(fill_request(8, "https://example.com"))
+        .await
+        .expect("send");
+    assert_eq!(next(&mut outgoing_rx).await["error"], "rate_limited");
+    drop(incoming_tx);
+    task.await.expect("serve ends");
 }

@@ -566,7 +566,7 @@ impl<S: VaultService> App<S> {
     /// The user moved to another window: dismiss the picker without pulling the focus back to
     /// the browser, since they chose where it goes.
     fn dismiss_picker_on_focus_loss(&self, id: u64) {
-        self.finish_browser_with(id, BrowserReply::Dismissed, false);
+        self.finish_browser_with(id, BrowserReply::Abandoned, false);
     }
 
     fn finish_browser_with(&self, id: u64, reply: BrowserReply, restore_focus: bool) {

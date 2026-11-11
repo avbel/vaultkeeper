@@ -8,7 +8,7 @@ use vk_ipc::{
     dto::ItemSummaryDto,
 };
 use vk_vault::{
-    BrowserCredentials, BrowserFields, Error, LoginMatch, Vault,
+    BrowserCredentials, BrowserFields, BrowserSnapshot, Error, LoginMatch, Vault,
     model::ItemId,
     uri_match::{DefaultMatch, PageUrl},
 };
@@ -105,9 +105,14 @@ where
         if !authorized().await {
             return Err(ErrorCode::Denied);
         }
-        let revealed = vault
-            .browser_reveal(snapshot, &item, &page, request.default_match, false, fields)
-            .map_err(|error| vault_error(&error))?;
+        let revealed = reveal_retrying(
+            vault,
+            snapshot,
+            &item,
+            &page,
+            (request.default_match, false),
+            fields,
+        )?;
         return Ok(filled(revealed, item, &page, via));
     }
     let reply = tokio::time::timeout(
@@ -147,20 +152,40 @@ where
     {
         return Err(ErrorCode::Denied);
     }
+    let revealed = reveal_retrying(
+        vault,
+        snapshot,
+        &item,
+        &page,
+        (request.default_match, confirmed_other_site),
+        fields,
+    )?;
+    Ok(filled(revealed, item, &page, Via::Picker))
+}
+
+/// Reveals under the snapshot taken before the prompt or Touch ID sheet. A background sync can
+/// move the index while the user is deciding; the user approved this item for this page and
+/// `browser_reveal` rechecks both, so a fresh snapshot of the same session is enough. A different
+/// session stays refused.
+fn reveal_retrying(
+    vault: &Vault,
+    snapshot: BrowserSnapshot,
+    item: &ItemId,
+    page: &PageUrl,
+    (default_match, confirmed_other_site): (DefaultMatch, bool),
+    fields: BrowserFields,
+) -> Result<BrowserCredentials, ErrorCode> {
     let reveal = |snapshot| {
         vault.browser_reveal(
             snapshot,
-            &item,
-            &page,
-            request.default_match,
+            item,
+            page,
+            default_match,
             confirmed_other_site,
             fields,
         )
     };
-    let revealed = match reveal(snapshot) {
-        // A background sync moved the index while the picker was open. The user approved this
-        // item for this page and `browser_reveal` rechecks both, so a fresh snapshot of the
-        // same session is enough; a different session stays refused.
+    match reveal(snapshot) {
         Err(Error::Conflict) => {
             let fresh = vault
                 .browser_snapshot()
@@ -172,8 +197,7 @@ where
         }
         result => result,
     }
-    .map_err(|error| vault_error(&error))?;
-    Ok(filled(revealed, item, &page, Via::Picker))
+    .map_err(|error| vault_error(&error))
 }
 
 /// The login to release without the picker, if any. A remembered approval applies only to an

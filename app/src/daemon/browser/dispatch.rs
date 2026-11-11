@@ -3,14 +3,17 @@
 use std::{
     collections::HashMap,
     future::Future,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use serde::Serialize;
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 use vk_ipc::{
     BrowserPrompt, BrowserReply, TypingTarget,
@@ -35,6 +38,7 @@ use super::{
 
 const UNLOCK_WAIT: Duration = Duration::from_secs(120);
 const MAX_REMEMBERED: usize = 32;
+const MAX_UNLOCKS: usize = 2;
 
 /// The fill flow behind the dispatch seam. The real implementation binds the vault snapshot;
 /// tests substitute a stub to exercise queueing, cancellation and limits without a vault.
@@ -136,6 +140,8 @@ struct Completion {
     origin: String,
     epoch: u64,
     answer: Result<Filled, ErrorCode>,
+    /// The user walked away (the picker lost focus): not a cancel for the cooldown.
+    abandoned: bool,
 }
 
 struct InFlight {
@@ -199,6 +205,9 @@ struct Dispatcher<H, F> {
     limits: Arc<std::sync::Mutex<Limits>>,
     remembered: Remembered,
     inflight: Option<InFlight>,
+    /// `unlock` waits for the user, so it runs beside the request loop; dropping the set on
+    /// disconnect cancels the waits.
+    unlocks: JoinSet<u64>,
     completions: mpsc::Sender<Completion>,
     last_status: (State, Theme),
 }
@@ -259,6 +268,7 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
             items: HashMap::new(),
         },
         inflight: None,
+        unlocks: JoinSet::new(),
         completions,
         last_status: sent,
         host,
@@ -274,7 +284,11 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
                 None => return,
             },
             Some(done) = completed.recv() => dispatcher.complete(done).await,
-            () = dispatcher.fill_ended() => dispatcher.fill_lost(&mut completed).await,
+            () = fill_ended(&mut dispatcher.inflight) => dispatcher.fill_lost(&mut completed).await,
+            Some(unlocked) = dispatcher.unlocks.join_next() => match unlocked {
+                Ok(id) => dispatcher.answer_state(id).await,
+                Err(_) => Ok(()),
+            },
             moved = changes.changed() => match moved {
                 Ok(()) => dispatcher.changed().await,
                 Err(_) => return,
@@ -317,12 +331,15 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
                 self.respond::<()>(id, Err(ErrorCode::RateLimited)).await
             }
             Request::Unlock { .. } => {
-                tokio::select! {
-                    () = self.host.unlock() => {}
-                    () = self.outgoing.closed() => return Err(Closed),
-                    () = tokio::time::sleep(UNLOCK_WAIT) => {}
+                if self.unlocks.len() >= MAX_UNLOCKS {
+                    return self.respond::<()>(id, Err(ErrorCode::Busy)).await;
                 }
-                self.answer_state(id).await
+                let host = Arc::clone(&self.host);
+                self.unlocks.spawn(async move {
+                    let _ = tokio::time::timeout(UNLOCK_WAIT, host.unlock()).await;
+                    id
+                });
+                Ok(())
             }
             Request::OpenApp { view, .. } => {
                 self.host.open_app(view);
@@ -412,16 +429,6 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
         Ok(())
     }
 
-    /// Resolves when the fill task has ended, normally or by panic.
-    async fn fill_ended(&mut self) {
-        match self.inflight.as_mut() {
-            Some(inflight) => {
-                let _ = (&mut inflight.task).await;
-            }
-            None => std::future::pending().await,
-        }
-    }
-
     /// The task ended: its completion, if any, is already queued; otherwise it died without
     /// one and the request would wait for the extension's timeout.
     async fn fill_lost(
@@ -450,6 +457,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             origin,
             epoch,
             answer,
+            abandoned,
         } = done;
         let answer = match answer {
             Ok(filled) => {
@@ -457,7 +465,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
                 Ok(filled.result)
             }
             Err(code) => {
-                if matches!(code, ErrorCode::Cancelled | ErrorCode::Timeout) {
+                if matches!(code, ErrorCode::Cancelled | ErrorCode::Timeout) && !abandoned {
                     self.limit(|limits| limits.cancelled(&origin, Instant::now()));
                 }
                 Err(code)
@@ -565,6 +573,16 @@ fn canonical_origin(origin: &str) -> String {
     )
 }
 
+/// Resolves when the fill task has ended, normally or by panic.
+async fn fill_ended(inflight: &mut Option<InFlight>) {
+    match inflight.as_mut() {
+        Some(inflight) => {
+            let _ = (&mut inflight.task).await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 struct FillTask {
     id: u64,
     /// The origin as the vault and the limiters see it; `origin` is what the extension sent.
@@ -602,8 +620,8 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
     let fills = Arc::clone(fills);
     let host = Arc::clone(host);
     let task = tokio::spawn(async move {
-        let answer = tokio::select! {
-            answer = run_fill(&*fills, &host, FillInput { browser, kind, origin, path, choose, fields, remembered }) => answer,
+        let (answer, abandoned) = tokio::select! {
+            done = run_fill(&*fills, &host, FillInput { browser, kind, origin, path, choose, fields, remembered }) => done,
             _ = cancelled => return,
         };
         let _ = completions
@@ -612,6 +630,7 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
                 origin: key,
                 epoch,
                 answer,
+                abandoned,
             })
             .await;
     });
@@ -637,6 +656,17 @@ async fn run_fill<H: BrowserHost, F: FillFlow>(
     fills: &F,
     host: &Arc<H>,
     input: FillInput,
+) -> (Result<Filled, ErrorCode>, bool) {
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let answer = run_fill_inner(fills, host, input, &abandoned).await;
+    (answer, abandoned.load(Ordering::SeqCst))
+}
+
+async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
+    fills: &F,
+    host: &Arc<H>,
+    input: FillInput,
+    abandoned: &Arc<AtomicBool>,
 ) -> Result<Filled, ErrorCode> {
     let return_to = host.return_to().await;
     let mut input = input;
@@ -675,7 +705,15 @@ async fn run_fill<H: BrowserHost, F: FillFlow>(
                 touch_id,
                 return_to,
             },
-            |prompt| host.prompt(prompt),
+            |prompt| async {
+                match host.prompt(prompt).await {
+                    BrowserReply::Abandoned => {
+                        abandoned.store(true, Ordering::SeqCst);
+                        BrowserReply::Dismissed
+                    }
+                    reply => reply,
+                }
+            },
             || host.presence(&reason),
             || async { host.enabled(kind) },
         )

@@ -30,7 +30,14 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
   address has exactly the same site name under another ICANN public suffix (`PageUrl::site_label`); other names,
   IDN lookalikes, shared-host tenants, IPs and localhost never qualify, and nothing is written without a click.
   The Fill picker also closes on focus loss and suggests logins named after the site when no address matches.
+- Reviewed again by Fable (medium) after the manual run; fixed: silent fills retry after a snapshot conflict, `unlock`
+  runs beside the request loop instead of blocking the connection, and a picker closed by focus loss is not counted
+  as a cancel (`BrowserReply::Abandoned`, protocol 12).
 - Known gaps, none blocking:
+  - The popup, shortcut and context menu start a fill in the top frame only; a login form inside an iframe works from
+    the in-page icon but not from the popup (a fix needs the `webNavigation` permission).
+  - Closing the lock window does not tell the daemon, so an `unlock` request waits out its 120 s.
+  - An address offer that never reached the UI is still marked as asked until the daemon restarts.
   - The save prompt is not placed in the top-right corner of the cursor's screen (needs a new `WindowPlacement`).
   - Whether the real UI process keeps the browser frontmost when the save prompt shows is untested by hand
     (section 8.4); apply the `give_focus_back` fallback if it steals focus.
@@ -172,10 +179,10 @@ is not. The extension is semi-trusted: it is the user's browser, but it may be c
 | Threat | Defence |
 |---|---|
 | Page script reads the vault | Impossible: the page talks to nobody. Only a filled value is visible to the page it was filled in. |
-| Page triggers a fill without the user | Content script accepts only `event.isTrusted` clicks; the first release per origin needs a click in a native window. |
+| Page triggers a fill without the user | Content script accepts only `event.isTrusted` clicks. The first release per origin needs a click in a native window, except the lone-match shortcut below (`browser_fill_single`). |
 | Phishing site with a similar name | Matching is done in the daemon on the URL the *browser* reports, by Bitwarden URI rules. The picker shows the ASCII (punycode) host. Picking a login saved for another site needs an explicit second confirmation. |
 | Clickjacking the in-page icon | A click only opens the native picker. |
-| Compromised extension or renderer asks for other sites | It can only make the native picker appear for that origin, with the browser name and host shown. No list, no search, no silent release. Rate limits and a cooldown stop prompt bombing. |
+| Compromised extension or renderer asks for other sites | It can only make the native picker appear for that origin, with the browser name and host shown. No list, no search, no release for another site. Rate limits and a cooldown stop prompt bombing. **Relaxation (user's choice, setting `browser_fill_single`, default on):** when exactly one login's saved address matches the page by the Domain rule on an https page, it is released on a trusted in-page click with no window and no host shown, and Touch ID still applies when enabled. That includes user-content subdomains outside the private suffix list (a login saved for `example.com` fills on `attacker.example.com`), as Domain matching does for every fill. Turn the setting off to restore the picker. |
 | Local script runs the host binary | D6: parent must be a signed known browser, else `unverified_parent`. Plus D5 pairing. |
 | Fake host placed in the native-messaging manifest (man in the middle) | The real host it would have to start has a non-browser parent → refused. The daemon also re-checks its manifests (section 9). |
 | Another extension talks to ours | No `externally_connectable`, no `onMessageExternal`; `sender.id` is checked. The native manifest allows one extension id. |

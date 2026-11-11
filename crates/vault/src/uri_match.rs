@@ -360,6 +360,8 @@ mod downgrade_tests {
         // (saved address, page, may the page's address be linked to the login)
         for (saved, origin, linked) in [
             ("https://site.com", "https://site.io", true),
+            ("HTTPS://SITE.COM./login", "https://site.io", true),
+            ("https://site.co.uk", "https://site.uk", true),
             ("site.com", "https://login.site.io", true),
             ("https://example.co.uk", "https://example.com", true),
             ("https://2ip.ru/login", "https://2ip.io", true),
