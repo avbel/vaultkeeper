@@ -973,3 +973,32 @@ branded Chrome refuses `--load-extension`; `experiments/browser-spike/chrome-spi
 | Existing manifests on this Mac | `com.8bit.bitwarden.json` in the Chrome, Chromium, Edge and Firefox folders and a Claude one in Chrome and Chromium. Different names from `org.vaultkeeper.browser`, so no clash. |
 | Non-activating Slint window | **Partly verified**, see the end of section 8.4. Daemon-style backend (Accessory, no activation at launch): `show()` leaves the other app frontmost, window visible at level 3. Default backend (activates at launch): `show()` makes the app frontmost. The real UI-process setup (Accessory plus activation at launch) and the hand-back fallback are **untested**: the one attempt ran on a locked Mac. `with_active(false)` in the attributes hook made no difference in either run. First-click behaviour untested. |
 | `psl` | `psl = "2.1"` (tested `=2.1.250`). The list is compiled in; the build needs no network. The private section is included: `alice.github.io` and `bob.github.io` have different registrable domains, `github.io` itself has none, `foo.blogspot.com` is its own domain. IPs and unknown suffixes need handling before calling it (section 6). |
+
+## 15. Firefox end-to-end run (2026-11-11)
+
+`scripts/e2e-browser.sh` runs the real Firefox 159 extension (headless, WebDriver with real trusted input) against a
+real `vaultkeeper --daemon` (`vw-it` debug build, private data dir and keychain prefix) and a disposable Vaultwarden. The
+driver is `browsers/e2e/run.mjs`; `app/examples/e2e_browser_bot.rs` plays the `--ui` process. It needs
+`npm i selenium-webdriver` in a scratch directory (`E2E_DEPS`) and a geckodriver binary (`GECKODRIVER`); it is not part of
+`vp test`. Result: pair (code equal in prompt and popup), fill (picker, remembered), popup "Choose another login…", save
+(new, update, unchanged = no prompt), lock → `UnlockInTray` → picker, removed pairing, daemon killed and restarted, idle
+port over 100 s, host stdout framing: all pass.
+
+Facts learned:
+
+- **Firefox ignores `$HOME` for native-messaging manifests.** `XREUserNativeManifests` is `~/Library/Application
+  Support/Mozilla/NativeMessagingHosts` of the real account. The run overrides the directory-service key from a
+  privileged WebDriver context (`geckodriver --allow-system-access`, `Services.dirsvc.set`), so no real file is touched.
+- Verified: the host's parent is the real Firefox (the verified-parent check is on and the pairing stores
+  `browser: "firefox"`); `runtime.id` read in the popup equals `browser-extension@vaultkeeper`, which is the caller the
+  host signs; the host's stdout holds only framed native messages (a host started from a terminal answers exactly one
+  `unavailable/unverified_parent` frame, 56 bytes, empty stderr); the host's RSS is about 20 MB (debug build).
+- With the daemon down, the host started by Firefox starts `vaultkeeper --tray` itself (observed in the daemon-killed
+  scenario). In a test it must inherit the headless/keychain-prefix overrides, or it would start a real tray app.
+- A temporarily installed add-on (WebDriver) kept its idle native port for 100 s, past the 30 s event-page timer. The
+  remote-debugging caveat of section 14 still applies, so a normally installed add-on is still unverified.
+- The popup page cannot be opened in a tab for testing: the background refuses senders that have a `tab`. The run opens
+  the real toolbar popup instead and reads it through a frame script.
+- A daemon whose data directory was deleted while it runs does not exit on SIGTERM (the single-instance listener thread
+  cannot be woken); harmless in practice.
+- Not logged in `browser.log`: pairings, removals and refused connections (only fills and restored manifests are).

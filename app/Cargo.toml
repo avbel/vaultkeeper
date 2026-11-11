@@ -15,6 +15,11 @@ path = "src/lib.rs"
 name = "vaultkeeper"
 path = "src/main.rs"
 
+[[example]]
+name = "e2e_browser_bot"
+path = "examples/e2e_browser_bot.rs"
+required-features = ["vw-it"]
+
 [features]
 # End-to-end tests against the docker Vaultwarden (scripts/e2e.sh). Also lets a `--daemon` built
 # with it accept the test process as its UI peer and skip the keychain's real item names; release

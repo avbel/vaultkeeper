@@ -115,9 +115,13 @@ mod tests {
             .await
             .expect("connect");
         let hello = br#"{"protocol":1,"caller":{"kind":"firefox","extension_id":"test"},"parent":{"pid":1,"executable":"test","browser":"firefox"}}"#;
-        peer.write_all(&(hello.len() as u32).to_le_bytes())
-            .await
-            .expect("header");
+        peer.write_all(
+            &u32::try_from(hello.len())
+                .expect("short hello")
+                .to_le_bytes(),
+        )
+        .await
+        .expect("header");
         peer.write_all(hello).await.expect("hello");
         let length = peer.read_u32_le().await.expect("welcome header");
         let mut welcome = vec![0; length as usize];

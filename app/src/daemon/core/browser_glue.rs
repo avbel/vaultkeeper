@@ -249,7 +249,10 @@ impl Daemon {
         };
         let reloaded = store.lock().await.reload();
         match reloaded {
-            Ok(()) => self.browser.pairings_changed.notify_one(),
+            Ok(()) => {
+                self.browser.log.record("pairings reloaded");
+                self.browser.pairings_changed.notify_one();
+            }
             Err(error) => tracing::warn!(%error, "cannot reload browser pairings"),
         }
     }
@@ -330,7 +333,9 @@ impl Daemon {
     }
 
     async fn browser_prompt(self: &Arc<Self>, prompt: BrowserPrompt) -> BrowserReply {
-        if matches!(prompt, BrowserPrompt::Pair { .. }) && !self.pair_prompt_allowed() {
+        let is_pair = matches!(prompt, BrowserPrompt::Pair { .. });
+        if is_pair && !self.pair_prompt_allowed() {
+            self.browser.log.record("pairing refused: too many prompts");
             tracing::warn!("too many browser pairing prompts; refused");
             return BrowserReply::Dismissed;
         }
@@ -338,7 +343,16 @@ impl Daemon {
         if !self.send(|seq| DaemonEvent::BrowserPrompt { seq, prompt, reply }) {
             return BrowserReply::Dismissed;
         }
-        answer.await.unwrap_or(BrowserReply::Dismissed)
+        let reply = answer.await.unwrap_or(BrowserReply::Dismissed);
+        if is_pair {
+            let outcome = if matches!(reply, BrowserReply::PairApproved) {
+                "approved"
+            } else {
+                "denied"
+            };
+            self.browser.log.record(&format!("pairing {outcome}"));
+        }
+        reply
     }
 
     /// Touch ID for one fill, one sheet at a time.
