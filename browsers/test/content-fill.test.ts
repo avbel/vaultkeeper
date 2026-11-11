@@ -137,6 +137,18 @@ describe("fill", () => {
     expect(filler.applyResult(result(nonceOf(sent), null, "s3cret")).filled).toBe(0);
   });
 
+  test("a sign-in field already marked new-password at request time is filled", () => {
+    render(
+      `<form id="signin-form"><input id="u" type="text"><input id="p" type="password" autocomplete="new-password"><button type="submit">Sign In</button></form>`,
+    );
+    const sent: ToBackground[] = [];
+    const filler = createFiller({ send: (m) => sent.push(m), isVisible: visible });
+    filler.request(detect()[0]!, false);
+    expect(filler.applyResult(result(nonceOf(sent), "alice", "s3cret")).filled).toBe(2);
+    expect(input("#u").value).toBe("alice");
+    expect(input("#p").value).toBe("s3cret");
+  });
+
   test("username is not written into a password field", () => {
     const { filler, form, sent } = setup();
     form.username!.type = "password";

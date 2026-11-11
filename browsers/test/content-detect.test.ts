@@ -80,7 +80,7 @@ describe("findLoginForms", () => {
 
   test("a step container never swallows a whole page section", () => {
     render(
-      `<section id="page"><input id="a"><input id="b"><input id="c"><input id="d"><div id="step"><input type="email" id="e"></div><button type="button">Send</button></section>`,
+      `<section id="page"><input id="a"><input id="b"><input id="c"><input id="d"><div id="step"><input type="email" id="e" autocomplete="username"></div><button type="button">Send</button></section>`,
     );
     const step = detect().find((f) => f.username === input("#e"));
     expect(step?.container).toBe(document.getElementById("step"));
@@ -110,6 +110,101 @@ describe("findLoginForms", () => {
     const [form] = detect();
     expect(form?.password).toBeUndefined();
     expect(form?.newPasswords).toHaveLength(1);
+  });
+
+  test("lone new-password field in a sign-in form is the current password", () => {
+    render(
+      `<form autocomplete="off" id="x-signin-form">
+        <input id="u" type="text" name="subject" aria-label="Username or email">
+        <input id="p" type="password" autocomplete="new-password" name="password">
+        <button type="button" aria-label="Show password"></button>
+        <button type="submit" id="x-signin-button" disabled>Sign In</button>
+      </form>`,
+    );
+    const [form] = detect();
+    expect(form?.username).toBe(input("#u"));
+    expect(form?.password).toBe(input("#p"));
+    expect(form?.newPasswords).toEqual([]);
+  });
+
+  test("sign-in submit text alone marks a lone new-password field as current", () => {
+    render(
+      `<form><input type="text"><input id="p" type="password" autocomplete="new-password"><button>Log in</button></form>`,
+    );
+    expect(detect()[0]?.password).toBe(input("#p"));
+  });
+
+  test("new-password field in a sign-up form stays new despite a sign-in link", () => {
+    render(
+      `<form id="signup"><input type="text"><input type="password" autocomplete="new-password"><button>Create account</button><a href="/signin">Sign in</a></form>`,
+    );
+    const [form] = detect();
+    expect(form?.password).toBeUndefined();
+    expect(form?.newPasswords).toHaveLength(1);
+  });
+
+  test("placeholder-only identifier step on a login page (Temu)", () => {
+    history.replaceState(null, "", "/login.html");
+    try {
+      render(
+        `<div><input type="text" id="u" placeholder="Email or phone number"><button>Continue</button></div>`,
+      );
+      expect(detect()[0]?.username).toBe(input("#u"));
+    } finally {
+      history.replaceState(null, "", "/");
+    }
+  });
+
+  test("placeholder-only identifier step beside a not-yet-shown password", () => {
+    render(
+      `<form><input type="text" id="u" aria-label="Email or mobile number"><input type="password" style="display: none"><button>Next</button></form>`,
+    );
+    expect(detect()[0]?.username).toBe(input("#u"));
+  });
+
+  test("labelled identifier step with sign-in wording", () => {
+    render(
+      `<form id="signin"><label for="u">Phone or email</label><input type="text" id="u"><button>Continue</button></form>`,
+    );
+    expect(detect()[0]?.username).toBe(input("#u"));
+  });
+
+  test("webauthn autocomplete marks an identifier step", () => {
+    render(
+      `<form><input type="text" id="u" autocomplete="webauthn"><button>Continue</button></form>`,
+    );
+    expect(detect()[0]?.username).toBe(input("#u"));
+  });
+
+  test("a placeholder-only email box without login context is not a step", () => {
+    render(
+      `<footer><input type="text" placeholder="Your email address"><button>Subscribe</button></footer>`,
+    );
+    expect(detect()).toEqual([]);
+  });
+
+  test("a newsletter email box is not a step (xda-developers.com)", () => {
+    render(
+      `<div><input type="email" name="email" placeholder="Email Address"><button>Subscribe</button></div>`,
+    );
+    expect(detect()).toEqual([]);
+  });
+
+  test("a code field between username and password is never the username", () => {
+    render(
+      `<form><input type="text" id="u"><input type="password" id="p"><input type="text" id="c" placeholder="Enter code"></form>
+       <form><input type="text" id="u2" name="login"><input type="text" id="otp" autocomplete="one-time-code"><input type="password"></form>`,
+    );
+    const [first, second] = detect();
+    expect(first?.username).toBe(input("#u"));
+    expect(second?.username).toBe(input("#u2"));
+  });
+
+  test("a search box is not an identifier step", () => {
+    render(
+      `<form><input type="text" name="user_search" placeholder="Search users"><button>Go</button></form>`,
+    );
+    expect(detect()).toEqual([]);
   });
 
   test("hidden password field is ignored", () => {

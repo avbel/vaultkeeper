@@ -205,7 +205,7 @@ describe("capture", () => {
 
   test("multi-step login reuses the username typed on the earlier step", () => {
     start(
-      `<form id="one"><input id="u" name="email" type="email"><button type="submit">Next</button></form>`,
+      `<form id="one"><input id="u" name="email" type="email" autocomplete="username"><button type="submit">Next</button></form>`,
     );
     typeInto(input("#u"), "alice@example.com");
     submit("#one");

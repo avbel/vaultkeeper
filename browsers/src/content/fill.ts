@@ -34,6 +34,13 @@ interface Pending {
   createdAt: number;
   username?: HTMLInputElement;
   password?: HTMLInputElement;
+  // Detection already accepted a sign-in field tagged new-password; only a token added later
+  // means the page turned the field into a new-password one.
+  passwordWasNew: boolean;
+}
+
+function isNewPassword(el: HTMLInputElement): boolean {
+  return autocompleteTokens(el).has("new-password");
 }
 
 function randomNonce(): string {
@@ -96,7 +103,12 @@ export function createFiller(deps: FillDeps): Filler {
       if (!fields.username && !fields.password) {
         return false;
       }
-      const created: Pending = { nonce: randomNonce(), origin: origin(), createdAt: now() };
+      const created: Pending = {
+        nonce: randomNonce(),
+        origin: origin(),
+        createdAt: now(),
+        passwordWasNew: form.password ? isNewPassword(form.password) : false,
+      };
       if (form.username) {
         created.username = form.username;
       }
@@ -117,7 +129,7 @@ export function createFiller(deps: FillDeps): Filler {
       const password =
         p.password &&
         isPasswordField(p.password) &&
-        !autocompleteTokens(p.password).has("new-password")
+        (p.passwordWasNew || !isNewPassword(p.password))
           ? p.password
           : undefined;
       const filled = write(username, message.username) + write(password, message.password);
