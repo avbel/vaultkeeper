@@ -48,6 +48,17 @@ Add-on → `dist/firefox/manifest.json`.
 The app side must be set up first: enable browser integration in Vaultkeeper settings so the native messaging manifest for
 the browser is installed.
 
+## Release packages
+
+```sh
+pnpm run package   # minified build, then release/vaultkeeper-chrome-<version>.zip and vaultkeeper-firefox-<version>.zip
+```
+
+`release/` is ignored by git. `pnpm run build` afterwards restores the readable development build in `dist/`.
+The Chrome zip keeps the manifest `key`, so a build loaded from it has the same extension id the app's connection file
+allows. The Firefox zip is unsigned: a release Firefox installs only a signed add-on, so sign it (see below) before
+handing it to anyone; the zip alone loads only as a temporary add-on.
+
 ## Sign (Firefox)
 
 ```sh

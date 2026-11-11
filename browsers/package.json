@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "package": "RELEASE=1 node scripts/build.mjs && web-ext build --source-dir dist/chrome --artifacts-dir release --filename \"vaultkeeper-chrome-{version}.zip\" --overwrite-dest && web-ext build --source-dir dist/firefox --artifacts-dir release --filename \"vaultkeeper-firefox-{version}.zip\" --overwrite-dest",
     "gen-theme": "node scripts/gen-theme.mjs",
     "check": "vp check",
     "test": "vp test",

@@ -5,6 +5,8 @@ import { build } from "vite-plus";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGETS = ["chrome", "firefox"];
+// RELEASE=1 minifies the bundles for the packages in release/; development builds stay readable.
+const MINIFY = process.env.RELEASE === "1";
 
 // Content scripts are classic scripts (IIFE); the background and popup are ES modules.
 const ENTRIES = [
@@ -32,7 +34,7 @@ async function bundle(outDir, spec) {
     build: {
       outDir,
       emptyOutDir: false,
-      minify: false,
+      minify: MINIFY,
       sourcemap: false,
       target: "es2023",
       lib: {
