@@ -25,6 +25,11 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
 - Changed after the manual run: a lone match on an https page is filled without the picker (setting `browser_fill_single`,
   default on; a deliberate relaxation of D3's "first release needs a click", still gated by the in-page user gesture and by
   Touch ID when that is on), and Touch ID now applies to remembered and single-match fills too.
+- Also added after the manual run: after a confirmed "Fill anyway" the daemon offers to add this site's address to the
+  login (`app/src/daemon/browser/address.rs`, `BrowserPrompt::AddAddress`, protocol 11). It is offered only when a saved
+  address has exactly the same site name under another ICANN public suffix (`PageUrl::site_label`); other names,
+  IDN lookalikes, shared-host tenants, IPs and localhost never qualify, and nothing is written without a click.
+  The Fill picker also closes on focus loss and suggests logins named after the site when no address matches.
 - Known gaps, none blocking:
   - The save prompt is not placed in the top-right corner of the cursor's screen (needs a new `WindowPlacement`).
   - Whether the real UI process keeps the browser frontmost when the save prompt shows is untested by hand
