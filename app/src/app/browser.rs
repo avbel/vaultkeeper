@@ -6,7 +6,10 @@ use std::{
     time::Duration,
 };
 
-use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{
+    ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel,
+    winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent},
+};
 use tokio::sync::oneshot;
 use vk_ipc::{BrowserPrompt, BrowserReply};
 use vk_vault::{
@@ -165,6 +168,7 @@ impl<S: VaultService> App<S> {
         window.on_submit_password(handler!(self, |app, password| app
             .verify_browser_password(id, Zeroizing::new(password.to_string()))));
         window.on_dismiss(handler!(self, |app| app.finish_browser(id, BrowserReply::Dismissed)));
+        self.dismiss_on_focus_loss(&window, id);
         let timer = Timer::default();
         timer.start(
             TimerMode::SingleShot,
@@ -521,6 +525,16 @@ impl<S: VaultService> App<S> {
     }
 
     fn finish_browser(&self, id: u64, reply: BrowserReply) {
+        self.finish_browser_with(id, reply, true);
+    }
+
+    /// The user moved to another window: dismiss the picker without pulling the focus back to
+    /// the browser, since they chose where it goes.
+    fn dismiss_picker_on_focus_loss(&self, id: u64) {
+        self.finish_browser_with(id, BrowserReply::Dismissed, false);
+    }
+
+    fn finish_browser_with(&self, id: u64, reply: BrowserReply, restore_focus: bool) {
         let request = {
             let mut queue = self.browser.borrow_mut();
             if queue.current.as_ref().is_none_or(|item| item.id != id) {
@@ -561,11 +575,39 @@ impl<S: VaultService> App<S> {
             self.window_closed();
         }
         self.show_next_browser_prompt();
-        if self.browser.borrow().current.is_none()
+        if restore_focus
+            && self.browser.borrow().current.is_none()
             && let Some(target) = return_to
         {
             self.hooks.autotype.give_focus_back(&target);
         }
+    }
+
+    /// Closes the picker when its window is deactivated, for example by a click in the page.
+    /// Only a loss after the window had focus counts: showing it can move focus around first.
+    fn dismiss_on_focus_loss(&self, window: &BrowserPicker, id: u64) {
+        let app = std::rc::Weak::clone(&self.me);
+        let mut focused = false;
+        window
+            .window()
+            .on_winit_window_event(move |_, event| match event {
+                WindowEvent::Focused(true) => {
+                    focused = true;
+                    EventResult::Propagate
+                }
+                WindowEvent::Focused(false) if focused => {
+                    focused = false;
+                    let app = std::rc::Weak::clone(&app);
+                    // Not from inside the window's own event: the window is dropped on close.
+                    Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(app) = app.upgrade() {
+                            app.dismiss_picker_on_focus_loss(id);
+                        }
+                    });
+                    EventResult::Propagate
+                }
+                _ => EventResult::Propagate,
+            });
     }
 
     pub(super) fn deny_all_browser(&self) {
