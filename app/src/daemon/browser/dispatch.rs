@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 
 use super::{
     auth::authenticate,
-    fill::{self, FillRequest, Filled},
+    fill::{self, FillRequest, Filled, Via},
     limits::Limits,
     pairing::PairingStore,
     request,
@@ -84,7 +84,7 @@ pub struct FillRecord {
     pub browser: String,
     pub host: String,
     pub item: ItemId,
-    pub from_memory: bool,
+    pub via: Via,
     pub has_totp: bool,
 }
 
@@ -103,6 +103,7 @@ pub trait BrowserHost: Send + Sync {
     fn limits(&self, key: &[u8; 65]) -> Arc<std::sync::Mutex<Limits>>;
     fn default_match(&self) -> DefaultMatch;
     fn browser_touch_id(&self) -> bool;
+    fn browser_fill_single(&self) -> bool;
     /// Integration and the per-request permission must still hold right now.
     fn enabled(&self, browser: KnownBrowser) -> bool;
     /// Changes whenever remembered approvals must be forgotten: lock, logout, account switch,
@@ -474,7 +475,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             browser: self.browser.to_owned(),
             host: filled.host.clone(),
             item: filled.item.clone(),
-            from_memory: filled.from_memory,
+            via: filled.via,
             has_totp: filled.has_totp,
         });
     }
@@ -655,12 +656,14 @@ async fn run_fill<H: BrowserHost, F: FillFlow>(
         remembered,
     } = input;
     let touch_id = host.browser_touch_id();
+    let fill_single = host.browser_fill_single();
     let reason = format!("fill a login in {browser}");
     fills
         .run(
             FillRequest {
                 browser: browser.to_owned(),
                 choose,
+                fill_single,
                 remembered,
                 origin,
                 path,

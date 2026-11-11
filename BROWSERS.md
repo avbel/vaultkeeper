@@ -22,6 +22,9 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
   reconnect or `HTTPS://Host:443` does not reset them; pairing windows are limited to 3/min; unknown requests get
   an error reply; a panicking fill answers `internal`; a background sync during the picker no longer yields
   `denied`; a trailing dot no longer turns a real domain into an intranet name.
+- Changed after the manual run: a lone match on an https page is filled without the picker (setting `browser_fill_single`,
+  default on; a deliberate relaxation of D3's "first release needs a click", still gated by the in-page user gesture and by
+  Touch ID when that is on), and Touch ID now applies to remembered and single-match fills too.
 - Known gaps, none blocking:
   - The save prompt is not placed in the top-right corner of the cursor's screen (needs a new `WindowPlacement`).
   - Whether the real UI process keeps the browser frontmost when the save prompt shows is untested by hand

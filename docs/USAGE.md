@@ -177,6 +177,7 @@ decision and every prompt are in Vaultkeeper's own windows.
    then click *Connect*. *Deny* is the default; Return does not approve.
 3. **Fill:** click the Vaultkeeper icon in a login field, press ⌘⇧L, or use the popup's *Fill this
    page*. A native window lists the logins saved for the site; pick one with the arrows and Return.
+   When only one login matches the site it is filled at once, with no window (see the setting below).
    Later fills of the same site in the same browser session need no window until the vault locks, the
    Mac sleeps or the screen locks. *Choose another login…* in the popup always shows the window.
    Picking a login saved for a different site asks for a second confirmation (the default is *Cancel*).
@@ -187,7 +188,8 @@ decision and every prompt are in Vaultkeeper's own windows.
    so answer it with the mouse. It also times out after 30 s (*Not now*). *Never for this site*
    stops the offers for that site. Nothing is offered in private windows, on unencrypted sites other
    than local ones, or when the stored password is already the same.
-6. **Settings:** *Require Touch ID to fill*, *Offer to save logins*, *Copy TOTP code after filling*
+6. **Settings:** *Require Touch ID to fill* (asked for every fill, including remembered ones and single matches), *Fill at once when only one login matches* (on by default: with exactly one saved login for an encrypted page, no picker is shown; sites with several matches, `http` pages and re-prompt items still show it),
+   *Offer to save logins*, *Copy TOTP code after filling*
    (the code goes to the clipboard and is cleared like other copies) and *Match sites by* (*Domain*
    or *Exact host*, for saved addresses without their own rule; a saved address's own match
    rule from the Bitwarden web vault always wins). *Paired browsers* lists each connection with its

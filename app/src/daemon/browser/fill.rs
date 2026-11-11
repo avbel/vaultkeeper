@@ -15,9 +15,19 @@ use vk_vault::{
 
 use super::validation;
 
+/// How the credential was released, for the activity log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    Picker,
+    Remembered,
+    /// The only login matching the site, released without the picker.
+    Single,
+}
+
 pub struct FillRequest {
     pub browser: String,
     pub choose: bool,
+    pub fill_single: bool,
     /// The item approved earlier on this connection for this origin, if any.
     pub remembered: Option<ItemId>,
     pub origin: String,
@@ -34,7 +44,7 @@ pub struct Filled {
     pub host: String,
     /// The caller may remember `origin -> item` for this connection.
     pub remember: bool,
-    pub from_memory: bool,
+    pub via: Via,
     pub has_totp: bool,
 }
 
@@ -47,7 +57,7 @@ impl Filled {
             item: ItemId("item".into()),
             host: "example.com".into(),
             remember: false,
-            from_memory: false,
+            via: Via::Picker,
             has_totp: false,
         }
     }
@@ -83,11 +93,18 @@ where
         username: request.fields.username,
         password: request.fields.password,
     };
-    if let Some(item) = remembered_item(&request, &matches) {
+    if let Some((item, via)) = silent_item(&request, &page, &matches) {
+        // Skipping the picker never skips Touch ID: the setting means every fill.
+        if request.touch_id && !presence().await {
+            return Err(ErrorCode::Denied);
+        }
+        if !authorized().await {
+            return Err(ErrorCode::Denied);
+        }
         let revealed = vault
             .browser_reveal(snapshot, &item, &page, request.default_match, false, fields)
             .map_err(|error| vault_error(&error))?;
-        return Ok(filled(revealed, item, &page, true));
+        return Ok(filled(revealed, item, &page, via));
     }
     let reply = tokio::time::timeout(
         Duration::from_secs(90),
@@ -152,23 +169,36 @@ where
         result => result,
     }
     .map_err(|error| vault_error(&error))?;
-    Ok(filled(revealed, item, &page, false))
+    Ok(filled(revealed, item, &page, Via::Picker))
 }
 
-/// A remembered approval applies only to an item that still matches the page and needs no
-/// master-password re-prompt; `choose` always shows the picker.
-fn remembered_item(request: &FillRequest, matches: &[LoginMatch]) -> Option<ItemId> {
+/// The login to release without the picker, if any. A remembered approval applies only to an
+/// item that still matches the page and needs no master-password re-prompt; a single match is
+/// released at once only on an encrypted page. `choose` always shows the picker.
+fn silent_item(
+    request: &FillRequest,
+    page: &PageUrl,
+    matches: &[LoginMatch],
+) -> Option<(ItemId, Via)> {
     if request.choose {
         return None;
     }
-    let item = request.remembered.as_ref()?;
-    matches
-        .iter()
-        .any(|found| found.summary.id == *item && !found.summary.reprompt)
-        .then(|| item.clone())
+    if let Some(item) = &request.remembered
+        && matches
+            .iter()
+            .any(|found| found.summary.id == *item && !found.summary.reprompt)
+    {
+        return Some((item.clone(), Via::Remembered));
+    }
+    match matches {
+        [only] if request.fill_single && page.is_https() && !only.summary.reprompt => {
+            Some((only.summary.id.clone(), Via::Single))
+        }
+        _ => None,
+    }
 }
 
-fn filled(revealed: BrowserCredentials, item: ItemId, page: &PageUrl, from_memory: bool) -> Filled {
+fn filled(revealed: BrowserCredentials, item: ItemId, page: &PageUrl, via: Via) -> Filled {
     Filled {
         remember: revealed.matched && !revealed.reprompt,
         has_totp: revealed.has_totp,
@@ -178,7 +208,7 @@ fn filled(revealed: BrowserCredentials, item: ItemId, page: &PageUrl, from_memor
         },
         item,
         host: page.host_ascii().to_owned(),
-        from_memory,
+        via,
     }
 }
 
@@ -202,6 +232,7 @@ mod tests {
         FillRequest {
             browser: "Firefox".into(),
             choose: false,
+            fill_single: false,
             remembered: None,
             origin: origin.into(),
             path: "/".into(),
@@ -245,5 +276,65 @@ mod tests {
             };
             assert_eq!(serde_json::to_value(error).expect("serialize"), expected);
         }
+    }
+
+    fn login(id: &str, reprompt: bool) -> LoginMatch {
+        LoginMatch {
+            summary: vk_vault::model::ItemSummary {
+                id: ItemId(id.into()),
+                kind: vk_vault::model::ItemKind::Login,
+                name: id.into(),
+                subtitle: String::new().into(),
+                favorite: false,
+                folder_id: None,
+                organization_id: None,
+                primary_uri: None,
+                has_password: true,
+                has_totp: false,
+                reprompt,
+                deleted: false,
+                editable: true,
+            },
+            matched_uri: "https://example.com".into(),
+        }
+    }
+
+    fn single_request(choose: bool, remembered: Option<&str>) -> FillRequest {
+        FillRequest {
+            choose,
+            fill_single: true,
+            remembered: remembered.map(|id| ItemId(id.into())),
+            ..request("https://example.com")
+        }
+    }
+
+    #[test]
+    fn a_lone_match_skips_the_picker_only_when_it_is_safe_to() {
+        let https = validation::page("https://example.com", "/").expect("page");
+        let http = validation::page("http://localhost:3000", "/").expect("page");
+        let one = [login("a", false)];
+        let two = [login("a", false), login("b", false)];
+
+        let picked = silent_item(&single_request(false, None), &https, &one);
+        assert!(matches!(picked, Some((item, Via::Single)) if item.0.as_ref() == "a"));
+        assert!(silent_item(&single_request(false, None), &https, &two).is_none());
+        assert!(silent_item(&single_request(false, None), &http, &one).is_none());
+        assert!(silent_item(&single_request(false, None), &https, &[login("a", true)]).is_none());
+        assert!(silent_item(&single_request(true, None), &https, &one).is_none());
+        let off = FillRequest {
+            fill_single: false,
+            ..single_request(false, None)
+        };
+        assert!(silent_item(&off, &https, &one).is_none());
+    }
+
+    #[test]
+    fn a_remembered_item_wins_and_a_reprompt_item_is_never_remembered() {
+        let https = validation::page("https://example.com", "/").expect("page");
+        let two = [login("a", false), login("b", false)];
+        let picked = silent_item(&single_request(false, Some("b")), &https, &two);
+        assert!(matches!(picked, Some((item, Via::Remembered)) if item.0.as_ref() == "b"));
+        let reprompt = [login("a", false), login("b", true)];
+        assert!(silent_item(&single_request(false, Some("b")), &https, &reprompt).is_none());
     }
 }

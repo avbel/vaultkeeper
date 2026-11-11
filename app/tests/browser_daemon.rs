@@ -335,6 +335,30 @@ fn locking_forgets_remembered_approvals() {
 }
 
 #[test]
+fn a_single_matching_login_is_filled_without_the_picker_only_when_enabled() {
+    run(async {
+        let settings = Settings {
+            browser_fill_single: true,
+            ..integration_on()
+        };
+        let mut rig = Rig::start_with(&settings, &items()).await;
+        let mut host = rig.open(&Extension::chrome(15)).await;
+        // One login matches the bank: released at once, no window.
+        let id = host.submit_fill("https://bank.example.org", false).await;
+        let reply = host.response(id).await;
+        assert_eq!(credentials(&reply), (Some("carol"), Some("carol-pw")));
+        rig.ui.no_prompt().await;
+        // Two logins match GitHub, so the user still chooses.
+        let id = host.submit_fill(GITHUB, false).await;
+        let asked = rig.ui.prompt().await;
+        assert!(matches!(asked.prompt, BrowserPrompt::Fill { .. }));
+        asked.answer(BrowserReply::Dismissed);
+        assert_failure(&host.response(id).await, "cancelled");
+        rig.shutdown().await;
+    });
+}
+
+#[test]
 fn twenty_fills_a_minute_and_then_rate_limited() {
     run(async {
         let mut rig = Rig::start().await;

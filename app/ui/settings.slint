@@ -70,6 +70,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> browser-touch-id;
     in-out property <bool> browser-save-prompts;
     in-out property <bool> browser-copy-totp;
+    in-out property <bool> browser-fill-single;
     in-out property <int> browser-match-index;
     in property <[PairedBrowserRow]> paired-browsers;
     in property <string> error-text;
@@ -96,6 +97,7 @@ export component SettingsWindow inherits Window {
     callback browser-touch-id-toggled(bool);
     callback browser-save-prompts-toggled(bool);
     callback browser-copy-totp-toggled(bool);
+    callback browser-fill-single-toggled(bool);
     callback browser-match-selected(int);
     callback paired-browser-removed(string);
     // Both save paths validate and save an accelerator; an empty one clears the Generator's.
@@ -320,6 +322,12 @@ export component SettingsWindow inherits Window {
                 }
                 Toggle { text: "Offer to save logins"; checked <=> root.browser-save-prompts; toggled(v) => { root.browser-save-prompts-toggled(v); } }
                 Toggle { text: "Copy TOTP code after filling"; checked <=> root.browser-copy-totp; toggled(v) => { root.browser-copy-totp-toggled(v); } }
+                Toggle {
+                    text: "Fill at once when only one login matches";
+                    description: "Skips the picker when a single saved login matches the site. Touch ID still applies.";
+                    checked <=> root.browser-fill-single;
+                    toggled(v) => { root.browser-fill-single-toggled(v); }
+                }
                 SettingRow {
                     text: "Match sites by";
                     Segmented {

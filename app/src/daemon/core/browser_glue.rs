@@ -25,6 +25,7 @@ use crate::{
         activity::ActivityLog,
         control::BrowserControl,
         dispatch::{BrowserHost, Candidate, FillRecord, RealFills, serve},
+        fill::Via,
         limits::Limits,
         manifests::{self, ExtensionIds, ManifestBrowser, Outcome},
         pairing::PairingStore,
@@ -408,10 +409,10 @@ impl Daemon {
             record.browser,
             record.host,
             record.item.0,
-            if record.from_memory {
-                "remembered"
-            } else {
-                "picker"
+            match record.via {
+                Via::Picker => "picker",
+                Via::Remembered => "remembered",
+                Via::Single => "single",
             },
         ));
         let settings = self.settings();
@@ -504,6 +505,10 @@ impl BrowserHost for DaemonBrowser {
 
     fn browser_touch_id(&self) -> bool {
         self.0.settings().browser_touch_id
+    }
+
+    fn browser_fill_single(&self) -> bool {
+        self.0.settings().browser_fill_single
     }
 
     fn enabled(&self, browser: KnownBrowser) -> bool {

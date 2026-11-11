@@ -57,6 +57,7 @@ impl<S: VaultService> App<S> {
         window.set_browser_touch_id(settings.browser_touch_id);
         window.set_browser_save_prompts(settings.browser_save_prompts);
         window.set_browser_copy_totp(settings.browser_copy_totp);
+        window.set_browser_fill_single(settings.browser_fill_single);
         window.set_browser_match_index(match_index(settings.browser_default_match));
         self.show_paired_browsers(window);
     }
@@ -97,6 +98,9 @@ impl<S: VaultService> App<S> {
         }));
         window.on_browser_copy_totp_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.browser_copy_totp = enabled);
+        }));
+        window.on_browser_fill_single_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.browser_fill_single = enabled);
         }));
         window.on_browser_match_selected(handler!(self, |app, index| {
             app.update_settings(|settings| settings.browser_default_match = match_mode(index));

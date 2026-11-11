@@ -38,6 +38,7 @@ fn the_browsers_section_writes_every_setting() {
     click(&window, "Require Touch ID to fill");
     click(&window, "Offer to save logins");
     click(&window, "Copy TOTP code after filling");
+    click(&window, "Fill at once when only one login matches");
     window.invoke_browser_match_selected(1);
     let settings = saved(&h);
     assert!(!settings.browser_firefox);
@@ -45,6 +46,7 @@ fn the_browsers_section_writes_every_setting() {
     assert!(settings.browser_touch_id);
     assert!(!settings.browser_save_prompts);
     assert!(!settings.browser_copy_totp);
+    assert!(!settings.browser_fill_single);
     assert_eq!(settings.browser_default_match, BrowserMatch::Host);
 }
 

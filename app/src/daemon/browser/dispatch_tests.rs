@@ -105,6 +105,9 @@ impl BrowserHost for StubHost {
     fn default_match(&self) -> vk_vault::uri_match::DefaultMatch {
         vk_vault::uri_match::DefaultMatch::Domain
     }
+    fn browser_fill_single(&self) -> bool {
+        false
+    }
     fn browser_touch_id(&self) -> bool {
         false
     }

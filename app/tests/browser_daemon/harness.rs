@@ -129,9 +129,12 @@ pub fn write_settings(dir: &DataDir, settings: &Settings) {
     SettingsFile::write(&dir.path().join(SETTINGS_FILE), settings).unwrap();
 }
 
+/// The single-match shortcut is off here so the picker tests keep their prompts; one test turns
+/// it on.
 pub fn integration_on() -> Settings {
     Settings {
         browser_integration: true,
+        browser_fill_single: false,
         ..Settings::default()
     }
 }

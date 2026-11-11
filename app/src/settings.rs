@@ -138,6 +138,8 @@ pub struct Settings {
     pub browser_touch_id: bool,
     pub browser_save_prompts: bool,
     pub browser_copy_totp: bool,
+    /// Fill without the picker when exactly one login matches the site (Touch ID still applies).
+    pub browser_fill_single: bool,
     pub browser_default_match: BrowserMatch,
     pub hotkey: String,
     /// Opens the Generator window from anywhere; empty means no shortcut.
@@ -173,6 +175,7 @@ impl Default for Settings {
             browser_touch_id: false,
             browser_save_prompts: true,
             browser_copy_totp: true,
+            browser_fill_single: true,
             browser_default_match: BrowserMatch::Domain,
             hotkey: "Cmd+Shift+Space".to_owned(),
             generator_hotkey: String::new(),
@@ -434,6 +437,7 @@ mod tests {
         assert!(!old.browser_touch_id);
         assert!(old.browser_save_prompts);
         assert!(old.browser_copy_totp);
+        assert!(old.browser_fill_single);
         assert_eq!(old.browser_default_match, BrowserMatch::Domain);
         let settings = Settings {
             browser_integration: true,
@@ -568,6 +572,7 @@ mod tests {
             browser_touch_id: true,
             browser_save_prompts: false,
             browser_copy_totp: false,
+            browser_fill_single: false,
             browser_default_match: BrowserMatch::Host,
             hotkey: "Cmd+Alt+K".to_owned(),
             generator_hotkey: "Cmd+Alt+G".to_owned(),
