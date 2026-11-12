@@ -243,8 +243,8 @@ window at launch.
 
 Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *Dark*. Text size is there too.
 
-**Show site icons** (Appearance, on by default) puts each login's website icon in place of its type glyph. The
-icons come from your server's `/icons/<host>/icon.png`, as in the official clients, so the server learns which sites
+**Show site icons** (Appearance, on by default) puts each login's website icon in place of its type glyph, in the
+lists and in the browser's *Fill login* picker; a site without an icon keeps the glyph. The icons come from your server's `/icons/<host>/icon.png`, as in the official clients, so the server learns which sites
 you have logins for. A server set up with an external icon service (Vaultwarden's `ICON_SERVICE`) redirects there,
 so that service learns the site names too; only https redirects to public hosts are followed, with no `Referer`.
 Switch the setting off to keep your sites to yourself. Icons load only for the rows on screen, after scrolling or

@@ -15,14 +15,20 @@ use std::{
 use common::{Setup, click, elapse, harness, pump, set_size, type_into};
 use image::{ImageFormat, Rgba, RgbaImage};
 use slint::{ComponentHandle, Model};
+use tokio::sync::oneshot;
 use vaultkeeper::{
+    app::BrowserPromptRequest,
     hooks::{IconLookup, SiteIcon, SiteIconSource},
     rows::RowsModel,
     settings::Settings,
     site_icon::icon_host,
     ui::{ManagerWindow, Theme},
 };
-use vk_vault::model::ItemKind;
+use vk_ipc::{BrowserPrompt, dto::ItemSummaryDto};
+use vk_vault::{
+    VaultService,
+    model::{Filter, ItemKind},
+};
 
 const SETTLE: Duration = Duration::from_millis(200);
 
@@ -240,4 +246,70 @@ fn hosts_that_were_unavailable_are_asked_again_at_the_next_settle() {
         "every unavailable host is retried: {again:?}"
     );
     assert!(icons_shown(&manager) > 0);
+}
+
+fn open_picker(h: &common::Harness, query: &str, host: &str) -> vaultkeeper::ui::BrowserPicker {
+    let matches = h
+        .vault
+        .search(query, &Filter::default())
+        .expect("search")
+        .iter()
+        .filter(|item| item.kind == ItemKind::Login)
+        .map(ItemSummaryDto::from)
+        .collect();
+    let (reply, _answer) = oneshot::channel();
+    h.app.request_browser_prompt(BrowserPromptRequest {
+        prompt: BrowserPrompt::Fill {
+            browser: "Firefox".into(),
+            host: host.into(),
+            insecure: false,
+            matches,
+            touch_id: false,
+            return_to: None,
+        },
+        reply,
+    });
+    h.app.browser_picker().expect("picker")
+}
+
+fn picker_icons(picker: &vaultkeeper::ui::BrowserPicker) -> usize {
+    let rows = picker.get_rows();
+    (0..rows.row_count())
+        .filter_map(|row| rows.row_data(row))
+        .filter(|row| row.icon.size().width > 0)
+        .count()
+}
+
+#[test]
+fn the_fill_picker_shows_its_logins_icons() {
+    let (h, _manager, icons) = open();
+    let picker = open_picker(&h, "github", "github.com");
+    assert_eq!(picker_icons(&picker), 0, "login chips until loaded");
+    elapse(SETTLE);
+    assert!(icons.requested().contains(&"github.com".to_owned()));
+    assert!(
+        picker_icons(&picker) > 0,
+        "requested {:?}",
+        icons.requested()
+    );
+
+    type_into(&picker, "Search vault", "git");
+    elapse(SETTLE);
+    assert!(
+        picker_icons(&picker) > 0,
+        "search results keep loaded icons"
+    );
+}
+
+#[test]
+fn the_fill_picker_requests_nothing_while_icons_are_off() {
+    let settings = Settings {
+        show_site_icons: false,
+        ..Settings::default()
+    };
+    let (h, _manager, icons) = open_with(settings, FakeIcons::default());
+    let picker = open_picker(&h, "github", "github.com");
+    elapse(SETTLE);
+    assert_eq!(icons.requested(), Vec::<String>::new());
+    assert!(!picker.global::<Theme>().get_site_icons(), "login chips");
 }

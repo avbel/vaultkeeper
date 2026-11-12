@@ -2,12 +2,13 @@
 
 use std::{
     collections::{HashSet, VecDeque},
+    ops::Range,
     sync::Arc,
     time::Duration,
 };
 
 use slint::{
-    ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel,
+    ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel,
     winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent},
 };
 use tokio::sync::oneshot;
@@ -19,7 +20,10 @@ use vk_vault::{
 use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};
-use crate::ui::{BrowserPairPrompt, BrowserPicker, BrowserPickerRow, BrowserSavePrompt};
+use crate::{
+    rows::item_host,
+    ui::{BrowserPairPrompt, BrowserPicker, BrowserPickerRow, BrowserSavePrompt},
+};
 
 #[derive(Debug)]
 pub struct BrowserPromptRequest {
@@ -171,6 +175,7 @@ impl<S: VaultService> App<S> {
         window.on_submit_password(handler!(self, |app, password| app
             .verify_browser_password(id, Zeroizing::new(password.to_string()))));
         window.on_dismiss(handler!(self, |app| app.finish_browser(id, BrowserReply::Dismissed)));
+        window.on_visible_range_changed(handler!(self, |app| app.schedule_site_icons()));
         self.dismiss_on_focus_loss(&window, id);
         let timer = Timer::default();
         timer.start(
@@ -200,6 +205,7 @@ impl<S: VaultService> App<S> {
 
     fn render_browser_rows(&self, window: &BrowserPicker) {
         let queue = self.browser.borrow();
+        let icons = &self.site_icons.cache;
         let rows: Vec<_> = queue
             .rows
             .iter()
@@ -207,10 +213,63 @@ impl<S: VaultService> App<S> {
                 name: item.name.as_ref().into(),
                 username: item.subtitle.as_ref().into(),
                 other_site: !queue.matched.contains(&item.id.0),
+                icon: item_host(item)
+                    .and_then(|host| icons.image(&host))
+                    .unwrap_or_default(),
             })
             .collect();
+        drop(queue);
         window.set_rows(ModelRc::new(VecModel::from(rows)));
         window.set_selected(0);
+        self.schedule_site_icons();
+    }
+
+    /// Distinct icon hosts of the picker's rows on screen, top first.
+    pub(super) fn browser_icon_hosts(&self) -> Vec<Arc<str>> {
+        let Some(range) = self.browser_icon_range() else {
+            return Vec::new();
+        };
+        let queue = self.browser.borrow();
+        let end = range.end.min(queue.rows.len());
+        let mut hosts: Vec<Arc<str>> = Vec::new();
+        for host in queue.rows[range.start.min(end)..end]
+            .iter()
+            .filter_map(item_host)
+        {
+            if !hosts.iter().any(|known| known.as_ref() == host) {
+                hosts.push(Arc::from(host));
+            }
+        }
+        hosts
+    }
+
+    fn browser_icon_range(&self) -> Option<Range<usize>> {
+        self.browser_picker.borrow().as_ref().map(|window| {
+            let first = usize::try_from(window.get_first_visible()).unwrap_or(0);
+            let count = usize::try_from(window.get_visible_count()).unwrap_or(0);
+            first..first + count
+        })
+    }
+
+    /// Shows `host`'s freshly loaded icon on the picker's rows of that site.
+    pub(super) fn browser_icon_loaded(&self, host: &str) {
+        let Some(image) = self.site_icons.cache.image(host) else {
+            return;
+        };
+        let picker = self.browser_picker.borrow();
+        let Some(window) = picker.as_ref() else {
+            return;
+        };
+        let model = window.get_rows();
+        let queue = self.browser.borrow();
+        for (row, item) in queue.rows.iter().enumerate() {
+            if item_host(item).is_some_and(|known| known == host)
+                && let Some(mut data) = model.row_data(row)
+            {
+                data.icon = image.clone();
+                model.set_row_data(row, data);
+            }
+        }
     }
 
     fn search_browser(&self, id: u64, query: &str) {

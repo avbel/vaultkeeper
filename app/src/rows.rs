@@ -175,7 +175,7 @@ impl Model for RowsModel {
 }
 
 /// Only logins show a site icon, as in the official clients.
-fn item_host(item: &ItemSummary) -> Option<String> {
+pub(crate) fn item_host(item: &ItemSummary) -> Option<String> {
     (item.kind == ItemKind::Login)
         .then_some(item.primary_uri.as_deref())
         .flatten()

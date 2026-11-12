@@ -104,6 +104,11 @@ impl<S: VaultService> App<S> {
                 }
             }
         }
+        for host in self.browser_icon_hosts() {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
         hosts
     }
 
@@ -178,8 +183,15 @@ impl<S: VaultService> App<S> {
                 .as_ref()
                 .map(|quick| quick.window.window().scale_factor())
         };
+        let picker = || {
+            self.browser_picker
+                .borrow()
+                .as_ref()
+                .map(|picker| picker.window().scale_factor())
+        };
         manager
             .or_else(quick)
+            .or_else(picker)
             .filter(|scale| (1.0..=4.0).contains(scale))
             .unwrap_or(DEFAULT_BACKING_SCALE)
     }
@@ -193,6 +205,7 @@ impl<S: VaultService> App<S> {
         if let Some(quick) = self.quick.borrow().as_ref() {
             quick.rows.icon_loaded(host, 0..QUICK_ROWS);
         }
+        self.browser_icon_loaded(host);
     }
 
     /// Drops every loaded and queued icon; loads in flight are ignored when they finish.
