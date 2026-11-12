@@ -171,10 +171,13 @@ component SidebarRow inherits Rectangle {
         if root.entry.busy: Spinner {
             y: (parent.height - self.height) / 2;
         }
-        if root.entry.kind == 2 && ta.has-hover && root.online && !root.entry.busy: IconBtn {
+        // Faded out rather than removed: opening the menu takes the hover away, and removing the
+        // button in the middle of its click closed the menu again at once.
+        if root.entry.kind == 2 && root.online && !root.entry.busy: IconBtn {
             y: (parent.height - self.height) / 2;
             width: 22px;
             height: 22px;
+            opacity: ta.has-hover ? 1 : 0;
             icon: @image-url("icons/chevron-down.svg");
             label: "Folder actions for " + root.entry.label;
             clicked => { menu.show(); }

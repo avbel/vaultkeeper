@@ -9,6 +9,7 @@ use common::{
     CMD, Harness, Setup, block_on, click, control_exists, elapse, enabled, find, harness, key,
     pump, set_size, special, type_into, value_of,
 };
+use i_slint_backend_testing::{AccessibleRole, ElementHandle};
 use slint::{ComponentHandle, Model, platform::Key};
 use vaultkeeper::{mock::MockCall, ui::ManagerWindow};
 use vk_vault::{
@@ -1131,4 +1132,47 @@ fn a_hidden_custom_field_without_a_visible_value_has_no_reveal_or_copy() {
     assert!(!field.secret, "no mask, so no reveal control");
     assert_eq!(field.copy, -1, "no copy control");
     assert_eq!(field.value, "");
+}
+
+#[test]
+fn the_folder_chevron_opens_its_menu_and_deletes_the_folder() {
+    use slint::{
+        LogicalPosition,
+        platform::{PointerEventButton, WindowEvent},
+    };
+    let (h, manager) = open();
+    let row = ElementHandle::find_by_accessible_label(&manager, "Dev")
+        .find(|element| element.accessible_role() == Some(AccessibleRole::ListItem))
+        .expect("Dev row");
+    let (origin, height) = (row.absolute_position(), row.size().height);
+    manager.window().dispatch_event(WindowEvent::PointerMoved {
+        position: LogicalPosition::new(origin.x + 20.0, origin.y + height / 2.0),
+    });
+    pump();
+    let chevron = find(&manager, "Folder actions for Dev");
+    let (at, extent) = (chevron.absolute_position(), chevron.size());
+    let position = LogicalPosition::new(at.x + extent.width / 2.0, at.y + extent.height / 2.0);
+    let window = manager.window();
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Left,
+    });
+    pump();
+    elapse(Duration::from_millis(300));
+    assert!(
+        control_exists(&manager, "Delete"),
+        "the folder menu stays open"
+    );
+    click(&manager, "Delete");
+    click(&manager, "Confirm delete folder");
+    assert!(
+        h.vault
+            .calls()
+            .contains(&MockCall::DeleteFolder("f-dev".to_owned()))
+    );
 }
