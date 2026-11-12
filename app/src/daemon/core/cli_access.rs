@@ -85,12 +85,33 @@ impl Daemon {
 
     fn prompt_for_cli_unlock(self: &Arc<Self>) {
         let mut last_prompt = guard(&self.cli_access.last_prompt);
-        if last_prompt.is_some_and(|time| time.elapsed() < UNLOCK_PROMPT_INTERVAL) {
+        let now = Instant::now();
+        if !prompt_due(*last_prompt, now) {
             return;
         }
         if self.settings().cli_access && !self.quitting.load(Ordering::SeqCst) {
-            *last_prompt = Some(Instant::now());
+            *last_prompt = Some(now);
             self.send_command(UiCommand::ShowUnlock);
         }
+    }
+}
+
+/// A burst of locked CLI calls (a script reading several fields) raises one unlock prompt.
+fn prompt_due(last_prompt: Option<Instant>, now: Instant) -> bool {
+    last_prompt.is_none_or(|time| now.duration_since(time) >= UNLOCK_PROMPT_INTERVAL)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locked_calls_prompt_once_per_interval() {
+        let start = Instant::now();
+        assert!(prompt_due(None, start));
+        assert!(!prompt_due(Some(start), start));
+        let just_before = UNLOCK_PROMPT_INTERVAL.saturating_sub(Duration::from_millis(1));
+        assert!(!prompt_due(Some(start), start + just_before));
+        assert!(prompt_due(Some(start), start + UNLOCK_PROMPT_INTERVAL));
     }
 }

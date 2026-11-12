@@ -20,7 +20,7 @@ fn open(setup: Setup) -> (Harness, vaultkeeper::ui::SettingsWindow) {
     let window = h.app.settings_window().expect("settings");
     window
         .window()
-        .set_size(slint::LogicalSize::new(520.0, 1600.0));
+        .set_size(slint::LogicalSize::new(520.0, 2400.0));
     pump();
     (h, window)
 }
