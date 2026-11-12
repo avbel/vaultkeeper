@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Clock } from "theme.slint";
+import { Theme } from "theme.slint";
 import { Btn, BtnKind, Divider, EmptyState, Field, Icon, MenuRow, PopupPanel, SkeletonRows, Toast } from "kit.slint";
 import { ItemRow, RowData } from "row.slint";
 import { AssignChoice, AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
@@ -409,7 +409,7 @@ export component ManagerWindow inherits Window {
                     background: Theme.border-subtle;
                 }
                 Rectangle {
-                    horizontal-stretch: 3;
+                    horizontal-stretch: 1;
                     min-width: 320px;
                     background: Theme.surface;
                     list := ListView {
@@ -464,7 +464,7 @@ export component ManagerWindow inherits Window {
                     background: Theme.border-subtle;
                 }
                 Rectangle {
-                    horizontal-stretch: 2;
+                    horizontal-stretch: 1;
                     min-width: 380px;
                     background: Theme.surface;
                     if root.detail-mode == 0 && !root.send-mode: EmptyState {

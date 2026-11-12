@@ -255,6 +255,7 @@ export component CopyBtn inherits Rectangle {
         if !root.text-glyph: Icon {
             source: root.code == 0 ? @image-url("icons/user.svg")
                 : root.code == 1 || root.code == 10 ? @image-url("icons/key.svg")
+                : root.code == 2 ? @image-url("icons/clock.svg")
                 : root.code == 8 ? @image-url("icons/phone.svg")
                 : root.code == 11 ? @image-url("icons/link.svg")
                 : @image-url("icons/copy.svg");

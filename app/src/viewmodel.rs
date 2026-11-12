@@ -12,14 +12,6 @@ use vk_vault::{
 
 use crate::ui::{AccountRow, RowData};
 
-/// TOTP code shown in a row; `expires` is in the UI clock's seconds (see `Clock.now`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TotpCell {
-    pub code: SharedString,
-    pub expires: i32,
-    pub period: i32,
-}
-
 /// Order of the "+ New" menu and of ⌘1…⌘5.
 pub const NEW_KINDS: [ItemKind; 5] = [
     ItemKind::Login,
@@ -150,7 +142,7 @@ fn button(field: Option<CopyField>) -> (i32, SharedString) {
 }
 
 #[must_use]
-pub fn to_row(item: &ItemSummary, totp: Option<&TotpCell>, icon: Option<slint::Image>) -> RowData {
+pub fn to_row(item: &ItemSummary, icon: Option<slint::Image>) -> RowData {
     let [first, second] = row_buttons(item);
     let (b1, b1_label) = button(first);
     let (b2, b2_label) = button(second);
@@ -165,9 +157,6 @@ pub fn to_row(item: &ItemSummary, totp: Option<&TotpCell>, icon: Option<slint::I
         b1_label,
         b2_label,
         has_totp: item.has_totp && item.kind == ItemKind::Login,
-        totp_code: totp.map(|cell| cell.code.clone()).unwrap_or_default(),
-        totp_expires: totp.map_or(0, |cell| cell.expires),
-        totp_period: totp.map_or(30, |cell| cell.period),
         auto_type: crate::autotype::can_auto_type(item),
         icon: icon.unwrap_or_default(),
     }
@@ -527,26 +516,17 @@ mod tests {
     }
 
     #[test]
-    fn to_row_maps_fields_and_totp_overlay() {
+    fn to_row_maps_fields() {
         let login = item(ItemKind::Login, "octocat", true, true);
-        let row = to_row(&login, None, None);
+        let row = to_row(&login, None);
         assert_eq!(row.name, "GitHub");
         assert_eq!(row.subtitle, "octocat");
         assert_eq!((row.b1, row.b2), (0, 1));
         assert_eq!(row.b1_label, "Copy username");
         assert_eq!(row.b2_label, "Copy password");
         assert!(row.has_totp);
-        assert_eq!(row.totp_code, "");
-        let cell = TotpCell {
-            code: "482 913".into(),
-            expires: 40,
-            period: 30,
-        };
-        let row = to_row(&login, Some(&cell), None);
-        assert_eq!(row.totp_code, "482 913");
-        assert_eq!((row.totp_expires, row.totp_period), (40, 30));
-        let card = to_row(&item(ItemKind::Card, "Visa", false, true), None, None);
-        assert!(!card.has_totp, "only logins show a TOTP cell");
+        let card = to_row(&item(ItemKind::Card, "Visa", false, true), None);
+        assert!(!card.has_totp, "only logins offer a TOTP copy button");
         assert_eq!(card.kind, 2);
     }
 

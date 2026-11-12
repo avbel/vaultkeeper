@@ -1,5 +1,5 @@
-import { Theme, Clock } from "theme.slint";
-import { Icon, CopyBtn, KindChip, TotpRing } from "kit.slint";
+import { Theme } from "theme.slint";
+import { Icon, CopyBtn, KindChip } from "kit.slint";
 
 // Kinds: 0 login, 1 note, 2 card, 3 identity, 4 SSH key, 5 unsupported, 6 Send.
 // Copy codes: 0 username, 1 password, 2 TOTP, 3 URI, 4 notes, 5 card number, 6 card code,
@@ -16,73 +16,10 @@ export struct RowData {
     b1-label: string,
     b2-label: string,
     has-totp: bool,
-    totp-code: string,
-    // `Clock.now` value at which `totp-code` expires.
-    totp-expires: int,
-    totp-period: int,
     // A login with a password: the Quick Panel offers auto-type.
     auto-type: bool,
     // The site's icon once it has loaded; empty (width 0) until then and for other kinds.
     icon: image,
-}
-
-export component TotpCell inherits Rectangle {
-    in property <string> code;
-    in property <int> expires;
-    in property <int> period;
-    in property <bool> enabled: true;
-    callback copy() -> bool;
-
-    property <bool> copied: false;
-    property <int> remaining: root.expires - Clock.now;
-    width: 92px * Theme.scale;
-    height: 24px * Theme.scale;
-    border-radius: Theme.radius-control;
-    background: copied ? Theme.success.with-alpha(0.14) : ta.has-hover ? Theme.hover : transparent;
-    animate background { duration: 400ms; easing: ease-out; }
-    accessible-role: button;
-    accessible-label: "Copy TOTP";
-    accessible-value: root.code;
-    accessible-action-default => { root.trigger(); }
-
-    function trigger() {
-        if root.enabled && root.copy() {
-            root.copied = true;
-        }
-    }
-
-    Timer {
-        interval: 1.2s;
-        running: root.copied;
-        triggered => { root.copied = false; }
-    }
-
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.trigger(); }
-    }
-
-    HorizontalLayout {
-        padding-left: Theme.s1;
-        padding-right: Theme.s1;
-        spacing: Theme.s2;
-        alignment: end;
-        Text {
-            text: root.code == "" ? "··· ···" : root.code;
-            font-family: Theme.mono;
-            font-size: Theme.font-body;
-            font-weight: 500;
-            letter-spacing: 1px;
-            color: root.copied ? Theme.success-text : root.remaining < 5 ? Theme.warn-text : Theme.text;
-            animate color { duration: 300ms; }
-            vertical-alignment: center;
-        }
-        TotpRing {
-            y: (parent.height - self.height) / 2;
-            remaining: root.remaining;
-            period: root.period;
-        }
-    }
 }
 
 // Types username, Tab, password into the app behind the Quick Panel. The selected row shows the
@@ -233,7 +170,7 @@ export component ItemRow inherits Rectangle {
             HorizontalLayout {
                 spacing: 2px;
                 alignment: end;
-                width: 2 * Theme.control-height + 10px;
+                width: 3 * Theme.control-height + 12px;
                 if root.data.b1 >= 0: CopyBtn {
                     y: (parent.height - self.height) / 2;
                     code: root.data.b1;
@@ -248,16 +185,18 @@ export component ItemRow inherits Rectangle {
                     emphasized: ta.has-hover || root.selected;
                     copy => { return root.copy(root.data.b2); }
                 }
-            }
-            if root.data.has-totp: TotpCell {
-                y: (parent.height - self.height) / 2;
-                code: root.data.totp-code;
-                expires: root.data.totp-expires;
-                period: root.data.totp-period;
-                copy => { return root.copy(2); }
-            }
-            if !root.data.has-totp: Rectangle {
-                width: 92px * Theme.scale;
+                // Codes show only in the detail pane; the list just copies them.
+                if root.data.has-totp: CopyBtn {
+                    y: (parent.height - self.height) / 2;
+                    code: 2;
+                    label: "Copy TOTP";
+                    emphasized: ta.has-hover || root.selected;
+                    copy => { return root.copy(2); }
+                }
+                // Keeps the other buttons in their column on rows without TOTP.
+                if !root.data.has-totp: Rectangle {
+                    width: Theme.control-height;
+                }
             }
         }
     }

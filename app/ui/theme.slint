@@ -91,7 +91,7 @@ export global Theme {
     out property <length> focus-ring: 2px;
 }
 
-// Seconds since app start; the TOTP ticker sets it once per second on windows showing codes.
+// Seconds since app start; the TOTP ticker sets it once per second while the detail pane shows a code.
 export global Clock {
     in-out property <int> now;
 }

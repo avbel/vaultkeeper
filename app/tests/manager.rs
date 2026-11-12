@@ -185,24 +185,18 @@ fn keyboard_moves_the_selection_and_enter_copies_the_password() {
 }
 
 #[test]
-fn row_totp_codes_come_from_one_timer_that_stops_with_the_window() {
+fn totp_timer_runs_only_while_the_detail_shows_a_code() {
     let (h, manager) = open();
-    let tailscale = usize::try_from(row_of(&manager, "Tailscale")).expect("row");
-    let row = manager.get_rows().row_data(tailscale).expect("row");
-    assert!(row.has_totp);
-    assert_eq!(
-        row.totp_code.len(),
-        7,
-        "grouped 6 digits: {}",
-        row.totp_code
-    );
-    assert!(h.app.totp_timer_running());
-    click(&manager, "Cards");
-    assert!(
-        !h.app.totp_timer_running(),
-        "no visible TOTP rows, no timer"
-    );
-    click(&manager, "All items");
+    let tailscale = row_of(&manager, "Tailscale");
+    let row = manager
+        .get_rows()
+        .row_data(usize::try_from(tailscale).expect("row"))
+        .expect("row");
+    assert!(row.has_totp, "the list offers a TOTP copy button");
+    assert!(!h.app.totp_timer_running(), "list rows never compute codes");
+    manager.invoke_row_clicked(tailscale);
+    pump();
+    assert_eq!(manager.get_detail_totp_code().len(), 7);
     assert!(h.app.totp_timer_running());
     let weak = manager.as_weak();
     drop(manager);
@@ -956,7 +950,6 @@ fn reprompt_hides_notes_and_totp_codes_until_the_password_is_confirmed() {
     let row = usize::try_from(row_of(&manager, "PayPal")).expect("row");
     let listed = manager.get_rows().row_data(row).expect("row");
     assert!(listed.has_totp);
-    assert_eq!(listed.totp_code, "", "no live code in the list");
     manager.invoke_row_clicked(row_of(&manager, "PayPal"));
     pump();
     assert_eq!(manager.get_detail_totp_code(), "••• •••");
@@ -980,8 +973,6 @@ fn reprompt_hides_notes_and_totp_codes_until_the_password_is_confirmed() {
         "{}",
         manager.get_detail_totp_code()
     );
-    let listed = manager.get_rows().row_data(row).expect("row");
-    assert_eq!(listed.totp_code.len(), 7, "{}", listed.totp_code);
     manager.invoke_reveal_field(i32::try_from(notes).expect("small"));
     assert_eq!(
         manager
