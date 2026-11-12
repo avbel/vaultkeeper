@@ -6,9 +6,9 @@ mod common;
 use std::{path::PathBuf, sync::Arc};
 
 use common::{
-    Daemon, EMAIL, FakeTouchId, FakeVault, OTHER_EMAIL, OTHER_SERVER, PASSWORD, RawClient, SERVER,
-    USER_KEY, accounts, attachment, collections, draft, folders, locked, organizations, secret,
-    unlocked, url,
+    Daemon, EMAIL, FakeTouchId, FakeVault, OTHER_EMAIL, OTHER_SERVER, PASSWORD, RawClient,
+    SEND_LINK, SERVER, USER_KEY, accounts, attachment, collections, draft, folders, locked,
+    organizations, secret, send_draft, send_summary, unlocked, url,
 };
 use vk_ipc::{
     ServeOptions, TouchIdBackend, TouchIdFailure,
@@ -379,6 +379,43 @@ async fn writes_attachments_folders_and_ssh_keys_round_trip() {
             "delete_folder f3",
         ]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sends_and_their_links_round_trip() {
+    let (daemon, vault) = unlocked_pair().await;
+    assert_eq!(vault.sends().expect("sends"), [send_summary()]);
+    assert!(vault.send_draft("s1").expect("draft") == send_draft());
+    assert_eq!(vault.send_link("s1").expect("link").as_str(), SEND_LINK);
+
+    let mut draft = send_draft();
+    draft.password = Some(secret("open sesame"));
+    let saved = vault.save_send(None, draft).await.expect("create");
+    assert_eq!(saved, send_summary());
+    vault
+        .save_send(Some("s1".into()), send_draft())
+        .await
+        .expect("update");
+    vault
+        .remove_send_password("s1")
+        .await
+        .expect("remove password");
+    vault.delete_send("s1").await.expect("delete");
+
+    assert_eq!(
+        daemon.fake.log(),
+        [
+            "send_draft s1",
+            "send_link s1",
+            "save_send new Wi-Fi hunter2 open sesame",
+            "save_send s1 Wi-Fi hunter2 -",
+            "remove_send_password s1",
+            "delete_send s1",
+        ]
+    );
+
+    daemon.fake.set_state(locked());
+    assert!(matches!(vault.sends(), Err(Error::Locked)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

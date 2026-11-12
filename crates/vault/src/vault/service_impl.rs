@@ -9,8 +9,8 @@ use crate::{
     index::record_recent,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe, SessionState,
-        SshKeyMaterial, TwoFactorAnswer,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft, SendSummary,
+        ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
     reveal,
     util::unix_now,
@@ -195,6 +195,30 @@ impl VaultService for Vault {
 
     async fn delete_folder(&self, id: &str) -> Result<()> {
         self.inner.delete_folder(id).await
+    }
+
+    fn sends(&self) -> Result<Vec<SendSummary>> {
+        self.inner.send_summaries()
+    }
+
+    fn send_draft(&self, id: &str) -> Result<SendDraft> {
+        self.inner.send_draft(id)
+    }
+
+    fn send_link(&self, id: &str) -> Result<Zeroizing<String>> {
+        self.inner.send_link(id)
+    }
+
+    async fn save_send(&self, id: Option<Arc<str>>, draft: SendDraft) -> Result<SendSummary> {
+        self.inner.save_send(id, draft).await
+    }
+
+    async fn delete_send(&self, id: &str) -> Result<()> {
+        self.inner.delete_send(id).await
+    }
+
+    async fn remove_send_password(&self, id: &str) -> Result<()> {
+        self.inner.remove_send_password(id).await
     }
 
     /// Empty while locked or logged out: the agent serves only the unlocked account's keys.

@@ -30,6 +30,11 @@ impl GeneratorCore {
         self.current = Zeroizing::new(String::new());
     }
 
+    /// The saved password options, for the Send form's generate button.
+    pub(super) fn password_options(&self) -> PasswordOptions {
+        self.password.clone()
+    }
+
     pub(super) fn strings(&self) -> Vec<String> {
         (!self.current.is_empty())
             .then(|| self.current.to_string())

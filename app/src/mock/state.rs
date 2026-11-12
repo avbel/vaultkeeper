@@ -12,6 +12,7 @@ use super::{
     Account, Inner,
     data::{AccountData, MockItem},
     fake::fnv1a,
+    sends::MockSend,
 };
 
 /// What the real vault returns when the server can't be reached (`Error::is_offline` is true).
@@ -69,6 +70,22 @@ impl Inner {
             .items
             .iter_mut()
             .find(|item| &item.summary.id == id)
+            .ok_or(Error::NotFound)
+    }
+
+    pub(super) fn send(&self, id: &str) -> Result<&MockSend> {
+        self.data()?
+            .sends
+            .iter()
+            .find(|send| &*send.summary.id == id)
+            .ok_or(Error::NotFound)
+    }
+
+    pub(super) fn send_mut(&mut self, id: &str) -> Result<&mut MockSend> {
+        self.data_mut()?
+            .sends
+            .iter_mut()
+            .find(|send| &*send.summary.id == id)
             .ok_or(Error::NotFound)
     }
 

@@ -1,0 +1,365 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Check, CopyBtn, Divider, Field, IconBtn, InlineConfirm, KindChip, MultiField, Select, Spinner } from "kit.slint";
+
+// What the detail pane shows for a Send. `text` is masked until revealed when the Send hides
+// its text; Rust swaps in the decrypted text only on reveal.
+export struct SendDetail {
+    name: string,
+    is-text: bool,
+    kind-label: string,
+    text: string,
+    text-secret: bool,
+    text-revealed: bool,
+    file-name: string,
+    file-size: string,
+    notes: string,
+    status: string,
+    available: bool,
+    deletion: string,
+    expiration: string,
+    views: string,
+    has-password: bool,
+    hide-email: bool,
+}
+
+component InfoRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> warn: false;
+    in property <bool> multiline: false;
+    min-height: 28px * Theme.scale;
+    HorizontalLayout {
+        spacing: Theme.s2;
+        Text {
+            width: 96px;
+            text: root.label;
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+            font-weight: 500;
+            vertical-alignment: root.multiline ? top : center;
+        }
+        Text {
+            text: root.value;
+            color: root.warn ? Theme.warn-text : Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: root.multiline ? top : center;
+            wrap: root.multiline ? word-wrap : no-wrap;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: AccessibleRole.text;
+            accessible-label: root.label;
+            accessible-value: self.text;
+        }
+    }
+}
+
+export component SendDetailView inherits Rectangle {
+    in property <SendDetail> send;
+    in property <bool> online: true;
+    in property <bool> busy;
+    in-out property <bool> confirm-delete: false;
+    in-out property <bool> confirm-remove-password: false;
+    callback copy-link() -> bool;
+    callback copy-text() -> bool;
+    callback toggle-text();
+    callback edit();
+    callback delete-confirmed();
+    callback remove-password-confirmed();
+
+    background: Theme.surface;
+
+    ScrollView {
+        content-width: self.visible-width;
+        VerticalLayout {
+            padding: Theme.s4;
+            spacing: Theme.s2;
+            HorizontalLayout {
+                spacing: Theme.s3;
+                KindChip {
+                    y: (parent.height - self.height) / 2;
+                    kind: 6;
+                    size: 28px;
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.send.name;
+                        color: Theme.text;
+                        font-size: Theme.font-title;
+                        font-weight: 600;
+                        letter-spacing: -0.2px;
+                        overflow: elide;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Send name";
+                        accessible-value: self.text;
+                    }
+                    Text {
+                        text: root.send.kind-label + " · " + root.send.status;
+                        color: root.send.available ? Theme.text-muted : Theme.warn-text;
+                        font-size: Theme.font-hint;
+                        overflow: elide;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Send status";
+                        accessible-value: self.text;
+                    }
+                }
+            }
+            // The link is what the user came for: first, and the only primary button.
+            HorizontalLayout {
+                alignment: start;
+                Btn {
+                    text: "Copy link";
+                    label: "Copy Send link";
+                    kind: BtnKind.primary;
+                    has-icon: true;
+                    icon: @image-url("icons/link.svg");
+                    hint: "↩";
+                    clicked => { root.copy-link(); }
+                }
+            }
+            Divider { }
+            if root.send.is-text: HorizontalLayout {
+                spacing: Theme.s2;
+                Text {
+                    width: 96px;
+                    text: "Text";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    font-weight: 500;
+                }
+                Text {
+                    text: root.send.text;
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-family: root.send.text-secret && !root.send.text-revealed ? Theme.mono : "";
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Send text";
+                    accessible-value: self.text;
+                }
+                if root.send.text-secret: IconBtn {
+                    icon: root.send.text-revealed ? @image-url("icons/eye-off.svg") : @image-url("icons/eye.svg");
+                    label: root.send.text-revealed ? "Hide text" : "Reveal text";
+                    clicked => { root.toggle-text(); }
+                }
+                CopyBtn {
+                    code: 99;
+                    label: "Copy text";
+                    emphasized: true;
+                    copy => { return root.copy-text(); }
+                }
+            }
+            if !root.send.is-text: InfoRow {
+                label: "File";
+                value: root.send.file-name + (root.send.file-size != "" ? " · " + root.send.file-size : "");
+            }
+            InfoRow { label: "Deletes"; value: root.send.deletion; }
+            if root.send.expiration != "": InfoRow { label: "Expires"; value: root.send.expiration; }
+            InfoRow { label: "Views"; value: root.send.views; }
+            InfoRow { label: "Password"; value: root.send.has-password ? "Required" : "None"; }
+            if root.send.hide-email: InfoRow { label: "Email"; value: "Hidden from recipients"; }
+            if root.send.notes != "": InfoRow { label: "Private note"; value: root.send.notes; multiline: true; }
+            Divider { }
+            if !root.confirm-delete && !root.confirm-remove-password: HorizontalLayout {
+                spacing: Theme.s2;
+                alignment: start;
+                if root.send.is-text: Btn {
+                    text: "Edit";
+                    hint: "⌘E";
+                    has-icon: true;
+                    icon: @image-url("icons/edit.svg");
+                    enabled: root.online && !root.busy;
+                    clicked => { root.edit(); }
+                }
+                if root.send.has-password: Btn {
+                    text: "Remove password";
+                    enabled: root.online && !root.busy;
+                    clicked => { root.confirm-remove-password = true; }
+                }
+                Btn {
+                    text: "Delete";
+                    kind: BtnKind.danger;
+                    enabled: root.online && !root.busy;
+                    clicked => { root.confirm-delete = true; }
+                }
+                if root.busy: Spinner {
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            if root.confirm-delete: InlineConfirm {
+                question: "Delete? The link stops working";
+                subject: "delete Send";
+                confirmed => {
+                    root.confirm-delete = false;
+                    root.delete-confirmed();
+                }
+                cancelled => { root.confirm-delete = false; }
+            }
+            if root.confirm-remove-password: InlineConfirm {
+                question: "Remove the password? Anyone with the link can open it";
+                subject: "remove password";
+                yes: "Remove";
+                confirmed => {
+                    root.confirm-remove-password = false;
+                    root.remove-password-confirmed();
+                }
+                cancelled => { root.confirm-remove-password = false; }
+            }
+            if !root.send.is-text: Text {
+                text: "File Sends are made in the web vault or another app; here you can copy the link or delete them.";
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+            }
+            if !root.online: Text {
+                text: "Offline · changes need the server; they are disabled until it is reachable";
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+component FormLabel inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-hint;
+    font-weight: 500;
+}
+
+component FormHint inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-meta;
+    wrap: word-wrap;
+}
+
+export component SendEditForm inherits Rectangle {
+    in property <string> title;
+    in-out property <string> name;
+    in-out property <string> text;
+    in-out property <bool> hidden;
+    in property <[string]> deletion-options;
+    in-out property <int> deletion-index;
+    in-out property <string> password;
+    in property <bool> has-password;
+    in-out property <string> max-views;
+    in property <string> views-hint;
+    in-out property <bool> hide-email;
+    in-out property <string> notes;
+    in property <string> error;
+    in property <bool> saving;
+    callback generate-password();
+    callback save();
+    callback cancel();
+
+    background: Theme.surface;
+
+    ScrollView {
+        content-width: self.visible-width;
+        VerticalLayout {
+            padding: Theme.s4;
+            spacing: Theme.s2;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-title;
+                font-weight: 600;
+                letter-spacing: -0.2px;
+            }
+            FormLabel { text: "Name"; }
+            Field {
+                label: "Send name";
+                placeholder: "What you are sharing";
+                text <=> root.name;
+                init => { self.focus-input(); }
+            }
+            FormLabel { text: "Text to share"; }
+            MultiField {
+                label: "Text to share";
+                text <=> root.text;
+                password: root.hidden;
+            }
+            Check { text: "Hide the text until the recipient reveals it"; checked <=> root.hidden; }
+            FormLabel { text: "Deletion"; }
+            HorizontalLayout {
+                alignment: start;
+                Select {
+                    width: 260px;
+                    label: "Deletion date";
+                    options: root.deletion-options;
+                    index <=> root.deletion-index;
+                }
+            }
+            FormHint { text: "The Send and its link are deleted for good at this time."; }
+            FormLabel { text: root.has-password ? "New password" : "Password"; }
+            HorizontalLayout {
+                spacing: Theme.s1;
+                Field {
+                    label: "Send password";
+                    placeholder: root.has-password ? "Leave empty to keep the current one" : "Optional";
+                    text <=> root.password;
+                    password: true;
+                    horizontal-stretch: 1;
+                }
+                IconBtn {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/refresh.svg");
+                    label: "Generate password";
+                    clicked => { root.generate-password(); }
+                }
+            }
+            FormHint { text: "Recipients need it to open the link. Share it another way than the link."; }
+            FormLabel { text: "Maximum views"; }
+            HorizontalLayout {
+                alignment: start;
+                Field {
+                    width: 120px;
+                    label: "Maximum views";
+                    placeholder: "No limit";
+                    text <=> root.max-views;
+                }
+            }
+            if root.views-hint != "": FormHint { text: root.views-hint; }
+            Check { text: "Hide my email address from recipients"; checked <=> root.hide-email; }
+            FormLabel { text: "Private note"; }
+            MultiField {
+                label: "Private note";
+                text <=> root.notes;
+            }
+            FormHint { text: "Only you see the note; it is not shared."; }
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Theme.font-hint;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Edit error";
+                accessible-value: self.text;
+            }
+            HorizontalLayout {
+                spacing: Theme.s2;
+                alignment: start;
+                Btn {
+                    text: root.saving ? "Saving…" : "Save";
+                    kind: BtnKind.primary;
+                    enabled: !root.saving;
+                    clicked => { root.save(); }
+                }
+                Btn {
+                    text: "Cancel";
+                    hint: "Esc";
+                    enabled: !root.saving;
+                    clicked => { root.cancel(); }
+                }
+                if root.saving: Spinner {
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}

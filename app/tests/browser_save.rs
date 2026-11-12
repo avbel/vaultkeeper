@@ -180,6 +180,7 @@ impl Env {
             folders: Vec::new(),
             collections: Vec::new(),
             ciphers: items.iter().map(|item| self.cipher(item)).collect(),
+            sends: Vec::new(),
         })
         .unwrap();
         Mock::given(method("POST"))

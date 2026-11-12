@@ -143,7 +143,7 @@ The UI has two surfaces that share one vault core:
 - "Vault unlocked" and sync banners.
 - Modal confirmations for routine actions; confirmation is inline instead, e.g. `Delete? [Yes][No]`.
 - Favicons.
-- Send, Reports and upsell tabs.
+- Reports and upsell tabs.
 
 ## Change: sidebar with folder management (user request)
 The Manager window has a collapsible left sidebar like the official app, about 200 px wide and toggled with ⌘\. It
@@ -154,10 +154,26 @@ Sections, top to bottom:
 - Types, each with a count.
 - Folders: "No folder" plus every folder, with counts.
 - Collections, grouped by organization.
-- Trash.
+- Send, then Trash.
 
 Folder management:
 - "+" on the Folders header adds a folder inline.
 - The ⋯ menu or a right-click on a folder row offers Rename (inline) and Delete (inline confirm; items move to
   "No folder").
 - Items move to a folder from the item detail or edit form, or by drag-and-drop where Slint supports it.
+
+## Change: Send (user request)
+Text Sends as in the official clients: encrypted text behind a link that deletes itself.
+
+- The sidebar's **Send** entry swaps the list for the account's Sends; the item list, detail and
+  edit form are untouched, and a switch is refused while either form is open.
+- **Row:** the Send glyph, the name, a subtitle with why the link no longer opens ("Expired",
+  "View limit reached", …) or "Deletes in 7 days · 1/3 views · password", and one copy button:
+  the link. Return copies it too.
+- **Detail:** "Copy link" first and the only primary button; the text (masked until revealed when
+  the Send hides it) with its own copy button; deletion and expiry dates, views, password, hidden
+  email, private note; Edit, Remove password and Delete with inline confirms.
+- **Form:** name, text, "hide the text", deletion preset (1 hour … 30 days; an edit offers to keep
+  the current date first), password (empty keeps the current one), maximum views, hide my email,
+  private note. A new Send's link is copied on save.
+- File Sends from other clients are listed with copy link and delete only.

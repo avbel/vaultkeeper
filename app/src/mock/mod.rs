@@ -7,6 +7,7 @@
 
 mod data;
 mod fake;
+mod sends;
 mod service;
 mod state;
 
@@ -74,6 +75,12 @@ pub enum MockCall {
         name: String,
     },
     DeleteFolder(String),
+    SaveSend {
+        id: Option<Arc<str>>,
+        name: String,
+    },
+    DeleteSend(String),
+    RemoveSendPassword(String),
     SwitchAccount(String),
     BeginAddAccount,
     Logout,

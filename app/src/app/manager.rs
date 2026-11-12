@@ -9,7 +9,8 @@ use vk_vault::{
 };
 
 use super::{
-    App, OFFLINE_TOAST, handler, hide, manager_detail::Detail, manager_edit::Edit, retire, show,
+    App, OFFLINE_TOAST, handler, hide, manager_detail::Detail, manager_edit::Edit,
+    manager_send::SendPane, retire, show,
 };
 use crate::{
     keymap::{self, Command, Mods},
@@ -36,6 +37,7 @@ pub(super) struct Manager {
     pub(super) edit: Option<Edit>,
     /// The row clicked while the form had unsaved changes, waiting for Save / Discard / Cancel.
     pub(super) switch_to: Option<ItemId>,
+    pub(super) send: SendPane,
 }
 
 impl Manager {
@@ -54,6 +56,7 @@ impl Manager {
         if let Some(edit) = &self.edit {
             strings.extend(edit.fields.iter().map(|field| field.value.to_string()));
         }
+        strings.extend(self.send.strings(&self.window));
         strings.push(self.window.get_query().to_string());
         strings
     }
@@ -95,6 +98,7 @@ impl<S: VaultService> App<S> {
         self.bind_manager_detail(&window);
         self.bind_manager_assign(&window);
         self.bind_manager_edit(&window);
+        self.bind_manager_send(&window);
         self.bind_sidebar(&window);
         self.bind_reprompt(&window);
         self.bind_generator(&window.global::<crate::ui::GeneratorState>());
@@ -112,6 +116,7 @@ impl<S: VaultService> App<S> {
             detail: None,
             edit: None,
             switch_to: None,
+            send: SendPane::default(),
         });
         self.restore_geometry(&window);
         self.refresh_manager();
@@ -146,15 +151,33 @@ impl<S: VaultService> App<S> {
             }
         ));
         window.on_search_edited(handler!(self, |app, _text| app.refresh_list()));
-        window.on_row_clicked(handler!(self, |app, row| app.select_row(row)));
+        window.on_row_clicked(handler!(self, |app, row| {
+            if app.in_send_mode() {
+                app.select_send_row(row);
+            } else {
+                app.select_row(row);
+            }
+        }));
         window.on_row_double_clicked(handler!(self, |app, row| {
+            if app.in_send_mode() {
+                app.select_send_row(row);
+                if !app.editing_send() {
+                    app.start_send_edit();
+                }
+                return;
+            }
             app.select_row(row);
             if !app.editing() {
                 app.start_edit();
             }
         }));
-        window.on_copy_row(handler!(self, false, |app, row, code| app
-            .copy_manager_row(row, code)));
+        window.on_copy_row(handler!(self, false, |app, row, code| {
+            if app.in_send_mode() {
+                app.copy_send_row(row, code)
+            } else {
+                app.copy_manager_row(row, code)
+            }
+        }));
         window.on_visible_range_changed(handler!(self, |app| {
             app.refresh_totp();
             app.schedule_site_icons();
@@ -236,6 +259,10 @@ impl<S: VaultService> App<S> {
     }
 
     pub(super) fn refresh_list(&self) {
+        if self.in_send_mode() {
+            self.refresh_send_list();
+            return;
+        }
         let Some((query, filter)) = self
             .manager
             .borrow()
@@ -351,7 +378,7 @@ impl<S: VaultService> App<S> {
         true
     }
 
-    fn editing(&self) -> bool {
+    pub(super) fn editing(&self) -> bool {
         self.manager
             .borrow()
             .as_ref()
@@ -360,6 +387,9 @@ impl<S: VaultService> App<S> {
 
     fn manager_command(&self, command: Command) -> bool {
         use vk_vault::model::CopyField;
+        if self.in_send_mode() {
+            return self.send_command(command);
+        }
         if self.editing() {
             return match command {
                 Command::Escape => {
@@ -405,6 +435,73 @@ impl<S: VaultService> App<S> {
                 self.open_detail_generator();
                 true
             }
+            Command::Escape => self.manager_escape(),
+            Command::Settings
+            | Command::FilterKind(_)
+            | Command::Lock
+            | Command::ToggleSidebar
+            | Command::FocusSearch
+            | Command::QuickPanel
+            | Command::CloseWindow
+            | Command::Quit => self.shared_command(command),
+        }
+    }
+
+    /// Keys while Sends are listed: Return copies the link, item-only copies do nothing.
+    fn send_command(&self, command: Command) -> bool {
+        if self.editing_send() {
+            return match command {
+                Command::Escape => self.send_escape(),
+                Command::Lock => {
+                    self.lock();
+                    true
+                }
+                Command::CloseWindow => {
+                    self.close_manager();
+                    true
+                }
+                _ => false,
+            };
+        }
+        match command {
+            Command::Up => self.move_send_selection(-1),
+            Command::Down => self.move_send_selection(1),
+            Command::CopyPassword => {
+                self.copy_selected_send_link();
+                true
+            }
+            Command::CopyUsername
+            | Command::CopyTotp
+            | Command::AutoType
+            | Command::ToggleFavorite => true,
+            Command::Edit => {
+                self.start_send_edit();
+                true
+            }
+            Command::New => {
+                self.new_send();
+                true
+            }
+            Command::Generator => {
+                self.open_generator_window();
+                true
+            }
+            Command::Escape => self.send_escape(),
+            Command::OpenInManager
+            | Command::Settings
+            | Command::FilterKind(_)
+            | Command::Lock
+            | Command::ToggleSidebar
+            | Command::FocusSearch
+            | Command::QuickPanel
+            | Command::CloseWindow
+            | Command::Quit => self.shared_command(command),
+        }
+    }
+
+    /// Commands that act the same whatever the list shows.
+    fn shared_command(&self, command: Command) -> bool {
+        match command {
             Command::Settings => {
                 self.open_settings();
                 true
@@ -415,7 +512,6 @@ impl<S: VaultService> App<S> {
                     .copied();
                 kind.is_some_and(|kind| self.select_sidebar_key(&SidebarKey::Kind(kind)))
             }
-            Command::Escape => self.manager_escape(),
             Command::Lock => {
                 self.lock();
                 true
@@ -445,6 +541,18 @@ impl<S: VaultService> App<S> {
                 self.quit();
                 true
             }
+            Command::Up
+            | Command::Down
+            | Command::CopyPassword
+            | Command::CopyUsername
+            | Command::CopyTotp
+            | Command::AutoType
+            | Command::OpenInManager
+            | Command::Edit
+            | Command::ToggleFavorite
+            | Command::New
+            | Command::Generator
+            | Command::Escape => false,
         }
     }
 

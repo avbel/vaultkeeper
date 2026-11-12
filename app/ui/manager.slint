@@ -5,6 +5,7 @@ import { ItemRow, RowData } from "row.slint";
 import { AssignChoice, AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
 import { GeneratorView, GeneratorState } from "generator.slint";
 import { Sidebar, SidebarEntry } from "sidebar.slint";
+import { SendDetail, SendDetailView, SendEditForm } from "send.slint";
 import { AccountRow, AccountSwitcher } from "accounts.slint";
 
 component NewMenu inherits Rectangle {
@@ -29,7 +30,8 @@ component NewMenu inherits Rectangle {
         PopupPanel {
             VerticalLayout {
                 padding: Theme.s1;
-                for kind[i] in ["Login", "Secure note", "Card", "Identity", "SSH key"]: MenuRow {
+                // The last entry, index 5, is a Send rather than an item kind.
+                for kind[i] in ["Login", "Secure note", "Card", "Identity", "SSH key", "Send"]: MenuRow {
                     text: kind;
                     // Report first: once closed, the popup's items are gone and nothing after
                     // `close()` in this handler would run.
@@ -141,15 +143,35 @@ export component ManagerWindow inherits Window {
     in property <[RowData]> rows;
     in-out property <int> selected: -1;
     in-out property <bool> keyboard-nav: false;
-    // 0 no items yet, 1 no search results, 2 empty filter.
+    // 0 no items yet, 1 no search results, 2 empty filter, 3 no Sends yet.
     in property <int> empty-kind: 0;
     in property <string> empty-text: "No items";
     in property <bool> loading: false;
     out property <int> first-visible: max(0, floor(-list.content-y / Theme.row-height));
     out property <int> visible-count: ceil(list.visible-height / Theme.row-height) + 1;
 
-    // Detail pane: 0 empty, 1 view, 2 edit, 3 generator.
+    // Detail pane: 0 empty, 1 view, 2 edit, 3 generator, 4 Send view, 5 Send edit.
     in-out property <int> detail-mode: 0;
+    // The sidebar's Send entry is selected: the list holds Sends instead of items.
+    in property <bool> send-mode: false;
+    in property <SendDetail> send-detail;
+    in-out property <bool> send-confirm-delete;
+    in-out property <bool> send-confirm-remove-password;
+    in property <bool> send-busy;
+    in property <string> send-edit-title;
+    in-out property <string> send-name;
+    in-out property <string> send-text;
+    in-out property <bool> send-hidden;
+    in property <[string]> send-deletion-options;
+    in-out property <int> send-deletion-index;
+    in-out property <string> send-password;
+    in property <bool> send-has-password;
+    in-out property <string> send-max-views;
+    in property <string> send-views-hint;
+    in-out property <bool> send-hide-email;
+    in-out property <string> send-notes;
+    in property <string> send-edit-error;
+    in property <bool> send-saving;
     in property <DetailHeader> detail-header;
     in property <[DetailField]> detail-fields;
     in property <string> detail-totp-code;
@@ -241,6 +263,15 @@ export component ManagerWindow inherits Window {
     callback close-generator();
     callback toast-dismissed();
     callback status-tick();
+    callback send-copy-link() -> bool;
+    callback send-copy-text() -> bool;
+    callback send-toggle-text();
+    callback send-edit();
+    callback send-delete-confirmed();
+    callback send-remove-password-confirmed();
+    callback send-generate-password();
+    callback send-save();
+    callback send-cancel();
 
     public function scroll-to(index: int) {
         if index * Theme.row-height < -list.content-y {
@@ -414,6 +445,14 @@ export component ManagerWindow inherits Window {
                         action: "Show all items";
                         action-clicked => { root.clear-filters(); }
                     }
+                    if root.rows.length == 0 && !root.loading && root.empty-kind == 3: EmptyState {
+                        icon: @image-url("icons/send.svg");
+                        title: "No Sends yet";
+                        body: "Share text through an encrypted link that deletes itself";
+                        action: "+ New Send";
+                        action-hint: "⌘N";
+                        action-clicked => { root.new-item(5); }
+                    }
                 }
                 Rectangle {
                     width: 1px;
@@ -423,10 +462,47 @@ export component ManagerWindow inherits Window {
                     horizontal-stretch: 2;
                     min-width: 380px;
                     background: Theme.surface;
-                    if root.detail-mode == 0: EmptyState {
+                    if root.detail-mode == 0 && !root.send-mode: EmptyState {
                         icon: @image-url("icons/kind-note.svg");
                         title: "Select an item";
                         body: "↑↓ move · Return copies the password · ⌘E edit";
+                    }
+                    if root.detail-mode == 0 && root.send-mode: EmptyState {
+                        icon: @image-url("icons/send.svg");
+                        title: "Select a Send";
+                        body: "↑↓ move · Return copies the link · ⌘E edit";
+                    }
+                    if root.detail-mode == 4: SendDetailView {
+                        send: root.send-detail;
+                        online: root.online;
+                        busy: root.send-busy;
+                        confirm-delete <=> root.send-confirm-delete;
+                        confirm-remove-password <=> root.send-confirm-remove-password;
+                        copy-link => { return root.send-copy-link(); }
+                        copy-text => { return root.send-copy-text(); }
+                        toggle-text => { root.send-toggle-text(); }
+                        edit => { root.send-edit(); }
+                        delete-confirmed => { root.send-delete-confirmed(); }
+                        remove-password-confirmed => { root.send-remove-password-confirmed(); }
+                    }
+                    if root.detail-mode == 5: SendEditForm {
+                        title: root.send-edit-title;
+                        name <=> root.send-name;
+                        text <=> root.send-text;
+                        hidden <=> root.send-hidden;
+                        deletion-options: root.send-deletion-options;
+                        deletion-index <=> root.send-deletion-index;
+                        password <=> root.send-password;
+                        has-password: root.send-has-password;
+                        max-views <=> root.send-max-views;
+                        views-hint: root.send-views-hint;
+                        hide-email <=> root.send-hide-email;
+                        notes <=> root.send-notes;
+                        error: root.send-edit-error;
+                        saving: root.send-saving;
+                        generate-password => { root.send-generate-password(); }
+                        save => { root.send-save(); }
+                        cancel => { root.send-cancel(); }
                     }
                     if root.detail-mode == 1: DetailView {
                         header: root.detail-header;

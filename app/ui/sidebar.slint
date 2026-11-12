@@ -4,7 +4,7 @@ import { Field, Icon, IconBtn, InlineConfirm, KindChip, MenuRow, PopupPanel, Spi
 
 // Entry kinds: 0 section header, 1 filter, 2 folder (manageable), 3 organization, 4 collection.
 // Icons: 0 all, 1 favorites, 2 login, 3 card, 4 identity, 5 note, 6 SSH, 7 folder, 8 org,
-// 9 collection, 10 trash.
+// 9 collection, 10 trash, 11 Send.
 export struct SidebarEntry {
     kind: int,
     label: string,
@@ -32,6 +32,7 @@ component EntryIcon inherits Rectangle {
             : root.code == 7 ? @image-url("icons/folder.svg")
             : root.code == 8 ? @image-url("icons/building.svg")
             : root.code == 9 ? @image-url("icons/layers.svg")
+            : root.code == 11 ? @image-url("icons/send.svg")
             : @image-url("icons/trash.svg");
     }
 }
@@ -276,7 +277,7 @@ export component Sidebar inherits Rectangle {
                 height: 1px;
                 background: Theme.border;
             }
-            if entry.kind == 1 && entry.icon <= 6: RailEntry {
+            if entry.kind == 1 && (entry.icon <= 6 || entry.icon == 11): RailEntry {
                 entry: entry;
                 selected: i == root.selected;
                 clicked => {

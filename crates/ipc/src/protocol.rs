@@ -11,11 +11,11 @@ use zeroize::Zeroizing;
 
 use crate::dto::{
     AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemDraftDto,
-    ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SessionStateDto, TotpCodeDto,
-    TwoFactorAnswerDto, WireError,
+    ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SendDraftDto, SendSummaryDto,
+    SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -382,6 +382,16 @@ pub enum Call {
         name: String,
     },
     DeleteFolder(String),
+    Sends,
+    SendDraft(Arc<str>),
+    /// The share link, which carries the Send's key; it crosses only when asked for.
+    SendLink(Arc<str>),
+    SaveSend {
+        id: Option<Arc<str>>,
+        draft: Box<SendDraftDto>,
+    },
+    DeleteSend(Arc<str>),
+    RemoveSendPassword(Arc<str>),
     ProbeServer(String),
     /// The daemon puts `text` on the clipboard and owns its auto-clear.
     CopyToClipboard {
@@ -429,6 +439,9 @@ impl Call {
                 | Self::Totp { .. }
                 | Self::Draft(_)
                 | Self::Attachments(_)
+                | Self::Sends
+                | Self::SendDraft(_)
+                | Self::SendLink(_)
                 | Self::DownloadAttachment { .. }
                 | Self::ProbeServer(_)
                 | Self::CopyToClipboard { .. }
@@ -459,6 +472,9 @@ pub enum Reply {
     Attachments(Vec<AttachmentDto>),
     Attachment(AttachmentDto),
     Folder(FolderDto),
+    Sends(Vec<SendSummaryDto>),
+    Send(SendSummaryDto),
+    SendDraft(Box<SendDraftDto>),
     ServerProbe { version: Option<String> },
     SiteIcon(crate::SiteIcon),
 }
@@ -534,6 +550,10 @@ mod tests {
             .changes_state()
         );
         assert!(!Call::ClearClipboard.changes_state());
+        assert!(!Call::Sends.changes_state());
+        assert!(!Call::SendLink("s".into()).changes_state());
+        assert!(Call::DeleteSend("s".into()).changes_state());
+        assert!(Call::RemoveSendPassword("s".into()).changes_state());
     }
 
     #[test]

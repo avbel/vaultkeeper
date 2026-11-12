@@ -33,10 +33,14 @@ impl<S: VaultService> App<S> {
         let folders = self.vault.folders();
         let organizations = self.vault.organizations().unwrap_or_default();
         let collections = self.vault.collections().unwrap_or_default();
+        let sends = self.vault.sends().map_or(0, |sends| sends.len());
         let (Ok(all), Ok(trash), Ok(folders)) = (all, trash, folders) else {
             return;
         };
-        let counts = Counts::tally(&all, trash.len());
+        let counts = Counts {
+            sends,
+            ..Counts::tally(&all, trash.len())
+        };
         let data = sidebar::build(&folders, &organizations, &collections, &counts);
         let (labels, choices) = super::manager::folder_options(&folders);
         let mut guard = self.manager.borrow_mut();
@@ -79,6 +83,7 @@ impl<S: VaultService> App<S> {
         let Some(filter) = sidebar::filter_for(key) else {
             return false;
         };
+        let to_sends = *key == SidebarKey::Send;
         {
             let mut guard = self.manager.borrow_mut();
             let Some(manager) = guard.as_mut() else {
@@ -87,6 +92,20 @@ impl<S: VaultService> App<S> {
             let Some(index) = manager.sidebar.index_of(key) else {
                 return false;
             };
+            let crossing = (manager.sidebar_key == SidebarKey::Send) != to_sends;
+            // An open form belongs to the list it came from; it is never dropped by a switch.
+            if crossing && (manager.edit.is_some() || manager.send.edit.is_some()) {
+                let current = manager.sidebar.index_of(&manager.sidebar_key).unwrap_or(0);
+                manager
+                    .window
+                    .set_sidebar_selected(i32::try_from(current).unwrap_or(0));
+                drop(guard);
+                self.toast("Save or cancel the edit first", true);
+                return false;
+            }
+            if crossing && to_sends {
+                manager.rows.clear();
+            }
             manager.sidebar_key = key.clone();
             manager.filter = filter;
             manager
@@ -94,6 +113,7 @@ impl<S: VaultService> App<S> {
                 .set_sidebar_selected(i32::try_from(index).unwrap_or(0));
             manager.window.invoke_scroll_top();
         }
+        self.set_send_mode(to_sends);
         self.refresh_list();
         true
     }

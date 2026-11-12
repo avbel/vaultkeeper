@@ -14,6 +14,8 @@ vw-it = []
 [dependencies]
 # `uriChecksum` (base64 of SHA-256); both already in the build through vk-crypto.
 base64.workspace = true
+# Send dates: the server's RFC 3339 deletion and expiration times.
+chrono.workspace = true
 vk-api.workspace = true
 vk-crypto.workspace = true
 vk-gen.workspace = true

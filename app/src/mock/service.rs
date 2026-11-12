@@ -9,8 +9,8 @@ use vk_vault::{
     Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemData,
-        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe,
-        SessionState, SshKeyMaterial, TwoFactorAnswer,
+        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft,
+        SendKind, SendSummary, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -19,11 +19,20 @@ use super::{
     Account, Inner, MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MOCK_SERVER_VERSION,
     MockCall, MockVault,
     data::{self, AccountData, MockItem},
+    sends::{MockSend, summarize as summarize_send},
     state::{
         assign_collections, fake_totp, field_value, matches, not_bitwarden, rank, set_deleted,
         unix_now, unreachable, user_key,
     },
 };
+
+/// A refusal shown verbatim, as the real vault reports what it does not offer.
+fn refused(message: &str) -> Error {
+    Error::Api(vk_api::Error::Server {
+        status: 400,
+        message: message.to_owned(),
+    })
+}
 
 impl MockVault {
     fn online(&self) -> Result<()> {
@@ -606,6 +615,90 @@ impl VaultService for MockVault {
                 item.draft.folder_id = None;
                 item.summary.folder_id = None;
             }
+            Ok(())
+        })
+    }
+
+    fn sends(&self) -> Result<Vec<SendSummary>> {
+        let inner = self.guard();
+        let mut sends: Vec<SendSummary> = inner
+            .data()?
+            .sends
+            .iter()
+            .map(|send| send.summary.clone())
+            .collect();
+        sends.sort_by_cached_key(|send| send.name.to_lowercase());
+        Ok(sends)
+    }
+
+    fn send_draft(&self, id: &str) -> Result<SendDraft> {
+        let inner = self.guard();
+        let send = inner.send(id)?;
+        if send.summary.kind != SendKind::Text {
+            return Err(refused("Only text Sends can be edited here"));
+        }
+        Ok(send.draft.clone())
+    }
+
+    fn send_link(&self, id: &str) -> Result<Zeroizing<String>> {
+        let inner = self.guard();
+        inner.send(id)?;
+        let server = inner.active()?.server.as_str().trim_end_matches('/');
+        Ok(Zeroizing::new(format!(
+            "{server}/#/send/{id}/bW9jay1zZW5kLWtleQ"
+        )))
+    }
+
+    async fn save_send(&self, id: Option<Arc<str>>, draft: SendDraft) -> Result<SendSummary> {
+        self.delay().await;
+        if draft.name.trim().is_empty() {
+            return Err(refused("Give the Send a name"));
+        }
+        if draft.text.is_empty() {
+            return Err(refused("Enter the text to share"));
+        }
+        let call = MockCall::SaveSend {
+            id: id.clone(),
+            name: draft.name.clone(),
+        };
+        self.write(call, |inner| {
+            let mut draft = draft;
+            draft.has_password |= draft.password.as_ref().is_some_and(|p| !p.is_empty());
+            draft.password = None;
+            if let Some(id) = id {
+                let send = inner.send_mut(&id)?;
+                draft.has_password |= send.draft.has_password;
+                send.summary = summarize_send(&id, &draft, send.summary.access_count);
+                send.draft = draft;
+                return Ok(send.summary.clone());
+            }
+            inner.next_id += 1;
+            let id = format!("send-new-{}", inner.next_id);
+            let send = MockSend::new(&id, draft, 0);
+            let summary = send.summary.clone();
+            inner.data_mut()?.sends.push(send);
+            Ok(summary)
+        })
+    }
+
+    async fn delete_send(&self, id: &str) -> Result<()> {
+        self.delay().await;
+        self.write(MockCall::DeleteSend(id.to_owned()), |inner| {
+            inner.send(id)?;
+            inner
+                .data_mut()?
+                .sends
+                .retain(|send| &*send.summary.id != id);
+            Ok(())
+        })
+    }
+
+    async fn remove_send_password(&self, id: &str) -> Result<()> {
+        self.delay().await;
+        self.write(MockCall::RemoveSendPassword(id.to_owned()), |inner| {
+            let send = inner.send_mut(id)?;
+            send.draft.has_password = false;
+            send.summary.has_password = false;
             Ok(())
         })
     }

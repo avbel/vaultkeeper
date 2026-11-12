@@ -38,11 +38,14 @@ pub enum Notification {
     FolderDeleted {
         id: String,
     },
+    /// A Send was created, edited, deleted or opened by a recipient (`SyncSendCreate`,
+    /// `SyncSendUpdate`, `SyncSendDelete`); the payload id may be missing.
+    SendChanged,
     /// `SyncCiphers`, `SyncVault`, `SyncOrgKeys` and `SyncSettings`, or an event whose id is missing.
     VaultChanged,
     /// The session was revoked server-side (`LogOut`).
     LogOut,
-    /// Any other `UpdateType` (sends, auth requests, ...), by number.
+    /// Any other `UpdateType` (auth requests, ...), by number.
     Other(u8),
 }
 
@@ -55,6 +58,7 @@ impl Notification {
             (7 | 8, Some(id)) => Self::FolderChanged { id },
             (0..=10, None) | (4..=6 | 10, Some(_)) => Self::VaultChanged,
             (11, _) => Self::LogOut,
+            (12..=14, _) => Self::SendChanged,
             (other, _) => Self::Other(other),
         }
     }
@@ -168,12 +172,22 @@ mod tests {
             );
         }
         assert_eq!(Notification::from_update(11, None), Notification::LogOut);
+        for kind in [12, 13, 14] {
+            assert_eq!(
+                Notification::from_update(kind, id()),
+                Notification::SendChanged
+            );
+            assert_eq!(
+                Notification::from_update(kind, None),
+                Notification::SendChanged
+            );
+        }
     }
 
     #[test]
     fn unknown_update_types_are_reported_by_number() {
         let id = || Some("abc".to_owned());
-        for kind in [12, 13, 14, 15, 16, 100, 255] {
+        for kind in [15, 16, 100, 255] {
             assert_eq!(
                 Notification::from_update(kind, id()),
                 Notification::Other(kind)

@@ -59,6 +59,8 @@ pub struct SyncResponse {
     pub collections: Vec<Collection>,
     #[serde(default)]
     pub ciphers: Vec<Cipher>,
+    #[serde(default)]
+    pub sends: Vec<SendItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +374,103 @@ pub struct CipherRequest {
     pub extra: Extra,
 }
 
+/// Send types. File Sends are listed but can't be made here.
+pub mod send_type {
+    pub const TEXT: u8 = 0;
+    pub const FILE: u8 = 1;
+}
+
+/// A Send as the server returns it (named `SendItem` so it never shadows the `Send` trait).
+/// `name`, `notes`, `text.text` and `file.fileName` are EncStrings under the key derived from
+/// the seed in `key`, which is itself an EncString under the user key. Lossless like [`Cipher`],
+/// so the cache keeps what this client doesn't model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendItem {
+    pub id: String,
+    /// The link's first segment: base64url of the id, computed by the server.
+    pub access_id: String,
+    pub r#type: u8,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub text: Option<SendText>,
+    #[serde(default)]
+    pub file: Option<SendFile>,
+    pub key: String,
+    #[serde(default)]
+    pub max_access_count: Option<u32>,
+    #[serde(default)]
+    pub access_count: u32,
+    /// The server's own hash of the password hash; only its presence matters to a client.
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub hide_email: bool,
+    pub revision_date: String,
+    #[serde(default)]
+    pub expiration_date: Option<String>,
+    pub deletion_date: String,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendText {
+    pub text: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFile {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default, deserialize_with = "string_or_number")]
+    pub size: Option<String>,
+    #[serde(default)]
+    pub size_name: Option<String>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// Body for `POST /api/sends` and `PUT /api/sends/{id}` (text Sends only). Built field by field:
+/// Vaultwarden refuses any `emails`, so nothing unmodeled may ride along.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRequest {
+    pub r#type: u8,
+    pub name: String,
+    pub notes: Option<String>,
+    /// The seed wrapped by the user key; an edit sends the stored one back unchanged.
+    pub key: String,
+    pub max_access_count: Option<u32>,
+    pub expiration_date: Option<String>,
+    pub deletion_date: String,
+    pub text: SendTextRequest,
+    /// The client-side password hash; `None` keeps the current password on an update.
+    pub password: Option<String>,
+    pub disabled: bool,
+    pub hide_email: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTextRequest {
+    pub text: String,
+    pub hidden: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -469,5 +568,66 @@ mod tests {
         assert_eq!(body["lastKnownRevisionDate"], "2026-11-08T17:00:59.323234Z");
         assert_eq!(body["name"], ENC);
         assert!(body.get("extra").is_none());
+    }
+
+    /// A text Send as Vaultwarden's `Send::to_json` writes it.
+    fn text_send() -> Value {
+        json!({
+            "id": "6e1b3f6c-0f5c-4f2b-9d3e-1a2b3c4d5e6f",
+            "accessId": "bjsfbA9cTyudPhorPE1ebw",
+            "type": 0,
+            "name": ENC,
+            "notes": null,
+            "text": { "text": ENC, "hidden": true },
+            "file": null,
+            "key": ENC,
+            "maxAccessCount": 3,
+            "accessCount": 1,
+            "password": "c2VydmVyLWhhc2g",
+            "authType": 1,
+            "disabled": false,
+            "hideEmail": false,
+            "revisionDate": "2026-11-11T10:00:00.000000Z",
+            "expirationDate": null,
+            "deletionDate": "2026-11-18T10:00:00.000000Z",
+            "object": "send"
+        })
+    }
+
+    #[test]
+    fn a_send_re_serializes_to_the_server_json_it_came_from() {
+        let raw = text_send();
+        let send: SendItem = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(send.access_id, "bjsfbA9cTyudPhorPE1ebw");
+        assert!(send.text.as_ref().unwrap().hidden);
+        assert_eq!(send.max_access_count, Some(3));
+        assert_eq!(send.extra["authType"], 1);
+        assert_eq!(serde_json::to_value(&send).unwrap(), raw);
+    }
+
+    #[test]
+    fn a_send_request_carries_no_emails_and_keeps_null_password() {
+        let request = SendRequest {
+            r#type: send_type::TEXT,
+            name: ENC.into(),
+            notes: None,
+            key: ENC.into(),
+            max_access_count: None,
+            expiration_date: None,
+            deletion_date: "2026-11-18T10:00:00Z".into(),
+            text: SendTextRequest {
+                text: ENC.into(),
+                hidden: false,
+            },
+            password: None,
+            disabled: false,
+            hide_email: true,
+        };
+        let body = serde_json::to_value(&request).unwrap();
+        assert!(body.get("emails").is_none());
+        assert!(body["password"].is_null());
+        assert_eq!(body["disabled"], false);
+        assert_eq!(body["hideEmail"], true);
+        assert_eq!(body["text"]["text"], ENC);
     }
 }

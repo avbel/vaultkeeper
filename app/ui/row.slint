@@ -1,9 +1,10 @@
 import { Theme, Clock } from "theme.slint";
 import { Icon, CopyBtn, KindChip, TotpRing } from "kit.slint";
 
-// Kinds: 0 login, 1 note, 2 card, 3 identity, 4 SSH key, 5 unsupported.
+// Kinds: 0 login, 1 note, 2 card, 3 identity, 4 SSH key, 5 unsupported, 6 Send.
 // Copy codes: 0 username, 1 password, 2 TOTP, 3 URI, 4 notes, 5 card number, 6 card code,
-// 7 email, 8 phone, 9 SSH public key, 10 SSH private key, 99 the shown value, 100+n custom n.
+// 7 email, 8 phone, 9 SSH public key, 10 SSH private key, 11 Send link, 99 the shown value,
+// 100+n custom n.
 export struct RowData {
     kind: int,
     name: string,

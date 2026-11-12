@@ -20,6 +20,7 @@ use crate::{
     Result,
     keys::{KeyRing, decrypt_text},
     model::{CollectionView, Filter, FolderView, ItemId, ItemKind, ItemSummary, OrganizationView},
+    sends::SendList,
     store::CACHE_FORMAT,
 };
 
@@ -310,6 +311,7 @@ pub(crate) struct VaultData {
     /// Sorted by lowercase name.
     entries: Vec<Entry>,
     by_id: HashMap<Arc<str>, usize>,
+    pub sends: SendList,
     /// False for a cache older than [`CACHE_FORMAT`]: its ciphers lack what the models don't
     /// name, and an update built from one would delete that on the server.
     complete: bool,
@@ -326,6 +328,7 @@ impl VaultData {
             org_views: Vec::new(),
             entries: Vec::new(),
             by_id: HashMap::new(),
+            sends: SendList::default(),
             complete: true,
         }
     }
@@ -336,6 +339,7 @@ impl VaultData {
             folders,
             collections,
             ciphers,
+            sends,
         } = sync;
         let mut ids = Interner::default();
 
@@ -375,6 +379,7 @@ impl VaultData {
             org_views,
             entries,
             by_id: HashMap::new(),
+            sends: SendList::build(sends, keys),
             complete: true,
         };
         data.reindex();
@@ -567,9 +572,18 @@ impl VaultData {
             folders: &'a [Folder],
             collections: &'a [Collection],
             ciphers: Ciphers<'a>,
+            sends: Sends<'a>,
         }
 
         struct Ciphers<'a>(&'a [Entry]);
+
+        struct Sends<'a>(&'a SendList);
+
+        impl Serialize for Sends<'_> {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_seq(self.0.items())
+            }
+        }
 
         impl Serialize for Ciphers<'_> {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -583,6 +597,7 @@ impl VaultData {
             folders: &self.folders,
             collections: &self.collections,
             ciphers: Ciphers(&self.entries),
+            sends: Sends(&self.sends),
         })
     }
 }

@@ -16,7 +16,7 @@ use crate::{
     login::{classify_bad_request, is_invalid_grant},
     models::{
         Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, OptionalCipher,
-        PreloginResponse, SyncResponse, TokenResponse,
+        PreloginResponse, SendItem, SendRequest, SyncResponse, TokenResponse,
     },
     server_url::validate_server_url,
     token,
@@ -353,6 +353,46 @@ impl Client {
     pub async fn delete_folder(&self, access_token: &str, id: &str) -> Result<()> {
         let url = self.transport.endpoint(&["api", "folders", id])?;
         self.call_empty(self.transport.delete(url).bearer_auth(access_token))
+            .await
+    }
+
+    /// `POST /api/sends`: a new text Send.
+    pub async fn create_send(&self, access_token: &str, send: &SendRequest) -> Result<SendItem> {
+        let url = self.transport.endpoint(&["api", "sends"])?;
+        self.call(
+            self.transport
+                .post(url)
+                .bearer_auth(access_token)
+                .json(send),
+        )
+        .await
+    }
+
+    /// `PUT /api/sends/{id}`.
+    pub async fn update_send(
+        &self,
+        access_token: &str,
+        id: &str,
+        send: &SendRequest,
+    ) -> Result<SendItem> {
+        let url = self.transport.endpoint(&["api", "sends", id])?;
+        self.call(self.transport.put(url).bearer_auth(access_token).json(send))
+            .await
+    }
+
+    /// `DELETE /api/sends/{id}`: gone at once, there is no trash for Sends.
+    pub async fn delete_send(&self, access_token: &str, id: &str) -> Result<()> {
+        let url = self.transport.endpoint(&["api", "sends", id])?;
+        self.call_empty(self.transport.delete(url).bearer_auth(access_token))
+            .await
+    }
+
+    /// `PUT /api/sends/{id}/remove-password`.
+    pub async fn remove_send_password(&self, access_token: &str, id: &str) -> Result<SendItem> {
+        let url = self
+            .transport
+            .endpoint(&["api", "sends", id, "remove-password"])?;
+        self.call(self.transport.put(url).bearer_auth(access_token))
             .await
     }
 

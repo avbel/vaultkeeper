@@ -95,6 +95,18 @@ pub(super) async fn dispatch<S: VaultService>(
         }),
         Call::RenameFolder { id, name } => unit(service.rename_folder(&id, &name).await),
         Call::DeleteFolder(id) => unit(service.delete_folder(&id).await),
+        Call::Sends => reply(service.sends(), |list| Reply::Sends(convert_all(list))),
+        Call::SendDraft(id) => reply(service.send_draft(&id), |draft| {
+            Reply::SendDraft(Box::new(draft.into()))
+        }),
+        Call::SendLink(id) => reply(service.send_link(&id), Reply::Secret),
+        Call::SaveSend { id, draft } => {
+            reply(service.save_send(id, (*draft).into()).await, |send| {
+                Reply::Send(send.into())
+            })
+        }
+        Call::DeleteSend(id) => unit(service.delete_send(&id).await),
+        Call::RemoveSendPassword(id) => unit(service.remove_send_password(&id).await),
         Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
         call @ (Call::CopyToClipboard { .. } | Call::ClearClipboard) => {
             clipboard_call(clipboard, call).await

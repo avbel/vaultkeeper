@@ -22,6 +22,8 @@ pub enum SidebarKey {
         id: Arc<str>,
     },
     Trash,
+    /// Lists Sends instead of items.
+    Send,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -33,6 +35,7 @@ pub struct Counts {
     pub folders: HashMap<Arc<str>, usize>,
     pub organizations: HashMap<Arc<str>, usize>,
     pub trash: usize,
+    pub sends: usize,
 }
 
 impl Counts {
@@ -68,6 +71,7 @@ const ICON_FOLDER: i32 = 7;
 const ICON_ORG: i32 = 8;
 const ICON_COLLECTION: i32 = 9;
 const ICON_TRASH: i32 = 10;
+const ICON_SEND: i32 = 11;
 
 const fn kind_icon(kind: ItemKind) -> i32 {
     match kind {
@@ -198,6 +202,7 @@ pub fn build(
         }
     }
     data.header("");
+    data.push(SidebarKey::Send, 1, "Send", Some(counts.sends), ICON_SEND);
     data.push(
         SidebarKey::Trash,
         1,
@@ -212,7 +217,8 @@ pub fn build(
 pub fn filter_for(key: &SidebarKey) -> Option<Filter> {
     let filter = match key {
         SidebarKey::Header => return None,
-        SidebarKey::All => Filter::default(),
+        // The item filter is unused while Sends are listed.
+        SidebarKey::All | SidebarKey::Send => Filter::default(),
         SidebarKey::Favorites => Filter {
             favorites_only: true,
             ..Filter::default()
@@ -303,7 +309,10 @@ mod tests {
     #[test]
     fn build_orders_sections_and_sorts_folders() {
         let items = [item(ItemKind::Login, Some("b"), Some("o"), false)];
-        let counts = Counts::tally(&items, 0);
+        let counts = Counts {
+            sends: 3,
+            ..Counts::tally(&items, 0)
+        };
         let data = build(
             &[folder("b", "work"), folder("a", "Finance")],
             &[OrganizationView {
@@ -342,6 +351,7 @@ mod tests {
                 "Acme",
                 "Engineering",
                 "",
+                "Send",
                 "Trash",
             ]
         );
@@ -358,6 +368,9 @@ mod tests {
             .expect("c");
         assert_eq!(collection.kind, 4);
         assert_eq!(collection.count, "");
+        let send = data.index_of(&SidebarKey::Send).expect("send");
+        assert_eq!(data.entries[send].count, "3");
+        assert_eq!(data.entries[send].icon, ICON_SEND);
     }
 
     #[test]
@@ -409,5 +422,6 @@ mod tests {
             None
         );
         assert!(filter_for(&SidebarKey::Trash).expect("t").trash);
+        assert_eq!(filter_for(&SidebarKey::Send), Some(Filter::default()));
     }
 }

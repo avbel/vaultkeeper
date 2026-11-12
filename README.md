@@ -33,6 +33,7 @@ spike's window was dropped). See the "Step 0 result" section of
 - Quick Panel with a global hotkey and fuzzy search: copy password, username or TOTP code from the keyboard
 - Manager window: folders, organizations and collections, moving items into an organization or between collections,
   attachments, trash
+- Send: share text through an encrypted, self-deleting link (optional password and view limit)
 - TOTP codes with a countdown
 - Password and passphrase generator, from the tray or its own hotkey
 - Auto-type of username and password into the previous app (key presses, no clipboard)

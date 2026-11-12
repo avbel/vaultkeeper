@@ -29,7 +29,8 @@ use vk_vault::{
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, CustomField, Filter, FolderView,
         ItemData, ItemDraft, ItemId, ItemKind, ItemSummary, LoginRequest, LoginStep,
-        OrganizationView, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        OrganizationView, SendDraft, SendKind, SendSummary, ServerProbe, SessionState,
+        SshKeyMaterial, TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -168,6 +169,42 @@ pub fn items(count: usize) -> Arc<[ItemSummary]> {
 pub fn secret(text: &str) -> Zeroizing<String> {
     Zeroizing::new(text.to_owned())
 }
+
+pub fn send_summary() -> SendSummary {
+    SendSummary {
+        id: "s1".into(),
+        kind: SendKind::Text,
+        name: "Wi-Fi".into(),
+        file_name: None,
+        file_size: None,
+        has_password: true,
+        hidden: true,
+        disabled: false,
+        hide_email: false,
+        access_count: 1,
+        max_access_count: Some(3),
+        deletion_date: 1_794_157_259,
+        expiration_date: None,
+    }
+}
+
+pub fn send_draft() -> SendDraft {
+    SendDraft {
+        name: "Wi-Fi".to_owned(),
+        text: secret("hunter2"),
+        hidden: true,
+        notes: secret("guests only"),
+        deletion_date: 1_794_157_259,
+        expiration_date: None,
+        max_access_count: Some(3),
+        hide_email: false,
+        disabled: false,
+        password: None,
+        has_password: true,
+    }
+}
+
+pub const SEND_LINK: &str = "https://vault.example.com/#/send/YWNjZXNz/AAECAwQFBgcICQoLDA0ODw";
 
 pub fn draft() -> ItemDraft {
     ItemDraft {
@@ -600,6 +637,44 @@ impl VaultService for FakeVault {
 
     async fn delete_folder(&self, id: &str) -> Result<()> {
         self.record(format!("delete_folder {id}"));
+        Ok(())
+    }
+
+    fn sends(&self) -> Result<Vec<SendSummary>> {
+        self.require_unlocked()?;
+        Ok(vec![send_summary()])
+    }
+
+    fn send_draft(&self, id: &str) -> Result<SendDraft> {
+        self.require_unlocked()?;
+        self.record(format!("send_draft {id}"));
+        Ok(send_draft())
+    }
+
+    fn send_link(&self, id: &str) -> Result<Zeroizing<String>> {
+        self.require_unlocked()?;
+        self.record(format!("send_link {id}"));
+        Ok(secret(SEND_LINK))
+    }
+
+    async fn save_send(&self, id: Option<Arc<str>>, draft: SendDraft) -> Result<SendSummary> {
+        let password = draft.password.as_deref().map_or("-", String::as_str);
+        let target = id.as_deref().unwrap_or("new");
+        self.record(format!(
+            "save_send {target} {} {} {password}",
+            draft.name,
+            draft.text.as_str()
+        ));
+        Ok(send_summary())
+    }
+
+    async fn delete_send(&self, id: &str) -> Result<()> {
+        self.record(format!("delete_send {id}"));
+        Ok(())
+    }
+
+    async fn remove_send_password(&self, id: &str) -> Result<()> {
+        self.record(format!("remove_send_password {id}"));
         Ok(())
     }
 

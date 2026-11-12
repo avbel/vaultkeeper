@@ -54,6 +54,7 @@ export component KindChip inherits Rectangle {
             : root.kind == 2 ? @image-url("icons/kind-card.svg")
             : root.kind == 3 ? @image-url("icons/kind-identity.svg")
             : root.kind == 4 ? @image-url("icons/kind-ssh.svg")
+            : root.kind == 6 ? @image-url("icons/send.svg")
             : @image-url("icons/kind-other.svg");
     }
 }
@@ -255,6 +256,7 @@ export component CopyBtn inherits Rectangle {
             source: root.code == 0 ? @image-url("icons/user.svg")
                 : root.code == 1 || root.code == 10 ? @image-url("icons/key.svg")
                 : root.code == 8 ? @image-url("icons/phone.svg")
+                : root.code == 11 ? @image-url("icons/link.svg")
                 : @image-url("icons/copy.svg");
             tint: Theme.text;
         }

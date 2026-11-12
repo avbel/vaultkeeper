@@ -209,5 +209,6 @@ pub(crate) fn sync(ciphers: Vec<Cipher>, folders: Vec<Folder>) -> SyncResponse {
         folders,
         collections: Vec::new(),
         ciphers,
+        sends: Vec::new(),
     }
 }

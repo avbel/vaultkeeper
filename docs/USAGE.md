@@ -65,6 +65,15 @@ clipboard if it holds a copied secret.
   organization item, *Change…* changes which of its collections it is in. Read-only collections
   stay assigned. An item from before per-item keys that has attachments can't be moved here; use
   the official client for those.
+- **Send:** the sidebar's *Send* entry lists your Sends: text shared through an encrypted link
+  that deletes itself, as in the official apps. *+ New ▸ Send* (or ⌘N in the Send list) takes a
+  name, the text, a deletion time (1 hour to 30 days), and optionally a password, a view limit,
+  *Hide my email* and a private note only you see. Saving copies the link; later, the row's link
+  button or Enter copies it again. The link opens in the web vault of your server and carries the
+  key in its `#` part, so the server never sees the text, but anyone holding the link can read it
+  (share a password another way). Editing keeps the link working; *Remove password* and *Delete*
+  are in the detail pane. File Sends made in another app are listed with their link and can be
+  deleted, but not created or edited here.
 - Copied secrets are hidden from clipboard history, and cleared after 30 s (configurable) if the
   clipboard still holds them. The background process does the clearing, so it happens even when
   the windows have closed, and also on lock, log out, account switch and Quit. Time asleep counts.

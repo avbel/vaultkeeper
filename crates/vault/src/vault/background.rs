@@ -237,6 +237,7 @@ impl Inner {
             | Notification::CipherDeleted { .. }
             | Notification::FolderChanged { .. }
             | Notification::FolderDeleted { .. }
+            | Notification::SendChanged
             | Notification::VaultChanged => self.request_sync(),
         }
     }

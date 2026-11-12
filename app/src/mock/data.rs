@@ -8,7 +8,10 @@ use vk_vault::model::{
 };
 use zeroize::Zeroizing;
 
-use super::fake::{Prng, fake_ssh_key, fnv1a};
+use super::{
+    fake::{Prng, fake_ssh_key, fnv1a},
+    sends::{self, MockSend},
+};
 
 pub struct MockItem {
     pub summary: ItemSummary,
@@ -26,6 +29,7 @@ pub struct AccountData {
     pub organizations: Vec<OrganizationView>,
     pub collections: Vec<CollectionView>,
     pub attachments: HashMap<ItemId, Vec<AttachmentView>>,
+    pub sends: Vec<MockSend>,
 }
 
 /// Derives the list row from the draft, as the real vault does after decrypting names.
@@ -296,6 +300,7 @@ pub fn alice() -> AccountData {
     push_ssh_keys(&mut data, &mut ids);
     push_specials(&mut data, &mut ids);
     data.folders = folders;
+    data.sends = sends::samples(super::state::unix_now().try_into().unwrap_or(i64::MAX));
     seed_mru(&mut data);
     data
 }

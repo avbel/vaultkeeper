@@ -12,6 +12,7 @@ mod browser;
 mod collections;
 mod logout;
 mod probe;
+mod sends;
 mod service_impl;
 mod session;
 mod sync;

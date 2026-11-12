@@ -166,7 +166,7 @@ async fn every_update_type_maps_to_its_notification() {
             Notification::CipherDeleted { id: id() },
             Notification::VaultChanged,
             Notification::LogOut,
-            Notification::Other(12),
+            Notification::SendChanged,
             Notification::Other(15),
             Notification::Other(100),
         ]

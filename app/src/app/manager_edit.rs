@@ -88,6 +88,13 @@ impl<S: VaultService> App<S> {
 
     /// `kind` indexes [`NEW_KINDS`]; the item starts in the folder selected in the sidebar.
     pub(super) fn new_item(&self, kind: i32) {
+        if kind == crate::send_view::NEW_SEND_INDEX {
+            self.new_send();
+            return;
+        }
+        if self.in_send_mode() && !self.select_sidebar_key(&SidebarKey::All) {
+            return;
+        }
         let Some(kind) = usize::try_from(kind)
             .ok()
             .and_then(|index| NEW_KINDS.get(index))

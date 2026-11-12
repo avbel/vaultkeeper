@@ -3,6 +3,7 @@
 
 mod error;
 mod secret;
+mod send;
 mod view;
 
 pub use error::{
@@ -12,6 +13,7 @@ pub use secret::{
     CustomFieldDto, IdentityDto, ItemDataDto, ItemDraftDto, LoginRequestDto, SshKeyDto,
     TotpCodeDto, TwoFactorAnswerDto,
 };
+pub use send::{SendDraftDto, SendKindDto, SendSummaryDto};
 pub use view::{
     AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemKindDto,
     ItemSummaryDto, LoginStepDto, OrganizationDto, SessionStateDto,

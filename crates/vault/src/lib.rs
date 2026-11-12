@@ -18,6 +18,7 @@ pub mod model;
 mod passthrough;
 mod reveal;
 mod secrets;
+mod sends;
 mod service;
 mod store;
 #[cfg(test)]

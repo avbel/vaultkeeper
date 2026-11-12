@@ -5,8 +5,8 @@ use vk_vault::{
     Error, Result, TotpCode, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe, SessionState,
-        SshKeyMaterial, TwoFactorAnswer,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft, SendSummary,
+        ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -300,6 +300,46 @@ impl VaultService for RemoteVault {
 
     async fn delete_folder(&self, id: &str) -> Result<()> {
         unit(&self.call(Call::DeleteFolder(id.to_owned())).await?)
+    }
+
+    fn sends(&self) -> Result<Vec<SendSummary>> {
+        match self.call_blocking(Call::Sends)? {
+            Reply::Sends(list) => Ok(convert_all(list)),
+            _ => Err(unexpected()),
+        }
+    }
+
+    fn send_draft(&self, id: &str) -> Result<SendDraft> {
+        match self.call_blocking(Call::SendDraft(Arc::from(id)))? {
+            Reply::SendDraft(draft) => Ok((*draft).into()),
+            _ => Err(unexpected()),
+        }
+    }
+
+    fn send_link(&self, id: &str) -> Result<Zeroizing<String>> {
+        match self.call_blocking(Call::SendLink(Arc::from(id)))? {
+            Reply::Secret(link) => Ok(link),
+            _ => Err(unexpected()),
+        }
+    }
+
+    async fn save_send(&self, id: Option<Arc<str>>, draft: SendDraft) -> Result<SendSummary> {
+        let call = Call::SaveSend {
+            id,
+            draft: Box::new(draft.into()),
+        };
+        match self.call(call).await? {
+            Reply::Send(send) => Ok(send.into()),
+            _ => Err(unexpected()),
+        }
+    }
+
+    async fn delete_send(&self, id: &str) -> Result<()> {
+        unit(&self.call(Call::DeleteSend(Arc::from(id))).await?)
+    }
+
+    async fn remove_send_password(&self, id: &str) -> Result<()> {
+        unit(&self.call(Call::RemoveSendPassword(Arc::from(id))).await?)
     }
 
     fn ssh_keys(&self) -> Result<Vec<SshKeyMaterial>> {

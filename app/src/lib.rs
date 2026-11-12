@@ -22,6 +22,7 @@ pub mod mock;
 pub mod os;
 pub mod rows;
 pub mod run;
+pub mod send_view;
 pub mod server_url;
 pub mod settings;
 pub mod sidebar;

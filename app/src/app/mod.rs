@@ -14,6 +14,7 @@ mod manager;
 mod manager_assign;
 mod manager_detail;
 mod manager_edit;
+mod manager_send;
 mod quick;
 mod reprompt;
 mod settings_browser;

@@ -160,6 +160,7 @@ impl Fake {
             folders: Vec::new(),
             collections: Vec::new(),
             ciphers,
+            sends: Vec::new(),
         })
         .unwrap()
     }
@@ -1596,4 +1597,225 @@ async fn a_token_the_hub_rejects_is_refreshed_before_reconnecting() {
         2,
         "the password login and one refresh"
     );
+}
+
+/// Vaultwarden's Send routes, enough for the vault: `POST /api/sends` and `PUT /api/sends/{id}`
+/// store the request as the server would, and `/api/sync` lists what is stored, so the
+/// confirming sync after a write keeps the Send.
+struct SendServer {
+    stored: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+
+impl SendServer {
+    async fn mount(fake: &Fake) -> Self {
+        let stored = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let create = Arc::clone(&stored);
+        Mock::given(method("POST"))
+            .and(path("/api/sends"))
+            .respond_with(move |request: &Request| {
+                let mut list = create.lock().unwrap();
+                let id = format!("send-{}", list.len() + 1);
+                let send = stored_send(&id, request, None);
+                list.push(send.clone());
+                ResponseTemplate::new(200).set_body_json(send)
+            })
+            .mount(&fake.server)
+            .await;
+        let update = Arc::clone(&stored);
+        Mock::given(method("PUT"))
+            .and(wiremock::matchers::path_regex("^/api/sends/[^/]+$"))
+            .respond_with(move |request: &Request| {
+                let id = request.url.path().rsplit('/').next().unwrap().to_owned();
+                let mut list = update.lock().unwrap();
+                let position = list.iter().position(|send| send["id"] == id.as_str());
+                let Some(position) = position else {
+                    return ResponseTemplate::new(404);
+                };
+                let send = stored_send(&id, request, Some(&list[position]));
+                list[position] = send.clone();
+                ResponseTemplate::new(200).set_body_json(send)
+            })
+            .mount(&fake.server)
+            .await;
+        let sync = Arc::clone(&stored);
+        let body = fake.sync_body(Vec::new());
+        Mock::given(method("GET"))
+            .and(path("/api/sync"))
+            .respond_with(move |_: &Request| {
+                let mut body = body.clone();
+                body["sends"] = Value::Array(sync.lock().unwrap().clone());
+                ResponseTemplate::new(200).set_body_json(body)
+            })
+            .with_priority(1)
+            .mount(&fake.server)
+            .await;
+        Self { stored }
+    }
+
+    fn get(&self, id: &str) -> Value {
+        let list = self.stored.lock().unwrap();
+        list.iter().find(|send| send["id"] == id).unwrap().clone()
+    }
+}
+
+/// What Vaultwarden's `Send::to_json` returns for a create or update request.
+fn stored_send(id: &str, request: &Request, before: Option<&Value>) -> Value {
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert!(body.get("emails").is_none(), "Vaultwarden refuses emails");
+    let password = match (&body["password"], before) {
+        (Value::Null, Some(before)) => before["password"].clone(),
+        (Value::Null, None) => Value::Null,
+        (Value::String(_), _) => json!("c2VydmVyLWhhc2g"),
+        (other, _) => panic!("password must be a string or null, got {other}"),
+    };
+    json!({
+        "id": id,
+        "accessId": format!("access-{id}"),
+        "type": body["type"],
+        "name": body["name"],
+        "notes": body["notes"],
+        "text": body["text"],
+        "file": null,
+        "key": body["key"],
+        "maxAccessCount": body["maxAccessCount"],
+        "accessCount": before.map_or(json!(0), |before| before["accessCount"].clone()),
+        "password": password,
+        "disabled": body["disabled"],
+        "hideEmail": body["hideEmail"],
+        "revisionDate": "2026-11-08T17:00:59.321Z",
+        "expirationDate": body["expirationDate"],
+        "deletionDate": body["deletionDate"],
+        "object": "send",
+    })
+}
+
+fn send_draft(text: &str, password: Option<&str>) -> vk_vault::model::SendDraft {
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    vk_vault::model::SendDraft {
+        name: "Wi-Fi".into(),
+        text: Zeroizing::new(text.into()),
+        hidden: true,
+        notes: Zeroizing::new("guests only".into()),
+        deletion_date: now + 7 * 86_400,
+        expiration_date: None,
+        max_access_count: Some(3),
+        hide_email: false,
+        disabled: false,
+        password: password.map(|password| Zeroizing::new(password.into())),
+        has_password: false,
+    }
+}
+
+/// Opens a link as a recipient's client does: the seed from the fragment, then the text.
+fn open_link(link: &str, send: &Value) -> String {
+    use base64::Engine as _;
+    let fragment = link.rsplit('/').next().unwrap();
+    let fragment_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(fragment)
+        .unwrap();
+    let key = vk_crypto::SendKey::from_seed(&fragment_key).unwrap();
+    let text: EncString = send["text"]["text"].as_str().unwrap().parse().unwrap();
+    text.decrypt_string(key.key()).unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_text_send_opens_from_its_link_and_survives_the_confirming_sync() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, Vec::new()).await;
+    let server = SendServer::mount(&fake).await;
+    let vault = &harness.vault;
+
+    let summary = vault
+        .save_send(None, send_draft("hunter2", Some("open sesame")))
+        .await
+        .unwrap();
+    assert_eq!(&*summary.name, "Wi-Fi");
+    assert!(summary.has_password && summary.hidden);
+    let stored = server.get(&summary.id);
+
+    let link = vault.send_link(&summary.id).unwrap();
+    let prefix = format!("{}#/send/access-{}/", fake.url(), summary.id);
+    assert!(link.starts_with(&prefix), "{}", link.as_str());
+    assert_eq!(open_link(&link, &stored), "hunter2");
+
+    // The owner keeps the seed wrapped by the user key; the password proof is salted with it.
+    let wrapped: EncString = stored["key"].as_str().unwrap().parse().unwrap();
+    let seed = wrapped.decrypt(&fake.user_key).unwrap();
+    let key = vk_crypto::SendKey::from_seed(&seed).unwrap();
+    let requests = fake.requests_to("/api/sends").await;
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["password"], key.password_hash("open sesame"));
+
+    vault.sync().await.unwrap();
+    let listed = vault.sends().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, summary.id);
+    assert_eq!(
+        vault.send_draft(&summary.id).unwrap().text.as_str(),
+        "hunter2"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn editing_a_send_keeps_its_seed_so_the_shared_link_still_opens() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, Vec::new()).await;
+    let server = SendServer::mount(&fake).await;
+    let vault = &harness.vault;
+    let summary = vault
+        .save_send(None, send_draft("first", Some("pw")))
+        .await
+        .unwrap();
+    let link = vault.send_link(&summary.id).unwrap();
+    let key_before = server.get(&summary.id)["key"].clone();
+
+    let mut draft = vault.send_draft(&summary.id).unwrap();
+    assert!(draft.has_password && draft.password.is_none());
+    draft.text = Zeroizing::new("second".into());
+    vault
+        .save_send(Some(Arc::clone(&summary.id)), draft)
+        .await
+        .unwrap();
+
+    let stored = server.get(&summary.id);
+    assert_eq!(stored["key"], key_before);
+    assert_eq!(open_link(&link, &stored), "second");
+    assert_eq!(vault.send_link(&summary.id).unwrap(), link);
+    assert!(
+        vault.sends().unwrap()[0].has_password,
+        "a null password keeps the old one"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_are_cached_for_offline_use_and_writes_wait_for_the_server() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, Vec::new()).await;
+    let _server = SendServer::mount(&fake).await;
+    let vault = &harness.vault;
+    let summary = vault
+        .save_send(None, send_draft("cached", None))
+        .await
+        .unwrap();
+    let link = vault.send_link(&summary.id).unwrap();
+    vault.lock();
+    assert!(matches!(vault.sends(), Err(Error::Locked)));
+    drop(fake);
+
+    vault
+        .unlock_with_password(Zeroizing::new(PASSWORD.into()))
+        .await
+        .unwrap();
+    assert_eq!(vault.sends().unwrap()[0].name, summary.name);
+    assert_eq!(vault.send_link(&summary.id).unwrap(), link);
+    assert!(vault.sync().await.unwrap_err().is_offline());
+    let refused = vault.delete_send(&summary.id).await.unwrap_err();
+    assert!(matches!(refused, Error::Offline), "{refused:?}");
+    assert_eq!(vault.sends().unwrap().len(), 1);
 }

@@ -229,3 +229,64 @@ pub struct SshKeyMaterial {
     /// OpenSSH PEM.
     pub private_key: Zeroizing<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SendKind {
+    Text,
+    /// Made by another client; listed, linked and deleted here, but not created or edited.
+    File,
+    Unsupported(u8),
+}
+
+/// One Send in the list. Contains no secrets: the link and the text are fetched on demand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendSummary {
+    pub id: Arc<str>,
+    pub kind: SendKind,
+    pub name: Arc<str>,
+    /// A file Send's decrypted file name and the server's size label ("1.2 MB").
+    pub file_name: Option<Arc<str>>,
+    pub file_size: Option<Arc<str>>,
+    pub has_password: bool,
+    pub hidden: bool,
+    pub disabled: bool,
+    pub hide_email: bool,
+    pub access_count: u32,
+    pub max_access_count: Option<u32>,
+    /// Unix seconds; the server deletes the Send then.
+    pub deletion_date: i64,
+    /// Unix seconds after which the link stops working while the Send still exists.
+    pub expiration_date: Option<i64>,
+}
+
+impl SendSummary {
+    /// Whether a recipient can still open the link at `now` (unix seconds), as the server decides
+    /// it (`Send::is_accessible` plus the access limit).
+    #[must_use]
+    pub fn is_available(&self, now: i64) -> bool {
+        !self.disabled
+            && now < self.deletion_date
+            && self.expiration_date.is_none_or(|expires| now < expires)
+            && self
+                .max_access_count
+                .is_none_or(|max| self.access_count < max)
+    }
+}
+
+/// A text Send for the edit form. `password` is a new password to set; `None` keeps the current
+/// one, which can only be removed (`VaultService::remove_send_password`), never read back.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SendDraft {
+    pub name: String,
+    pub text: Zeroizing<String>,
+    pub hidden: bool,
+    pub notes: Zeroizing<String>,
+    pub deletion_date: i64,
+    pub expiration_date: Option<i64>,
+    pub max_access_count: Option<u32>,
+    pub hide_email: bool,
+    pub disabled: bool,
+    pub password: Option<Zeroizing<String>>,
+    /// The stored Send has a password (read-only; ignored on save).
+    pub has_password: bool,
+}

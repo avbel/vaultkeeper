@@ -7,8 +7,8 @@ use crate::{
     Result, TotpCode,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, ServerProbe, SessionState,
-        SshKeyMaterial, TwoFactorAnswer,
+        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft, SendSummary,
+        ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 
@@ -146,6 +146,27 @@ pub trait VaultService: Send + Sync + 'static {
     fn create_folder(&self, name: &str) -> impl Future<Output = Result<FolderView>> + Send;
     fn rename_folder(&self, id: &str, name: &str) -> impl Future<Output = Result<()>> + Send;
     fn delete_folder(&self, id: &str) -> impl Future<Output = Result<()>> + Send;
+
+    /// The account's Sends, sorted by name.
+    fn sends(&self) -> Result<Vec<SendSummary>>;
+
+    /// Decrypts a text Send for the detail pane and the edit form; file Sends are refused.
+    fn send_draft(&self, id: &str) -> Result<SendDraft>;
+
+    /// The share link. It carries the decryption key, so treat it like a secret.
+    fn send_link(&self, id: &str) -> Result<Zeroizing<String>>;
+
+    /// Creates (id `None`) or updates a text Send and returns its new list row.
+    fn save_send(
+        &self,
+        id: Option<Arc<str>>,
+        draft: SendDraft,
+    ) -> impl Future<Output = Result<SendSummary>> + Send;
+
+    /// Deletes the Send on the server at once; its link stops working.
+    fn delete_send(&self, id: &str) -> impl Future<Output = Result<()>> + Send;
+
+    fn remove_send_password(&self, id: &str) -> impl Future<Output = Result<()>> + Send;
 
     /// All non-deleted SSH key items, for the agent.
     fn ssh_keys(&self) -> Result<Vec<SshKeyMaterial>>;
