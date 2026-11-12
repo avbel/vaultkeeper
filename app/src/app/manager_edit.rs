@@ -5,7 +5,7 @@ use std::rc::Rc;
 use slint::{Model, ModelRc, SharedString, VecModel};
 use vk_vault::{
     VaultService,
-    model::{ItemData, ItemDraft, ItemId, ItemKind},
+    model::{CLI_ACCESS_FIELD, ItemData, ItemDraft, ItemId, ItemKind},
 };
 
 use super::{App, handler};
@@ -142,6 +142,7 @@ impl<S: VaultService> App<S> {
         window.set_edit_error(SharedString::new());
         window.set_edit_favorite(draft.favorite);
         window.set_edit_reprompt(draft.reprompt);
+        window.set_edit_allow_cli_access(draft.allows_cli_access());
         window.set_edit_folder_index(folder_index);
         window.set_can_add_uri(matches!(draft.data, ItemData::Login { .. }));
         window.set_saving(false);
@@ -280,12 +281,18 @@ impl<S: VaultService> App<S> {
         .and_then(|draft| {
             if missing_custom_name {
                 Err(edit_form::EditError::CustomNameRequired)
+            } else if matches!(draft.data, ItemData::Login { .. })
+                && values
+                    .iter()
+                    .any(|row| row.custom && row.custom_name == CLI_ACCESS_FIELD)
+            {
+                Err(edit_form::EditError::ReservedCustomName)
             } else {
                 Ok(draft)
             }
         })
         .map(|mut draft| {
-            draft.fields = values
+            let mut fields: Vec<_> = values
                 .iter()
                 .filter(|row| row.custom)
                 .map(|row| {
@@ -304,6 +311,16 @@ impl<S: VaultService> App<S> {
                     }
                 })
                 .collect();
+            if matches!(draft.data, ItemData::Login { .. }) {
+                fields.extend(
+                    draft
+                        .fields
+                        .into_iter()
+                        .filter(|field| field.name == CLI_ACCESS_FIELD),
+                );
+            }
+            draft.fields = fields;
+            draft.set_allow_cli_access(window.get_edit_allow_cli_access());
             ItemDraft {
                 favorite: window.get_edit_favorite(),
                 reprompt: window.get_edit_reprompt(),

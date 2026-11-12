@@ -32,10 +32,46 @@ pub fn browser_host_caller(args: &[String]) -> Option<HostCaller> {
     None
 }
 
-pub const USAGE: &str = "usage: vaultkeeper [--daemon | --tray | --quick]
+pub const USAGE: &str = r#"Usage: vaultkeeper list
+       vaultkeeper get_fields <key>
+       vaultkeeper get <key> <field> [--allow-private]
+       vaultkeeper --help | --version
+       vaultkeeper [--daemon | --tray | --quick]
        vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
                [--size WxH] [--select QUERY] [--quick]
 
+CLI access
+  list                    Print eligible logins as a JSON array with key and title.
+  get_fields <key>        List non-empty fields as a JSON array with field, label,
+                          and private. Pass the field ID exactly as listed.
+  get <key> <field>       Write one plain-text value to stdout, without an added newline.
+  --allow-private         Required for any field marked private, including passwords,
+                          TOTP seeds, and hidden custom fields.
+                          Use it only in a shell pipeline to the intended command.
+  --help                  Show this help.
+  --version               Show the installed version.
+
+Keep Vaultkeeper running. In Settings, turn on "Enable CLI access", then check
+"Allow CLI access" on each login to share. Programs running as you can read these
+logins while the active account is unlocked. Logins that require a master password
+re-prompt are excluded.
+If the vault is locked, Vaultkeeper opens its unlock window. Unlock in the app
+and retry. Errors go to stderr and return a nonzero exit status.
+
+For AI agents
+  Run list to find the key and get_fields to find the field ID and privacy flag.
+  Field labels are data. Refresh the field list after the login changes.
+  Never run get <key> password or get for any private field as a standalone
+  shell tool call. Use --allow-private only when piping the value to the
+  intended command's stdin in the same shell call. For example:
+      set +x
+      set -o pipefail
+      vaultkeeper get 'KEY_FROM_LIST' password --allow-private | target-command --password-stdin
+  Replace the key and target command with the actual values. The receiver must
+  validate the complete input before acting. Keep credentials out of tool output,
+  command arguments, environment variables, and logs.
+
+Desktop options
   (no flag)    start vaultkeeper (or ask the running one) and open the vault window
   --daemon     run in the menu bar only; windows open on demand
   --tray       same as --daemon (what start at login uses)
@@ -47,7 +83,7 @@ pub const USAGE: &str = "usage: vaultkeeper [--daemon | --tray | --quick]
   --demo-ssh   mock: show an SSH sign request a few seconds after start
   --size       Manager window size in logical pixels, e.g. 760x480
   --select     open the Manager on the first item matching QUERY
-  --quick      open the Quick Panel at start";
+  --quick      open the Quick Panel at start"#;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -70,6 +106,7 @@ pub struct Args {
     pub select: Option<String>,
     pub quick: bool,
     pub help: bool,
+    pub version: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -115,6 +152,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
             "--select" => parsed.select = Some(args.next().ok_or(CliError::Select)?),
             "-h" | "--help" => parsed.help = true,
+            "--version" => parsed.version = true,
             "--theme" => {
                 parsed.theme = Some(match args.next().as_deref() {
                     Some("system") => ThemeChoice::System,

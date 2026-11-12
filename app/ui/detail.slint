@@ -594,6 +594,7 @@ export component EditForm inherits Rectangle {
     in property <string> error;
     in-out property <bool> favorite;
     in-out property <bool> reprompt;
+    in-out property <bool> allow-cli-access;
     in property <[string]> folder-options;
     in-out property <int> folder-index;
     in property <bool> saving;
@@ -741,6 +742,7 @@ export component EditForm inherits Rectangle {
             }
             Check { text: "Favorite"; checked <=> root.favorite; }
             Check { text: "Ask for master password"; checked <=> root.reprompt; }
+            if root.can-add-uri: Check { text: "Allow CLI access"; checked <=> root.allow-cli-access; }
             if root.error != "": Text {
                 text: root.error;
                 color: Theme.danger;

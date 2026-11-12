@@ -34,6 +34,7 @@
 compile_error!("vk-ipc talks over a unix domain socket; only unix targets are supported");
 
 pub mod browser;
+pub mod cli_access;
 mod client;
 mod clipboard;
 pub mod dto;

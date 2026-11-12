@@ -9,6 +9,7 @@
 mod attachments;
 mod background;
 mod browser;
+mod cli_access;
 mod collections;
 mod logout;
 mod probe;

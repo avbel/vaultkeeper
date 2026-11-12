@@ -410,7 +410,7 @@ impl VaultData {
         ids
     }
 
-    pub(crate) fn browser_entries(&self) -> impl Iterator<Item = &Entry> {
+    pub(crate) fn login_entries(&self) -> impl Iterator<Item = &Entry> {
         self.entries
             .iter()
             .filter(|entry| entry.summary.kind == ItemKind::Login && !entry.summary.deleted)
