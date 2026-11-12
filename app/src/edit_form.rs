@@ -1,6 +1,6 @@
 //! Edit form: one generic field list per item kind, mapped back onto the draft on save.
 
-use vk_vault::model::{IdentityData, ItemData, ItemDraft, ItemKind};
+use vk_vault::model::{CLI_ACCESS_FIELD, IdentityData, ItemData, ItemDraft, ItemKind};
 use zeroize::Zeroizing;
 
 use crate::ui::EditField;
@@ -11,6 +11,8 @@ pub enum EditError {
     NameRequired,
     #[error("Custom field name is required")]
     CustomNameRequired,
+    #[error("Use the Allow CLI access checkbox to change CLI access")]
+    ReservedCustomName,
     #[error("Unsupported items cannot be edited")]
     Unsupported,
 }
@@ -220,6 +222,9 @@ pub fn edit_fields(draft: &ItemDraft) -> Vec<EditField> {
     let mut out = vec![field("name", "Name", &draft.name, TEXT)];
     data_fields(&draft.data, &mut out);
     for (index, custom) in draft.fields.iter().enumerate() {
+        if matches!(draft.data, ItemData::Login { .. }) && custom.name == CLI_ACCESS_FIELD {
+            continue;
+        }
         let spec = Spec {
             multiline: true,
             ..if custom.hidden { SECRET } else { TEXT }

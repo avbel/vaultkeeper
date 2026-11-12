@@ -1132,3 +1132,33 @@ fn a_hidden_custom_field_without_a_visible_value_has_no_reveal_or_copy() {
     assert_eq!(field.copy, -1, "no copy control");
     assert_eq!(field.value, "");
 }
+
+#[test]
+fn login_cli_access_is_an_opt_in_boolean_and_can_be_revoked() {
+    use vk_vault::model::CLI_ACCESS_FIELD;
+
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    click(&manager, "Edit");
+    assert!(control_exists(&manager, "Allow CLI access"));
+    assert!(!manager.get_edit_allow_cli_access());
+    click(&manager, "Allow CLI access");
+    click(&manager, "Save");
+    let saved = h.vault.last_saved().expect("saved login");
+    assert!(saved.allows_cli_access());
+    assert!(saved.fields.iter().any(|field| {
+        field.name == CLI_ACCESS_FIELD && field.field_type == 2 && field.value.as_str() == "true"
+    }));
+    h.app.on_vault_changed();
+    pump();
+    click(&manager, "Edit");
+    assert!(manager.get_edit_allow_cli_access());
+    click(&manager, "Allow CLI access");
+    click(&manager, "Save");
+    let saved = h.vault.last_saved().expect("saved login");
+    assert!(!saved.allows_cli_access());
+    assert!(saved.fields.iter().any(|field| {
+        field.name == CLI_ACCESS_FIELD && field.field_type == 2 && field.value.as_str() == "false"
+    }));
+}

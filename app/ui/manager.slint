@@ -179,6 +179,7 @@ export component ManagerWindow inherits Window {
     in property <string> edit-error;
     in-out property <bool> edit-favorite;
     in-out property <bool> edit-reprompt;
+    in-out property <bool> edit-allow-cli-access;
     in-out property <int> edit-folder-index;
     in property <bool> saving;
     in property <bool> can-add-uri;
@@ -477,6 +478,7 @@ export component ManagerWindow inherits Window {
                         error: root.edit-error;
                         favorite <=> root.edit-favorite;
                         reprompt <=> root.edit-reprompt;
+                        allow-cli-access <=> root.edit-allow-cli-access;
                         folder-options: root.folder-options;
                         folder-index <=> root.edit-folder-index;
                         saving: root.saving;

@@ -46,6 +46,8 @@ export component SettingsWindow inherits Window {
     in property <bool> touch-id-enrolled;
     in property <bool> unlocked;
     in-out property <bool> ssh-agent;
+    in-out property <bool> cli-access;
+    in property <string> cli-path-setup;
     in property <string> ssh-socket;
     // The ~/.ssh/config lines that point ssh at the agent.
     in property <string> ssh-config;
@@ -87,6 +89,8 @@ export component SettingsWindow inherits Window {
     callback touch-id-enroll();
     callback touch-id-remove();
     callback ssh-agent-toggled(bool);
+    callback cli-access-toggled(bool);
+    callback copy-cli-path-setup() -> bool;
     callback copy-socket() -> bool;
     callback copy-ssh-config() -> bool;
     callback ssh-approval-selected(int);
@@ -303,6 +307,47 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 Toggle { text: "SSH requires Touch ID"; checked <=> root.ssh-touch-id; toggled(v) => { root.ssh-touch-id-toggled(v); } }
+                Divider { }
+                SectionLabel { text: "CLI ACCESS"; }
+                Toggle {
+                    text: "Enable CLI access";
+                    checked <=> root.cli-access;
+                    description: "Programs running as you can read fields from logins marked “Allow CLI access” while the vault is unlocked. Logins that require a master password re-prompt are excluded.";
+                    toggled(v) => { root.cli-access-toggled(v); }
+                }
+                Text {
+                    text: "CLI access is read-only. Programs can retain credentials they read. Manage access in Vaultkeeper.";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                }
+                if root.cli-path-setup != "": Text {
+                    text: "Copy and paste this command into your terminal (sh, Bash, or Zsh). It adds Vaultkeeper to PATH for that shell. To keep it available in new terminals, add the command to your shell startup file. Run it in the agent’s shell too if it uses a separate one. Then run vaultkeeper --help.";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                }
+                if root.cli-path-setup != "": HorizontalLayout {
+                    spacing: Theme.s2;
+                    Text {
+                        text: root.cli-path-setup;
+                        font-family: Theme.mono;
+                        font-size: Theme.font-meta;
+                        color: Theme.text;
+                        horizontal-stretch: 1;
+                        wrap: char-wrap;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "CLI setup command";
+                        accessible-value: self.text;
+                    }
+                    CopyBtn {
+                        y: 0px;
+                        code: 3;
+                        label: "Copy CLI setup command";
+                        emphasized: true;
+                        copy => { return root.copy-cli-path-setup(); }
+                    }
+                }
                 Divider { }
                 SectionLabel { text: "BROWSERS"; }
                 Toggle {

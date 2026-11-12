@@ -19,17 +19,20 @@ use vaultkeeper::{
     },
     os::{
         ClipboardKeeper,
-        layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
+        layout::{CLI_SOCKET, SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
         settings_file::SettingsFile,
     },
     settings::Settings,
     ui_process::answer,
 };
+use vk_api::models::{Cipher, Field, Login, Profile, SyncResponse};
+use vk_crypto::{EncString, SymmetricKey};
+use vk_ipc::cli_access::{self, Request, Response};
 use vk_ipc::{ClipboardHost, EventStream, RemoteVault, TypingTarget, UiCommand, UiEvent, UiNotice};
 use vk_ssh::{ApprovalKind, ApprovalRequest};
 use vk_vault::{
     MemorySecretStore, VaultService,
-    model::{Filter, LoginRequest, SessionState},
+    model::{CLI_ACCESS_FIELD, Filter, LoginRequest, SessionState},
 };
 use zeroize::Zeroizing;
 
@@ -338,6 +341,234 @@ async fn the_agent_follows_the_saved_setting() {
     eventually(|| !daemon.ssh_agent_running()).await;
     eventually(|| !socket.exists()).await;
     daemon.shutdown().await;
+}
+
+fn cli_test_vault(dir: &DataDir) -> SymmetricKey {
+    const ID: &str = "3bef05d6-9070-48b4-b320-a5d425eec9fd";
+    const SERVER: &str = "https://example.invalid";
+    const EMAIL: &str = "cli@example.invalid";
+    let account = dir.path().join("accounts").join(ID);
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(
+        dir.path().join("accounts.json"),
+        serde_json::json!({"accounts": [{"id": ID, "server": SERVER, "email": EMAIL}]}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        account.join("account.json"),
+        serde_json::json!({
+            "id": ID, "server": SERVER, "email": EMAIL,
+            "kdf": {"kind": 0, "iterations": 600_000}, "key": "unused"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let key = SymmetricKey::generate();
+    let enc = |text: &str| {
+        Some(
+            EncString::encrypt(text.as_bytes(), &key)
+                .unwrap()
+                .to_string(),
+        )
+    };
+    let ciphers = [("shared", "true"), ("private", "false")]
+        .into_iter()
+        .map(|(id, allow)| Cipher {
+            id: id.into(),
+            r#type: 1,
+            name: enc(id),
+            notes: enc(""),
+            view_password: true,
+            login: Some(Login {
+                username: enc("test-user"),
+                password: enc("test-password"),
+                totp: enc("test-seed"),
+                ..Login::default()
+            }),
+            fields: Some(
+                [
+                    (2, CLI_ACCESS_FIELD, allow),
+                    (0, "Label", "visible"),
+                    (1, "Label", "hidden\nvalue"),
+                ]
+                .into_iter()
+                .map(|(kind, name, value)| Field {
+                    r#type: kind,
+                    name: enc(name),
+                    value: enc(value),
+                    ..Field::default()
+                })
+                .collect(),
+            ),
+            ..Cipher::default()
+        })
+        .collect();
+    let cached = SyncResponse {
+        profile: Profile {
+            id: ID.into(),
+            email: EMAIL.into(),
+            name: None,
+            key: None,
+            private_key: None,
+            organizations: Vec::new(),
+        },
+        ciphers,
+        folders: Vec::new(),
+        collections: Vec::new(),
+    };
+    std::fs::write(
+        account.join("vault.json"),
+        serde_json::to_vec(&cached).unwrap(),
+    )
+    .unwrap();
+    key
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_follows_settings_and_requests_unlock_in_the_app() {
+    let dir = DataDir::new();
+    let key = cli_test_vault(&dir);
+    let daemon = start(&dir).await;
+    let socket = dir.path().join(CLI_SOCKET);
+    let (vault, mut events) = connect(&dir).await;
+    assert!(matches!(vault.state(), SessionState::Locked { .. }));
+    assert!(!socket.exists());
+
+    write_settings(
+        dir.path(),
+        &Settings {
+            cli_access: true,
+            ..Settings::default()
+        },
+    );
+    vault.notify(UiNotice::SettingsChanged).unwrap();
+    eventually(|| socket.exists()).await;
+    for request in [
+        Request::ListKeys,
+        Request::GetFields {
+            key: "example-key".to_owned(),
+        },
+        Request::GetValue {
+            key: "example-key".to_owned(),
+            field: "password".to_owned(),
+            allow_private: true,
+        },
+    ] {
+        assert!(matches!(
+            cli_access::call(&socket, &request).await.unwrap(),
+            Response::Locked
+        ));
+    }
+    assert!(matches!(
+        next(&mut events).await,
+        UiEvent::Command {
+            command: UiCommand::ShowUnlock,
+            ..
+        }
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), events.next())
+            .await
+            .is_err()
+    );
+
+    daemon.vault().unlock_with_user_key(key.to_bytes()).unwrap();
+    let Response::Keys(keys) = cli_access::call(&socket, &Request::ListKeys).await.unwrap() else {
+        panic!("expected available login keys");
+    };
+    assert_eq!(
+        keys.iter().map(|login| &*login.key).collect::<Vec<_>>(),
+        ["shared"]
+    );
+    assert_cli_fields(&socket).await;
+    daemon.vault().lock();
+    assert!(matches!(
+        cli_access::call(
+            &socket,
+            &Request::GetValue {
+                key: "shared".into(),
+                field: "password".into(),
+                allow_private: true
+            }
+        )
+        .await
+        .unwrap(),
+        Response::Locked
+    ));
+
+    write_settings(dir.path(), &Settings::default());
+    vault.notify(UiNotice::SettingsChanged).unwrap();
+    eventually(|| !socket.exists()).await;
+    assert!(cli_access::call(&socket, &Request::ListKeys).await.is_err());
+    daemon.shutdown().await;
+}
+
+async fn assert_cli_fields(socket: &Path) {
+    let Response::Fields(fields) = cli_access::call(
+        socket,
+        &Request::GetFields {
+            key: "shared".to_owned(),
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("expected non-empty login fields");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| (f.field.as_str(), f.label.as_str(), f.private))
+            .collect::<Vec<_>>(),
+        [
+            ("title", "Title", false),
+            ("username", "Username", false),
+            ("password", "Password", true),
+            ("totp", "TOTP seed", true),
+            ("custom:2", "Label", false),
+            ("custom:3", "Label", true),
+        ]
+    );
+    let get = |key: &str, field: &str, allow_private| Request::GetValue {
+        key: key.to_owned(),
+        field: field.to_owned(),
+        allow_private,
+    };
+    for (field, allow_private, expected) in [
+        ("username", false, "test-user"),
+        ("password", true, "test-password"),
+        ("custom:2", false, "visible"),
+        ("custom:3", true, "hidden\nvalue"),
+    ] {
+        let Response::Value(value) = cli_access::call(socket, &get("shared", field, allow_private))
+            .await
+            .unwrap()
+        else {
+            panic!("expected field value");
+        };
+        assert_eq!(value.as_str(), expected);
+    }
+    for field in ["password", "totp", "custom:3"] {
+        assert!(matches!(
+            cli_access::call(socket, &get("shared", field, false))
+                .await
+                .unwrap(),
+            Response::PrivateField
+        ));
+    }
+    for field in ["custom:1", "notes", "missing"] {
+        assert!(matches!(
+            cli_access::call(socket, &get("shared", field, true))
+                .await
+                .unwrap(),
+            Response::NoSuchField
+        ));
+    }
+    assert!(matches!(
+        cli_access::call(socket, &get("private", "password", true))
+            .await
+            .unwrap(),
+        Response::NotFound
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

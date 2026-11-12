@@ -15,6 +15,20 @@ use crate::{
     viewmodel::host,
 };
 
+fn cli_path_setup() -> String {
+    std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::to_str)
+        .map_or_else(String::new, |directory| {
+            format!(
+                "export PATH='{}':\"$PATH\"",
+                directory.replace('\'', "'\\''")
+            )
+        })
+}
+
 impl<S: VaultService> App<S> {
     pub fn open_settings(&self) {
         let existing = self
@@ -93,6 +107,8 @@ impl<S: VaultService> App<S> {
             vk_vault::model::SessionState::Unlocked { .. }
         ));
         window.set_ssh_agent(settings.ssh_agent);
+        window.set_cli_access(settings.cli_access);
+        window.set_cli_path_setup(cli_path_setup().into());
         let socket = self.hooks.ssh_agent.socket_path();
         window.set_ssh_config(ssh_config_lines(&socket).into());
         window.set_ssh_socket(socket.into());
@@ -183,6 +199,13 @@ impl<S: VaultService> App<S> {
         window.on_touch_id_enroll(handler!(self, |app| app.enroll_touch_id()));
         window.on_touch_id_remove(handler!(self, |app| app.remove_touch_id()));
         self.bind_ssh_settings(window);
+        window.on_cli_access_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.cli_access = enabled);
+        }));
+        window.on_copy_cli_path_setup(handler!(self, false, |app| {
+            let command = zeroize::Zeroizing::new(cli_path_setup());
+            app.copy_text("CLI setup command", &command)
+        }));
         window.on_touch_id_right_away_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.touch_id_right_away = enabled);
         }));
