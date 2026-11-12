@@ -1,11 +1,11 @@
-//! Manager "Send" section: the list of Sends, their detail pane and the text Send form. Active
+//! Manager "Send" section: the list of Sends, their detail pane and the Send form. Active
 //! while the sidebar's Send entry is selected; the item list, detail and edit stay untouched.
 
-use std::{rc::Rc, sync::Arc};
+use std::{fs, path::PathBuf, rc::Rc, sync::Arc};
 
-use slint::{Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use vk_vault::{
-    VaultService,
+    MAX_SEND_FILE_BYTES, VaultService,
     model::{SendDraft, SendKind, SendSummary},
 };
 use zeroize::Zeroizing;
@@ -26,7 +26,7 @@ pub(super) struct SendPane {
     /// The listed Sends, in row order.
     pub(super) sends: Vec<SendSummary>,
     pub(super) selected: Option<Arc<str>>,
-    /// The selected text Send, decrypted while the pane shows it.
+    /// The selected Send's decrypted details, kept while the pane shows them.
     draft: Option<SendDraft>,
     revealed: bool,
     pub(super) edit: Option<SendEdit>,
@@ -35,6 +35,7 @@ pub(super) struct SendPane {
 pub(super) struct SendEdit {
     id: Option<Arc<str>>,
     base: Option<SendDraft>,
+    source: Option<PathBuf>,
     /// The unix time behind each deletion choice.
     deletion_dates: Vec<i64>,
 }
@@ -91,6 +92,7 @@ impl<S: VaultService> App<S> {
             handler!(self, |app| app.remove_selected_send_password())
         );
         window.on_send_generate_password(handler!(self, |app| app.generate_send_password()));
+        window.on_send_choose_file(handler!(self, |app| app.choose_send_file()));
         window.on_send_save(handler!(self, |app| app.save_send()));
         window.on_send_cancel(handler!(self, |app| app.cancel_send_edit()));
     }
@@ -232,7 +234,7 @@ impl<S: VaultService> App<S> {
         true
     }
 
-    /// Decrypts the selected text Send (kept only while the pane shows it) and fills the pane.
+    /// Decrypts the selected Send and fills the pane.
     fn reload_send_detail(&self) {
         let summary = self.manager.borrow().as_ref().and_then(|manager| {
             let id = manager.send.selected.as_ref()?;
@@ -247,7 +249,7 @@ impl<S: VaultService> App<S> {
             self.clear_send_detail();
             return;
         };
-        let draft = if summary.kind == SendKind::Text {
+        let draft = if matches!(summary.kind, SendKind::Text | SendKind::File) {
             match self.vault.send_draft(&summary.id) {
                 Ok(draft) => Some(draft),
                 Err(error) => {
@@ -333,6 +335,7 @@ impl<S: VaultService> App<S> {
             .manager
             .borrow()
             .as_ref()
+            .filter(|manager| manager.window.get_send_detail().is_text)
             .and_then(|manager| manager.send.draft.as_ref().map(|draft| draft.text.clone()));
         text.is_some_and(|text| self.copy_text("Send text", &text))
     }
@@ -368,19 +371,25 @@ impl<S: VaultService> App<S> {
     }
 
     pub(super) fn start_send_edit(&self) {
+        if self.editing_send() {
+            return;
+        }
+        let Some(selected) = self.selected_send() else {
+            return;
+        };
+        if selected.kind != SendKind::Text {
+            self.toast("Only text Sends can be edited here", true);
+            return;
+        }
         let (id, draft) = {
             let guard = self.manager.borrow();
             let Some(manager) = guard.as_ref() else {
                 return;
             };
-            let (Some(id), Some(draft)) = (&manager.send.selected, &manager.send.draft) else {
-                drop(guard);
-                if self.selected_send().is_some() {
-                    self.toast("Only text Sends can be edited here", true);
-                }
+            let Some(draft) = &manager.send.draft else {
                 return;
             };
-            (Arc::clone(id), draft.clone())
+            (selected.id, draft.clone())
         };
         if !self.sends_online() {
             return;
@@ -428,6 +437,9 @@ impl<S: VaultService> App<S> {
             .into(),
         );
         window.set_send_name(name.into());
+        window.set_send_creating(id.is_none());
+        window.set_send_type(0);
+        window.set_send_file_name(SharedString::new());
         window.set_send_text(text.as_str().into());
         window.set_send_notes(notes.as_str().into());
         window.set_send_hidden(base.as_ref().is_some_and(|base| base.hidden));
@@ -462,6 +474,7 @@ impl<S: VaultService> App<S> {
             manager.send.edit = Some(SendEdit {
                 id,
                 base,
+                source: None,
                 deletion_dates: dates,
             });
         }
@@ -495,6 +508,41 @@ impl<S: VaultService> App<S> {
         }
     }
 
+    fn choose_send_file(&self) {
+        let Some(source) = self.hooks.files.open_file() else {
+            return;
+        };
+        let mut guard = self.manager.borrow_mut();
+        let Some(manager) = guard.as_mut() else {
+            return;
+        };
+        let window = &manager.window;
+        let Some(edit) = manager.send.edit.as_mut() else {
+            return;
+        };
+        if edit.id.is_some() || window.get_send_type() != 1 || window.get_send_saving() {
+            return;
+        }
+        let error = match fs::metadata(&source) {
+            Ok(metadata) if !metadata.is_file() => Some("Choose a regular file to share"),
+            Ok(metadata) if metadata.len() > MAX_SEND_FILE_BYTES => {
+                Some("File Sends are limited to 100 MB")
+            }
+            Ok(_) => None,
+            Err(_) => Some("Could not read the selected file"),
+        };
+        if let Some(message) = error {
+            edit.source = None;
+            window.set_send_file_name(SharedString::new());
+            window.set_send_edit_error(message.into());
+            return;
+        }
+        let name = source.file_name().unwrap_or_default().to_string_lossy();
+        window.set_send_file_name(name.as_ref().into());
+        window.set_send_edit_error(SharedString::new());
+        edit.source = Some(source);
+    }
+
     fn save_send(&self) {
         let prepared = {
             let guard = self.manager.borrow();
@@ -515,19 +563,32 @@ impl<S: VaultService> App<S> {
             let Some(deletion_date) = deletion_date else {
                 return;
             };
+            let is_file = edit.id.is_none() && window.get_send_type() == 1;
             let form = SendForm {
                 name: window.get_send_name().into(),
-                text: Zeroizing::new(window.get_send_text().into()),
-                hidden: window.get_send_hidden(),
+                is_file,
+                text: if is_file {
+                    Zeroizing::default()
+                } else {
+                    Zeroizing::new(window.get_send_text().into())
+                },
+                hidden: !is_file && window.get_send_hidden(),
                 deletion_date,
                 password: Zeroizing::new(window.get_send_password().into()),
                 max_views: window.get_send_max_views().into(),
                 hide_email: window.get_send_hide_email(),
                 notes: Zeroizing::new(window.get_send_notes().into()),
             };
-            send_view::build_draft(form, edit.base.as_ref()).map(|draft| (edit.id.clone(), draft))
+            send_view::build_draft(form, edit.base.as_ref()).and_then(|draft| {
+                let source = if is_file {
+                    Some(edit.source.clone().ok_or("Choose a file to share")?)
+                } else {
+                    None
+                };
+                Ok((edit.id.clone(), draft, source))
+            })
         };
-        let (id, draft) = match prepared {
+        let (id, draft, source) = match prepared {
             Ok(prepared) => prepared,
             Err(message) => {
                 if let Some(manager) = self.manager.borrow().as_ref() {
@@ -539,26 +600,40 @@ impl<S: VaultService> App<S> {
         if !self.sends_online() {
             return;
         }
-        if let Some(manager) = self.manager.borrow().as_ref() {
+        let window = if let Some(manager) = self.manager.borrow().as_ref() {
             manager.window.set_send_saving(true);
             manager.window.set_send_edit_error(SharedString::new());
-        }
+            manager.window.as_weak()
+        } else {
+            return;
+        };
         let created = id.is_none();
         let vault = Arc::clone(&self.vault);
         self.exec.spawn(
-            async move { vault.save_send(id, draft).await },
-            handler!(self, |app, result| app.send_saved(result, created)),
+            async move {
+                match source {
+                    Some(source) => vault.create_file_send(draft, source).await,
+                    None => vault.save_send(id, draft).await,
+                }
+            },
+            handler!(self, |app, result| app.send_saved(result, created, &window)),
         );
     }
 
-    fn send_saved(&self, result: vk_vault::Result<SendSummary>, created: bool) {
+    fn send_saved(
+        &self,
+        result: vk_vault::Result<SendSummary>,
+        created: bool,
+        window: &slint::Weak<ManagerWindow>,
+    ) {
         // The Manager may have closed (or locked) and reopened meanwhile: the answer then has no
         // form to close, and must not put a Send pane into another list.
-        let form_open = self
-            .manager
-            .borrow()
-            .as_ref()
-            .is_some_and(|manager| manager.send.edit.is_some());
+        let form_open = self.manager.borrow().as_ref().is_some_and(|manager| {
+            manager.window.get_send_saving()
+                && window
+                    .upgrade()
+                    .is_some_and(|window| std::ptr::eq(manager.window.window(), window.window()))
+        });
         if !form_open {
             self.on_vault_changed();
             return;
@@ -664,6 +739,7 @@ impl<S: VaultService> App<S> {
 fn clear_send_form(window: &ManagerWindow) {
     window.set_send_name(SharedString::new());
     window.set_send_text(SharedString::new());
+    window.set_send_file_name(SharedString::new());
     window.set_send_password(SharedString::new());
     window.set_send_notes(SharedString::new());
     window.set_send_max_views(SharedString::new());

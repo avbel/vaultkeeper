@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{io::Write, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use tokio::sync::{mpsc, oneshot};
@@ -14,23 +14,36 @@ use vaultkeeper::{
 fn main() -> anyhow::Result<()> {
     vk_platform::hardening::harden_process();
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(
+        raw_args.first().map(String::as_str),
+        Some("list" | "get_fields" | "get")
+    ) {
+        return vaultkeeper::cli_access::run(&raw_args);
+    }
     if let Some(caller) = cli::browser_host_caller(&raw_args) {
         init_logging(Some("browser-host"));
         return vaultkeeper::browser_host::run(caller);
     }
-    let args = cli::parse(raw_args);
-    let log_name = match args.as_ref().map(cli::Args::mode) {
-        Ok(Mode::Daemon(_)) => Some("daemon"),
-        Ok(Mode::Ui { .. }) => Some("ui"),
-        Ok(Mode::Mock) | Err(_) => None,
-    };
-    init_logging(log_name);
-    let args = args?;
+    let args = cli::parse(raw_args)?;
     if args.help {
-        tracing::info!("{}", cli::USAGE);
+        writeln!(std::io::stdout(), "{}", cli::USAGE)?;
         return Ok(());
     }
-    match args.mode() {
+    if args.version {
+        writeln!(
+            std::io::stdout(),
+            "vaultkeeper {}",
+            env!("CARGO_PKG_VERSION")
+        )?;
+        return Ok(());
+    }
+    let mode = args.mode();
+    init_logging(match mode {
+        Mode::Daemon(_) => Some("daemon"),
+        Mode::Ui { .. } => Some("ui"),
+        Mode::Mock => None,
+    });
+    match mode {
         Mode::Mock => run_mock(args),
         Mode::Ui { first_unlock } => vaultkeeper::ui_process::run(first_unlock, args.no_activate),
         Mode::Daemon(launch) => vaultkeeper::daemon::run(launch),

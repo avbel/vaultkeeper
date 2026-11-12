@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use url::Url;
-use vk_api::models::{SendItem, SendRequest, SendTextRequest, send_type};
+use vk_api::models::{SendFileRequest, SendItem, SendRequest, SendTextRequest, send_type};
 use vk_crypto::{EncString, SendKey};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -19,6 +19,8 @@ use crate::{
 
 /// Vaultwarden refuses a deletion date more than 31 days ahead; the official presets end at 30.
 pub const MAX_DELETION_DAYS: i64 = 31;
+/// Maximum size of the original file, in bytes.
+pub const MAX_SEND_FILE_BYTES: u64 = 100_000_000;
 const SECONDS_PER_DAY: i64 = 86_400;
 const UNDECRYPTABLE: &str = "[cannot decrypt]";
 
@@ -152,11 +154,12 @@ pub(crate) fn summary(send: &SendItem, keys: &KeyRing) -> SendSummary {
 }
 
 pub(crate) fn draft(send: &SendItem, keys: &KeyRing) -> Result<SendDraft> {
-    if send.r#type != send_type::TEXT {
-        return Err(Error::unsupported("Only text Sends can be edited here"));
-    }
+    let text = match kind_of(send.r#type) {
+        SendKind::Text => send.text.as_ref(),
+        SendKind::File => None,
+        SendKind::Unsupported(_) => return Err(Error::unsupported("Unsupported Send type")),
+    };
     let key = send_key(send, keys)?;
-    let text = send.text.as_ref();
     Ok(SendDraft {
         name: decrypt_text(send.name.as_deref(), key.key())?.to_string(),
         text: decrypt_text(text.and_then(|text| text.text.as_deref()), key.key())?,
@@ -201,7 +204,26 @@ pub(crate) fn prepare(
     keys: &KeyRing,
     now: i64,
 ) -> Result<SendRequest> {
-    validate(draft, base.is_some(), now)?;
+    prepare_request(draft, base, keys, now, None).map(|(request, _)| request)
+}
+
+pub(crate) fn prepare_file(
+    draft: &SendDraft,
+    file_name: &str,
+    keys: &KeyRing,
+    now: i64,
+) -> Result<(SendRequest, SendKey)> {
+    prepare_request(draft, None, keys, now, Some(file_name))
+}
+
+fn prepare_request(
+    draft: &SendDraft,
+    base: Option<&SendItem>,
+    keys: &KeyRing,
+    now: i64,
+    file_name: Option<&str>,
+) -> Result<(SendRequest, SendKey)> {
+    validate(draft, base.is_some(), now, file_name.is_some())?;
     let (key, wrapped) = if let Some(base) = base {
         if base.r#type != send_type::TEXT {
             return Err(Error::unsupported("Only text Sends can be edited here"));
@@ -217,29 +239,41 @@ pub(crate) fn prepare(
         .as_ref()
         .filter(|password| !password.is_empty())
         .map(|password| key.password_hash(password));
-    Ok(SendRequest {
-        r#type: send_type::TEXT,
+    let (kind, text, file) = if let Some(file_name) = file_name {
+        let file = SendFileRequest {
+            file_name: encrypt_text(file_name, key.key())?,
+        };
+        (send_type::FILE, None, Some(file))
+    } else {
+        let text = SendTextRequest {
+            text: encrypt_text(&draft.text, key.key())?,
+            hidden: draft.hidden,
+        };
+        (send_type::TEXT, Some(text), None)
+    };
+    let request = SendRequest {
+        r#type: kind,
         name: encrypt_text(draft.name.trim(), key.key())?,
         notes: encrypt_opt(&draft.notes, key.key())?,
         key: wrapped,
         max_access_count: draft.max_access_count,
         expiration_date: draft.expiration_date.map(format_date),
         deletion_date: format_date(draft.deletion_date),
-        text: SendTextRequest {
-            text: encrypt_text(&draft.text, key.key())?,
-            hidden: draft.hidden,
-        },
+        text,
+        file,
+        file_length: None,
         password,
         disabled: draft.disabled,
         hide_email: draft.hide_email,
-    })
+    };
+    Ok((request, key))
 }
 
-fn validate(draft: &SendDraft, update: bool, now: i64) -> Result<()> {
+fn validate(draft: &SendDraft, update: bool, now: i64, is_file: bool) -> Result<()> {
     if draft.name.trim().is_empty() {
         return Err(Error::unsupported("Give the Send a name"));
     }
-    if draft.text.is_empty() {
+    if !is_file && draft.text.is_empty() {
         return Err(Error::unsupported("Enter the text to share"));
     }
     if draft.max_access_count == Some(0) {
@@ -345,11 +379,12 @@ mod tests {
     }
 
     #[test]
-    fn file_sends_list_their_file_and_refuse_a_draft() {
+    fn file_sends_list_their_file_and_show_the_private_note() {
         let keys = ring();
         let (mut send, key) = stored("f1", "Report", "", &keys);
         send.r#type = send_type::FILE;
         send.text = None;
+        send.notes = enc("internal report", key.key());
         send.file = Some(SendFile {
             file_name: enc("report.pdf", key.key()),
             size_name: Some("1.2 MB".into()),
@@ -360,7 +395,9 @@ mod tests {
         assert_eq!(summary.kind, SendKind::File);
         assert_eq!(summary.file_name.as_deref(), Some("report.pdf"));
         assert_eq!(summary.file_size.as_deref(), Some("1.2 MB"));
-        assert!(draft(&list.get("f1").unwrap().send, &keys).is_err());
+        let draft = draft(&list.get("f1").unwrap().send, &keys).unwrap();
+        assert!(draft.text.is_empty());
+        assert_eq!(draft.notes.as_str(), "internal report");
     }
 
     #[test]
@@ -389,7 +426,10 @@ mod tests {
         let seed = parse(&request.key).unwrap().decrypt(keys.user()).unwrap();
         let key = SendKey::from_seed(&seed).unwrap();
         assert_eq!(decrypt(Some(&request.name), &key), "Wi-Fi");
-        assert_eq!(decrypt(Some(&request.text.text), &key), "hunter2");
+        assert_eq!(
+            decrypt(Some(&request.text.as_ref().unwrap().text), &key),
+            "hunter2"
+        );
         assert_eq!(request.notes, None);
         assert_eq!(request.password, Some(key.password_hash("open sesame")));
         assert_eq!(request.deletion_date, "2026-11-15T17:00:59.000Z");
@@ -406,7 +446,10 @@ mod tests {
         draft.text = Zeroizing::new("0815".into());
         let request = prepare(&draft, Some(&send), &keys, NOW).unwrap();
         assert_eq!(request.key, send.key);
-        assert_eq!(decrypt(Some(&request.text.text), &key), "0815");
+        assert_eq!(
+            decrypt(Some(&request.text.as_ref().unwrap().text), &key),
+            "0815"
+        );
         assert_eq!(request.password, None, "no new password keeps the old one");
         assert_eq!(request.max_access_count, Some(2));
     }

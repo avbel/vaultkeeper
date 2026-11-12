@@ -5,7 +5,9 @@ mod common;
 
 use std::sync::{Arc, PoisonError};
 
-use common::{Harness, Mods, Setup, harness, key, pump, set_size, special, type_into, value_of};
+use common::{
+    Harness, Mods, Setup, click, harness, key, pump, set_size, special, type_into, value_of,
+};
 use slint::{Model, platform::Key};
 use vaultkeeper::{mock::MockCall, send_view::NEW_SEND_INDEX, ui::ManagerWindow};
 
@@ -172,6 +174,63 @@ fn a_new_send_is_saved_selected_and_its_link_copied() {
         manager.get_send_password(),
         "",
         "the form's secrets are cleared"
+    );
+}
+
+#[test]
+fn a_new_file_send_requires_a_file_and_copies_its_link_after_upload() {
+    let (h, manager) = open_sends();
+    manager.invoke_new_item(NEW_SEND_INDEX);
+    pump();
+    assert_eq!(manager.get_send_type(), 0);
+    click(&manager, "File");
+    assert_eq!(manager.get_send_type(), 1);
+    manager.set_send_name("Report".into());
+    manager.invoke_send_save();
+    assert_eq!(manager.get_send_edit_error(), "Choose a file to share");
+
+    let dir = tempfile::tempdir().expect("temporary folder");
+    let source = dir.path().join("résumé.pdf");
+    std::fs::File::create(&source)
+        .expect("oversized file")
+        .set_len(vk_vault::MAX_SEND_FILE_BYTES + 1)
+        .expect("set file size");
+    *h.files.open.lock().unwrap_or_else(PoisonError::into_inner) = Some(source.clone());
+    click(&manager, "Choose file…");
+    assert_eq!(
+        manager.get_send_edit_error(),
+        "File Sends are limited to 100 MB"
+    );
+    assert!(manager.get_send_file_name().is_empty());
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&source)
+        .expect("selected file")
+        .set_len(vk_vault::MAX_SEND_FILE_BYTES)
+        .expect("set size to the limit");
+    click(&manager, "Choose file…");
+    assert_eq!(manager.get_send_file_name(), "résumé.pdf");
+    assert!(manager.get_send_edit_error().is_empty());
+    manager.set_send_password("open sesame".into());
+    manager.set_send_notes("Only for my records".into());
+    manager.invoke_send_save();
+    pump();
+
+    assert!(h.vault.calls().contains(&MockCall::CreateFileSend {
+        name: "Report".into(),
+        source,
+    }));
+    assert_eq!(manager.get_detail_mode(), SEND_VIEW);
+    let detail = manager.get_send_detail();
+    assert_eq!(detail.file_name, "résumé.pdf");
+    assert_eq!(detail.notes, "Only for my records");
+    assert!(detail.has_password);
+    assert_eq!(manager.get_selected(), row_of(&manager, "Report"));
+    assert!(
+        h.clipboard
+            .last()
+            .is_some_and(|link| link.contains("/#/send/send-new-"))
     );
 }
 

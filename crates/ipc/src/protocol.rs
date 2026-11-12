@@ -402,6 +402,10 @@ pub enum Call {
     ClearClipboard,
     /// The website icon of a host, as encoded image bytes.
     SiteIcon(String),
+    CreateFileSend {
+        draft: Box<SendDraftDto>,
+        source: Vec<u8>,
+    },
 }
 
 impl Call {
@@ -414,6 +418,7 @@ impl Call {
             | Self::Sync
             | Self::DownloadAttachment { .. }
             | Self::UploadAttachment { .. }
+            | Self::CreateFileSend { .. }
             | Self::DeleteAttachment { .. } => LONG_TIMEOUT,
             _ => DEFAULT_TIMEOUT,
         }

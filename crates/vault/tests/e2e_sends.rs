@@ -1,4 +1,4 @@
-//! Text Sends against the e2e Vaultwarden (scripts/e2e.sh). What reached the server is read
+//! Sends against the e2e Vaultwarden (scripts/e2e.sh). What reached the server is read
 //! back through a second session and opened from the link alone, as a recipient would.
 
 #![cfg(feature = "vw-it")]
@@ -6,13 +6,17 @@
 
 mod support;
 
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde_json::Value;
 use support::{KdfChoice, TestVault, env, raw_session, register, unix_now};
 use vk_api::models::SendItem;
-use vk_crypto::{EncString, SendKey};
-use vk_vault::{VaultService, model::SendDraft};
+use vk_crypto::{EncString, SendKey, enc_buffer};
+use vk_vault::{
+    MAX_SEND_FILE_BYTES, VaultService,
+    model::{SendDraft, SendKind},
+};
 use zeroize::Zeroizing;
 
 fn draft(text: &str) -> SendDraft {
@@ -127,4 +131,123 @@ async fn a_deletion_date_beyond_31_days_is_refused_and_nothing_is_stored() {
     far.deletion_date += 40 * 86_400;
     assert!(test.vault.save_send(None, far).await.is_err());
     assert_eq!(test.vault.sends().unwrap().len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_send_over_the_limit_is_rejected_before_upload() {
+    let env = env();
+    let account = register(&env, KdfChoice::Pbkdf2).await;
+    let test = TestVault::new();
+    test.login(&env.vw, &account).await;
+    let vault = &test.vault;
+    let source = test.data_dir.join("résumé.bin");
+    fs::File::create(&source)
+        .unwrap()
+        .set_len(MAX_SEND_FILE_BYTES + 1)
+        .unwrap();
+    let error = vault.create_file_send(draft(""), source).await.unwrap_err();
+    assert!(matches!(
+        error,
+        vk_vault::Error::Api(vk_api::Error::Server { status: 400, message })
+            if message == "File Sends are limited to 100 MB"
+    ));
+    vault.sync().await.unwrap();
+    assert_eq!(vault.sends().unwrap(), []);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_send_is_downloadable_with_its_link_and_password() {
+    let env = env();
+    let account = register(&env, KdfChoice::Pbkdf2).await;
+    let test = TestVault::new();
+    test.login(&env.vw, &account).await;
+    let vault = &test.vault;
+    let source = test.data_dir.join("résumé.bin");
+    let bytes = b"Binary file contents\x00\xff";
+    fs::write(&source, bytes).unwrap();
+    let saved = vault.create_file_send(draft(""), source).await.unwrap();
+    assert_eq!(saved.kind, SendKind::File);
+    assert_eq!(saved.file_name.as_deref(), Some("résumé.bin"));
+    assert!(saved.has_password && saved.hide_email);
+    assert_eq!(saved.max_access_count, Some(2));
+
+    let link = vault.send_link(&saved.id).unwrap();
+    let url = url::Url::parse(&link).unwrap();
+    let (access_id, seed) = url
+        .fragment()
+        .unwrap()
+        .strip_prefix("/send/")
+        .unwrap()
+        .split_once('/')
+        .unwrap();
+    let key = SendKey::from_seed(&URL_SAFE_NO_PAD.decode(seed).unwrap()).unwrap();
+    let token: Value = env
+        .http
+        .post(env.vw.join("identity/connect/token").unwrap())
+        .form(&[
+            ("grant_type", "send_access"),
+            ("client_id", "web"),
+            ("send_id", access_id),
+            ("password_hash_b64", &key.password_hash("open sesame")),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["access_token"].as_str().unwrap();
+    let accessed: Value = env
+        .http
+        .post(env.vw.join("api/sends/access").unwrap())
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let file = &accessed["file"];
+    let name: EncString = file["fileName"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        name.decrypt_string(key.key()).unwrap().as_str(),
+        "résumé.bin"
+    );
+
+    let file_id = file["id"].as_str().unwrap();
+    let download: Value = env
+        .http
+        .post(
+            env.vw
+                .join(&format!("api/sends/access/file/{file_id}"))
+                .unwrap(),
+        )
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let encrypted = env
+        .http
+        .get(download["url"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(
+        &*enc_buffer::decrypt_bytes(key.key(), &encrypted).unwrap(),
+        bytes
+    );
 }

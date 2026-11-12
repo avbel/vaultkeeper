@@ -634,9 +634,6 @@ impl VaultService for MockVault {
     fn send_draft(&self, id: &str) -> Result<SendDraft> {
         let inner = self.guard();
         let send = inner.send(id)?;
-        if send.summary.kind != SendKind::Text {
-            return Err(refused("Only text Sends can be edited here"));
-        }
         Ok(send.draft.clone())
     }
 
@@ -690,6 +687,31 @@ impl VaultService for MockVault {
                 .sends
                 .retain(|send| &*send.summary.id != id);
             Ok(())
+        })
+    }
+
+    async fn create_file_send(&self, mut draft: SendDraft, source: PathBuf) -> Result<SendSummary> {
+        self.delay().await;
+        let name = source.file_name().unwrap_or_default().to_string_lossy();
+        let size = std::fs::metadata(&source)?.len();
+        let call = MockCall::CreateFileSend {
+            name: draft.name.clone(),
+            source: source.clone(),
+        };
+        self.write(call, |inner| {
+            draft.has_password = draft
+                .password
+                .take()
+                .is_some_and(|password| !password.is_empty());
+            inner.next_id += 1;
+            let id = format!("send-new-{}", inner.next_id);
+            let mut send = MockSend::new(&id, draft, 0);
+            send.summary.kind = SendKind::File;
+            send.summary.file_name = Some(Arc::from(name.as_ref()));
+            send.summary.file_size = Some(Arc::from(format!("{size} B")));
+            let summary = send.summary.clone();
+            inner.data_mut()?.sends.push(send);
+            Ok(summary)
         })
     }
 

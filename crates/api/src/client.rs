@@ -16,7 +16,7 @@ use crate::{
     login::{classify_bad_request, is_invalid_grant},
     models::{
         Attachment, AttachmentUpload, Cipher, CipherRequest, Folder, OptionalCipher,
-        PreloginResponse, SendItem, SendRequest, SyncResponse, TokenResponse,
+        PreloginResponse, SendFileUpload, SendItem, SendRequest, SyncResponse, TokenResponse,
     },
     server_url::validate_server_url,
     token,
@@ -366,6 +366,61 @@ impl Client {
                 .json(send),
         )
         .await
+    }
+
+    /// Reserves a File Send and returns the metadata needed for the direct upload.
+    pub async fn create_file_send(
+        &self,
+        access_token: &str,
+        send: &SendRequest,
+    ) -> Result<SendFileUpload> {
+        let url = self.transport.endpoint(&["api", "sends", "file", "v2"])?;
+        self.call(
+            self.transport
+                .post(url)
+                .bearer_auth(access_token)
+                .json(send),
+        )
+        .await
+    }
+
+    /// Streams the encrypted file to Vaultwarden. Its multipart filename must match the
+    /// encrypted filename in the reservation.
+    pub async fn upload_send_file(
+        &self,
+        access_token: &str,
+        upload: &SendFileUpload,
+        encrypted_name: &str,
+        body: reqwest::Body,
+        len: u64,
+    ) -> Result<()> {
+        if upload.file_upload_type != 0 {
+            return Err(Error::Decode(serde::de::Error::custom(
+                "expected a direct Send file upload",
+            )));
+        }
+        let send = &upload.send_response;
+        let file_id = send
+            .file
+            .as_ref()
+            .and_then(|file| file.id.as_deref())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                Error::Decode(serde::de::Error::custom("missing direct Send file id"))
+            })?;
+        let url = self
+            .transport
+            .endpoint(&["api", "sends", &send.id, "file", file_id])?;
+        let part = Part::stream_with_length(body, len)
+            .file_name(encrypted_name.to_owned())
+            .mime_str("application/octet-stream")?;
+        let request = self
+            .transport
+            .post_transfer(url)
+            .bearer_auth(access_token)
+            .multipart(Form::new().part("data", part))
+            .timeout(self.transport.timeouts.transfer);
+        self.call_empty(request).await
     }
 
     /// `PUT /api/sends/{id}`.

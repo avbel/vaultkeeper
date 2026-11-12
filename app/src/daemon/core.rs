@@ -5,6 +5,7 @@
 //! [`Daemon::shutdown`] aborts them.
 
 mod browser_glue;
+mod cli_access;
 
 use std::{
     path::{Path, PathBuf},
@@ -126,6 +127,7 @@ pub struct Daemon {
     tasks: Mutex<Vec<JoinHandle<()>>>,
     tray_sync: watch::Sender<TraySync>,
     browser: browser_glue::BrowserState,
+    cli_access: cli_access::CliAccessState,
     site_icons: Arc<SiteIcons>,
 }
 
@@ -200,6 +202,7 @@ impl Daemon {
             tasks: Mutex::new(Vec::new()),
             tray_sync: watch::Sender::new(TraySync::default()),
             browser: browser_glue::BrowserState::new(),
+            cli_access: cli_access::CliAccessState::default(),
             site_icons,
         });
         if daemon.settings().ssh_agent
@@ -209,6 +212,7 @@ impl Daemon {
         }
         daemon.spawn_tasks(notices_rx, approvals_rx);
         daemon.reconcile_browser();
+        daemon.reconcile_cli_access();
         Ok(daemon)
     }
 
@@ -452,6 +456,9 @@ impl Daemon {
         if previous.lock_timeout != current.lock_timeout {
             self.lock_wake.notify_one();
         }
+        if previous.cli_access != current.cli_access {
+            self.reconcile_cli_access();
+        }
         if browser_settings_changed(&previous, &current) {
             self.reconcile_browser();
         }
@@ -497,6 +504,7 @@ impl Daemon {
         self.clipboard.clear_if_ours();
         self.ssh.stop();
         self.stop_browser();
+        self.cli_access.stop();
         let server = guard(&self.server).take();
         if let Some(server) = server {
             server.shutdown().await;

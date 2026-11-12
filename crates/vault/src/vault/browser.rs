@@ -81,7 +81,7 @@ impl Vault {
         }
         let entry = unlocked
             .data
-            .browser_entries()
+            .login_entries()
             .find(|entry| entry.summary.id == *id)
             .ok_or(crate::Error::NotFound)?;
         let matched = matched_uri(entry, page, default).is_some();
@@ -112,7 +112,7 @@ impl Vault {
         self.inner.read_unlocked(|_, unlocked| {
             let mut found: Vec<_> = unlocked
                 .data
-                .browser_entries()
+                .login_entries()
                 .filter_map(|entry| {
                     Some(LoginMatch {
                         summary: entry.summary.clone(),
@@ -133,7 +133,7 @@ impl Vault {
         default: DefaultMatch,
     ) -> Result<bool> {
         self.inner.read_unlocked(|_, unlocked| {
-            Ok(unlocked.data.browser_entries().any(|entry| {
+            Ok(unlocked.data.login_entries().any(|entry| {
                 entry.summary.id == *id && matched_uri(entry, page, default).is_some()
             }))
         })

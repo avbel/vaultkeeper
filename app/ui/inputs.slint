@@ -305,6 +305,7 @@ export component Segmented inherits Rectangle {
     in property <[string]> options;
     in-out property <int> index;
     in property <string> label;
+    in property <bool> enabled: true;
     callback selected(int);
 
     height: Theme.control-height;
@@ -325,11 +326,15 @@ export component Segmented inherits Rectangle {
             accessible-role: tab;
             accessible-label: option;
             accessible-item-selected: i == root.index;
+            accessible-enabled: root.enabled;
             accessible-action-default => {
-                root.index = i;
-                root.selected(i);
+                if root.enabled {
+                    root.index = i;
+                    root.selected(i);
+                }
             }
             TouchArea {
+                enabled: root.enabled;
                 mouse-cursor: pointer;
                 clicked => {
                     root.index = i;

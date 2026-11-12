@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -119,6 +120,23 @@ pub struct CustomField {
     pub withheld: bool,
 }
 
+/// Reserved encrypted Bitwarden custom field used by the login editor and CLI access policy.
+pub const CLI_ACCESS_FIELD: &str = "vaultkeeper.cli.allow_access";
+pub(crate) const BOOLEAN_FIELD: u8 = 2;
+
+#[derive(Serialize, Deserialize)]
+pub struct CliLoginKey {
+    pub key: Arc<str>,
+    pub title: Arc<str>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CliLoginField {
+    pub field: String,
+    pub label: String,
+    pub private: bool,
+}
+
 /// Fully decrypted item for the detail pane and the edit form. Drop it when the pane closes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ItemDraft {
@@ -135,6 +153,42 @@ pub struct ItemDraft {
     /// Saving an update whose revision is no longer the cached one is refused with
     /// [`crate::Error::Conflict`], so an edit never silently overwrites a change from elsewhere.
     pub revision_date: Option<Arc<str>>,
+}
+
+impl ItemDraft {
+    #[must_use]
+    pub fn allows_cli_access(&self) -> bool {
+        if !matches!(self.data, ItemData::Login { .. }) {
+            return false;
+        }
+        let mut fields = self
+            .fields
+            .iter()
+            .filter(|field| field.name == CLI_ACCESS_FIELD);
+        fields.next().is_some_and(|field| {
+            field.field_type == BOOLEAN_FIELD && !field.hidden && field.value.as_str() == "true"
+        }) && fields.next().is_none()
+    }
+
+    pub fn set_allow_cli_access(&mut self, allow: bool) {
+        if !matches!(self.data, ItemData::Login { .. }) {
+            return;
+        }
+        let source_index = self
+            .fields
+            .iter()
+            .find(|field| field.name == CLI_ACCESS_FIELD && field.field_type == BOOLEAN_FIELD)
+            .and_then(|field| field.source_index);
+        self.fields.retain(|field| field.name != CLI_ACCESS_FIELD);
+        self.fields.push(CustomField {
+            name: CLI_ACCESS_FIELD.to_owned(),
+            value: Zeroizing::new(allow.to_string()),
+            hidden: false,
+            field_type: BOOLEAN_FIELD,
+            source_index,
+            withheld: false,
+        });
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]

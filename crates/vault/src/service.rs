@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc};
+use std::{future::Future, path::PathBuf, sync::Arc};
 
 use tokio::sync::watch;
 use zeroize::Zeroizing;
@@ -150,7 +150,7 @@ pub trait VaultService: Send + Sync + 'static {
     /// The account's Sends, sorted by name.
     fn sends(&self) -> Result<Vec<SendSummary>>;
 
-    /// Decrypts a text Send for the detail pane and the edit form; file Sends are refused.
+    /// Decrypts a Send's details, including the text for text Sends.
     fn send_draft(&self, id: &str) -> Result<SendDraft>;
 
     /// The share link. It carries the decryption key, so treat it like a secret.
@@ -161,6 +161,13 @@ pub trait VaultService: Send + Sync + 'static {
         &self,
         id: Option<Arc<str>>,
         draft: SendDraft,
+    ) -> impl Future<Output = Result<SendSummary>> + Send;
+
+    /// Creates a File Send from the selected local file and the draft's sharing options.
+    fn create_file_send(
+        &self,
+        draft: SendDraft,
+        source: PathBuf,
     ) -> impl Future<Output = Result<SendSummary>> + Send;
 
     /// Deletes the Send on the server at once; its link stops working.

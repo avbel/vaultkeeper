@@ -159,6 +159,9 @@ export component ManagerWindow inherits Window {
     in-out property <bool> send-confirm-remove-password;
     in property <bool> send-busy;
     in property <string> send-edit-title;
+    in property <bool> send-creating;
+    in-out property <int> send-type;
+    in property <string> send-file-name;
     in-out property <string> send-name;
     in-out property <string> send-text;
     in-out property <bool> send-hidden;
@@ -170,7 +173,7 @@ export component ManagerWindow inherits Window {
     in property <string> send-views-hint;
     in-out property <bool> send-hide-email;
     in-out property <string> send-notes;
-    in property <string> send-edit-error;
+    in-out property <string> send-edit-error;
     in property <bool> send-saving;
     in property <DetailHeader> detail-header;
     in property <[DetailField]> detail-fields;
@@ -201,6 +204,7 @@ export component ManagerWindow inherits Window {
     in property <string> edit-error;
     in-out property <bool> edit-favorite;
     in-out property <bool> edit-reprompt;
+    in-out property <bool> edit-allow-cli-access;
     in-out property <int> edit-folder-index;
     in property <bool> saving;
     in property <bool> can-add-uri;
@@ -270,6 +274,7 @@ export component ManagerWindow inherits Window {
     callback send-delete-confirmed();
     callback send-remove-password-confirmed();
     callback send-generate-password();
+    callback send-choose-file();
     callback send-save();
     callback send-cancel();
 
@@ -487,6 +492,9 @@ export component ManagerWindow inherits Window {
                     }
                     if root.detail-mode == 5: SendEditForm {
                         title: root.send-edit-title;
+                        creating: root.send-creating;
+                        send-type <=> root.send-type;
+                        file-name: root.send-file-name;
                         name <=> root.send-name;
                         text <=> root.send-text;
                         hidden <=> root.send-hidden;
@@ -500,6 +508,8 @@ export component ManagerWindow inherits Window {
                         notes <=> root.send-notes;
                         error: root.send-edit-error;
                         saving: root.send-saving;
+                        type-changed => { root.send-edit-error = ""; }
+                        choose-file => { root.send-choose-file(); }
                         generate-password => { root.send-generate-password(); }
                         save => { root.send-save(); }
                         cancel => { root.send-cancel(); }
@@ -553,6 +563,7 @@ export component ManagerWindow inherits Window {
                         error: root.edit-error;
                         favorite <=> root.edit-favorite;
                         reprompt <=> root.edit-reprompt;
+                        allow-cli-access <=> root.edit-allow-cli-access;
                         folder-options: root.folder-options;
                         folder-index <=> root.edit-folder-index;
                         saving: root.saving;

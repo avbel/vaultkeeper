@@ -18,7 +18,8 @@ use vk_ipc::{
 use vk_vault::{
     Error, TotpCode, TwoFactorProvider, VaultService,
     model::{
-        CopyField, Filter, ItemData, ItemId, LoginRequest, LoginStep, SessionState, TwoFactorAnswer,
+        CopyField, Filter, ItemData, ItemId, LoginRequest, LoginStep, SendKind, SessionState,
+        TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -396,6 +397,11 @@ async fn sends_and_their_links_round_trip() {
         .save_send(Some("s1".into()), send_draft())
         .await
         .expect("update");
+    let file = vault
+        .create_file_send(send_draft(), PathBuf::from("/tmp/ré port.pdf"))
+        .await
+        .expect("create file Send");
+    assert_eq!(file.kind, SendKind::File);
     vault
         .remove_send_password("s1")
         .await
@@ -409,6 +415,7 @@ async fn sends_and_their_links_round_trip() {
             "send_link s1",
             "save_send new Wi-Fi hunter2 open sesame",
             "save_send s1 Wi-Fi hunter2 -",
+            "create_file_send Wi-Fi /tmp/ré port.pdf",
             "remove_send_password s1",
             "delete_send s1",
         ]

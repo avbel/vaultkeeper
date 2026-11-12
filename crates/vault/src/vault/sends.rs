@@ -1,16 +1,23 @@
 //! Send reads and writes. Writes follow `writes.rs`: encrypt, call under `sync_lock`, apply,
 //! persist, then ask for a confirming sync.
 
-use std::sync::Arc;
+use std::{
+    fs::{self, File},
+    io::{BufReader, BufWriter, Read, Write},
+    path::PathBuf,
+    sync::Arc,
+};
 
+use vk_crypto::enc_buffer;
 use zeroize::Zeroizing;
 
 use super::Inner;
 use crate::{
-    Error, Result,
+    Error, MAX_SEND_FILE_BYTES, Result,
     model::{SendDraft, SendSummary},
     sends,
-    util::unix_now,
+    store::create_private_file,
+    util::{TempFile, unix_now},
 };
 
 fn now() -> i64 {
@@ -80,6 +87,87 @@ impl Inner {
         finished.map(|()| summary)
     }
 
+    pub(crate) async fn create_file_send(
+        self: &Arc<Self>,
+        draft: SendDraft,
+        source: PathBuf,
+    ) -> Result<SendSummary> {
+        let ctx = self.writable_ctx()?;
+        let temp = TempFile::new_in(&self.store.temp_dir(&ctx.account_id)?);
+        let keys = Arc::clone(&ctx.keys);
+        let (mut request, temp, size) = self
+            .config
+            .runtime
+            .spawn_blocking(move || {
+                let file_name = source
+                    .file_name()
+                    .ok_or_else(|| Error::unsupported("Choose a file to share"))?;
+                check_file(&fs::metadata(&source)?)?;
+                let file = File::open(&source)?;
+                check_file(&file.metadata()?)?;
+                let (request, key) =
+                    sends::prepare_file(&draft, &file_name.to_string_lossy(), &keys, now())?;
+                // Cap the read too, in case the selected file grows after the metadata check.
+                let mut reader = BufReader::new(file).take(MAX_SEND_FILE_BYTES + 1);
+                let mut writer = BufWriter::new(create_private_file(temp.path())?);
+                let size = enc_buffer::encrypt_stream(key.key(), &mut reader, &mut writer)?;
+                if reader.limit() == 0 {
+                    return Err(file_too_large());
+                }
+                writer.flush()?;
+                Ok((request, temp, size))
+            })
+            .await
+            .map_err(Error::task)??;
+
+        request.file_length = Some(size);
+        let enc_name = &request
+            .file
+            .as_ref()
+            .ok_or_else(|| Error::protocol("missing encrypted Send file name"))?
+            .file_name;
+        let request = &request;
+        // Keep sync from publishing the reservation before it has a file.
+        let _serial = self.sync_lock.lock().await;
+        let upload = self
+            .call(&ctx, |client, token| async move {
+                client.create_file_send(&token, request).await
+            })
+            .await?;
+        let encrypted = temp.path();
+        let reservation = &upload;
+        let sent = self
+            .call(&ctx, |client, token| async move {
+                let file = tokio::fs::File::open(encrypted).await?;
+                client
+                    .upload_send_file(
+                        &token,
+                        reservation,
+                        enc_name,
+                        reqwest::Body::from(file),
+                        size,
+                    )
+                    .await
+            })
+            .await;
+        if let Err(error) = sent {
+            let id = upload.send_response.id.as_str();
+            if let Err(cleanup) = self
+                .call(&ctx, |client, token| async move {
+                    client.delete_send(&token, id).await
+                })
+                .await
+            {
+                tracing::warn!(%cleanup, "could not remove a half-uploaded Send");
+            }
+            return Err(error);
+        }
+        drop(temp);
+        let summary = self.apply_send(&ctx, upload.send_response);
+        self.finish_write(&ctx).await?;
+        Ok(summary)
+    }
+
     pub(crate) async fn delete_send(self: &Arc<Self>, id: &str) -> Result<()> {
         let ctx = self.writable_ctx()?;
         self.existing_send(id)?;
@@ -124,4 +212,18 @@ impl Inner {
             unlocked.data.sends.get(id).map(drop).ok_or(Error::NotFound)
         })
     }
+}
+
+fn check_file(metadata: &fs::Metadata) -> Result<()> {
+    if !metadata.is_file() {
+        return Err(Error::unsupported("Choose a regular file to share"));
+    }
+    if metadata.len() > MAX_SEND_FILE_BYTES {
+        return Err(file_too_large());
+    }
+    Ok(())
+}
+
+fn file_too_large() -> Error {
+    Error::unsupported("File Sends are limited to 100 MB")
 }

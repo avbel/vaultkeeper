@@ -334,6 +334,17 @@ impl VaultService for RemoteVault {
         }
     }
 
+    async fn create_file_send(&self, draft: SendDraft, source: PathBuf) -> Result<SendSummary> {
+        let call = Call::CreateFileSend {
+            draft: Box::new(draft.into()),
+            source: path_bytes(&source),
+        };
+        match self.call(call).await? {
+            Reply::Send(send) => Ok(send.into()),
+            _ => Err(unexpected()),
+        }
+    }
+
     async fn delete_send(&self, id: &str) -> Result<()> {
         unit(&self.call(Call::DeleteSend(Arc::from(id))).await?)
     }

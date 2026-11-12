@@ -33,11 +33,12 @@ spike's window was dropped). See the "Step 0 result" section of
 - Quick Panel with a global hotkey and fuzzy search: copy password, username or TOTP code from the keyboard
 - Manager window: folders, organizations and collections, moving items into an organization or between collections,
   attachments, trash
-- Send: share text through an encrypted, self-deleting link (optional password and view limit)
+- Send: share text or a file up to 100 MB through an encrypted, self-deleting link (optional password and view limit)
 - TOTP codes with a countdown
 - Password and passphrase generator, from the tray or its own hotkey
 - Auto-type of username and password into the previous app (key presses, no clipboard)
 - SSH agent for the vault's SSH keys, with approval prompts and optional Touch ID
+- Read-only [CLI access](#cli-access) for individual logins you choose to share
 - Chrome and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
 - Touch ID unlock (key wrapped to the Secure Enclave)
 - Multiple accounts
@@ -85,6 +86,36 @@ vaultkeeper --tray     menu bar only
 vaultkeeper --quick    open the Quick Panel
 vaultkeeper --mock     demo vault
 ```
+
+### CLI access
+
+1. Keep Vaultkeeper running and turn on **Enable CLI access** in Settings.
+2. Edit each login you want to share, check **Allow CLI access**, and save. Both controls are off by default.
+3. Copy the terminal setup command from Settings. For the standard installation, run this in sh, Bash, or Zsh, or add it to
+   your shell startup file. If an AI agent uses a separate shell, add the same directory to that shell's `PATH`.
+
+   ```sh
+   export PATH="/Applications/Vaultkeeper.app/Contents/MacOS:$PATH"
+   ```
+
+| Command | Output |
+|---|---|
+| `vaultkeeper list` | JSON array with a `key` and `title` for each eligible login |
+| `vaultkeeper get_fields <key>` | JSON array describing non-empty fields with `field`, `label`, and `private` |
+| `vaultkeeper get <key> <field> [--allow-private]` | The selected field as plain text, without an added newline |
+| `vaultkeeper --help` | Usage and guidance for AI agents |
+| `vaultkeeper --version` | Installed version |
+
+The CLI uses an encrypted connection to the desktop app. Programs running as you can read opted-in logins from the active
+account while it is unlocked. Logins that require a master password re-prompt are excluded. If the vault is locked,
+Vaultkeeper prompts you to unlock it in the app. Unlock it, then retry the command.
+
+Use the field ID from `get_fields` exactly as listed and refresh the list after editing the login. Fields marked
+`private`, including passwords, TOTP seeds, and hidden custom fields, require `--allow-private`. The flag prevents
+accidental disclosure. Privacy follows the field type, so ordinary fields such as notes can still contain secrets.
+For a private value, add the flag only when piping the value directly into the intended command's stdin.
+Running that command on its own can expose the value in the terminal or agent transcript. See the
+[Vaultkeeper CLI skill](skills/vaultkeeper-cli/SKILL.md) for a pipeline example.
 
 ## Project layout
 

@@ -89,7 +89,11 @@ pub(super) async fn dispatch<S: VaultService>(
         | Call::AssignCollections { .. }
         | Call::Trash(_)
         | Call::Restore(_)
-        | Call::DeletePermanently(_)) => item_write_call(service.as_ref(), call).await,
+        | Call::DeletePermanently(_)
+        | Call::SaveSend { .. }
+        | Call::CreateFileSend { .. }
+        | Call::DeleteSend(_)
+        | Call::RemoveSendPassword(_)) => write_call(service.as_ref(), call).await,
         Call::CreateFolder(name) => reply(service.create_folder(&name).await, |folder| {
             Reply::Folder(folder.into())
         }),
@@ -100,13 +104,6 @@ pub(super) async fn dispatch<S: VaultService>(
             Reply::SendDraft(Box::new(draft.into()))
         }),
         Call::SendLink(id) => reply(service.send_link(&id), Reply::Secret),
-        Call::SaveSend { id, draft } => {
-            reply(service.save_send(id, (*draft).into()).await, |send| {
-                Reply::Send(send.into())
-            })
-        }
-        Call::DeleteSend(id) => unit(service.delete_send(&id).await),
-        Call::RemoveSendPassword(id) => unit(service.remove_send_password(&id).await),
         Call::ProbeServer(server) => probe(service.as_ref(), &server).await,
         call @ (Call::CopyToClipboard { .. } | Call::ClearClipboard) => {
             clipboard_call(clipboard, call).await
@@ -118,8 +115,8 @@ pub(super) async fn dispatch<S: VaultService>(
     }
 }
 
-/// Item writes and attachment transfers, all of which wait on the server.
-async fn item_write_call<S: VaultService>(service: &S, call: Call) -> Result<Reply, WireError> {
+/// Item and Send writes and file transfers, all of which wait on the server.
+async fn write_call<S: VaultService>(service: &S, call: Call) -> Result<Reply, WireError> {
     match call {
         Call::Save { id, draft } => {
             reply(service.save(id.map(ItemId), (*draft).into()).await, |id| {
@@ -156,7 +153,20 @@ async fn item_write_call<S: VaultService>(service: &S, call: Call) -> Result<Rep
         Call::Trash(id) => unit(service.trash(&ItemId(id)).await),
         Call::Restore(id) => unit(service.restore(&ItemId(id)).await),
         Call::DeletePermanently(id) => unit(service.delete_permanently(&ItemId(id)).await),
-        _ => Err(WireError::internal("not an item write".to_owned())),
+        Call::SaveSend { id, draft } => {
+            reply(service.save_send(id, (*draft).into()).await, |send| {
+                Reply::Send(send.into())
+            })
+        }
+        Call::CreateFileSend { draft, source } => reply(
+            service
+                .create_file_send((*draft).into(), os_path(source))
+                .await,
+            |send| Reply::Send(send.into()),
+        ),
+        Call::DeleteSend(id) => unit(service.delete_send(&id).await),
+        Call::RemoveSendPassword(id) => unit(service.remove_send_password(&id).await),
+        _ => Err(WireError::internal("unexpected write call".to_owned())),
     }
 }
 

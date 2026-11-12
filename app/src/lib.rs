@@ -10,6 +10,7 @@ pub mod autotype;
 pub mod browser_host;
 pub mod browser_status;
 pub mod cli;
+pub mod cli_access;
 pub mod daemon;
 pub mod detail;
 pub mod edit_form;

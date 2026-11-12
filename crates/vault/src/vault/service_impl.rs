@@ -213,6 +213,10 @@ impl VaultService for Vault {
         self.inner.save_send(id, draft).await
     }
 
+    async fn create_file_send(&self, draft: SendDraft, source: PathBuf) -> Result<SendSummary> {
+        self.inner.create_file_send(draft, source).await
+    }
+
     async fn delete_send(&self, id: &str) -> Result<()> {
         self.inner.delete_send(id).await
     }

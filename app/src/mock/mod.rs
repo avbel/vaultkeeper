@@ -79,6 +79,10 @@ pub enum MockCall {
         id: Option<Arc<str>>,
         name: String,
     },
+    CreateFileSend {
+        name: String,
+        source: PathBuf,
+    },
     DeleteSend(String),
     RemoveSendPassword(String),
     SwitchAccount(String),

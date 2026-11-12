@@ -673,6 +673,17 @@ impl VaultService for FakeVault {
         Ok(())
     }
 
+    async fn create_file_send(&self, draft: SendDraft, source: PathBuf) -> Result<SendSummary> {
+        self.record(format!(
+            "create_file_send {} {}",
+            draft.name,
+            source.display()
+        ));
+        let mut summary = send_summary();
+        summary.kind = SendKind::File;
+        Ok(summary)
+    }
+
     async fn remove_send_password(&self, id: &str) -> Result<()> {
         self.record(format!("remove_send_password {id}"));
         Ok(())

@@ -444,7 +444,7 @@ pub struct SendFile {
     pub extra: Extra,
 }
 
-/// Body for `POST /api/sends` and `PUT /api/sends/{id}` (text Sends only). Built field by field:
+/// Body for creating a Send or updating a text Send. Built field by field:
 /// Vaultwarden refuses any `emails`, so nothing unmodeled may ride along.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -457,7 +457,12 @@ pub struct SendRequest {
     pub max_access_count: Option<u32>,
     pub expiration_date: Option<String>,
     pub deletion_date: String,
-    pub text: SendTextRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<SendTextRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<SendFileRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_length: Option<u64>,
     /// The client-side password hash; `None` keeps the current password on an update.
     pub password: Option<String>,
     pub disabled: bool,
@@ -469,6 +474,19 @@ pub struct SendRequest {
 pub struct SendTextRequest {
     pub text: String,
     pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFileRequest {
+    pub file_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFileUpload {
+    pub file_upload_type: u8,
+    pub send_response: SendItem,
 }
 
 #[cfg(test)]
@@ -615,10 +633,12 @@ mod tests {
             max_access_count: None,
             expiration_date: None,
             deletion_date: "2026-11-18T10:00:00Z".into(),
-            text: SendTextRequest {
+            text: Some(SendTextRequest {
                 text: ENC.into(),
                 hidden: false,
-            },
+            }),
+            file: None,
+            file_length: None,
             password: None,
             disabled: false,
             hide_email: true,

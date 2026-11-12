@@ -1,6 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, Check, CopyBtn, Divider, Field, IconBtn, InlineConfirm, KindChip, MultiField, Select, Spinner } from "kit.slint";
+import { Btn, BtnKind, Check, CopyBtn, Divider, Field, IconBtn, InlineConfirm, KindChip, MultiField, Segmented, Select, Spinner } from "kit.slint";
 
 // What the detail pane shows for a Send. `text` is masked until revealed when the Send hides
 // its text; Rust swaps in the decrypted text only on reveal.
@@ -208,12 +208,6 @@ export component SendDetailView inherits Rectangle {
                 }
                 cancelled => { root.confirm-remove-password = false; }
             }
-            if !root.send.is-text: Text {
-                text: "File Sends are made in the web vault or another app; here you can copy the link or delete them.";
-                color: Theme.text-muted;
-                font-size: Theme.font-hint;
-                wrap: word-wrap;
-            }
             if !root.online: Text {
                 text: "Offline · changes need the server; they are disabled until it is reachable";
                 color: Theme.text-muted;
@@ -239,6 +233,9 @@ component FormHint inherits Text {
 
 export component SendEditForm inherits Rectangle {
     in property <string> title;
+    in property <bool> creating;
+    in-out property <int> send-type;
+    in property <string> file-name;
     in-out property <string> name;
     in-out property <string> text;
     in-out property <bool> hidden;
@@ -252,6 +249,8 @@ export component SendEditForm inherits Rectangle {
     in-out property <string> notes;
     in property <string> error;
     in property <bool> saving;
+    callback type-changed();
+    callback choose-file();
     callback generate-password();
     callback save();
     callback cancel();
@@ -270,6 +269,17 @@ export component SendEditForm inherits Rectangle {
                 font-weight: 600;
                 letter-spacing: -0.2px;
             }
+            if root.creating: HorizontalLayout {
+                alignment: start;
+                Segmented {
+                    width: 180px * Theme.scale;
+                    label: "Send type";
+                    options: ["Text", "File"];
+                    index <=> root.send-type;
+                    enabled: !root.saving;
+                    selected => { root.type-changed(); }
+                }
+            }
             FormLabel { text: "Name"; }
             Field {
                 label: "Send name";
@@ -277,13 +287,38 @@ export component SendEditForm inherits Rectangle {
                 text <=> root.name;
                 init => { self.focus-input(); }
             }
-            FormLabel { text: "Text to share"; }
-            MultiField {
+            if root.send-type == 0: FormLabel { text: "Text to share"; }
+            if root.send-type == 0: MultiField {
                 label: "Text to share";
                 text <=> root.text;
                 password: root.hidden;
             }
-            Check { text: "Hide the text until the recipient reveals it"; checked <=> root.hidden; }
+            if root.send-type == 0: Check {
+                text: "Hide the text until the recipient reveals it";
+                checked <=> root.hidden;
+            }
+            if root.send-type == 1: FormLabel { text: "File to share"; }
+            if root.send-type == 1: HorizontalLayout {
+                alignment: start;
+                spacing: Theme.s2;
+                Btn {
+                    text: root.file-name == "" ? "Choose file…" : "Change file…";
+                    enabled: !root.saving;
+                    clicked => { root.choose-file(); }
+                }
+                if root.file-name != "": Text {
+                    text: root.file-name;
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Selected file";
+                    accessible-value: self.text;
+                }
+            }
+            if root.send-type == 1: FormHint { text: "Maximum file size is 100 MB."; }
             FormLabel { text: "Deletion"; }
             HorizontalLayout {
                 alignment: start;
@@ -344,7 +379,7 @@ export component SendEditForm inherits Rectangle {
                 spacing: Theme.s2;
                 alignment: start;
                 Btn {
-                    text: root.saving ? "Saving…" : "Save";
+                    text: root.saving ? (root.send-type == 1 ? "Uploading…" : "Saving…") : "Save";
                     kind: BtnKind.primary;
                     enabled: !root.saving;
                     clicked => { root.save(); }

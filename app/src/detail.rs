@@ -311,6 +311,11 @@ pub fn fields(draft: &ItemDraft) -> Vec<FieldSpec> {
         out.push(notes.with_kind(FieldKind::Multiline));
     }
     for (index, field) in draft.fields.iter().enumerate() {
+        if matches!(draft.data, ItemData::Login { .. })
+            && field.name == vk_vault::model::CLI_ACCESS_FIELD
+        {
+            continue;
+        }
         let copy = Some(CopyField::Custom(index));
         if field.hidden && field.withheld {
             // The vault withholds hidden values from members without viewPassword (it returns

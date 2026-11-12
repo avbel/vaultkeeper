@@ -185,6 +185,7 @@ pub fn deletion_options(current: Option<i64>, now: i64) -> (Vec<SharedString>, V
 /// What the edit form holds, read back from the window.
 pub struct SendForm {
     pub name: String,
+    pub is_file: bool,
     pub text: Zeroizing<String>,
     pub hidden: bool,
     pub deletion_date: i64,
@@ -200,7 +201,7 @@ pub fn build_draft(form: SendForm, base: Option<&SendDraft>) -> Result<SendDraft
     if form.name.trim().is_empty() {
         return Err("Give the Send a name");
     }
-    if form.text.is_empty() {
+    if !form.is_file && form.text.is_empty() {
         return Err("Enter the text to share");
     }
     let max_access_count = parse_max_views(&form.max_views)?;
@@ -277,6 +278,7 @@ mod tests {
     fn form() -> SendForm {
         SendForm {
             name: " Door code ".into(),
+            is_file: false,
             text: Zeroizing::new("0815".into()),
             hidden: false,
             deletion_date: NOW + DAY,
