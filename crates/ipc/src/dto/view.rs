@@ -386,11 +386,15 @@ impl From<AttachmentDto> for AttachmentView {
     }
 }
 
-/// Two-factor providers travel as their server wire ids.
+/// Two-factor providers travel as their server wire ids, the security-key challenge as the
+/// server's JSON text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoginStepDto {
     Done,
-    TwoFactorRequired(Vec<u8>),
+    TwoFactorRequired {
+        providers: Vec<u8>,
+        webauthn: Option<String>,
+    },
     NewDeviceOtpRequired,
 }
 
@@ -398,9 +402,13 @@ impl From<LoginStep> for LoginStepDto {
     fn from(step: LoginStep) -> Self {
         match step {
             LoginStep::Done => Self::Done,
-            LoginStep::TwoFactorRequired(providers) => {
-                Self::TwoFactorRequired(providers.into_iter().map(TwoFactorProvider::id).collect())
-            }
+            LoginStep::TwoFactorRequired {
+                providers,
+                webauthn,
+            } => Self::TwoFactorRequired {
+                providers: providers.into_iter().map(TwoFactorProvider::id).collect(),
+                webauthn,
+            },
             LoginStep::NewDeviceOtpRequired => Self::NewDeviceOtpRequired,
         }
     }
@@ -412,11 +420,16 @@ impl TryFrom<LoginStepDto> for LoginStep {
     fn try_from(step: LoginStepDto) -> Result<Self, ConvertError> {
         Ok(match step {
             LoginStepDto::Done => Self::Done,
-            LoginStepDto::TwoFactorRequired(ids) => Self::TwoFactorRequired(
-                ids.into_iter()
+            LoginStepDto::TwoFactorRequired {
+                providers,
+                webauthn,
+            } => Self::TwoFactorRequired {
+                providers: providers
+                    .into_iter()
                     .map(provider_from_id)
                     .collect::<Result<_, _>>()?,
-            ),
+                webauthn,
+            },
             LoginStepDto::NewDeviceOtpRequired => Self::NewDeviceOtpRequired,
         })
     }
@@ -634,22 +647,32 @@ mod tests {
         let steps = [
             LoginStep::Done,
             LoginStep::NewDeviceOtpRequired,
-            LoginStep::TwoFactorRequired(vec![
-                TwoFactorProvider::Authenticator,
-                TwoFactorProvider::Email,
-                TwoFactorProvider::RecoveryCode,
-            ]),
+            LoginStep::TwoFactorRequired {
+                providers: vec![
+                    TwoFactorProvider::Authenticator,
+                    TwoFactorProvider::Email,
+                    TwoFactorProvider::RecoveryCode,
+                ],
+                webauthn: None,
+            },
+            LoginStep::TwoFactorRequired {
+                providers: vec![TwoFactorProvider::WebAuthn],
+                webauthn: Some(r#"{"challenge":"AQID"}"#.to_owned()),
+            },
         ];
         for step in steps {
             let dto = over_the_wire(&LoginStepDto::from(step.clone()));
             assert_eq!(LoginStep::try_from(dto).expect("convert"), step);
         }
         assert_eq!(
-            LoginStepDto::from(LoginStep::TwoFactorRequired(vec![
-                TwoFactorProvider::Email,
-                TwoFactorProvider::RecoveryCode
-            ])),
-            LoginStepDto::TwoFactorRequired(vec![1, 8])
+            LoginStepDto::from(LoginStep::TwoFactorRequired {
+                providers: vec![TwoFactorProvider::Email, TwoFactorProvider::RecoveryCode],
+                webauthn: None,
+            }),
+            LoginStepDto::TwoFactorRequired {
+                providers: vec![1, 8],
+                webauthn: None,
+            }
         );
     }
 
@@ -657,7 +680,10 @@ mod tests {
     fn unknown_provider_id_is_rejected() {
         // 4 is the retired U2F provider.
         assert_eq!(
-            LoginStep::try_from(LoginStepDto::TwoFactorRequired(vec![1, 4])),
+            LoginStep::try_from(LoginStepDto::TwoFactorRequired {
+                providers: vec![1, 4],
+                webauthn: None,
+            }),
             Err(ConvertError::UnknownProvider(4))
         );
     }

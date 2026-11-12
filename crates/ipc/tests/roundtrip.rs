@@ -49,10 +49,10 @@ async fn login_rounds_carry_every_argument_and_step() {
         .expect("first round");
     assert_eq!(
         step,
-        LoginStep::TwoFactorRequired(vec![
-            TwoFactorProvider::Authenticator,
-            TwoFactorProvider::Email
-        ])
+        LoginStep::TwoFactorRequired {
+            providers: vec![TwoFactorProvider::Authenticator, TwoFactorProvider::Email],
+            webauthn: None,
+        }
     );
     let answer = TwoFactorAnswer {
         provider: TwoFactorProvider::Email,

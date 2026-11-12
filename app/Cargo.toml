@@ -28,6 +28,9 @@ vw-it = []
 
 [dependencies]
 anyhow.workspace = true
+# Security keys over USB HID (CTAP2 with PIN, CTAP1/U2F with the AppID fallback); Firefox's
+# implementation. Pure-Rust crypto for the PIN protocol instead of the default NSS.
+authenticator = { version = "0.5.0", default-features = false, features = ["crypto_rust"] }
 base64.workspace = true
 hmac.workspace = true
 image.workspace = true
@@ -42,6 +45,7 @@ vk-ipc.workspace = true
 vk-platform.workspace = true
 vk-ssh.workspace = true
 vk-vault.workspace = true
+vk-webauthn.workspace = true
 # Local wall-clock time of the last sync in the tray menu.
 chrono.workspace = true
 global-hotkey.workspace = true

@@ -1,12 +1,14 @@
 //! In-memory `VaultService` for `--mock` and the UI tests.
 //!
 //! Master password for every mock account: [`MOCK_MASTER_PASSWORD`]. Emails containing "2fa" ask
-//! for a second factor ([`MOCK_2FA_CODE`]); emails containing "newdevice" ask for a device OTP
+//! for a second factor ([`MOCK_2FA_CODE`]), emails containing "key" for a security key (the
+//! [`MockSecurityKey`], or the code); emails containing "newdevice" ask for a device OTP
 //! ([`MOCK_DEVICE_CODE`]). Server hosts containing "unreachable" fail like a dead network and
 //! hosts containing "notbitwarden" answer like a non-Bitwarden server.
 
 mod data;
 mod fake;
+mod security_key;
 mod sends;
 mod service;
 mod state;
@@ -25,6 +27,7 @@ use url::Url;
 use vk_vault::model::{ItemDraft, ItemId};
 
 pub use fake::{MockGenerator, MockSshKeys, Prng};
+pub use security_key::{MOCK_KEY_ID, MOCK_KEY_PIN, MockSecurityKey};
 
 use data::AccountData;
 

@@ -249,11 +249,18 @@ pub struct LoginRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginStep {
     Done,
-    TwoFactorRequired(Vec<TwoFactorProvider>),
+    /// `webauthn` is the security-key challenge as JSON text, see
+    /// [`vk_api::LoginOutcome::TwoFactorRequired`]; it is single-use, so a failed attempt asks
+    /// the server for a new one by logging in again without an answer.
+    TwoFactorRequired {
+        providers: Vec<TwoFactorProvider>,
+        webauthn: Option<String>,
+    },
     NewDeviceOtpRequired,
 }
 
-/// Second login round: the code the user typed for one of the offered providers.
+/// Second login round: the code the user typed for one of the offered providers, or for
+/// [`TwoFactorProvider::WebAuthn`] the security key's answer as JSON text.
 pub struct TwoFactorAnswer {
     pub provider: TwoFactorProvider,
     pub code: String,

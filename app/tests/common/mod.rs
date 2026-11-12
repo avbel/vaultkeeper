@@ -23,10 +23,10 @@ use vaultkeeper::{
     exec::Exec,
     hooks::{
         AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, DockIcon, FileDialogs, GlobalHotkey,
-        HookError, HookResult, Hooks, SettingsStore, SiteIconSource, SshKeyTool, TypingTarget,
-        WindowPlacement,
+        HookError, HookResult, Hooks, KeyCeremony, KeyEvent, KeyEvents, SecurityKeys,
+        SettingsStore, SiteIconSource, SshKeyTool, TypingTarget, WindowPlacement,
     },
-    mock::{MockConfig, MockVault},
+    mock::{MOCK_KEY_ID, MockConfig, MockSecurityKey, MockVault},
     settings::Settings,
 };
 
@@ -186,6 +186,95 @@ thread_local! {
 
 pub fn during_next_prompt(probe: impl FnOnce() + 'static) {
     DURING_PROMPT.with(|slot| *slot.borrow_mut() = Some(Box::new(probe)));
+}
+
+/// A security key driven by the test: it records requests, PINs and cancels, and the test sends
+/// the key's events with [`ScriptedSecurityKey::send`] and delivers them with [`elapse`].
+#[derive(Default)]
+pub struct ScriptedSecurityKey {
+    pub requests: Mutex<Vec<(vk_webauthn::RequestOptions, String)>>,
+    pub pins: Mutex<Vec<String>>,
+    pub cancels: std::sync::atomic::AtomicUsize,
+    events: Mutex<Option<KeyEvents>>,
+}
+
+impl ScriptedSecurityKey {
+    pub fn send(&self, event: KeyEvent) {
+        let events = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        events
+            .as_ref()
+            .expect("a key request is running")
+            .send(event)
+            .expect("the login window listens");
+        drop(events);
+        elapse(Duration::from_millis(1));
+    }
+
+    /// Signs the last request with the key the mock server allows.
+    pub fn touch(&self) {
+        let (options, origin) = self
+            .requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last()
+            .cloned()
+            .expect("a key request");
+        let client_data = vk_webauthn::ClientDataJson::new(
+            vk_webauthn::Ceremony::Get,
+            &options.challenge.0,
+            &origin,
+        );
+        let assertion = vk_webauthn::get_assertion(
+            &vk_webauthn::PasskeyKey::generate().expect("key"),
+            MOCK_KEY_ID,
+            options.rp_id.as_deref().unwrap_or_default(),
+            vk_webauthn::FLAG_USER_PRESENT,
+            0,
+            &client_data,
+        );
+        self.send(KeyEvent::Done(Ok(assertion)));
+    }
+
+    pub fn cancels(&self) -> usize {
+        self.cancels.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+struct ScriptedCeremony(Arc<ScriptedSecurityKey>);
+
+impl KeyCeremony for ScriptedCeremony {
+    fn enter_pin(&self, pin: zeroize::Zeroizing<String>) {
+        self.0
+            .pins
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(pin.to_string());
+    }
+
+    fn cancel(&self) {
+        self.0
+            .cancels
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+pub struct ScriptedKeys(pub Arc<ScriptedSecurityKey>);
+
+impl SecurityKeys for ScriptedKeys {
+    fn sign(
+        &self,
+        options: vk_webauthn::RequestOptions,
+        origin: String,
+        events: KeyEvents,
+    ) -> HookResult<Box<dyn KeyCeremony>> {
+        self.0
+            .requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((options, origin));
+        *self.0.events.lock().unwrap_or_else(PoisonError::into_inner) = Some(events);
+        Ok(Box::new(ScriptedCeremony(Arc::clone(&self.0))))
+    }
 }
 
 /// Touch ID enrolled for every account, answering prompts from a script and counting them.
@@ -406,6 +495,8 @@ pub struct Harness {
     pub app: Rc<App<MockVault>>,
     /// Set when [`Setup::scripted_touch_id`] is.
     pub touch_id: Option<Arc<ScriptedTouchId>>,
+    /// Set when [`Setup::scripted_security_key`] is.
+    pub security_key: Option<Arc<ScriptedSecurityKey>>,
     pub vault: Arc<MockVault>,
     pub clipboard: Arc<RecordingClipboard>,
     pub files: Arc<FakeFiles>,
@@ -427,6 +518,8 @@ pub struct Setup {
     pub scripted_touch_id: bool,
     /// Replaces the offline site icon source, which has no icons.
     pub site_icons: Option<Arc<dyn SiteIconSource>>,
+    /// Replaces the mock security key, which signs at once, with [`ScriptedSecurityKey`].
+    pub scripted_security_key: bool,
 }
 
 impl Default for Setup {
@@ -438,6 +531,7 @@ impl Default for Setup {
             ssh_keys: None,
             scripted_touch_id: false,
             site_icons: None,
+            scripted_security_key: false,
         }
     }
 }
@@ -468,6 +562,9 @@ pub fn harness(setup: Setup) -> Harness {
             prompts: std::sync::atomic::AtomicUsize::new(0),
         })
     });
+    let security_key = setup
+        .scripted_security_key
+        .then(|| Arc::new(ScriptedSecurityKey::default()));
     let hooks = Hooks {
         biometrics: touch_id.as_ref().map_or_else(
             || Arc::clone(&defaults.biometrics),
@@ -487,6 +584,10 @@ pub fn harness(setup: Setup) -> Harness {
         site_icons: setup
             .site_icons
             .unwrap_or_else(|| Arc::clone(&defaults.site_icons)),
+        security_keys: security_key.as_ref().map_or_else(
+            || Arc::new(MockSecurityKey { instant: true }) as Arc<dyn SecurityKeys>,
+            |key| Arc::new(ScriptedKeys(Arc::clone(key))) as Arc<dyn SecurityKeys>,
+        ),
         ..defaults
     };
     let app = App::new(
@@ -497,6 +598,7 @@ pub fn harness(setup: Setup) -> Harness {
     Harness {
         app,
         touch_id,
+        security_key,
         vault,
         clipboard,
         files,

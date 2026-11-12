@@ -91,8 +91,12 @@ impl fmt::Debug for TwoFactorToken {
 #[derive(Debug)]
 pub enum LoginOutcome {
     Success(Box<TokenResponse>),
-    /// HTTP 400 with `TwoFactorProviders2`; unknown provider ids are dropped.
-    TwoFactorRequired(Vec<TwoFactorProvider>),
+    /// HTTP 400 with `TwoFactorProviders2`; unknown provider ids are dropped. `webauthn` is the
+    /// security-key challenge (the JSON value of provider 7), present when that provider is.
+    TwoFactorRequired {
+        providers: Vec<TwoFactorProvider>,
+        webauthn: Option<String>,
+    },
     /// HTTP 400 "new device verification required": resend with an emailed OTP.
     NewDeviceOtpRequired,
 }

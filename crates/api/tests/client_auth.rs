@@ -177,7 +177,7 @@ async fn login_reports_the_available_two_factor_providers() {
         .await
         .unwrap();
 
-    let LoginOutcome::TwoFactorRequired(providers) = outcome else {
+    let LoginOutcome::TwoFactorRequired { providers, .. } = outcome else {
         panic!("expected a 2FA challenge, got {outcome:?}");
     };
     assert_eq!(providers, vec![TwoFactorProvider::Authenticator]);

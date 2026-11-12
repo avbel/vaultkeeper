@@ -38,9 +38,16 @@ a running old version refuses the new one's windows until it is quit.
 2. Enter the **server URL** of your Vaultwarden (e.g. `https://vault.example.com`), email and master
    password. Plain `http://` is accepted only for localhost and private-network addresses
    (10.x, 172.16–31.x, 192.168.x, `*.local`).
-3. If the account has email 2FA, enter the code from the email. If the server asks for a new-device
-   code, enter that.
+3. If the account has two-step login, enter the code from your authenticator app or the email. If
+   the server asks for a new-device code, enter that.
 4. The vault syncs and the Manager window opens.
+
+**Security key (FIDO2 / U2F, e.g. YubiKey).** Add the key once in the web vault (Settings →
+Security → Two-step login → Passkey). When it is one of your two-step methods,
+the login window starts with it: plug the key in over USB and touch it, and enter its PIN if it
+asks. *Use security key* tries again; the other methods stay available above. The server URL must
+have the same scheme, host and port as the server's `DOMAIN` setting, or the server refuses the
+key's answer. NFC and Bluetooth keys are not supported.
 
 More accounts: tray menu or sidebar account switcher → *Add account*. *Log out* removes all of that
 account's local data: cache, keychain items, Touch ID enrollment, SSH keys in the agent and the

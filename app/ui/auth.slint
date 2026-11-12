@@ -210,6 +210,12 @@ export component LoginWindow inherits Window {
     in property <[string]> providers;
     in-out property <int> provider-index: 0;
     in property <bool> email-provider-selected;
+    // The security key is the selected provider: no code field, the key's prompts instead.
+    in property <bool> key-selected;
+    in property <bool> key-waiting;
+    in property <bool> key-pin-needed;
+    in property <string> key-status;
+    in-out property <string> key-pin;
     in-out property <string> code;
     in-out property <bool> remember: false;
     in property <string> error-text;
@@ -221,6 +227,8 @@ export component LoginWindow inherits Window {
     callback submit-two-factor();
     callback submit-new-device();
     callback send-email-code();
+    callback use-key();
+    callback submit-key-pin();
     callback provider-selected(int);
     callback back();
     callback cancel();
@@ -340,13 +348,30 @@ export component LoginWindow inherits Window {
                 index <=> root.provider-index;
                 selected(i) => { root.provider-selected(i); }
             }
-            Field {
+            if !root.key-selected: Field {
                 placeholder: "Code";
                 label: "Verification code";
                 mono: true;
                 enabled: !root.busy;
                 text <=> root.code;
                 accepted => { root.submit-two-factor(); }
+            }
+            if root.key-selected && root.key-status != "": Text {
+                text: root.key-status;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Security key status";
+                accessible-value: self.text;
+            }
+            if root.key-selected && root.key-pin-needed: Field {
+                placeholder: "Security key PIN";
+                label: "Security key PIN";
+                password: true;
+                enabled: !root.busy;
+                text <=> root.key-pin;
+                accepted => { root.submit-key-pin(); }
+                init => { self.focus-input(); }
             }
             if root.email-provider-selected: LinkText {
                 text: "Send code by email";
@@ -385,12 +410,21 @@ export component LoginWindow inherits Window {
             spacing: Theme.s2;
             Btn {
                 horizontal-stretch: 1;
-                text: root.busy ? "Working…" : root.step == 0 ? "Log in" : "Continue";
+                text: root.busy ? "Working…"
+                    : root.step == 0 ? "Log in"
+                    : root.step == 1 && root.key-selected && root.key-pin-needed ? "Continue"
+                    : root.step == 1 && root.key-selected && root.key-waiting ? "Waiting for key…"
+                    : root.step == 1 && root.key-selected ? "Use security key"
+                    : "Continue";
                 kind: BtnKind.primary;
-                enabled: !root.busy;
+                enabled: !root.busy && !(root.key-selected && root.key-waiting && !root.key-pin-needed);
                 clicked => {
                     if root.step == 0 {
                         root.submit-credentials();
+                    } else if root.step == 1 && root.key-selected && root.key-pin-needed {
+                        root.submit-key-pin();
+                    } else if root.step == 1 && root.key-selected {
+                        root.use-key();
                     } else if root.step == 1 {
                         root.submit-two-factor();
                     } else {

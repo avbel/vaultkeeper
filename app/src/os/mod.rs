@@ -10,6 +10,7 @@ pub mod fs;
 pub mod layout;
 pub mod log_file;
 mod misc;
+mod security_key;
 pub mod settings_file;
 
 use std::{path::Path, sync::Arc};
@@ -65,6 +66,7 @@ impl Hooks {
             clock: Arc::new(SystemClock),
             autotype: Arc::new(autotype::SystemAutoType),
             site_icons: Arc::new(DaemonSiteIcons(Arc::clone(daemon))),
+            security_keys: Arc::new(security_key::UsbSecurityKeys),
         }
     }
 }

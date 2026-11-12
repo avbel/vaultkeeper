@@ -6,8 +6,8 @@
 mod support;
 
 use support::{
-    KdfChoice, TestVault, email_factor, enable_authenticator, enable_email_two_factor, env,
-    mail_count, raw_session, register, totp, unix_now, wait_for_code,
+    KdfChoice, TestVault, email_factor, enable_authenticator, enable_email_two_factor,
+    enable_webauthn, env, mail_count, raw_session, register, totp, unix_now, wait_for_code,
 };
 use vk_api::TwoFactorProvider;
 use vk_vault::{
@@ -138,7 +138,10 @@ async fn email_two_factor_with_a_mailed_code_and_remember_device() {
         .unwrap();
     assert_eq!(
         step,
-        LoginStep::TwoFactorRequired(vec![TwoFactorProvider::Email])
+        LoginStep::TwoFactorRequired {
+            providers: vec![TwoFactorProvider::Email],
+            webauthn: None,
+        }
     );
 
     let before = mail_count(&env, &account.email).await;
@@ -208,7 +211,10 @@ async fn authenticator_two_factor_smoke_test() {
         .unwrap();
     assert_eq!(
         step,
-        LoginStep::TwoFactorRequired(vec![TwoFactorProvider::Authenticator])
+        LoginStep::TwoFactorRequired {
+            providers: vec![TwoFactorProvider::Authenticator],
+            webauthn: None,
+        }
     );
     // The activation used the current step and the server rejects replays; the next step is
     // within its allowed drift.
@@ -220,6 +226,69 @@ async fn authenticator_two_factor_smoke_test() {
     let step = test
         .vault
         .login(account.login_request(&env.vw), Some(answer), None)
+        .await
+        .unwrap();
+    assert_eq!(step, LoginStep::Done);
+    assert!(matches!(test.vault.state(), SessionState::Unlocked { .. }));
+}
+
+/// The token is built exactly as the login window builds it from a USB key's answer, so this
+/// pins the wire contract with Vaultwarden's webauthn-rs: client data origin, rpId and the
+/// connector's field names.
+#[tokio::test(flavor = "multi_thread")]
+async fn security_key_two_factor_logs_in_and_a_challenge_is_single_use() {
+    let env = env();
+    let account = register(&env, KdfChoice::Pbkdf2).await;
+    let setup = raw_session(&env, &account).await;
+    let key = enable_webauthn(&env, &setup, &account).await;
+
+    let test = TestVault::new();
+    let LoginStep::TwoFactorRequired {
+        providers,
+        webauthn: Some(first),
+    } = test
+        .vault
+        .login(account.login_request(&env.vw), None, None)
+        .await
+        .unwrap()
+    else {
+        panic!("expected a security-key challenge");
+    };
+    assert_eq!(providers, vec![TwoFactorProvider::WebAuthn]);
+    let challenge = || async {
+        match test
+            .vault
+            .login(account.login_request(&env.vw), None, None)
+            .await
+            .unwrap()
+        {
+            LoginStep::TwoFactorRequired {
+                webauthn: Some(challenge),
+                ..
+            } => challenge,
+            other => panic!("expected a security-key challenge, got {other:?}"),
+        }
+    };
+    let answer = |challenge: &str| TwoFactorAnswer {
+        provider: TwoFactorProvider::WebAuthn,
+        code: key.answer(challenge, &env.vw),
+        remember: false,
+    };
+
+    // Asking again replaces the first challenge on the server.
+    challenge().await;
+    assert!(
+        test.vault
+            .login(account.login_request(&env.vw), Some(answer(&first)), None)
+            .await
+            .is_err(),
+        "an answer to a replaced challenge is refused"
+    );
+
+    let fresh = challenge().await;
+    let step = test
+        .vault
+        .login(account.login_request(&env.vw), Some(answer(&fresh)), None)
         .await
         .unwrap();
     assert_eq!(step, LoginStep::Done);

@@ -38,6 +38,7 @@ zeroize = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util"] }
+vk-webauthn.workspace = true
 wiremock.workspace = true
 
 [lints]

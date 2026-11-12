@@ -167,6 +167,43 @@ pub trait AutoType: Send + Sync {
     }
 }
 
+/// Progress of one security-key login, delivered in order and ended by exactly one `Done`.
+#[derive(Debug)]
+pub enum KeyEvent {
+    /// Waiting for a key to be plugged in and touched.
+    Touch,
+    /// Several keys are plugged in: the one touched first is used.
+    ChooseKey,
+    /// The key wants its PIN, answered with [`KeyCeremony::enter_pin`]. `wrong` after a
+    /// rejected PIN, with the attempts the key still allows when it says.
+    Pin {
+        wrong: bool,
+        attempts_left: Option<u8>,
+    },
+    Done(HookResult<vk_webauthn::Assertion>),
+}
+
+pub type KeyEvents = tokio::sync::mpsc::UnboundedSender<KeyEvent>;
+
+/// FIDO2 / U2F security keys answering a WebAuthn 2FA challenge (provider 7).
+pub trait SecurityKeys: Send + Sync {
+    /// Asks the plugged-in keys to sign `options` for `origin` (the server's origin) and returns
+    /// at once; progress and the outcome arrive on `events`.
+    fn sign(
+        &self,
+        options: vk_webauthn::RequestOptions,
+        origin: String,
+        events: KeyEvents,
+    ) -> HookResult<Box<dyn KeyCeremony>>;
+}
+
+/// One running security-key request.
+pub trait KeyCeremony {
+    fn enter_pin(&self, pin: Zeroizing<String>);
+    /// Stops waiting; the `Done` that follows reports [`HookError::Cancelled`].
+    fn cancel(&self);
+}
+
 pub type IconLookup = std::pin::Pin<Box<dyn std::future::Future<Output = SiteIcon> + Send>>;
 
 /// Website icons by host. The UI process asks the daemon, which fetches and caches them.
@@ -192,6 +229,7 @@ pub struct Hooks {
     pub clock: Arc<dyn Clock>,
     pub autotype: Arc<dyn AutoType>,
     pub site_icons: Arc<dyn SiteIconSource>,
+    pub security_keys: Arc<dyn SecurityKeys>,
 }
 
 impl Hooks {
@@ -234,6 +272,7 @@ impl Hooks {
             clock: Arc::new(SystemClock),
             autotype: Arc::new(LogAutoType),
             site_icons: Arc::new(NoSiteIcons),
+            security_keys: Arc::new(crate::mock::MockSecurityKey::default()),
         }
     }
 }

@@ -17,7 +17,10 @@ pub(crate) fn classify_bad_request(reply: &Reply) -> Result<LoginOutcome> {
     normalize_keys(&mut value);
 
     if let Some(providers) = two_factor_providers(&value) {
-        return Ok(LoginOutcome::TwoFactorRequired(providers));
+        return Ok(LoginOutcome::TwoFactorRequired {
+            webauthn: webauthn_challenge(&value, &providers),
+            providers,
+        });
     }
     if message_candidates(&value).any(is_new_device_message) {
         return Ok(LoginOutcome::NewDeviceOtpRequired);
@@ -48,6 +51,20 @@ fn two_factor_providers(value: &Value) -> Option<Vec<TwoFactorProvider>> {
     None
 }
 
+/// The options object Vaultwarden puts under provider 7 of `TwoFactorProviders2`, kept as JSON
+/// text so the UI can hand it to the security key unchanged.
+fn webauthn_challenge(value: &Value, providers: &[TwoFactorProvider]) -> Option<String> {
+    if !providers.contains(&TwoFactorProvider::WebAuthn) {
+        return None;
+    }
+    let key = TwoFactorProvider::WebAuthn.id().to_string();
+    value
+        .get("twoFactorProviders2")?
+        .get(key)
+        .filter(|options| options.is_object())
+        .map(Value::to_string)
+}
+
 fn parse_ids(ids: impl Iterator<Item = Option<u64>>) -> Vec<TwoFactorProvider> {
     ids.flatten()
         .filter_map(|id| u8::try_from(id).ok())
@@ -74,7 +91,11 @@ mod tests {
         let reply = bad_request(
             r#"{"error":"invalid_grant","TwoFactorProviders2":{"0":null,"1":{"Email":"te***@example.com"},"4":null,"9":null,"5":null}}"#,
         );
-        let Ok(LoginOutcome::TwoFactorRequired(providers)) = classify_bad_request(&reply) else {
+        let Ok(LoginOutcome::TwoFactorRequired {
+            providers,
+            webauthn,
+        }) = classify_bad_request(&reply)
+        else {
             panic!("expected a two-factor challenge");
         };
         assert_eq!(
@@ -85,12 +106,14 @@ mod tests {
                 TwoFactorProvider::Remember
             ]
         );
+        assert_eq!(webauthn, None);
     }
 
     #[test]
     fn legacy_provider_list_is_used_when_providers2_is_absent() {
         let reply = bad_request(r#"{"TwoFactorProviders":["1", 0, "3"]}"#);
-        let Ok(LoginOutcome::TwoFactorRequired(providers)) = classify_bad_request(&reply) else {
+        let Ok(LoginOutcome::TwoFactorRequired { providers, .. }) = classify_bad_request(&reply)
+        else {
             panic!("expected a two-factor challenge");
         };
         assert_eq!(
@@ -101,6 +124,46 @@ mod tests {
                 TwoFactorProvider::YubiKey
             ]
         );
+    }
+
+    /// Vaultwarden 1.37 with a security key: the options of `generate_webauthn_login`, in the
+    /// PascalCase envelope the identity endpoint uses.
+    #[test]
+    fn webauthn_challenge_is_kept_as_json_text() {
+        let reply = bad_request(
+            r#"{"error":"invalid_grant","TwoFactorProviders":["7","0"],"TwoFactorProviders2":{"7":{"challenge":"q6yI","timeout":60000,"rpId":"vault.example.com","allowCredentials":[{"type":"public-key","id":"AAEC"}],"userVerification":"discouraged","extensions":{"appid":"https://vault.example.com/app-id.json"}},"0":null}}"#,
+        );
+        let Ok(LoginOutcome::TwoFactorRequired {
+            providers,
+            webauthn: Some(webauthn),
+        }) = classify_bad_request(&reply)
+        else {
+            panic!("expected a security-key challenge");
+        };
+        assert_eq!(
+            providers,
+            vec![
+                TwoFactorProvider::Authenticator,
+                TwoFactorProvider::WebAuthn
+            ]
+        );
+        let options: Value = serde_json::from_str(&webauthn).expect("JSON");
+        assert_eq!(options["rpId"], "vault.example.com");
+        assert_eq!(options["allowCredentials"][0]["id"], "AAEC");
+        assert_eq!(
+            options["extensions"]["appid"],
+            "https://vault.example.com/app-id.json"
+        );
+    }
+
+    #[test]
+    fn webauthn_without_options_has_no_challenge() {
+        let reply = bad_request(r#"{"TwoFactorProviders2":{"7":null}}"#);
+        let Ok(LoginOutcome::TwoFactorRequired { webauthn, .. }) = classify_bad_request(&reply)
+        else {
+            panic!("expected a two-factor challenge");
+        };
+        assert_eq!(webauthn, None);
     }
 
     #[test]

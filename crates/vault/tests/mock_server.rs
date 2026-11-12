@@ -419,10 +419,10 @@ async fn two_factor_rounds_reuse_the_derived_key_and_store_the_remember_token() 
     let step = vault.login(fake.request(), None, None).await.unwrap();
     assert_eq!(
         step,
-        LoginStep::TwoFactorRequired(vec![
-            TwoFactorProvider::Authenticator,
-            TwoFactorProvider::Email
-        ])
+        LoginStep::TwoFactorRequired {
+            providers: vec![TwoFactorProvider::Authenticator, TwoFactorProvider::Email],
+            webauthn: None,
+        }
     );
     vault.send_email_code().await.unwrap();
     let answer = TwoFactorAnswer {
@@ -529,7 +529,7 @@ async fn a_failed_or_abandoned_login_keeps_no_typed_password_or_derived_key() {
 
     assert!(matches!(
         vault.login(fake.request(), None, None).await.unwrap(),
-        LoginStep::TwoFactorRequired(_)
+        LoginStep::TwoFactorRequired { .. }
     ));
     vault.send_email_code().await.unwrap();
     vault.lock();

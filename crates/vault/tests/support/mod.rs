@@ -471,6 +471,100 @@ pub async fn enable_authenticator(
     secret
 }
 
+/// A software security key enrolled as the account's WebAuthn 2FA provider.
+pub struct SoftSecurityKey {
+    pub key: vk_webauthn::PasskeyKey,
+    pub credential_id: Vec<u8>,
+}
+
+impl SoftSecurityKey {
+    /// Answers a login challenge the way a browser and a plain USB key would (user present, no
+    /// user verification, not backed up).
+    pub fn answer(&self, challenge: &str, server: &Url) -> String {
+        let options =
+            vk_webauthn::RequestOptions::from_json(&serde_json::from_str(challenge).unwrap())
+                .unwrap();
+        assert!(
+            options
+                .allow_credentials
+                .iter()
+                .any(|credential| credential.id.0 == self.credential_id),
+            "the challenge allows the enrolled key"
+        );
+        let client_data = vk_webauthn::ClientDataJson::new(
+            vk_webauthn::Ceremony::Get,
+            &options.challenge.0,
+            &vk_webauthn::origin_of(server),
+        );
+        vk_webauthn::get_assertion(
+            &self.key,
+            &self.credential_id,
+            &options.rp_id.unwrap(),
+            vk_webauthn::FLAG_USER_PRESENT,
+            1,
+            &client_data,
+        )
+        .to_two_factor_token()
+    }
+}
+
+pub async fn enable_webauthn(
+    env: &Env,
+    session: &RawSession,
+    account: &TestAccount,
+) -> SoftSecurityKey {
+    let verification = session
+        .api(
+            env,
+            reqwest::Method::POST,
+            "api/two-factor/get-webauthn",
+            json!({ "masterPasswordHash": account.hash }),
+        )
+        .await;
+    let token = verification["userVerificationToken"].as_str().unwrap();
+    let challenge = session
+        .api(
+            env,
+            reqwest::Method::POST,
+            "api/two-factor/get-webauthn-challenge",
+            json!({ "masterPasswordHash": account.hash, "userVerificationToken": token }),
+        )
+        .await;
+    let options =
+        vk_webauthn::CreationOptions::from_json(challenge.get("options").unwrap_or(&challenge))
+            .unwrap();
+    let key = vk_webauthn::PasskeyKey::generate().unwrap();
+    let credential_id = Uuid::new_v4().as_bytes().to_vec();
+    let client_data = vk_webauthn::ClientDataJson::new(
+        vk_webauthn::Ceremony::Create,
+        &options.challenge.0,
+        &vk_webauthn::origin_of(&env.vw),
+    );
+    let registration = vk_webauthn::make_credential(
+        &key,
+        &credential_id,
+        options.rp.id.as_deref().unwrap(),
+        vk_webauthn::FLAG_USER_PRESENT,
+        &client_data,
+    )
+    .unwrap();
+    session
+        .api(
+            env,
+            reqwest::Method::PUT,
+            "api/two-factor/webauthn",
+            json!({
+                "id": 1,
+                "name": "Soft key",
+                "deviceResponse": registration.to_two_factor_device_response(),
+                "masterPasswordHash": account.hash,
+                "userVerificationToken": token,
+            }),
+        )
+        .await;
+    SoftSecurityKey { key, credential_id }
+}
+
 pub fn totp(secret: &str, unix_time: u64) -> String {
     vk_gen::totp::Totp::parse(secret)
         .unwrap()

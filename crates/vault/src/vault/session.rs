@@ -138,7 +138,7 @@ impl Inner {
         let step = self.login_round(request, two_factor, new_device_otp).await;
         if !matches!(
             step,
-            Ok(LoginStep::TwoFactorRequired(_) | LoginStep::NewDeviceOtpRequired)
+            Ok(LoginStep::TwoFactorRequired { .. } | LoginStep::NewDeviceOtpRequired)
         ) {
             self.clear_pending();
         }
@@ -197,7 +197,10 @@ impl Inner {
                 self.complete_login(&pending, (*token).into()).await?;
                 Ok(LoginStep::Done)
             }
-            LoginOutcome::TwoFactorRequired(providers) => {
+            LoginOutcome::TwoFactorRequired {
+                providers,
+                webauthn,
+            } => {
                 if remembered.is_some()
                     && let Some(id) = &known_id
                 {
@@ -210,7 +213,10 @@ impl Inner {
                     .into_iter()
                     .filter(|provider| *provider != TwoFactorProvider::Remember)
                     .collect();
-                Ok(LoginStep::TwoFactorRequired(offered))
+                Ok(LoginStep::TwoFactorRequired {
+                    providers: offered,
+                    webauthn,
+                })
             }
             LoginOutcome::NewDeviceOtpRequired => Ok(LoginStep::NewDeviceOtpRequired),
         }

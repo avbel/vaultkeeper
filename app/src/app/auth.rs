@@ -10,7 +10,11 @@ use vk_vault::{
 };
 use zeroize::Zeroizing;
 
-use super::{App, handler, hide, retire, show};
+use super::{
+    App, handler, hide, retire,
+    security_key::{KEY_LABEL, KeyLogin},
+    show,
+};
 use crate::{
     last_login::{self, LastLogin},
     server_url,
@@ -25,8 +29,9 @@ pub(super) struct LoginState {
     pub(super) window: LoginWindow,
     probe_timer: Timer,
     /// Kept between the credential step and the 2FA / device steps.
-    pending: Option<(Url, String, Zeroizing<String>)>,
-    providers: Vec<TwoFactorProvider>,
+    pub(super) pending: Option<(Url, String, Zeroizing<String>)>,
+    pub(super) providers: Vec<TwoFactorProvider>,
+    pub(super) key: KeyLogin,
     /// Account to return to on Cancel (adding a further account).
     previous: Option<Arc<str>>,
 }
@@ -36,6 +41,7 @@ const fn provider_label(provider: TwoFactorProvider) -> Option<&'static str> {
         TwoFactorProvider::Authenticator => Some("Authenticator"),
         TwoFactorProvider::Email => Some("Email"),
         TwoFactorProvider::RecoveryCode => Some("Recovery code"),
+        TwoFactorProvider::WebAuthn => Some(KEY_LABEL),
         _ => None,
     }
 }
@@ -373,6 +379,7 @@ impl<S: VaultService> App<S> {
             probe_timer: Timer::default(),
             pending: None,
             providers: Vec::new(),
+            key: KeyLogin::default(),
             previous,
         });
         if let Some(url) = prefilled {
@@ -426,7 +433,8 @@ impl<S: VaultService> App<S> {
     }
 
     pub(super) fn close_login(&self) {
-        if let Some(login) = self.login.borrow_mut().take() {
+        if let Some(mut login) = self.login.borrow_mut().take() {
+            login.key.cancel();
             hide(&login.window);
             retire(login);
             self.window_closed();
@@ -448,7 +456,10 @@ impl<S: VaultService> App<S> {
         window.on_submit_new_device(handler!(self, |app| app.submit_second_step(false)));
         window.on_send_email_code(handler!(self, |app| app.send_email_code()));
         window.on_provider_selected(handler!(self, |app, _index| app.update_provider_hint()));
+        window.on_use_key(handler!(self, |app| app.retry_key()));
+        window.on_submit_key_pin(handler!(self, |app| app.submit_key_pin()));
         window.on_back(handler!(self, |app| {
+            app.cancel_key();
             if let Some(login) = app.login.borrow_mut().as_mut() {
                 login.pending = None;
                 login.window.set_step(0);
@@ -518,7 +529,11 @@ impl<S: VaultService> App<S> {
         }
     }
 
-    fn run_login(&self, two_factor: Option<TwoFactorAnswer>, new_device_otp: Option<String>) {
+    pub(super) fn run_login(
+        &self,
+        two_factor: Option<TwoFactorAnswer>,
+        new_device_otp: Option<String>,
+    ) {
         let request = self.login.borrow().as_ref().and_then(|login| {
             login
                 .pending
@@ -557,7 +572,10 @@ impl<S: VaultService> App<S> {
                 self.target.set(super::Target::Manager);
                 self.on_vault_changed();
             }
-            Ok(LoginStep::TwoFactorRequired(providers)) => self.show_two_factor(&window, providers),
+            Ok(LoginStep::TwoFactorRequired {
+                providers,
+                webauthn,
+            }) => self.show_two_factor(&window, providers, webauthn),
             Ok(LoginStep::NewDeviceOtpRequired) => {
                 window.set_code(SharedString::new());
                 window.set_step(2);
@@ -577,11 +595,21 @@ impl<S: VaultService> App<S> {
         }
     }
 
-    fn show_two_factor(&self, window: &LoginWindow, providers: Vec<TwoFactorProvider>) {
-        let supported: Vec<TwoFactorProvider> = providers
+    /// The security key goes first when offered, as in the Bitwarden clients.
+    fn show_two_factor(
+        &self,
+        window: &LoginWindow,
+        providers: Vec<TwoFactorProvider>,
+        webauthn: Option<String>,
+    ) {
+        let first_round = window.get_step() == 0;
+        let key_usable = KeyLogin::accepts(webauthn.as_deref());
+        let mut supported: Vec<TwoFactorProvider> = providers
             .into_iter()
             .filter(|provider| provider_label(*provider).is_some())
+            .filter(|provider| *provider != TwoFactorProvider::WebAuthn || key_usable)
             .collect();
+        supported.sort_by_key(|provider| *provider != TwoFactorProvider::WebAuthn);
         if supported.is_empty() {
             window.set_error_text(
                 "This account needs a two-step method Vaultkeeper does not support yet".into(),
@@ -602,6 +630,7 @@ impl<S: VaultService> App<S> {
             login.providers = supported;
         }
         self.update_provider_hint();
+        self.key_challenge_received(webauthn, first_round);
     }
 
     fn update_provider_hint(&self) {
@@ -614,6 +643,8 @@ impl<S: VaultService> App<S> {
             .and_then(|index| login.providers.get(index))
             .is_some_and(|provider| *provider == TwoFactorProvider::Email);
         login.window.set_email_provider_selected(email);
+        drop(guard);
+        self.key_provider_changed();
     }
 
     fn send_email_code(&self) {

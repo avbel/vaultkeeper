@@ -16,8 +16,8 @@ use vk_vault::{
 use zeroize::Zeroizing;
 
 use super::{
-    Account, Inner, MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MOCK_SERVER_VERSION,
-    MockCall, MockVault,
+    Account, Inner, MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_KEY_ID, MOCK_MASTER_PASSWORD,
+    MOCK_SERVER_VERSION, MockCall, MockVault,
     data::{self, AccountData, MockItem},
     sends::{MockSend, summarize as summarize_send},
     state::{
@@ -25,6 +25,25 @@ use super::{
         unix_now, unreachable, user_key,
     },
 };
+
+/// Vaultwarden's login options for the [`super::MockSecurityKey`].
+fn mock_key_challenge(server: &url::Url) -> String {
+    serde_json::json!({
+        "challenge": vk_webauthn::b64::encode(b"mock challenge"),
+        "timeout": 60_000,
+        "rpId": server.host_str().unwrap_or_default(),
+        "allowCredentials": [{"type": "public-key", "id": vk_webauthn::b64::encode(MOCK_KEY_ID)}],
+        "userVerification": "discouraged",
+    })
+    .to_string()
+}
+
+fn is_mock_key_answer(token: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(token).is_ok_and(|token| {
+        token["id"].as_str() == Some(&vk_webauthn::b64::encode(MOCK_KEY_ID))
+            && token["response"]["signature"].is_string()
+    })
+}
 
 /// A refusal shown verbatim, as the real vault reports what it does not offer.
 fn refused(message: &str) -> Error {
@@ -98,15 +117,32 @@ impl MockVault {
         if request.password.as_str() != MOCK_MASTER_PASSWORD {
             return Err(Error::InvalidPassword);
         }
-        if request.email.contains("2fa") {
+        let security_key = request.email.contains("key");
+        if request.email.contains("2fa") || security_key {
             match two_factor {
-                None => {
-                    return Ok(Some(LoginStep::TwoFactorRequired(vec![
-                        TwoFactorProvider::Authenticator,
-                        TwoFactorProvider::Email,
-                        TwoFactorProvider::RecoveryCode,
-                    ])));
+                None if security_key => {
+                    return Ok(Some(LoginStep::TwoFactorRequired {
+                        providers: vec![
+                            TwoFactorProvider::WebAuthn,
+                            TwoFactorProvider::Authenticator,
+                            TwoFactorProvider::RecoveryCode,
+                        ],
+                        webauthn: Some(mock_key_challenge(&request.server)),
+                    }));
                 }
+                None => {
+                    return Ok(Some(LoginStep::TwoFactorRequired {
+                        providers: vec![
+                            TwoFactorProvider::Authenticator,
+                            TwoFactorProvider::Email,
+                            TwoFactorProvider::RecoveryCode,
+                        ],
+                        webauthn: None,
+                    }));
+                }
+                Some(answer)
+                    if answer.provider == TwoFactorProvider::WebAuthn
+                        && is_mock_key_answer(&answer.code) => {}
                 Some(answer) if answer.code.trim() != MOCK_2FA_CODE => {
                     return Err(Error::Api(vk_api::Error::Server {
                         status: 400,
@@ -872,7 +908,7 @@ mod tests {
         let first =
             rt.block_on(vault.login(request(server, "dave+2fa@example.com", "mock"), None, None));
         assert!(
-            matches!(first, Ok(LoginStep::TwoFactorRequired(ref providers)) if providers.len() == 3)
+            matches!(first, Ok(LoginStep::TwoFactorRequired { ref providers, webauthn: None }) if providers.len() == 3)
         );
         let answer = |code: &str| TwoFactorAnswer {
             provider: TwoFactorProvider::Authenticator,

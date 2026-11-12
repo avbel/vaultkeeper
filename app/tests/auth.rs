@@ -2,8 +2,9 @@
 
 mod common;
 
-use common::{Setup, click, exists, harness, pump, type_into, value_of};
-use slint::Model;
+use common::{Setup, click, control_exists, enabled, exists, harness, pump, type_into, value_of};
+use slint::{ComponentHandle as _, Model};
+use vaultkeeper::hooks::{HookError, KeyEvent};
 use vaultkeeper::last_login::{self, LastLogin};
 use vaultkeeper::mock::{MOCK_2FA_CODE, MOCK_DEVICE_CODE, MOCK_MASTER_PASSWORD, MockCall};
 use vaultkeeper::settings::Settings;
@@ -150,6 +151,148 @@ fn login_with_two_factor_step() {
     );
     assert!(h.app.login_window().is_none());
     assert!(h.app.manager_window().is_some());
+}
+
+#[test]
+fn login_with_a_security_key_needs_only_a_touch() {
+    let h = harness(Setup::default());
+    let login = open_login_for_new_account(&h);
+    type_into(&login, "Email", "frank+key@example.com");
+    type_into(&login, "Master password", MOCK_MASTER_PASSWORD);
+    click(&login, "Log in");
+    assert!(
+        matches!(h.vault.state(), SessionState::Unlocked { ref email, .. } if email == "frank+key@example.com"),
+        "the key starts on its own and its answer logs in"
+    );
+    assert!(h.app.login_window().is_none());
+}
+
+fn key_login() -> (common::Harness, vaultkeeper::ui::LoginWindow) {
+    let h = harness(Setup {
+        scripted_security_key: true,
+        ..Setup::default()
+    });
+    let login = open_login_for_new_account(&h);
+    type_into(&login, "Email", "frank+key@example.com");
+    type_into(&login, "Master password", MOCK_MASTER_PASSWORD);
+    click(&login, "Log in");
+    (h, login)
+}
+
+#[test]
+fn security_key_prompts_follow_the_key_and_the_pin_reaches_it() {
+    let (h, login) = key_login();
+    let key = h.security_key.clone().expect("scripted key");
+    assert_eq!(login.get_step(), 1);
+    let providers: Vec<String> = login
+        .get_providers()
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+    assert_eq!(
+        providers,
+        ["Security key", "Authenticator", "Recovery code"]
+    );
+    {
+        let requests = key.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1, "the key starts with the first challenge");
+        let (options, origin) = &requests[0];
+        assert_eq!(origin, "https://vault.example.com");
+        assert_eq!(options.rp_id.as_deref(), Some("vault.example.com"));
+    }
+    assert!(!control_exists(&login, "Verification code"));
+    assert_eq!(
+        value_of(&login, "Security key status"),
+        "Plug in your security key and touch it"
+    );
+    assert!(!enabled(&login, "Waiting for key…"));
+
+    key.send(KeyEvent::Pin {
+        wrong: false,
+        attempts_left: None,
+    });
+    assert_eq!(
+        value_of(&login, "Security key status"),
+        "Enter your security key's PIN"
+    );
+    type_into(&login, "Security key PIN", "1234");
+    click(&login, "Continue");
+    assert_eq!(*key.pins.lock().expect("pins"), ["1234"]);
+    assert!(!control_exists(&login, "Security key PIN"));
+
+    key.send(KeyEvent::Pin {
+        wrong: true,
+        attempts_left: Some(3),
+    });
+    assert_eq!(
+        value_of(&login, "Security key status"),
+        "Wrong PIN, 3 attempts left"
+    );
+    key.send(KeyEvent::Touch);
+    assert_eq!(
+        value_of(&login, "Security key status"),
+        "Touch your security key"
+    );
+    assert!(!control_exists(&login, "Security key PIN"));
+
+    key.touch();
+    assert!(
+        matches!(h.vault.state(), SessionState::Unlocked { ref email, .. } if email == "frank+key@example.com")
+    );
+}
+
+#[test]
+fn another_provider_cancels_the_key_and_a_retry_fetches_a_fresh_challenge() {
+    let (h, login) = key_login();
+    let key = h.security_key.clone().expect("scripted key");
+
+    click(&login, "Authenticator");
+    assert_eq!(key.cancels(), 1);
+    assert!(control_exists(&login, "Verification code"));
+    assert!(!exists(&login, "Security key status"));
+
+    click(&login, "Security key");
+    assert_eq!(
+        key.requests.lock().expect("requests").len(),
+        1,
+        "no restart on its own"
+    );
+    click(&login, "Use security key");
+    assert_eq!(key.requests.lock().expect("requests").len(), 2);
+    let login_calls = h
+        .vault
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, MockCall::Login { .. }))
+        .count();
+    assert_eq!(
+        login_calls, 2,
+        "the retry asked the server for a new challenge"
+    );
+
+    key.send(KeyEvent::Done(Err(HookError::Failed(
+        "No registered security key answered in time".to_owned(),
+    ))));
+    assert_eq!(
+        value_of(&login, "Login error"),
+        "No registered security key answered in time"
+    );
+    assert!(enabled(&login, "Use security key"));
+
+    click(&login, "Back");
+    assert_eq!(login.get_step(), 0);
+}
+
+#[test]
+fn closing_the_login_window_cancels_a_waiting_key() {
+    let (h, login) = key_login();
+    let key = h.security_key.clone().expect("scripted key");
+    login
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+    pump();
+    assert!(h.app.login_window().is_none());
+    assert_eq!(key.cancels(), 1);
 }
 
 #[test]

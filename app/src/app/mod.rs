@@ -17,6 +17,7 @@ mod manager_edit;
 mod manager_send;
 mod quick;
 mod reprompt;
+mod security_key;
 mod settings_browser;
 mod settings_ctl;
 mod settings_hotkeys;

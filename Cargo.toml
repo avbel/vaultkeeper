@@ -9,6 +9,7 @@ members = [
     "crates/platform",
     "crates/ssh",
     "crates/vault",
+    "crates/webauthn",
     "vendor/secure_memory",
     "vendor/ssh_agent",
 ]
@@ -28,6 +29,7 @@ vk-ipc = { path = "crates/ipc" }
 vk-platform = { path = "crates/platform" }
 vk-ssh = { path = "crates/ssh" }
 vk-vault = { path = "crates/vault" }
+vk-webauthn = { path = "crates/webauthn" }
 secure_memory = { path = "vendor/secure_memory" }
 ssh_agent = { path = "vendor/ssh_agent" }
 

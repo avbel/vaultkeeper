@@ -88,6 +88,29 @@ impl Exec {
         }
     }
 
+    /// Runs `on_item` on the UI thread for each item `events` delivers, until it closes. Headless
+    /// (blocking) mode has no event loop to await on: it handles what is queued now and looks
+    /// again on a timer, which tests advance with mocked time.
+    pub fn stream<T: 'static>(
+        &self,
+        mut events: tokio::sync::mpsc::UnboundedReceiver<T>,
+        mut on_item: impl FnMut(T) + 'static,
+    ) {
+        match self.mode {
+            Mode::Blocking => poll_stream(events, on_item),
+            Mode::EventLoop => {
+                let spawned = slint::spawn_local(async move {
+                    while let Some(item) = events.recv().await {
+                        on_item(item);
+                    }
+                });
+                if let Err(error) = spawned {
+                    tracing::error!(%error, "cannot schedule UI continuation");
+                }
+            }
+        }
+    }
+
     /// Fire-and-forget background work, such as a sync after a write.
     pub fn detach<W>(&self, work: W)
     where
@@ -104,6 +127,24 @@ impl Exec {
     pub const fn handle(&self) -> &Handle {
         &self.handle
     }
+}
+
+/// How often headless mode looks for new stream items.
+const STREAM_POLL: std::time::Duration = std::time::Duration::from_millis(1);
+
+fn poll_stream<T: 'static>(
+    mut events: tokio::sync::mpsc::UnboundedReceiver<T>,
+    mut on_item: impl FnMut(T) + 'static,
+) {
+    use tokio::sync::mpsc::error::TryRecvError;
+    loop {
+        match events.try_recv() {
+            Ok(item) => on_item(item),
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => return,
+        }
+    }
+    slint::Timer::single_shot(STREAM_POLL, move || poll_stream(events, on_item));
 }
 
 #[cfg(test)]

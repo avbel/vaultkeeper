@@ -369,10 +369,10 @@ impl VaultService for FakeVault {
             new_device_otp.as_deref().unwrap_or("none"),
         ));
         match (two_factor, new_device_otp) {
-            (None, None) => Ok(LoginStep::TwoFactorRequired(vec![
-                TwoFactorProvider::Authenticator,
-                TwoFactorProvider::Email,
-            ])),
+            (None, None) => Ok(LoginStep::TwoFactorRequired {
+                providers: vec![TwoFactorProvider::Authenticator, TwoFactorProvider::Email],
+                webauthn: None,
+            }),
             (Some(_), None) => Ok(LoginStep::NewDeviceOtpRequired),
             (_, Some(_)) => {
                 self.set_state(unlocked());
