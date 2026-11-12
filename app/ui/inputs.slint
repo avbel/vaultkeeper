@@ -236,7 +236,9 @@ export component Toggle inherits Rectangle {
     in property <bool> enabled: true;
     callback toggled(bool);
 
-    min-height: 32px * Theme.scale;
+    // A fixed minimum lets the scroll layout squeeze a wrapped description below its text height, overlapping the next item.
+    min-height: max(32px * Theme.scale, row.min-height);
+    preferred-height: max(self.min-height, row.preferred-height);
     opacity: enabled ? 1 : 0.45;
     accessible-role: switch;
     accessible-label: root.text;
@@ -258,7 +260,7 @@ export component Toggle inherits Rectangle {
         clicked => { root.flip(); }
     }
 
-    HorizontalLayout {
+    row := HorizontalLayout {
         spacing: Theme.s3;
         VerticalLayout {
             alignment: center;
