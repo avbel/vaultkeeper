@@ -1,14 +1,9 @@
 // The isolated-world half of the passkey bridge: forwards the page script's requests to the
-// background, which decides the origin from the sender, and posts the answers back.
+// background, which decides the origin from the sender, and answers on each request's port.
 
 import { api } from "../shared/api.ts";
 import type { ToBackground } from "../shared/messages.ts";
-import { CHANNEL, type Outcome, parseFromPage, type ToPage } from "./bridge.ts";
-
-function reply(id: string, outcome: Outcome): void {
-  const message: ToPage = { channel: CHANNEL, direction: "reply", id, ...outcome };
-  window.postMessage(message, window.location.origin);
-}
+import { CANCEL, type Outcome, parseOutcome, parseRequest } from "./bridge.ts";
 
 function forward(message: ToBackground): Promise<boolean> {
   return Promise.resolve(api.runtime.sendMessage(message)).then(
@@ -18,26 +13,43 @@ function forward(message: ToBackground): Promise<boolean> {
 }
 
 function main(): void {
+  /** Ports of the requests still waiting for the background, by nonce. */
+  const waiting = new Map<string, MessagePort>();
+
+  const answer = (nonce: string, outcome: Outcome): void => {
+    const port = waiting.get(nonce);
+    if (port) {
+      waiting.delete(nonce);
+      port.postMessage(outcome);
+      port.close();
+    }
+  };
+
   window.addEventListener("message", (event: MessageEvent) => {
-    if (event.source !== window) {
+    if (event.source !== window || event.origin !== window.location.origin) {
       return;
     }
-    const message = parseFromPage(event.data);
-    if (!message) {
+    const request = parseRequest(event.data);
+    const port = event.ports[0];
+    if (!request || !port || waiting.has(request.id)) {
       return;
     }
-    if (message.direction === "cancel") {
-      void forward({ kind: "passkey_cancel", nonce: message.id });
-      return;
-    }
+    const nonce = request.id;
+    waiting.set(nonce, port);
+    port.onmessage = (message: MessageEvent) => {
+      if (message.data === CANCEL && waiting.delete(nonce)) {
+        port.close();
+        void forward({ kind: "passkey_cancel", nonce });
+      }
+    };
     void forward({
       kind: "passkey_request",
-      nonce: message.id,
-      ceremony: message.ceremony,
-      options: message.options,
+      nonce,
+      ceremony: request.ceremony,
+      options: request.options,
     }).then((accepted) => {
       if (!accepted) {
-        reply(message.id, { outcome: "fallback" });
+        answer(nonce, { outcome: "fallback" });
       }
     });
   });
@@ -46,9 +58,10 @@ function main(): void {
     if (sender.id !== api.runtime.id || typeof message !== "object" || message === null) {
       return;
     }
-    const m = message as { kind?: unknown; nonce?: unknown; outcome?: Outcome };
-    if (m.kind === "passkey_result" && typeof m.nonce === "string" && m.outcome) {
-      reply(m.nonce, m.outcome);
+    const m = message as { kind?: unknown; nonce?: unknown };
+    const outcome = parseOutcome(message);
+    if (m.kind === "passkey_result" && typeof m.nonce === "string" && outcome) {
+      answer(m.nonce, outcome);
     }
   });
 }

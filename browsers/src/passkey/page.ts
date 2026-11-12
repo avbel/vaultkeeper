@@ -2,7 +2,14 @@
 // passkeys for navigator.credentials.create/get and hands every request the vault does not take
 // to the browser's own WebAuthn, untouched.
 
-import { CHANNEL, type Ceremony, type FromPage, type Outcome, parseToPage } from "./bridge.ts";
+import {
+  CANCEL,
+  CHANNEL,
+  type Ceremony,
+  type Outcome,
+  type PageRequest,
+  parseOutcome,
+} from "./bridge.ts";
 import {
   type AssertionJson,
   decodeAssertion,
@@ -29,22 +36,6 @@ function install(): void {
     attestation: globalThis.AuthenticatorAttestationResponse?.prototype,
     assertion: globalThis.AuthenticatorAssertionResponse?.prototype,
   };
-  const waiting = new Map<string, (outcome: Outcome) => void>();
-
-  window.addEventListener("message", (event: MessageEvent) => {
-    if (event.source !== window) {
-      return;
-    }
-    const reply = parseToPage(event.data);
-    if (reply) {
-      waiting.get(reply.id)?.(reply);
-    }
-  });
-
-  const post = (message: FromPage): void => {
-    window.postMessage(message, window.location.origin);
-  };
-
   function ask(
     ceremony: Ceremony,
     options: JsonObject,
@@ -55,27 +46,38 @@ function install(): void {
         signal.reason ?? new DOMException("The operation was aborted.", "AbortError"),
       );
     }
-    const id = crypto.randomUUID();
+    const { port1: answers, port2: relayPort } = new MessageChannel();
     return new Promise<Outcome>((resolve, reject) => {
+      const done = (): void => {
+        clearTimeout(giveUp);
+        signal?.removeEventListener("abort", onAbort);
+        answers.close();
+      };
       const giveUp = setTimeout(() => {
-        finish({ outcome: "fallback" });
-        post({ channel: CHANNEL, direction: "cancel", id });
+        answers.postMessage(CANCEL);
+        done();
+        resolve({ outcome: "fallback" });
       }, NO_ANSWER_MS);
       const onAbort = (): void => {
-        clearTimeout(giveUp);
-        waiting.delete(id);
-        post({ channel: CHANNEL, direction: "cancel", id });
+        answers.postMessage(CANCEL);
+        done();
         reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
       };
-      const finish = (outcome: Outcome): void => {
-        clearTimeout(giveUp);
-        waiting.delete(id);
-        signal?.removeEventListener("abort", onAbort);
-        resolve(outcome);
-      };
       signal?.addEventListener("abort", onAbort, { once: true });
-      waiting.set(id, finish);
-      post({ channel: CHANNEL, direction: "request", id, ceremony, options });
+      answers.onmessage = (event: MessageEvent) => {
+        const outcome = parseOutcome(event.data);
+        if (outcome) {
+          done();
+          resolve(outcome);
+        }
+      };
+      const request: PageRequest = {
+        channel: CHANNEL,
+        id: crypto.randomUUID(),
+        ceremony,
+        options,
+      };
+      window.postMessage(request, window.location.origin, [relayPort]);
     });
   }
 

@@ -9,7 +9,7 @@ import {
   type RegistrationJson,
   toBase64Url,
 } from "../src/passkey/codec.ts";
-import { parseFromPage, parseToPage } from "../src/passkey/bridge.ts";
+import { parseOutcome, parseRequest } from "../src/passkey/bridge.ts";
 import { parseToBackground } from "../src/background/router.ts";
 
 const bytes = (...values: number[]) => new Uint8Array(values);
@@ -114,40 +114,36 @@ describe("passkey codec", () => {
 });
 
 describe("passkey bridge messages", () => {
-  it("accepts only well-formed messages on its channel", () => {
+  it("accepts only well-formed requests on its channel", () => {
     const request = {
       channel: "vaultkeeper-passkey",
-      direction: "request",
       id: "r1",
       ceremony: "get",
       options: { challenge: "AQ" },
     };
-    expect(parseFromPage(request)).toEqual(request);
-    expect(parseFromPage({ ...request, channel: "other" })).toBeNull();
-    expect(parseFromPage({ ...request, ceremony: "delete" })).toBeNull();
-    expect(parseFromPage({ ...request, id: "x".repeat(65) })).toBeNull();
-    expect(
-      parseToPage({
-        channel: "vaultkeeper-passkey",
-        direction: "reply",
-        id: "r1",
-        outcome: "error",
-        error: "boom",
-      }),
-    ).toBeNull();
-    expect(
-      parseToPage({
-        channel: "vaultkeeper-passkey",
-        direction: "reply",
-        id: "r1",
-        outcome: "fallback",
-      }),
-    ).toEqual({
-      channel: "vaultkeeper-passkey",
-      direction: "reply",
-      id: "r1",
-      outcome: "fallback",
+    expect(parseRequest(request)).toEqual(request);
+    expect(parseRequest({ ...request, channel: "other" })).toBeNull();
+    expect(parseRequest({ ...request, ceremony: "delete" })).toBeNull();
+    expect(parseRequest({ ...request, id: "x".repeat(65) })).toBeNull();
+    expect(parseRequest({ ...request, options: null })).toBeNull();
+  });
+
+  it("passes only known outcomes on to the page", () => {
+    expect(parseOutcome({ outcome: "fallback", extra: 1 })).toEqual({ outcome: "fallback" });
+    expect(parseOutcome({ outcome: "error", error: "invalid_state" })).toEqual({
+      outcome: "error",
+      error: "invalid_state",
     });
+    expect(parseOutcome({ outcome: "error", error: "boom" })).toBeNull();
+    expect(parseOutcome({ outcome: "credential", credential: null })).toBeNull();
+    expect(
+      parseOutcome({
+        kind: "passkey_result",
+        nonce: "n",
+        outcome: "credential",
+        credential: { id: "AQ" },
+      }),
+    ).toEqual({ outcome: "credential", credential: { id: "AQ" } });
   });
 
   it("the background parses passkey requests and drops any origin in the body", () => {

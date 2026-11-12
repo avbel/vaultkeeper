@@ -1,6 +1,6 @@
 {
   "name": "vaultkeeper-browser-extension",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Vaultkeeper browser extension (thin client for the Vaultkeeper app)",
   "type": "module",

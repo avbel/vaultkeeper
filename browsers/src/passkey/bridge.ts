@@ -1,6 +1,9 @@
 // Messages between the page script (the page's world) and the relay (the extension's isolated
-// world) of one frame. They travel by window.postMessage, so the page can read and forge them:
-// they carry only what the page itself passed to or gets from navigator.credentials.
+// world) of one frame. A request goes by window.postMessage and carries a MessagePort; the answer
+// and a cancel travel on that port. Firefox does not give a message the relay posts to the window
+// the page's own `window` as `event.source`, so answers by window.postMessage would be dropped.
+// The page can read and forge all of this: it carries only what the page itself passed to or gets
+// from navigator.credentials.
 
 import type { AssertionJson, JsonObject, RegistrationJson } from "./codec.ts";
 
@@ -14,21 +17,20 @@ export type Outcome =
   | { outcome: "fallback" }
   | { outcome: "error"; error: "not_allowed" | "invalid_state" };
 
-export type FromPage =
-  | {
-      channel: typeof CHANNEL;
-      direction: "request";
-      id: string;
-      ceremony: Ceremony;
-      options: JsonObject;
-    }
-  | { channel: typeof CHANNEL; direction: "cancel"; id: string };
+/** Posted to the window with the request's port. */
+export interface PageRequest {
+  channel: typeof CHANNEL;
+  id: string;
+  ceremony: Ceremony;
+  options: JsonObject;
+}
 
-export type ToPage = { channel: typeof CHANNEL; direction: "reply"; id: string } & Outcome;
+/** Sent by the page on the request's port when the page gives up. */
+export const CANCEL = "cancel";
 
 const MAX_ID = 64;
 
-export function parseFromPage(data: unknown): FromPage | null {
+export function parseRequest(data: unknown): PageRequest | null {
   if (typeof data !== "object" || data === null) {
     return null;
   }
@@ -37,46 +39,34 @@ export function parseFromPage(data: unknown): FromPage | null {
     m.channel !== CHANNEL ||
     typeof m.id !== "string" ||
     m.id.length === 0 ||
-    m.id.length > MAX_ID
+    m.id.length > MAX_ID ||
+    (m.ceremony !== "create" && m.ceremony !== "get") ||
+    typeof m.options !== "object" ||
+    m.options === null
   ) {
     return null;
   }
-  if (m.direction === "cancel") {
-    return { channel: CHANNEL, direction: "cancel", id: m.id };
-  }
-  if (
-    m.direction === "request" &&
-    (m.ceremony === "create" || m.ceremony === "get") &&
-    typeof m.options === "object" &&
-    m.options !== null
-  ) {
-    return {
-      channel: CHANNEL,
-      direction: "request",
-      id: m.id,
-      ceremony: m.ceremony,
-      options: m.options as JsonObject,
-    };
-  }
-  return null;
+  return {
+    channel: CHANNEL,
+    id: m.id,
+    ceremony: m.ceremony,
+    options: m.options as JsonObject,
+  };
 }
 
-export function parseToPage(data: unknown): ToPage | null {
+export function parseOutcome(data: unknown): Outcome | null {
   if (typeof data !== "object" || data === null) {
     return null;
   }
   const m = data as Record<string, unknown>;
-  if (m.channel !== CHANNEL || m.direction !== "reply" || typeof m.id !== "string") {
-    return null;
-  }
   if (m.outcome === "credential" && typeof m.credential === "object" && m.credential !== null) {
-    return m as unknown as ToPage;
+    return { outcome: "credential", credential: m.credential as RegistrationJson | AssertionJson };
   }
   if (m.outcome === "fallback") {
-    return { channel: CHANNEL, direction: "reply", id: m.id, outcome: "fallback" };
+    return { outcome: "fallback" };
   }
   if (m.outcome === "error" && (m.error === "not_allowed" || m.error === "invalid_state")) {
-    return { channel: CHANNEL, direction: "reply", id: m.id, outcome: "error", error: m.error };
+    return { outcome: "error", error: m.error };
   }
   return null;
 }
