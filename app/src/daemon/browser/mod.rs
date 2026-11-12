@@ -15,6 +15,7 @@ pub mod ids;
 pub mod limits;
 pub mod manifests;
 pub mod pairing;
+pub mod passkey;
 pub mod request;
 pub mod save;
 pub mod save_queue;

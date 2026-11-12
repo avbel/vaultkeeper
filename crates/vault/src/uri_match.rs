@@ -112,6 +112,23 @@ fn domain_key(url: &Url) -> &str {
         host
     }
 }
+/// Whether a page on `host` may use the WebAuthn relying party id `rp_id`: the host itself or a
+/// parent domain of it that is not a public suffix (`example.com` for `login.example.com`, never
+/// `com` or `github.io`). Hosts and ids are compared in lower-case ASCII; addresses never pass.
+#[must_use]
+pub fn valid_rp_id(rp_id: &str, host: &str) -> bool {
+    let rp_id = rp_id.trim_end_matches('.').to_ascii_lowercase();
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if rp_id.is_empty() || !matches!(Host::parse(&host), Ok(Host::Domain(_))) {
+        return false;
+    }
+    if rp_id == "localhost" {
+        return host == "localhost";
+    }
+    let below = host == rp_id || host.ends_with(&format!(".{rp_id}"));
+    below && psl::domain_str(&rp_id).is_some()
+}
+
 /// Match a stored Bitwarden URI rule (0..=5); unknown rules never match.
 #[must_use]
 pub fn matches(saved_uri: &str, rule: Option<u8>, default: DefaultMatch, page: &PageUrl) -> bool {
@@ -167,6 +184,28 @@ pub fn matches(saved_uri: &str, rule: Option<u8>, default: DefaultMatch, page: &
         MatchRule::StartsWith => page.url.as_str().starts_with(saved.as_str()),
         MatchRule::Exact => page.url == saved,
         MatchRule::Regex | MatchRule::Never => false,
+    }
+}
+
+#[cfg(test)]
+mod rp_id_tests {
+    use super::valid_rp_id;
+
+    #[test]
+    fn an_rp_id_is_the_host_or_a_registrable_parent() {
+        assert!(valid_rp_id("example.com", "example.com"));
+        assert!(valid_rp_id("example.com", "login.example.com"));
+        assert!(valid_rp_id("Example.COM.", "login.example.com"));
+        assert!(valid_rp_id("login.example.com", "login.example.com"));
+        assert!(valid_rp_id("localhost", "localhost"));
+        assert!(!valid_rp_id("other.com", "example.com"));
+        assert!(!valid_rp_id("ample.com", "example.com"));
+        assert!(!valid_rp_id("com", "example.com"));
+        assert!(!valid_rp_id("github.io", "bob.github.io"));
+        assert!(!valid_rp_id("co.uk", "shop.co.uk"));
+        assert!(!valid_rp_id("sub.example.com", "example.com"));
+        assert!(!valid_rp_id("127.0.0.1", "127.0.0.1"));
+        assert!(!valid_rp_id("", "example.com"));
     }
 }
 

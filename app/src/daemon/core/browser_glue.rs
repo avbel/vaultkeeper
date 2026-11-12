@@ -530,6 +530,14 @@ impl BrowserHost for DaemonBrowser {
         self.0.settings().browser_fill_single
     }
 
+    fn browser_passkeys(&self) -> bool {
+        self.0.settings().browser_passkeys
+    }
+
+    fn touch_id_available(&self) -> bool {
+        self.0.touch_id.is_available()
+    }
+
     fn enabled(&self, browser: KnownBrowser) -> bool {
         let settings = self.0.settings();
         let toggled = match browser {

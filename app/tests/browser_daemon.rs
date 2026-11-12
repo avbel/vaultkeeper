@@ -900,3 +900,439 @@ fn lookalike_and_unrelated_sites_are_never_offered_as_an_address() {
         rig.shutdown().await;
     });
 }
+
+mod passkeys {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use p256::{
+        ecdsa::{Signature, VerifyingKey, signature::Verifier as _},
+        pkcs8::DecodePublicKey as _,
+    };
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    const USER_HANDLE: &[u8] = b"octocat-handle";
+
+    fn b64(bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    fn unb64(value: &Value) -> Vec<u8> {
+        URL_SAFE_NO_PAD.decode(value.as_str().unwrap()).unwrap()
+    }
+
+    fn creation(exclude: &[&str]) -> Value {
+        json!({
+            "rp": { "id": "github.com", "name": "GitHub" },
+            "user": { "id": b64(USER_HANDLE), "name": "octocat", "displayName": "The Octocat" },
+            "challenge": b64(b"create challenge"),
+            "pubKeyCredParams": [
+                { "type": "public-key", "alg": -257 },
+                { "type": "public-key", "alg": -7 },
+            ],
+            "excludeCredentials": exclude
+                .iter()
+                .map(|id| json!({ "type": "public-key", "id": id }))
+                .collect::<Vec<_>>(),
+            "authenticatorSelection": { "residentKey": "required", "userVerification": "required" },
+            "extensions": { "credProps": true },
+        })
+    }
+
+    fn create(origin: &str, options: Value) -> Value {
+        json!({ "type": "passkey_create", "origin": origin, "options": options })
+    }
+
+    fn get(origin: &str, allow: &[&str]) -> Value {
+        json!({
+            "type": "passkey_get",
+            "origin": origin,
+            "options": {
+                "challenge": b64(b"sign challenge"),
+                "rpId": "github.com",
+                "allowCredentials": allow
+                    .iter()
+                    .map(|id| json!({ "type": "public-key", "id": id }))
+                    .collect::<Vec<_>>(),
+                "userVerification": "required",
+            },
+        })
+    }
+
+    fn client_data(credential: &Value) -> Value {
+        serde_json::from_slice(&unb64(&credential["response"]["clientDataJSON"])).unwrap()
+    }
+
+    /// Creates the GitHub passkey on a new login and returns the registration JSON.
+    async fn register(rig: &mut Rig, host: &mut harness::Host) -> Value {
+        let id = host.submit(create(GITHUB, creation(&[]))).await;
+        rig.ui
+            .prompt()
+            .await
+            .answer(BrowserReply::Save { target: None });
+        let reply = host.response(id).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["result"]["credential"].clone()
+    }
+
+    #[test]
+    fn a_passkey_saved_for_a_site_signs_its_challenges_after_touch_id() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(21)).await;
+
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            let asked = rig.ui.prompt().await;
+            let BrowserPrompt::Passkey {
+                browser,
+                host: shown,
+                save,
+                user_name,
+                choices,
+                ..
+            } = &asked.prompt
+            else {
+                panic!("expected the passkey prompt, got {:?}", asked.prompt);
+            };
+            assert_eq!(browser, "Google Chrome");
+            assert_eq!(shown, "github.com");
+            assert!(*save);
+            assert_eq!(user_name, "octocat");
+            let mut offered: Vec<&str> = choices.iter().map(|item| &*item.id).collect();
+            offered.sort_unstable();
+            assert_eq!(
+                offered,
+                [ALICE, BOB],
+                "the logins of the site, not the bank"
+            );
+            asked.answer(BrowserReply::Save { target: None });
+            let reply = host.response(id).await;
+            assert_eq!(reply["ok"], true, "{reply}");
+            let registration = &reply["result"]["credential"];
+            assert_eq!(rig.touch_id.checks.load(Ordering::SeqCst), 1);
+
+            assert_eq!(registration["type"], "public-key");
+            assert_eq!(registration["authenticatorAttachment"], "platform");
+            assert_eq!(registration["id"], registration["rawId"]);
+            assert_eq!(
+                registration["clientExtensionResults"],
+                json!({ "credProps": { "rk": true } })
+            );
+            assert_eq!(registration["response"]["publicKeyAlgorithm"], -7);
+            assert_eq!(
+                registration["response"]["transports"],
+                json!(["internal", "hybrid"])
+            );
+            assert_eq!(
+                client_data(registration),
+                json!({
+                    "type": "webauthn.create",
+                    "challenge": b64(b"create challenge"),
+                    "origin": GITHUB,
+                    "crossOrigin": false,
+                })
+            );
+            let raw_id = unb64(&registration["rawId"]);
+            assert_eq!(raw_id.len(), 16);
+            let auth_data = unb64(&registration["response"]["authenticatorData"]);
+            assert_eq!(auth_data[..32], Sha256::digest(b"github.com")[..]);
+            // UP | UV | BE | BS | AT
+            assert_eq!(auth_data[32], 0x5d);
+            assert_eq!(auth_data[33..37], [0, 0, 0, 0]);
+            assert_eq!(auth_data[53..55], [0, 16]);
+            assert_eq!(auth_data[55..71], raw_id[..]);
+
+            // Stored as a new login, in the Bitwarden clients' format.
+            let written = rig.fake.written().await;
+            assert_eq!(written.len(), 1);
+            let cipher = &written[0];
+            let plain = |field: &Value| rig.fake.decrypt(cipher, field);
+            assert_eq!(plain(&cipher["name"]), "GitHub");
+            assert_eq!(plain(&cipher["login"]["username"]), "octocat");
+            assert_eq!(plain(&cipher["login"]["uris"][0]["uri"]), GITHUB);
+            let passkey = &cipher["login"]["fido2Credentials"][0];
+            assert_eq!(plain(&passkey["rpId"]), "github.com");
+            assert_eq!(plain(&passkey["rpName"]), "GitHub");
+            assert_eq!(plain(&passkey["userName"]), "octocat");
+            assert_eq!(plain(&passkey["userDisplayName"]), "The Octocat");
+            assert_eq!(plain(&passkey["userHandle"]), b64(USER_HANDLE));
+            assert_eq!(plain(&passkey["counter"]), "0");
+            assert_eq!(plain(&passkey["discoverable"]), "true");
+            assert_eq!(plain(&passkey["keyType"]), "public-key");
+            assert_eq!(plain(&passkey["keyAlgorithm"]), "ECDSA");
+            assert_eq!(plain(&passkey["keyCurve"]), "P-256");
+            let guid = plain(&passkey["credentialId"]);
+            assert_eq!(
+                guid.replace('-', ""),
+                raw_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            assert!(passkey["creationDate"].as_str().unwrap().ends_with('Z'));
+
+            // Signing in with it.
+            let rp_raw_id = registration["rawId"].as_str().unwrap().to_owned();
+            let id = host.submit(get(GITHUB, &[&rp_raw_id])).await;
+            let asked = rig.ui.prompt().await;
+            let BrowserPrompt::Passkey { save, choices, .. } = &asked.prompt else {
+                panic!("expected the passkey prompt, got {:?}", asked.prompt);
+            };
+            assert!(!save);
+            assert_eq!(choices.len(), 1);
+            assert_eq!(&*choices[0].subtitle, "octocat");
+            let target = Some(choices[0].id.clone());
+            asked.answer(BrowserReply::Save { target });
+            let reply = host.response(id).await;
+            assert_eq!(reply["ok"], true, "{reply}");
+            let assertion = &reply["result"]["credential"];
+            assert_eq!(rig.touch_id.checks.load(Ordering::SeqCst), 2);
+            assert_eq!(assertion["rawId"], rp_raw_id);
+            assert_eq!(unb64(&assertion["response"]["userHandle"]), USER_HANDLE);
+            assert_eq!(
+                client_data(assertion),
+                json!({
+                    "type": "webauthn.get",
+                    "challenge": b64(b"sign challenge"),
+                    "origin": GITHUB,
+                    "crossOrigin": false,
+                })
+            );
+            let auth_data = unb64(&assertion["response"]["authenticatorData"]);
+            assert_eq!(auth_data.len(), 37);
+            assert_eq!(auth_data[..32], Sha256::digest(b"github.com")[..]);
+            assert_eq!(auth_data[32], 0x1d);
+            assert_eq!(
+                auth_data[33..37],
+                [0, 0, 0, 0],
+                "synced passkeys do not count"
+            );
+            let public_key =
+                VerifyingKey::from_public_key_der(&unb64(&registration["response"]["publicKey"]))
+                    .unwrap();
+            let mut signed = auth_data.clone();
+            signed.extend_from_slice(&Sha256::digest(unb64(
+                &assertion["response"]["clientDataJSON"],
+            )));
+            let signature =
+                Signature::from_der(&unb64(&assertion["response"]["signature"])).unwrap();
+            public_key.verify(&signed, &signature).unwrap();
+
+            // Discoverable: no allow list, the passkey is still offered.
+            let id = host.submit(get(GITHUB, &[])).await;
+            let asked = rig.ui.prompt().await;
+            let BrowserPrompt::Passkey { choices, .. } = &asked.prompt else {
+                panic!("expected the passkey prompt");
+            };
+            assert_eq!(choices.len(), 1);
+            asked.answer(BrowserReply::Dismissed);
+            assert_failure(&host.response(id).await, "fallback");
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn requests_the_vault_cannot_answer_go_to_the_browser_without_a_prompt() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(22)).await;
+            let unknown = b64(b"a security key elsewhere");
+            assert_failure(&host.request(get(GITHUB, &[&unknown])).await, "fallback");
+            assert_failure(&host.request(get(GITHUB, &[])).await, "fallback");
+            let mut foreign = get(GITHUB, &[]);
+            foreign["options"]["rpId"] = "gitlab.com".into();
+            assert_failure(&host.request(foreign).await, "fallback");
+            let mut suffix = creation(&[]);
+            suffix["rp"]["id"] = "com".into();
+            assert_failure(&host.request(create(GITHUB, suffix)).await, "fallback");
+            assert_failure(
+                &host
+                    .request(create("http://github.com", creation(&[])))
+                    .await,
+                "fallback",
+            );
+            let mut rsa_only = creation(&[]);
+            rsa_only["pubKeyCredParams"] = json!([{ "type": "public-key", "alg": -257 }]);
+            assert_failure(&host.request(create(GITHUB, rsa_only)).await, "fallback");
+            let mut security_key = creation(&[]);
+            security_key["authenticatorSelection"]["authenticatorAttachment"] =
+                "cross-platform".into();
+            assert_failure(
+                &host.request(create(GITHUB, security_key)).await,
+                "fallback",
+            );
+            rig.ui.no_prompt().await;
+            assert_eq!(rig.touch_id.checks.load(Ordering::SeqCst), 0);
+            assert_eq!(rig.fake.writes().await, 0);
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn with_passkeys_turned_off_every_request_goes_to_the_browser() {
+        run(async {
+            let settings = Settings {
+                browser_passkeys: false,
+                ..integration_on()
+            };
+            let mut rig = Rig::start_with(&settings, &items()).await;
+            let mut host = rig.open(&Extension::chrome(29)).await;
+            assert_failure(
+                &host.request(create(GITHUB, creation(&[]))).await,
+                "fallback",
+            );
+            assert_failure(&host.request(get(GITHUB, &[])).await, "fallback");
+            rig.ui.no_prompt().await;
+            assert_eq!(rig.touch_id.checks.load(Ordering::SeqCst), 0);
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn a_locked_vault_leaves_every_request_to_the_browser_at_once() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(27)).await;
+            let registration = register(&mut rig, &mut host).await;
+            let held = registration["rawId"].as_str().unwrap().to_owned();
+            rig.daemon.vault().lock();
+            assert_failure(&host.request(get(GITHUB, &[&held])).await, "fallback");
+            assert_failure(
+                &host.request(create(GITHUB, creation(&[]))).await,
+                "fallback",
+            );
+            rig.ui.no_prompt().await;
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn a_login_holding_the_sites_passkey_is_not_offered_for_another() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(28)).await;
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            rig.ui.prompt().await.answer(BrowserReply::Save {
+                target: Some(ALICE.into()),
+            });
+            assert_eq!(host.response(id).await["ok"], true);
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            let asked = rig.ui.prompt().await;
+            let BrowserPrompt::Passkey { choices, .. } = &asked.prompt else {
+                panic!("expected the passkey prompt");
+            };
+            let offered: Vec<&str> = choices.iter().map(|item| &*item.id).collect();
+            assert_eq!(offered, [BOB], "saving would replace Alice's passkey");
+            asked.answer(BrowserReply::Dismissed);
+            assert_failure(&host.response(id).await, "fallback");
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn a_declined_prompt_or_touch_id_leaves_the_request_to_the_browser() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::firefox(23)).await;
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            rig.ui.prompt().await.answer(BrowserReply::Dismissed);
+            assert_failure(&host.response(id).await, "fallback");
+
+            rig.touch_id.present.store(false, Ordering::SeqCst);
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            rig.ui
+                .prompt()
+                .await
+                .answer(BrowserReply::Save { target: None });
+            assert_failure(&host.response(id).await, "fallback");
+            assert_eq!(rig.touch_id.checks.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                rig.fake.writes().await,
+                0,
+                "nothing is stored without Touch ID"
+            );
+
+            rig.touch_id.available.store(false, Ordering::SeqCst);
+            assert_failure(
+                &host.request(create(GITHUB, creation(&[]))).await,
+                "fallback",
+            );
+            rig.ui.no_prompt().await;
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn a_site_excluding_a_passkey_the_vault_holds_is_told_so() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(24)).await;
+            let registration = register(&mut rig, &mut host).await;
+            let held = registration["rawId"].as_str().unwrap().to_owned();
+            let other = b64(b"another authenticator");
+            assert_failure(
+                &host
+                    .request(create(GITHUB, creation(&[&other, &held])))
+                    .await,
+                "invalid_state",
+            );
+            rig.ui.no_prompt().await;
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn saving_into_an_existing_login_keeps_its_password() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(25)).await;
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            rig.ui.prompt().await.answer(BrowserReply::Save {
+                target: Some(ALICE.into()),
+            });
+            assert_eq!(host.response(id).await["ok"], true);
+            let written = rig.fake.written().await;
+            let cipher = &written[0];
+            assert_eq!(
+                cipher["id"].as_str(),
+                None,
+                "an update names the cipher in the path"
+            );
+            assert_eq!(
+                rig.fake.decrypt(cipher, &cipher["login"]["password"]),
+                "alice-pw"
+            );
+            assert_eq!(
+                rig.fake.decrypt(cipher, &cipher["login"]["username"]),
+                "alice"
+            );
+            let passkey = &cipher["login"]["fido2Credentials"][0];
+            assert_eq!(rig.fake.decrypt(cipher, &passkey["userName"]), "octocat");
+            assert_eq!(rig.password_of(ALICE), "alice-pw");
+            rig.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn the_page_giving_up_ends_the_request_and_its_prompt() {
+        run(async {
+            let mut rig = Rig::start().await;
+            let mut host = rig.open(&Extension::chrome(26)).await;
+            let id = host.submit(create(GITHUB, creation(&[]))).await;
+            let asked = rig.ui.prompt().await;
+            let other = host
+                .request(json!({ "type": "passkey_cancel", "origin": "https://gitlab.com" }))
+                .await;
+            assert_eq!(other["ok"], true, "another site's cancel ends nothing");
+            let cancel = host
+                .submit(json!({ "type": "passkey_cancel", "origin": GITHUB }))
+                .await;
+            assert_failure(&host.response(id).await, "cancelled");
+            assert_eq!(host.response(cancel).await["ok"], true);
+            asked.answer(BrowserReply::Save { target: None });
+            assert_eq!(rig.fake.writes().await, 0);
+            assert_eq!(rig.touch_id.checks.load(Ordering::SeqCst), 0);
+            rig.shutdown().await;
+        });
+    }
+}

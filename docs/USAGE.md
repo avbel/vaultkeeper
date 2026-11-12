@@ -209,7 +209,20 @@ decision and every prompt are in Vaultkeeper's own windows.
    so answer it with the mouse. It also times out after 30 s (*Not now*). *Never for this site*
    stops the offers for that site. Nothing is offered in private windows, on unencrypted sites other
    than local ones, or when the stored password is already the same.
-6. **Settings:** *Require Touch ID to fill* (asked for every fill, including remembered ones and single matches), *Fill at once when only one login matches* (on by default: with exactly one saved login for an encrypted page, no picker is shown; sites with several matches, `http` pages and re-prompt items still show it),
+6. **Passkeys:** when a site creates a passkey, a *Save passkey?* window offers to keep it in a
+   new login or in one of the site's logins (the one with the same account name is chosen if there
+   is one; a login that already holds this site's passkey, or that asks for the master password,
+   is not offered). When a site asks for one the vault holds, *Sign in with a passkey?* lists them.
+   Both windows work like the save window (no focus taken, 30 s), and both ask for Touch ID before
+   anything is signed or stored. Passkeys are stored as the Bitwarden clients store them, so
+   passkeys made here work in Bitwarden and the other way round. Everything else goes straight to
+   the browser's own passkey dialog, so a security key keeps working as before: *Not now*, a
+   refused Touch ID, a Mac without Touch ID, a locked vault (unlock Vaultkeeper and try again), a
+   site the vault holds no passkey for, a site that asks for a security key, logins that ask for the
+   master password, and requests from a frame of another site. Passkeys in the username field's
+   suggestion list (conditional mediation) are left to the browser too. Turn off *Save and use
+   passkeys* in Settings → Browsers to leave every site to the browser's own passkeys.
+7. **Settings:** *Require Touch ID to fill* (asked for every fill, including remembered ones and single matches), *Fill at once when only one login matches* (on by default: with exactly one saved login for an encrypted page, no picker is shown; sites with several matches, `http` pages and re-prompt items still show it),
    *Offer to save logins*, *Copy TOTP code after filling*
    (the code goes to the clipboard and is cleared like other copies) and *Match sites by* (*Domain*
    or *Exact host*, for saved addresses without their own rule; a saved address's own match

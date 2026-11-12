@@ -22,6 +22,11 @@ impl BrowserSnapshot {
     pub fn same_session(self, other: Self) -> bool {
         self.epoch == other.epoch
     }
+
+    /// The session and index this snapshot was taken from are still the current ones.
+    pub(crate) const fn current(self, epoch: u64, revision: u64) -> bool {
+        self.epoch == epoch && self.revision == revision
+    }
 }
 
 #[derive(Clone, Copy)]

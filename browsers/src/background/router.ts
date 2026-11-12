@@ -1,4 +1,4 @@
-import type { FillFields, ToBackground, ToContent } from "../shared/messages.ts";
+import type { FillFields, PasskeyOutcome, ToBackground, ToContent } from "../shared/messages.ts";
 import { webOrigin, webPath } from "../shared/origin.ts";
 import type { RequestMap, RequestType, Theme } from "../shared/protocol.ts";
 import { NativeError } from "./native.ts";
@@ -132,6 +132,53 @@ export function createRouter(deps: RouterDeps) {
     }
   }
 
+  async function runPasskey(
+    from: VerifiedSender,
+    message: Extract<ToBackground, { kind: "passkey_request" }>,
+  ): Promise<void> {
+    const outcome = await passkeyOutcome(from, message);
+    const tab = await deps.getTab(from.tabId).catch(() => null);
+    if (webOrigin(tab?.url) !== from.origin) {
+      return;
+    }
+    const reply: ToContent = { kind: "passkey_result", nonce: message.nonce, ...outcome };
+    await deps.sendToTab(from.tabId, reply, from.frameId).catch(() => undefined);
+  }
+
+  // Everything but an explicit refusal goes to the browser's own WebAuthn, so an app that is
+  // not running, not paired or locked never stands between the site and the user's other keys.
+  async function passkeyOutcome(
+    from: VerifiedSender,
+    message: Extract<ToBackground, { kind: "passkey_request" }>,
+  ): Promise<PasskeyOutcome> {
+    const phase = deps.session.status.phase;
+    if (phase === "denied" || phase === "unavailable") {
+      return { outcome: "fallback" };
+    }
+    try {
+      const type = message.ceremony === "create" ? "passkey_create" : "passkey_get";
+      const result = await deps.session.request(type, {
+        origin: from.origin,
+        options: message.options,
+      });
+      return { outcome: "credential", credential: result.credential };
+    } catch (error) {
+      const code = error instanceof NativeError ? error.code : "internal";
+      if (code === "not_allowed" || code === "invalid_state") {
+        return { outcome: "error", error: code };
+      }
+      return { outcome: "fallback" };
+    }
+  }
+
+  async function cancelPasskey(from: VerifiedSender): Promise<void> {
+    try {
+      await deps.session.request("passkey_cancel", { origin: from.origin });
+    } catch {
+      // The request it cancels answers on its own.
+    }
+  }
+
   function track(work: Promise<void>): void {
     inFlight.add(work);
     void work.finally(() => {
@@ -150,10 +197,19 @@ export function createRouter(deps: RouterDeps) {
       if (!from || !parsed) {
         return { accepted: false };
       }
-      if (parsed.kind === "fill_request") {
-        track(runFill(from, parsed));
-      } else {
-        track(runSave(from, parsed));
+      switch (parsed.kind) {
+        case "fill_request":
+          track(runFill(from, parsed));
+          break;
+        case "save_candidate":
+          track(runSave(from, parsed));
+          break;
+        case "passkey_request":
+          track(runPasskey(from, parsed));
+          break;
+        case "passkey_cancel":
+          track(cancelPasskey(from));
+          break;
       }
       return { accepted: true };
     },
@@ -194,6 +250,10 @@ function isFillFields(value: unknown): value is FillFields {
   return typeof fields.username === "boolean" && typeof fields.password === "boolean";
 }
 
+function validNonce(nonce: unknown): nonce is string {
+  return typeof nonce === "string" && nonce.length > 0 && nonce.length <= MAX_NONCE;
+}
+
 // Fields such as `origin` or `path` in the body are never read: the sender decides them.
 export function parseToBackground(message: unknown): ToBackground | null {
   if (typeof message !== "object" || message === null) {
@@ -217,6 +277,20 @@ export function parseToBackground(message: unknown): ToBackground | null {
       fields: { username: m.fields.username, password: m.fields.password },
       path: "",
     };
+  }
+  if (m.kind === "passkey_request") {
+    if (
+      !validNonce(m.nonce) ||
+      (m.ceremony !== "create" && m.ceremony !== "get") ||
+      typeof m.options !== "object" ||
+      m.options === null
+    ) {
+      return null;
+    }
+    return { kind: "passkey_request", nonce: m.nonce, ceremony: m.ceremony, options: m.options };
+  }
+  if (m.kind === "passkey_cancel") {
+    return validNonce(m.nonce) ? { kind: "passkey_cancel", nonce: m.nonce } : null;
   }
   if (m.kind === "save_candidate") {
     if (

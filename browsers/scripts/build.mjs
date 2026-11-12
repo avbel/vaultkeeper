@@ -12,6 +12,8 @@ const MINIFY = process.env.RELEASE === "1";
 const ENTRIES = [
   { entry: "src/background/index.ts", file: "background.js", format: "es" },
   { entry: "src/content/index.ts", file: "content.js", format: "iife", optional: true },
+  { entry: "src/passkey/page.ts", file: "passkey-page.js", format: "iife" },
+  { entry: "src/passkey/relay.ts", file: "passkey-relay.js", format: "iife" },
   { entry: "src/ui/popup.ts", file: "popup.js", format: "es" },
 ];
 

@@ -35,7 +35,8 @@ pub use secrets::{MemorySecretStore, SecretStore, SecretStoreError};
 pub use sends::MAX_SEND_FILE_BYTES;
 pub use service::VaultService;
 pub use vault::{
-    BackgroundStatus, BrowserCredentials, BrowserFields, BrowserSnapshot, LoginMatch, Vault,
+    BackgroundStatus, BrowserCredentials, BrowserFields, BrowserSnapshot, LoginMatch, NewPasskey,
+    PasskeyMatch, PasskeySecret, PasskeyTarget, Vault, credential_id_text,
 };
 pub use vk_api::{DeviceInfo, TwoFactorProvider};
 pub use vk_gen::totp::TotpCode;

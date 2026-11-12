@@ -25,6 +25,8 @@ const UNLOCK_REASON: &str = "unlock your vault";
 pub trait DaemonBiometrics: TouchIdBackend {
     /// Plain presence check; blocks until the user answers.
     fn authenticate(&self, reason: &str) -> Result<(), TouchIdFailure>;
+    /// A Touch ID sensor is there and has fingerprints.
+    fn is_available(&self) -> bool;
 }
 
 pub struct TouchId {
@@ -81,6 +83,10 @@ impl TouchIdBackend for TouchId {
 impl DaemonBiometrics for TouchId {
     fn authenticate(&self, reason: &str) -> Result<(), TouchIdFailure> {
         biometric::authenticate(reason).map_err(failure)
+    }
+
+    fn is_available(&self) -> bool {
+        biometric::is_available()
     }
 }
 

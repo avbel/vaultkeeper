@@ -22,7 +22,7 @@ use uuid::Uuid;
 use vaultkeeper::{
     daemon::{Daemon, DaemonConfig, Peers, browser::ids, target::FrontmostApp},
     os::{
-        ClipboardKeeper,
+        ClipboardKeeper, DaemonBiometrics,
         layout::{BROWSER_PAIRINGS_FILE, BROWSER_SOCKET, SETTINGS_FILE},
         settings_file::SettingsFile,
     },
@@ -32,8 +32,8 @@ use vaultkeeper::{
 use vk_api::models::{Cipher, Login, LoginUri, Profile, SyncResponse};
 use vk_crypto::{EncString, Kdf, MasterKey, SymmetricKey};
 use vk_ipc::{
-    BrowserPrompt, BrowserReply, ClipboardHost, EventStream, RemoteVault, TypingTarget, UiCommand,
-    UiEvent,
+    BrowserPrompt, BrowserReply, ClipboardHost, EventStream, RemoteVault, TouchIdBackend,
+    TouchIdFailure, TypingTarget, UiCommand, UiEvent,
 };
 use vk_vault::{
     MemorySecretStore, Timings, VaultService,
@@ -165,6 +165,49 @@ impl ClipboardKeeper for FakeClipboard {
     fn recheck(&self) {}
 }
 
+/// Touch ID that answers as scripted and counts its checks; nothing is enrolled.
+pub struct ScriptedTouchId {
+    pub available: std::sync::atomic::AtomicBool,
+    pub present: std::sync::atomic::AtomicBool,
+    pub checks: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for ScriptedTouchId {
+    fn default() -> Self {
+        Self {
+            available: true.into(),
+            present: true.into(),
+            checks: 0.into(),
+        }
+    }
+}
+
+impl TouchIdBackend for ScriptedTouchId {
+    fn enroll(&self, _account_id: &str, _user_key: &[u8]) -> Result<(), TouchIdFailure> {
+        Err(TouchIdFailure::Unavailable)
+    }
+
+    fn unlock(&self, _account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+        Err(TouchIdFailure::Unavailable)
+    }
+}
+
+impl DaemonBiometrics for ScriptedTouchId {
+    fn authenticate(&self, _reason: &str) -> Result<(), TouchIdFailure> {
+        use std::sync::atomic::Ordering;
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        if self.present.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(TouchIdFailure::Cancelled)
+        }
+    }
+
+    fn is_available(&self) -> bool {
+        self.available.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 struct NothingInFront;
 
 impl FrontmostApp for NothingInFront {
@@ -253,6 +296,14 @@ impl Fake {
         Url::parse(&self.server.uri()).unwrap()
     }
 
+    /// Decrypts an EncString of a cipher body the daemon wrote, under that cipher's item key.
+    pub fn decrypt(&self, cipher: &Value, field: &Value) -> String {
+        let wrapped: EncString = cipher["key"].as_str().unwrap().parse().unwrap();
+        let key = SymmetricKey::from_bytes(&wrapped.decrypt(&self.user_key).unwrap()).unwrap();
+        let field: EncString = field.as_str().unwrap().parse().unwrap();
+        String::from_utf8(field.decrypt(&key).unwrap().to_vec()).unwrap()
+    }
+
     #[allow(clippy::unnecessary_wraps)]
     fn enc(key: &SymmetricKey, plain: &str) -> Option<String> {
         Some(
@@ -306,6 +357,7 @@ impl Fake {
             folders: Vec::new(),
             collections: Vec::new(),
             ciphers: items.iter().map(|item| self.cipher(item)).collect(),
+            sends: Vec::new(),
         })
         .unwrap();
         Mock::given(method("POST"))
@@ -333,6 +385,21 @@ impl Fake {
             .respond_with(Echo)
             .mount(&self.server)
             .await;
+    }
+
+    /// The bodies of the cipher creates and updates the daemon sent.
+    pub async fn written(&self) -> Vec<Value> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| {
+                matches!(request.method.as_str(), "POST" | "PUT")
+                    && request.url.path().starts_with("/api/ciphers")
+            })
+            .map(|request| request.body_json().unwrap())
+            .collect()
     }
 
     pub async fn writes(&self) -> usize {
@@ -442,6 +509,7 @@ pub struct Rig {
     pub dir: DataDir,
     pub fake: Fake,
     pub clipboard: Arc<FakeClipboard>,
+    pub touch_id: Arc<ScriptedTouchId>,
     pub ui: Ui,
 }
 
@@ -466,6 +534,8 @@ impl Rig {
         config.peers = Peers::AnyOfThisUser;
         config.clipboard = Arc::clone(&clipboard) as Arc<dyn ClipboardKeeper>;
         config.frontmost = Arc::new(NothingInFront);
+        let touch_id = Arc::new(ScriptedTouchId::default());
+        config.touch_id = Arc::clone(&touch_id) as Arc<dyn DaemonBiometrics>;
         config.timings = timings;
         let daemon = Daemon::start(config).await.unwrap();
         let (remote, events) =
@@ -495,6 +565,7 @@ impl Rig {
             dir,
             fake,
             clipboard,
+            touch_id,
             ui: Ui {
                 remote,
                 events,

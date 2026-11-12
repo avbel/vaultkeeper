@@ -74,6 +74,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> browser-save-prompts;
     in-out property <bool> browser-copy-totp;
     in-out property <bool> browser-fill-single;
+    in-out property <bool> browser-passkeys;
     in-out property <int> browser-match-index;
     in property <[PairedBrowserRow]> paired-browsers;
     in property <string> error-text;
@@ -104,6 +105,7 @@ export component SettingsWindow inherits Window {
     callback browser-save-prompts-toggled(bool);
     callback browser-copy-totp-toggled(bool);
     callback browser-fill-single-toggled(bool);
+    callback browser-passkeys-toggled(bool);
     callback browser-match-selected(int);
     callback paired-browser-removed(string);
     // Both save paths validate and save an accelerator; an empty one clears the Generator's.
@@ -380,6 +382,12 @@ export component SettingsWindow inherits Window {
                     description: "Skips the picker when a single saved login matches the site. Touch ID still applies.";
                     checked <=> root.browser-fill-single;
                     toggled(v) => { root.browser-fill-single-toggled(v); }
+                }
+                Toggle {
+                    text: "Save and use passkeys";
+                    description: "Sites create and sign in with passkeys kept in the vault, after Touch ID. Off: the browser's own passkeys answer.";
+                    checked <=> root.browser-passkeys;
+                    toggled(v) => { root.browser-passkeys-toggled(v); }
                 }
                 SettingRow {
                     text: "Match sites by";

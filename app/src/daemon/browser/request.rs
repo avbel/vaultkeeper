@@ -18,7 +18,16 @@ pub fn decode(body: &[u8]) -> Result<Request, (Option<u64>, ErrorCode)> {
         serde_json::from_slice(body).map_err(|_| (None, ErrorCode::BadRequest))?;
     if !matches!(
         envelope.kind.as_ref(),
-        "hello" | "prove" | "status" | "fill" | "save_candidate" | "unlock" | "open_app"
+        "hello"
+            | "prove"
+            | "status"
+            | "fill"
+            | "save_candidate"
+            | "unlock"
+            | "open_app"
+            | "passkey_create"
+            | "passkey_get"
+            | "passkey_cancel"
     ) {
         return Err((Some(envelope.id), ErrorCode::UnknownType));
     }

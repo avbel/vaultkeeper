@@ -84,12 +84,20 @@ impl Inner {
             encrypt::prepare(&draft, base, &unlocked.keys)
         })?;
         drop(draft);
+        self.send_prepared(&ctx, id, &prepared).await
+    }
 
+    /// Creates (`id` None) or updates the cipher from `prepared`, then applies the server's copy.
+    pub(super) async fn send_prepared(
+        self: &Arc<Self>,
+        ctx: &Ctx,
+        id: Option<ItemId>,
+        prepared: &encrypt::Prepared,
+    ) -> Result<ItemId> {
         let serial = self.sync_lock.lock().await;
-        let prepared = &prepared;
         let cipher = match &id {
             None => {
-                self.call(&ctx, |client, token| async move {
+                self.call(ctx, |client, token| async move {
                     client
                         .create_cipher(&token, &prepared.request, &prepared.collection_ids)
                         .await
@@ -98,7 +106,7 @@ impl Inner {
             }
             Some(id) => {
                 let updated = self
-                    .call(&ctx, |client, token| async move {
+                    .call(ctx, |client, token| async move {
                         client.update_cipher(&token, &id.0, &prepared.request).await
                     })
                     .await;
@@ -113,8 +121,8 @@ impl Inner {
             }
         };
         let saved = ItemId(Arc::from(cipher.id.as_str()));
-        self.apply(&ctx, |data, keys| data.upsert_cipher(cipher, keys));
-        let finished = self.finish_write(&ctx).await;
+        self.apply(ctx, |data, keys| data.upsert_cipher(cipher, keys));
+        let finished = self.finish_write(ctx).await;
         drop(serial);
         finished.map(|()| saved)
     }

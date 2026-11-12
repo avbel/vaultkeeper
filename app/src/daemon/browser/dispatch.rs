@@ -20,8 +20,8 @@ use vk_ipc::{
     browser::{
         BrowserConnection,
         protocol::{
-            AppView, Caller, ErrorCode, Event, FillFields, KnownBrowser, Request, SaveKind, State,
-            Theme,
+            AppView, Caller, ErrorCode, Event, FillFields, KnownBrowser, PasskeyResult, Request,
+            SaveKind, State, Theme,
         },
     },
 };
@@ -33,6 +33,7 @@ use super::{
     fill::{self, FillRequest, Filled, Via},
     limits::Limits,
     pairing::PairingStore,
+    passkey::{self, PasskeyCeremony, PasskeyRequest},
     request,
 };
 
@@ -57,6 +58,26 @@ pub trait FillFlow: Send + Sync {
         TFut: Future<Output = bool> + Send,
         A: FnOnce() -> AFut + Send,
         AFut: Future<Output = bool> + Send;
+
+    /// A page's passkey request; returns the credential's JSON.
+    fn passkey<P, PFut, T, TFut, A, AFut>(
+        &self,
+        request: PasskeyRequest,
+        prompt: P,
+        presence: T,
+        authorized: A,
+    ) -> impl Future<Output = Result<serde_json::Value, ErrorCode>> + Send
+    where
+        P: FnOnce(BrowserPrompt) -> PFut + Send,
+        PFut: Future<Output = BrowserReply> + Send,
+        T: FnOnce() -> TFut + Send,
+        TFut: Future<Output = bool> + Send,
+        A: FnOnce() -> AFut + Send,
+        AFut: Future<Output = bool> + Send,
+    {
+        let _ = (request, prompt, presence, authorized);
+        async { Err(ErrorCode::Fallback) }
+    }
 }
 
 pub struct RealFills {
@@ -80,6 +101,24 @@ impl FillFlow for RealFills {
         AFut: Future<Output = bool> + Send,
     {
         fill::fill(&self.vault, request, prompt, presence, authorized)
+    }
+
+    fn passkey<P, PFut, T, TFut, A, AFut>(
+        &self,
+        request: PasskeyRequest,
+        prompt: P,
+        presence: T,
+        authorized: A,
+    ) -> impl Future<Output = Result<serde_json::Value, ErrorCode>> + Send
+    where
+        P: FnOnce(BrowserPrompt) -> PFut + Send,
+        PFut: Future<Output = BrowserReply> + Send,
+        T: FnOnce() -> TFut + Send,
+        TFut: Future<Output = bool> + Send,
+        A: FnOnce() -> AFut + Send,
+        AFut: Future<Output = bool> + Send,
+    {
+        passkey::passkey(&self.vault, request, prompt, presence, authorized)
     }
 }
 
@@ -110,6 +149,11 @@ pub trait BrowserHost: Send + Sync {
     fn default_match(&self) -> DefaultMatch;
     fn browser_touch_id(&self) -> bool;
     fn browser_fill_single(&self) -> bool;
+    fn browser_passkeys(&self) -> bool;
+    /// Passkeys always ask for Touch ID; without it they are left to the browser.
+    fn touch_id_available(&self) -> bool {
+        true
+    }
     /// Integration and the per-request permission must still hold right now.
     fn enabled(&self, browser: KnownBrowser) -> bool;
     /// Changes whenever remembered approvals must be forgotten: lock, logout, account switch,
@@ -133,17 +177,26 @@ pub struct Candidate {
     pub kind: SaveKind,
 }
 
+enum Answer {
+    Fill(Result<Filled, ErrorCode>),
+    Passkey(Result<serde_json::Value, ErrorCode>),
+}
+
 struct Completion {
     id: u64,
     origin: String,
     epoch: u64,
-    answer: Result<Filled, ErrorCode>,
+    answer: Answer,
     /// The user walked away (the picker lost focus): not a cancel for the cooldown.
     abandoned: bool,
+    /// The user turned a passkey prompt down, which the answer reports as a fallback.
+    declined: bool,
 }
 
 struct InFlight {
     id: u64,
+    /// The canonical origin of a passkey request, which a `passkey_cancel` from it may end.
+    passkey_origin: Option<String>,
     /// Held for its Drop: dropping it cancels the fill, dropping the prompt, which the UI
     /// counts as dismissed.
     _cancel: oneshot::Sender<()>,
@@ -307,6 +360,19 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
                 ..
             } => self.fill(id, origin, path, choose, fields).await,
             Request::SaveCandidate { .. } => self.save(id, &request).await,
+            Request::PasskeyCreate {
+                origin, options, ..
+            } => {
+                self.passkey(id, PasskeyCeremony::Create, origin, options)
+                    .await
+            }
+            Request::PasskeyGet {
+                origin, options, ..
+            } => {
+                self.passkey(id, PasskeyCeremony::Get, origin, options)
+                    .await
+            }
+            Request::PasskeyCancel { origin, .. } => self.cancel_passkey(id, &origin).await,
             Request::Unlock { .. } | Request::OpenApp { .. }
                 if !self.limit(|limits| limits.open_app(Instant::now())) =>
             {
@@ -380,6 +446,53 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
         Ok(())
     }
 
+    /// Shares the fill's slot, limits and cooldown: a page can ask for these prompts at will.
+    async fn passkey(
+        &mut self,
+        id: u64,
+        ceremony: PasskeyCeremony,
+        origin: String,
+        options: serde_json::Value,
+    ) -> Result<(), Closed> {
+        if !self.host.browser_passkeys() || !self.host.touch_id_available() {
+            return self.respond::<()>(id, Err(ErrorCode::Fallback)).await;
+        }
+        if self.inflight.is_some() {
+            return self.respond::<()>(id, Err(ErrorCode::Busy)).await;
+        }
+        let key = canonical_origin(&origin);
+        if !self.limit(|limits| limits.fill(&key, Instant::now())) {
+            return self.respond::<()>(id, Err(ErrorCode::RateLimited)).await;
+        }
+        let task = PasskeyTask {
+            id,
+            key,
+            epoch: self.host.approvals_epoch(),
+            ceremony,
+            origin,
+            options,
+            browser: self.browser,
+            kind: self.kind,
+            completions: self.completions.clone(),
+        };
+        self.inflight = Some(spawn_passkey(&self.fills, &self.host, task));
+        Ok(())
+    }
+
+    /// Dropping the task drops its prompt, which the UI closes.
+    async fn cancel_passkey(&mut self, id: u64, origin: &str) -> Result<(), Closed> {
+        let origin = canonical_origin(origin);
+        if let Some(inflight) = self
+            .inflight
+            .take_if(|inflight| inflight.passkey_origin.as_deref() == Some(origin.as_str()))
+        {
+            inflight.task.abort();
+            self.respond::<()>(inflight.id, Err(ErrorCode::Cancelled))
+                .await?;
+        }
+        self.respond(id, Ok(serde_json::json!({}))).await
+    }
+
     /// Validates and acknowledges a save candidate; the daemon's queue owns it from here.
     async fn save(&mut self, id: u64, request: &Request) -> Result<(), Closed> {
         if request::validate(request).is_err() {
@@ -440,7 +553,22 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             epoch,
             answer,
             abandoned,
+            declined,
         } = done;
+        let answer = match answer {
+            Answer::Passkey(answer) => {
+                if declined && !abandoned {
+                    self.limit(|limits| limits.cancelled(&origin, Instant::now()));
+                }
+                if answer.is_ok() {
+                    self.host.note_activity();
+                }
+                return self
+                    .respond(id, answer.map(|credential| PasskeyResult { credential }))
+                    .await;
+            }
+            Answer::Fill(answer) => answer,
+        };
         let answer = match answer {
             Ok(filled) => {
                 self.finished(&origin, epoch, &filled);
@@ -611,16 +739,112 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
                 id,
                 origin: key,
                 epoch,
-                answer,
+                answer: Answer::Fill(answer),
                 abandoned,
+                declined: false,
             })
             .await;
     });
     InFlight {
         id,
+        passkey_origin: None,
         _cancel: cancel,
         task,
     }
+}
+
+struct PasskeyTask {
+    id: u64,
+    key: String,
+    epoch: u64,
+    ceremony: PasskeyCeremony,
+    origin: String,
+    options: serde_json::Value,
+    browser: &'static str,
+    kind: KnownBrowser,
+    completions: mpsc::Sender<Completion>,
+}
+
+fn spawn_passkey<H: BrowserHost + 'static, F: FillFlow + 'static>(
+    fills: &Arc<F>,
+    host: &Arc<H>,
+    task: PasskeyTask,
+) -> InFlight {
+    let id = task.id;
+    let passkey_origin = Some(task.key.clone());
+    let (cancel, cancelled) = oneshot::channel::<()>();
+    let fills = Arc::clone(fills);
+    let host = Arc::clone(host);
+    let handle = tokio::spawn(async move {
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let declined = Arc::new(AtomicBool::new(false));
+        let answer = tokio::select! {
+            answer = run_passkey(&*fills, &host, &task, &abandoned, &declined) => answer,
+            _ = cancelled => return,
+        };
+        let _ = task
+            .completions
+            .send(Completion {
+                id: task.id,
+                origin: task.key,
+                epoch: task.epoch,
+                answer: Answer::Passkey(answer),
+                abandoned: abandoned.load(Ordering::SeqCst),
+                declined: declined.load(Ordering::SeqCst),
+            })
+            .await;
+    });
+    InFlight {
+        id,
+        passkey_origin,
+        _cancel: cancel,
+        task: handle,
+    }
+}
+
+async fn run_passkey<H: BrowserHost, F: FillFlow>(
+    fills: &F,
+    host: &Arc<H>,
+    task: &PasskeyTask,
+    abandoned: &Arc<AtomicBool>,
+    declined: &Arc<AtomicBool>,
+) -> Result<serde_json::Value, ErrorCode> {
+    // Unlike a fill, a page asks for passkeys on its own, often for a security key the vault
+    // does not hold; waiting for an unlock would hold up the browser's dialog for every site.
+    if host.status().0 != State::Unlocked {
+        return Err(ErrorCode::Fallback);
+    }
+    let return_to = host.return_to().await;
+    let reason = format!("use a passkey in {}", task.browser);
+    let kind = task.kind;
+    fills
+        .passkey(
+            PasskeyRequest {
+                browser: task.browser.to_owned(),
+                ceremony: task.ceremony,
+                origin: task.origin.clone(),
+                options: task.options.clone(),
+                default_match: host.default_match(),
+                return_to,
+            },
+            |prompt| async {
+                match host.prompt(prompt).await {
+                    BrowserReply::Abandoned => {
+                        abandoned.store(true, Ordering::SeqCst);
+                        declined.store(true, Ordering::SeqCst);
+                        BrowserReply::Dismissed
+                    }
+                    BrowserReply::Dismissed => {
+                        declined.store(true, Ordering::SeqCst);
+                        BrowserReply::Dismissed
+                    }
+                    reply => reply,
+                }
+            },
+            || host.presence(&reason),
+            || async move { host.enabled(kind) },
+        )
+        .await
 }
 
 struct FillInput {
@@ -724,6 +948,9 @@ const fn id_of(request: &Request) -> u64 {
         | Request::Fill { id, .. }
         | Request::SaveCandidate { id, .. }
         | Request::Unlock { id }
-        | Request::OpenApp { id, .. } => *id,
+        | Request::OpenApp { id, .. }
+        | Request::PasskeyCreate { id, .. }
+        | Request::PasskeyGet { id, .. }
+        | Request::PasskeyCancel { id, .. } => *id,
     }
 }

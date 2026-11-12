@@ -521,3 +521,99 @@ fn address_offer_stays_in_the_background_and_follows_the_theme() {
     assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
     assert!(h.app.browser_save_prompt().is_none());
 }
+
+fn passkey_request(
+    save: bool,
+    choices: Vec<ItemSummaryDto>,
+) -> (BrowserPromptRequest, oneshot::Receiver<BrowserReply>) {
+    passkey_request_for("octocat", save, choices)
+}
+
+fn passkey_request_for(
+    user_name: &str,
+    save: bool,
+    choices: Vec<ItemSummaryDto>,
+) -> (BrowserPromptRequest, oneshot::Receiver<BrowserReply>) {
+    let (reply, receiver) = oneshot::channel();
+    (
+        BrowserPromptRequest {
+            prompt: BrowserPrompt::Passkey {
+                browser: "Google Chrome".into(),
+                host: "github.com".into(),
+                save,
+                user_name: user_name.into(),
+                choices,
+                return_to: None,
+            },
+            reply,
+        },
+        receiver,
+    )
+}
+
+#[test]
+fn passkey_save_offers_the_site_logins_then_a_new_one() {
+    let h = harness(Setup::default());
+    let item = address_item(&h);
+    let (request, mut answer) = passkey_request_for("someone-else", true, vec![item.clone()]);
+    h.app.handle(UiCommand::ShowBrowserPrompt(request));
+    assert_eq!(
+        activations(&h),
+        0,
+        "like a save prompt, it leaves the browser in front"
+    );
+    let prompt = h.app.browser_save_prompt().expect("passkey prompt");
+    assert!(prompt.get_passkey_save());
+    assert_eq!(prompt.get_username(), "someone-else");
+    let choices: Vec<String> = slint::Model::iter(&prompt.get_choices())
+        .map(|choice| choice.to_string())
+        .collect();
+    assert_eq!(choices.len(), 2);
+    assert!(choices[0].starts_with(item.name.as_ref()));
+    assert_eq!(choices[1], "New login");
+    assert!(!common::control_exists(&prompt, "Never for this site"));
+    assert_eq!(
+        prompt.get_choice_index(),
+        1,
+        "another account's login is not the default"
+    );
+    click(&prompt, "Save");
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Save { target: None }));
+
+    let (request, mut answer) = passkey_request_for(&item.subtitle, true, vec![item.clone()]);
+    h.app.request_browser_prompt(request);
+    let prompt = h.app.browser_save_prompt().expect("passkey prompt");
+    assert_eq!(prompt.get_choice_index(), 0, "the same account's login is");
+    click(&prompt, "Save");
+    assert_eq!(
+        answer.try_recv(),
+        Ok(BrowserReply::Save {
+            target: Some(item.id.clone())
+        })
+    );
+}
+
+#[test]
+fn passkey_sign_in_answers_with_the_chosen_login_or_not_now() {
+    let h = harness(Setup::default());
+    let item = address_item(&h);
+    let (request, mut answer) = passkey_request(false, vec![item.clone()]);
+    h.app.request_browser_prompt(request);
+    let prompt = h.app.browser_save_prompt().expect("passkey prompt");
+    assert!(prompt.get_passkey_sign_in());
+    click(&prompt, "Sign in");
+    assert_eq!(
+        answer.try_recv(),
+        Ok(BrowserReply::Save {
+            target: Some(item.id.clone())
+        })
+    );
+
+    let (request, mut answer) = passkey_request(false, vec![item]);
+    h.app.request_browser_prompt(request);
+    click(
+        &h.app.browser_save_prompt().expect("passkey prompt"),
+        "Not now",
+    );
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
+}

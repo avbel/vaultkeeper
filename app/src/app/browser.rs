@@ -90,7 +90,9 @@ impl<S: VaultService> App<S> {
         }
         if matches!(
             &queued.request.prompt,
-            BrowserPrompt::Save { .. } | BrowserPrompt::AddAddress { .. }
+            BrowserPrompt::Save { .. }
+                | BrowserPrompt::AddAddress { .. }
+                | BrowserPrompt::Passkey { .. }
         ) {
             self.show_browser_save(queued);
             return;
@@ -501,6 +503,7 @@ impl<S: VaultService> App<S> {
     }
 
     fn show_browser_save(&self, queued: Queued) {
+        let mut passkey = None;
         let (browser, host, username, update, labels, item_name): (
             _,
             _,
@@ -509,6 +512,24 @@ impl<S: VaultService> App<S> {
             Vec<SharedString>,
             _,
         ) = match &queued.request.prompt {
+            BrowserPrompt::Passkey {
+                browser,
+                host,
+                save,
+                user_name,
+                choices,
+                ..
+            } => {
+                passkey = Some(*save);
+                (
+                    browser,
+                    host,
+                    user_name.chars().take(64).collect::<String>(),
+                    false,
+                    passkey_choices(choices, *save),
+                    None,
+                )
+            }
             BrowserPrompt::Save {
                 browser,
                 host,
@@ -556,8 +577,13 @@ impl<S: VaultService> App<S> {
         window.set_username(username.into());
         window.set_update(update);
         window.set_address(item_name.is_some());
+        window.set_passkey_save(passkey == Some(true));
+        window.set_passkey_sign_in(passkey == Some(false));
         window.set_item_name(item_name.unwrap_or_default().into());
         window.set_choices(ModelRc::new(VecModel::from(labels)));
+        if let Some(index) = passkey_default_choice(&queued.request.prompt) {
+            window.set_choice_index(index);
+        }
         let id = queued.id;
         window.on_save(handler!(self, |app, index| app.save_browser(id, index)));
         window.on_dismiss(handler!(self, |app| app.finish_browser(id, BrowserReply::Dismissed)));
@@ -595,6 +621,19 @@ impl<S: VaultService> App<S> {
                 BrowserPrompt::Save {
                     update_of, choices, ..
                 } => (update_of, choices),
+                BrowserPrompt::Passkey { save, choices, .. } => {
+                    let index = usize::try_from(index).ok();
+                    let target = index
+                        .and_then(|index| choices.get(index))
+                        .map(|item| item.id.clone());
+                    // Saving offers "New login" after the logins; signing in needs a choice.
+                    if target.is_none() && !(*save && index == Some(choices.len())) {
+                        return;
+                    }
+                    drop(queue);
+                    self.finish_browser(id, BrowserReply::Save { target });
+                    return;
+                }
                 BrowserPrompt::AddAddress { item, .. } => {
                     let target = Some(item.id.clone());
                     drop(queue);
@@ -644,9 +683,9 @@ impl<S: VaultService> App<S> {
             queue.current.take().map(|item| item.request)
         };
         let return_to = request.as_ref().and_then(|request| match &request.prompt {
-            BrowserPrompt::Save { return_to, .. } | BrowserPrompt::Fill { return_to, .. } => {
-                return_to.clone()
-            }
+            BrowserPrompt::Save { return_to, .. }
+            | BrowserPrompt::Fill { return_to, .. }
+            | BrowserPrompt::Passkey { return_to, .. } => return_to.clone(),
             BrowserPrompt::Pair { .. } | BrowserPrompt::AddAddress { .. } => None,
         });
         if let Some(request) = request {
@@ -760,6 +799,43 @@ fn site_label(host: &str) -> Option<String> {
     let (label, _) = domain.split_once('.')?;
     let is_address = domain.parse::<std::net::IpAddr>().is_ok();
     (!is_address && label.chars().count() >= 3).then(|| label.to_owned())
+}
+
+/// Where a new passkey goes unless the user picks: the login of the same account, otherwise a
+/// new login, never some other login.
+fn passkey_default_choice(prompt: &BrowserPrompt) -> Option<i32> {
+    let BrowserPrompt::Passkey {
+        save: true,
+        user_name,
+        choices,
+        ..
+    } = prompt
+    else {
+        return None;
+    };
+    let index = choices
+        .iter()
+        .position(|item| item.subtitle.as_ref() == user_name)
+        .unwrap_or(choices.len());
+    i32::try_from(index).ok()
+}
+
+/// Sign-in lists the passkeys by login and account; saving lists the logins, then a new one.
+fn passkey_choices(choices: &[vk_ipc::dto::ItemSummaryDto], save: bool) -> Vec<SharedString> {
+    let mut labels: Vec<SharedString> = choices
+        .iter()
+        .map(|item| {
+            if item.subtitle.is_empty() {
+                item.name.as_ref().into()
+            } else {
+                format!("{} · {}", item.name, item.subtitle).into()
+            }
+        })
+        .collect();
+    if save {
+        labels.push("New login".into());
+    }
+    labels
 }
 
 #[cfg(test)]

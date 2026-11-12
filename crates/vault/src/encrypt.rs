@@ -171,6 +171,42 @@ pub(crate) fn prepare(
     base: Option<&Cipher>,
     keys: &KeyRing,
 ) -> Result<Prepared> {
+    prepare_keyed(draft, base, keys).map(|(prepared, _)| prepared)
+}
+
+/// The login's passkeys in a request (`login.fido2Credentials`; every string an EncString).
+pub(crate) const PASSKEYS: &str = "fido2Credentials";
+
+/// [`prepare`], then `edit` changes the login's [`PASSKEYS`] under the item key the request is
+/// encrypted with, after any re-encryption of the carried ones.
+pub(crate) fn prepare_with_passkeys(
+    draft: &ItemDraft,
+    base: Option<&Cipher>,
+    keys: &KeyRing,
+    edit: impl FnOnce(&SymmetricKey, &mut Vec<serde_json::Value>) -> Result<()>,
+) -> Result<Prepared> {
+    let (mut prepared, item) = prepare_keyed(draft, base, keys)?;
+    let login = prepared
+        .request
+        .login
+        .as_mut()
+        .ok_or_else(|| Error::unsupported("Only logins hold passkeys"))?;
+    let mut passkeys = match login.extra.remove(PASSKEYS) {
+        Some(serde_json::Value::Array(passkeys)) => passkeys,
+        _ => Vec::new(),
+    };
+    edit(&item.key, &mut passkeys)?;
+    login
+        .extra
+        .insert(PASSKEYS.to_owned(), serde_json::Value::Array(passkeys));
+    Ok(prepared)
+}
+
+fn prepare_keyed(
+    draft: &ItemDraft,
+    base: Option<&Cipher>,
+    keys: &KeyRing,
+) -> Result<(Prepared, ItemKeys)> {
     let kind = type_of(&draft.data);
     let organization_id = draft.organization_id.as_deref();
     if let Some(base) = base {
@@ -181,14 +217,15 @@ pub(crate) fn prepare(
         Some(base) => ItemKeys::for_update(base, keys, base_key)?,
         None => ItemKeys::new_item(base_key)?,
     };
-    Ok(Prepared {
+    let prepared = Prepared {
         request: build(draft, base, &item, organization_id)?,
         collection_ids: draft
             .collection_ids
             .iter()
             .map(ToString::to_string)
             .collect(),
-    })
+    };
+    Ok((prepared, item))
 }
 
 /// The `/share` body that moves the personal item `base` (decrypted as `draft`) into

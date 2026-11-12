@@ -87,6 +87,23 @@ pub enum Request {
         id: u64,
         view: AppView,
     },
+    /// `navigator.credentials.create` of a page; `options` is its `publicKey` in JSON form.
+    PasskeyCreate {
+        id: u64,
+        origin: String,
+        options: serde_json::Value,
+    },
+    /// `navigator.credentials.get` of a page; `options` is its `publicKey` in JSON form.
+    PasskeyGet {
+        id: u64,
+        origin: String,
+        options: serde_json::Value,
+    },
+    /// The page gave up: ends this connection's passkey request for `origin`, if one runs.
+    PasskeyCancel {
+        id: u64,
+        origin: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -116,6 +133,12 @@ pub enum Response<T> {
     Failure { id: u64, ok: bool, error: ErrorCode },
 }
 
+/// A passkey answer: `RegistrationResponseJSON` or `AuthenticationResponseJSON`.
+#[derive(Serialize, Deserialize)]
+pub struct PasskeyResult {
+    pub credential: serde_json::Value,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct FillResult {
     pub username: Option<Zeroizing<String>>,
@@ -139,6 +162,12 @@ pub enum ErrorCode {
     InsecurePage,
     Offline,
     Internal,
+    /// Not a request for the vault: the browser's own WebAuthn should answer it.
+    Fallback,
+    /// WebAuthn `NotAllowedError`: the user declined.
+    NotAllowed,
+    /// WebAuthn `InvalidStateError`: the vault already holds a passkey the site excluded.
+    InvalidState,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -117,6 +117,9 @@ impl BrowserHost for StubHost {
     fn browser_fill_single(&self) -> bool {
         false
     }
+    fn browser_passkeys(&self) -> bool {
+        true
+    }
     fn browser_touch_id(&self) -> bool {
         false
     }

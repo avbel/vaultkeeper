@@ -294,3 +294,88 @@ describe("begin_fill", () => {
     expect(injectContent).not.toHaveBeenCalled();
   });
 });
+
+describe("router passkeys", () => {
+  const GET = {
+    kind: "passkey_request",
+    nonce: "p1",
+    ceremony: "get",
+    options: { challenge: "AQ" },
+  };
+
+  it("sends the vault's credential to the requesting frame with the sender's origin", async () => {
+    const { router, request, sent } = setup({
+      request: async () => ({ credential: { id: "AQ" } }),
+    });
+    expect(await router.handleContentMessage(GET, sender({ frameId: 3 }))).toEqual({
+      accepted: true,
+    });
+    await router.idle();
+    expect(request).toHaveBeenCalledWith("passkey_get", {
+      origin: "https://shop.example",
+      options: { challenge: "AQ" },
+    });
+    expect(sent).toEqual([
+      {
+        tabId: 5,
+        frameId: 3,
+        message: {
+          kind: "passkey_result",
+          nonce: "p1",
+          outcome: "credential",
+          credential: { id: "AQ" },
+        },
+      },
+    ]);
+  });
+
+  it("passes refusals on and hands everything else to the browser", async () => {
+    for (const [code, outcome] of [
+      ["not_allowed", { outcome: "error", error: "not_allowed" }],
+      ["invalid_state", { outcome: "error", error: "invalid_state" }],
+      ["fallback", { outcome: "fallback" }],
+      ["locked", { outcome: "fallback" }],
+      ["unpaired", { outcome: "fallback" }],
+    ] as const) {
+      const { router, sent } = setup({
+        request: async () => {
+          throw new NativeError(code);
+        },
+      });
+      await router.handleContentMessage({ ...GET, ceremony: "create" }, sender());
+      await router.idle();
+      expect(sent[0]?.message).toEqual({ kind: "passkey_result", nonce: "p1", ...outcome });
+    }
+  });
+
+  it("does not wake an app the user refused or that is not installed", async () => {
+    for (const phase of ["denied", "unavailable"]) {
+      const { router, request, sent } = setup({ phase });
+      await router.handleContentMessage(GET, sender());
+      await router.idle();
+      expect(request).not.toHaveBeenCalled();
+      expect(sent[0]?.message).toEqual({
+        kind: "passkey_result",
+        nonce: "p1",
+        outcome: "fallback",
+      });
+    }
+  });
+
+  it("drops the answer when the tab moved to another site meanwhile", async () => {
+    const { router, sent } = setup({
+      tabUrl: "https://elsewhere.example/",
+      request: async () => ({ credential: { id: "AQ" } }),
+    });
+    await router.handleContentMessage(GET, sender());
+    await router.idle();
+    expect(sent).toEqual([]);
+  });
+
+  it("forwards a cancel for the sender's origin", async () => {
+    const { router, request } = setup();
+    await router.handleContentMessage({ kind: "passkey_cancel", nonce: "p1" }, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledWith("passkey_cancel", { origin: "https://shop.example" });
+  });
+});

@@ -15,7 +15,10 @@ export type ErrorCode =
   | "rate_limited"
   | "insecure_page"
   | "offline"
-  | "internal";
+  | "internal"
+  | "fallback"
+  | "not_allowed"
+  | "invalid_state";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -24,8 +27,16 @@ export interface FillFields {
   password: boolean;
 }
 
+/** How a passkey request ended, see src/passkey/bridge.ts. */
+export type PasskeyOutcome =
+  | { outcome: "credential"; credential: object }
+  | { outcome: "fallback" }
+  | { outcome: "error"; error: "not_allowed" | "invalid_state" };
+
 /** content -> background */
 export type ToBackground =
+  | { kind: "passkey_request"; nonce: string; ceremony: "create" | "get"; options: object }
+  | { kind: "passkey_cancel"; nonce: string }
   | { kind: "fill_request"; nonce: string; choose: boolean; fields: FillFields; path: string }
   | {
       kind: "save_candidate";
@@ -45,5 +56,6 @@ export type ToContent =
       theme: Theme;
     }
   | { kind: "fill_error"; nonce: string; code: ErrorCode | "unavailable"; theme: Theme }
+  | ({ kind: "passkey_result"; nonce: string } & PasskeyOutcome)
   | { kind: "begin_fill"; choose: boolean }
   | { kind: "theme"; theme: Theme };

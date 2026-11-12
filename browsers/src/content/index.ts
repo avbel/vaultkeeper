@@ -134,6 +134,9 @@ function main(): void {
             icon.toast(toastForError(message.code));
           }
           break;
+        case "passkey_result":
+          // The passkey relay answers these.
+          break;
       }
     },
   );

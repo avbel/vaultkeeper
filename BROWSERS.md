@@ -47,6 +47,14 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
     and whether Firefox's `runtime.id` equals the id the host receives are unverified (section 14).
   - Duplicate save candidates sent while locked each take one of the three queue slots.
   - Brave, Edge and Chromium are out of version 1 (signatures not checked).
+- Passkeys (added 2026-11-12, after this plan): a MAIN-world page script (`browsers/src/passkey/page.ts`,
+  `document_start`) wraps `navigator.credentials.create/get` and relays through `passkey-relay.js` to the
+  background, which takes the origin from the sender and sends `passkey_create` / `passkey_get` /
+  `passkey_cancel` on `browser.sock`. The daemon (`app/src/daemon/browser/passkey.rs`) checks the rpId,
+  shows `BrowserPrompt::Passkey` in the save window, always asks Touch ID, then signs or stores
+  (`crates/vault/src/vault/passkeys.rs`, Bitwarden's `fido2Credentials` format). Anything else answers
+  `fallback` and the page script calls the browser's own WebAuthn. Deferred: conditional mediation,
+  cross-origin iframes, Related Origin Requests.
 - On another computer: `BROWSERS.md` is untracked and `experiments/` is gitignored, so neither travels with `git`.
 
 This document is written for an implementer who has not seen the design discussion. Follow it in phase order. Where it
@@ -63,7 +71,7 @@ thin client.
 - The tray app (daemon) must be running; the extension can start it.
 - Every native window follows the app style and the app's light/dark theme. The small extension UI uses the same tokens.
 
-Non-goals for this plan: Safari, passkeys (WebAuthn), filling cards and identities, autofill on page load, cross-origin
+Non-goals for this plan: Safari, filling cards and identities, autofill on page load, cross-origin
 iframes, Linux and Windows.
 
 ## 2. Architecture

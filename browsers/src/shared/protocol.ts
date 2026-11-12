@@ -45,6 +45,18 @@ export interface RequestMap {
     fields: { view: "manager" | "settings" };
     result: Record<string, never>;
   };
+  passkey_create: {
+    fields: { origin: string; options: object };
+    result: { credential: object };
+  };
+  passkey_get: {
+    fields: { origin: string; options: object };
+    result: { credential: object };
+  };
+  passkey_cancel: {
+    fields: { origin: string };
+    result: Record<string, never>;
+  };
 }
 
 export type RequestType = keyof RequestMap;

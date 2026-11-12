@@ -15,7 +15,7 @@ use crate::dto::{
     SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -264,6 +264,19 @@ pub enum BrowserPrompt {
         browser: String,
         host: String,
         item: ItemSummaryDto,
+    },
+    /// A page asks for a vault passkey: to sign in (`save` false; `choices` are the logins holding
+    /// one for the site) or to create one (`save` true; `choices` are logins to store it in). The
+    /// answer is `Save { target }`, `None` meaning a new login, or `Dismissed` to leave the request
+    /// to the browser. Touch ID follows in the daemon.
+    Passkey {
+        browser: String,
+        host: String,
+        save: bool,
+        /// The account name the site gives a new passkey.
+        user_name: String,
+        choices: Vec<ItemSummaryDto>,
+        return_to: Option<TypingTarget>,
     },
 }
 

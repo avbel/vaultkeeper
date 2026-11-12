@@ -18,6 +18,9 @@ export component BrowserSavePrompt inherits Window {
     // Offer to add `host` to the login `item-name` instead of saving or updating a password.
     in property <bool> address;
     in property <string> item-name;
+    // A site asks to store a new passkey, or to sign in with one of the vault's.
+    in property <bool> passkey-save;
+    in property <bool> passkey-sign-in;
     in property <[string]> choices;
     in-out property <int> choice-index: 0;
     in-out property <int> seconds-left: 30;
@@ -44,26 +47,26 @@ export component BrowserSavePrompt inherits Window {
             VerticalLayout {
                 padding: 18px;
                 spacing: 8px;
-                PromptHeader { glyph: @image-url("icons/shield.svg"); title: root.address ? "Add this address?" : root.update ? "Update password?" : "Save login?"; }
+                PromptHeader { glyph: @image-url("icons/shield.svg"); title: root.passkey-save ? "Save passkey?" : root.passkey-sign-in ? "Sign in with a passkey?" : root.address ? "Add this address?" : root.update ? "Update password?" : "Save login?"; }
                 Text { text: root.browser + " · " + root.host; color: Theme.text-muted; }
-                if !root.address: Text { text: "Username from the page"; color: Theme.text-muted; font-size: Theme.font-meta; }
-                if !root.address: Text { text: root.username; color: Theme.text; font-family: Theme.mono; overflow: elide; }
+                if !root.address && !root.passkey-sign-in: Text { text: root.passkey-save ? "Account on the site" : "Username from the page"; color: Theme.text-muted; font-size: Theme.font-meta; }
+                if !root.address && !root.passkey-sign-in: Text { text: root.username; color: Theme.text; font-family: Theme.mono; overflow: elide; }
                 if root.address: Text { text: "Add " + root.host + " to"; color: Theme.text-muted; font-size: Theme.font-meta; }
                 if root.address: Text { text: root.item-name; color: Theme.text; overflow: elide; }
                 if root.address: Text { text: "so it matches next time."; color: Theme.text-muted; font-size: Theme.font-meta; }
                 if root.choices.length > 0: Select {
                     options: root.choices;
                     index <=> root.choice-index;
-                    label: "Login to update";
+                    label: root.passkey-save ? "Save in" : root.passkey-sign-in ? "Passkey" : "Login to update";
                 }
                 Rectangle { vertical-stretch: 1; }
                 Text { text: "Click to answer"; color: Theme.text-muted; font-size: Theme.font-meta; }
                 HorizontalLayout {
                     spacing: Theme.gap;
                     alignment: end;
-                    if !root.address: Btn { text: "Never for this site"; label: "Never for this site"; clicked => { root.never(); } }
+                    if !root.address && !root.passkey-save && !root.passkey-sign-in: Btn { text: "Never for this site"; label: "Never for this site"; clicked => { root.never(); } }
                     Btn { text: "Not now"; label: "Not now"; clicked => { root.dismiss(); } }
-                    Btn { text: root.address ? "Add" : root.update ? "Update" : "Save"; label: root.address ? "Add" : root.update ? "Update" : "Save"; kind: BtnKind.primary; clicked => { root.save(root.choice-index); } }
+                    Btn { text: root.passkey-sign-in ? "Sign in" : root.address ? "Add" : root.update ? "Update" : "Save"; label: self.text; kind: BtnKind.primary; clicked => { root.save(root.choice-index); } }
                 }
                 Rectangle {
                     height: 3px;

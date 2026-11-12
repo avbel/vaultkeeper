@@ -206,7 +206,8 @@ impl UiCommand {
                 | Self::Toast { .. }
                 | Self::ShowBrowserPrompt(BrowserPromptRequest {
                     prompt: vk_ipc::BrowserPrompt::Save { .. }
-                        | vk_ipc::BrowserPrompt::AddAddress { .. },
+                        | vk_ipc::BrowserPrompt::AddAddress { .. }
+                        | vk_ipc::BrowserPrompt::Passkey { .. },
                     ..
                 })
         )

@@ -684,6 +684,10 @@ impl DaemonBiometrics for FakeTouchId {
             Err(TouchIdFailure::Cancelled)
         }
     }
+
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 /// The daemon core in-process with a fake Touch ID: enrolment and unlock happen in the daemon

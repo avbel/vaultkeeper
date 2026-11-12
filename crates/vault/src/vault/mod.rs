@@ -12,6 +12,7 @@ mod browser;
 mod cli_access;
 mod collections;
 mod logout;
+mod passkeys;
 mod probe;
 mod sends;
 mod service_impl;
@@ -34,6 +35,9 @@ use zeroize::Zeroizing;
 
 pub use self::background::BackgroundStatus;
 pub use self::browser::{BrowserCredentials, BrowserFields, BrowserSnapshot, LoginMatch};
+pub use self::passkeys::{
+    NewPasskey, PasskeyMatch, PasskeySecret, PasskeyTarget, credential_id_text,
+};
 use self::{background::Tasks, session::PendingLogin};
 use crate::{
     Error, Result,
