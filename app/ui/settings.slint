@@ -312,8 +312,14 @@ export component SettingsWindow inherits Window {
                 Toggle {
                     text: "Enable CLI access";
                     checked <=> root.cli-access;
-                    description: "Programs running as you can read fields from logins marked “Allow CLI access” while the vault is unlocked. Logins that require a master password re-prompt are excluded.";
+                    accessible-description: cli-access-hint.text;
                     toggled(v) => { root.cli-access-toggled(v); }
+                }
+                cli-access-hint := Text {
+                    text: "When enabled, CLI commands can read logins marked “Allow CLI access.” Vaultkeeper prompts you to unlock the vault when needed.";
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
                 }
                 Text {
                     text: "CLI access is read-only. Programs can retain credentials they read. Manage access in Vaultkeeper.";
