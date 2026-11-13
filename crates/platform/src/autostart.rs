@@ -29,6 +29,14 @@ pub fn is_enabled() -> Result<bool> {
     Ok(plist_path()?.is_file())
 }
 
+/// Whether launchd started this process as the login agent's job: it then sets
+/// `XPC_SERVICE_NAME` to the job's label, while LaunchServices launches get an `application.…`
+/// name. Only such a process is restarted by `KeepAlive` when it exits non-zero.
+#[must_use]
+pub fn started_by_login_agent() -> bool {
+    std::env::var("XPC_SERVICE_NAME").is_ok_and(|name| name == LABEL)
+}
+
 /// Rewrites an enabled agent that starts this executable but differs from what this version
 /// writes (an older one without `KeepAlive`). An agent for another executable (the installed
 /// app, while a dev build runs) is left alone. Returns whether it rewrote it.

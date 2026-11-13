@@ -30,9 +30,14 @@ the internet.
 
 ## Desktop app
 
-The app connects only to the Vaultwarden (Bitwarden-compatible) server you sign in to, and, if you enable website icons,
-fetches them through that server. Your vault is cached on disk encrypted; the refresh token is kept in the macOS
+Apart from update checks (below), the app connects only to the Vaultwarden (Bitwarden-compatible) server you sign in
+to, and, if you enable website icons, fetches them through that server. Your vault is cached on disk encrypted; the refresh token is kept in the macOS
 keychain. Data sent to your server is governed by whoever runs that server.
+
+With *Update automatically* on (the default), the app asks GitHub's API once a day for the latest Vaultkeeper release
+and downloads it from GitHub when it is newer. Like any web request, this shows GitHub your IP address, and the request
+names the installed Vaultkeeper version; nothing else is sent. With the setting off, the app contacts GitHub only when
+you click *Check for Updates…*.
 
 ## Contact
 

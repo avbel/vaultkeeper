@@ -28,6 +28,7 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.on_settings(on(TrayAction::Settings));
     tray.on_lock_toggle(on(TrayAction::LockToggle));
     tray.on_sync_now(on(TrayAction::SyncNow));
+    tray.on_update(on(TrayAction::Update));
     tray.on_quit(on(TrayAction::Quit));
     let switch = Arc::clone(daemon);
     tray.on_switch_account(move |index| run(&switch, TrayAction::SwitchAccount(index)));
@@ -78,6 +79,17 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
         )
         .into(),
     );
+    let update = daemon
+        .subscribe_update()
+        .map(|status| status.borrow().clone());
+    tray.set_update_label(
+        update
+            .as_ref()
+            .map(super::update::Status::tray_label)
+            .unwrap_or_default()
+            .into(),
+    );
+    tray.set_update_enabled(update.is_none_or(|status| status.tray_enabled()));
     // Re-read on every refresh: a system appearance switch shows on the next vault or settings
     // change (a sync runs at least every 30 minutes).
     tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {
@@ -91,6 +103,7 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
     let mut changes = daemon.vault().changes();
     let mut settings = daemon.subscribe_settings();
     let mut sync = daemon.subscribe_tray_sync();
+    let mut update = daemon.subscribe_update();
     let weak = tray.as_weak();
     let daemon = Arc::clone(daemon);
     slint::spawn_local(async move {
@@ -100,6 +113,12 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
                 vault = changes.changed() => if vault.is_err() { break },
                 prefs = settings.changed() => if prefs.is_err() { break },
                 status = sync.changed() => if status.is_err() { break },
+                status = async {
+                    match update.as_mut() {
+                        Some(update) => update.changed().await,
+                        None => std::future::pending().await,
+                    }
+                } => if status.is_err() { break },
             }
             match weak.upgrade() {
                 Some(tray) => refresh(&tray, &daemon),

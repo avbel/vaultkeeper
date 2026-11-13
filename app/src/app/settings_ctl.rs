@@ -94,6 +94,7 @@ impl<S: VaultService> App<S> {
         window.set_clipboard_index(option_index(&CLIPBOARD_OPTIONS, &settings.clipboard_clear));
         window.set_start_at_login(settings.start_at_login);
         window.set_ask_unlock_on_start(settings.ask_unlock_on_start);
+        window.set_auto_update(settings.auto_update);
         window.set_require_master_password(settings.require_master_password_on_start);
         let biometrics = &self.hooks.biometrics;
         window.set_touch_id_available(biometrics.is_available());
@@ -195,6 +196,9 @@ impl<S: VaultService> App<S> {
         }));
         window.on_require_master_password_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.require_master_password_on_start = enabled);
+        }));
+        window.on_auto_update_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.auto_update = enabled);
         }));
         window.on_touch_id_enroll(handler!(self, |app| app.enroll_touch_id()));
         window.on_touch_id_remove(handler!(self, |app| app.remove_touch_id()));

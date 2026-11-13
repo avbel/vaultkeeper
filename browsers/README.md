@@ -81,7 +81,8 @@ A `v*` tag runs `.github/workflows/release.yml`. After the GitHub release it upl
   so the first upload is manual: zip `dist/chrome` without `key` in its manifest, add the private key as `key.pem` at the
   zip root so the store keeps the id `agkhmlgldbppfjkpiknbbfbknkdleepk`, and fill the listing from
   `store/chrome-listing.md`.
-- **Firefox Add-ons:** `web-ext sign --channel listed` submits `dist/firefox` for review together with the source
+- **Firefox Add-ons** ([listing](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/)):
+  `web-ext sign --channel listed` submits `dist/firefox` for review together with the source
   archive and listing in `store/amo-metadata.json`. Secrets: `AMO_JWT_ISSUER`, `AMO_JWT_SECRET`. AMO accepts each
   version number only once across both channels, so every release needs a new version.
 

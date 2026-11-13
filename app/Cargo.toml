@@ -49,6 +49,8 @@ vk-webauthn.workspace = true
 # Local wall-clock time of the last sync in the tray menu.
 chrono.workspace = true
 global-hotkey.workspace = true
+# The updater's GitHub client (daemon/update); already in the build through vk-api.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Software renderer only: the window process measured +28 MB resident after a window is dropped

@@ -3,6 +3,7 @@
 pub mod autostart;
 pub mod biometric;
 pub mod clipboard;
+pub mod code_signature;
 mod error;
 pub mod fs;
 pub mod hardening;

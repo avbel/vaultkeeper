@@ -12,6 +12,10 @@ export component TrayIcon inherits SystemTrayIcon {
     // "Last synced 12:04", or why the last "Sync now" failed; empty hides the line.
     in property <string> sync-label;
     in property <ColorScheme> menu-bar-scheme: ColorScheme.unknown;
+    // The update item ("Check for Updates…", "Install Vaultkeeper 0.2.0 and Restart", …); empty
+    // hides it in a daemon that does not update itself.
+    in property <string> update-label;
+    in property <bool> update-enabled: true;
     icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
         : @image-url("icons/tray-neutral.svg");
@@ -24,6 +28,7 @@ export component TrayIcon inherits SystemTrayIcon {
     callback lock-toggle();
     callback sync-now();
     callback switch-account(int);
+    callback update();
     callback quit();
 
     Menu {
@@ -66,6 +71,11 @@ export component TrayIcon inherits SystemTrayIcon {
             }
         }
         MenuSeparator { }
+        if root.update-label != "": MenuItem {
+            title: root.update-label;
+            enabled: root.update-enabled;
+            activated => { root.update(); }
+        }
         MenuItem {
             title: "Quit";
             activated => { root.quit(); }

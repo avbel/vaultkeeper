@@ -19,6 +19,8 @@ pub enum Error {
     Autostart(String),
     #[error("another instance is already running")]
     AlreadyRunning,
+    #[error("code signature: {0}")]
+    CodeSignature(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

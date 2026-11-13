@@ -50,6 +50,61 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Exchanges `a` and `b` in one step (`renamex_np` with `RENAME_SWAP`): each path always names a
+/// complete tree. Both must exist on the same volume.
+#[cfg(target_os = "macos")]
+pub fn swap(a: &Path, b: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+
+    let c_path = |path: &Path| {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))
+    };
+    let (a, b) = (c_path(a)?, c_path(b)?);
+    // SAFETY: both are NUL-terminated paths that outlive the call.
+    if unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn swap(_: &Path, _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic swap is macOS only",
+    ))
+}
+
+/// Whether this user may create and rename entries in `dir`.
+#[cfg(unix)]
+#[must_use]
+pub fn is_writable_dir(dir: &Path) -> bool {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+
+    CString::new(dir.as_os_str().as_bytes()).is_ok_and(|path| {
+        // SAFETY: a NUL-terminated path that outlives the call.
+        unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+    })
+}
+
+/// Whether `path` lies on a volume mounted read-only (a disk image, a translocated app).
+#[cfg(unix)]
+pub fn is_on_read_only_volume(path: &Path) -> io::Result<bool> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: a NUL-terminated path and a writable out pointer, both live for the call.
+    if unsafe { libc::statvfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: statvfs succeeded, so it initialised the struct.
+    let info = unsafe { info.assume_init() };
+    Ok(info.f_flag & libc::ST_RDONLY != 0)
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -97,6 +152,34 @@ mod tests {
         let path = dir.path().join("missing").join("state.bin");
         let err = write_private_atomic(&path, b"x").expect_err("missing dir");
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn swap_exchanges_two_trees() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::create_dir(&a).expect("a");
+        fs::create_dir(&b).expect("b");
+        fs::write(a.join("which"), b"a").expect("write");
+        fs::write(b.join("which"), b"b").expect("write");
+        swap(&a, &b).expect("swap");
+        assert_eq!(fs::read(a.join("which")).expect("read"), b"b");
+        assert_eq!(fs::read(b.join("which")).expect("read"), b"a");
+        let missing = dir.path().join("missing");
+        assert!(swap(&a, &missing).is_err(), "both sides must exist");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_and_read_only_checks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(is_writable_dir(dir.path()));
+        assert!(!is_writable_dir(&dir.path().join("missing")));
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).expect("chmod");
+        assert!(!is_writable_dir(dir.path()));
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).expect("chmod");
+        assert!(!is_on_read_only_volume(dir.path()).expect("statvfs"));
     }
 
     #[cfg(unix)]

@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     match mode {
         Mode::Mock => run_mock(args),
         Mode::Ui { first_unlock } => vaultkeeper::ui_process::run(first_unlock, args.no_activate),
-        Mode::Daemon(launch) => vaultkeeper::daemon::run(launch),
+        Mode::Daemon(launch) => vaultkeeper::daemon::run(launch, args.wait_for),
     }
 }
 

@@ -107,6 +107,8 @@ pub struct Args {
     pub quick: bool,
     pub help: bool,
     pub version: bool,
+    /// The previous daemon after an update: wait for this pid to exit before starting.
+    pub wait_for: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -119,6 +121,8 @@ pub enum CliError {
     Size,
     #[error("--select needs a search query\n\n{USAGE}")]
     Select,
+    #[error("--wait-for needs a process id")]
+    WaitFor,
 }
 
 fn parse_size(text: Option<&str>) -> Result<(u32, u32), CliError> {
@@ -151,6 +155,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--quick" => parsed.quick = true,
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
             "--select" => parsed.select = Some(args.next().ok_or(CliError::Select)?),
+            "--wait-for" => {
+                parsed.wait_for = Some(
+                    args.next()
+                        .and_then(|pid| pid.parse().ok())
+                        .filter(|pid: &i32| *pid > 0)
+                        .ok_or(CliError::WaitFor)?,
+                );
+            }
             "-h" | "--help" => parsed.help = true,
             "--version" => parsed.version = true,
             "--theme" => {
@@ -220,6 +232,14 @@ mod tests {
         assert_eq!(args(&["--size", "760"]), Err(CliError::Size));
         assert_eq!(args(&["--size", "ax480"]), Err(CliError::Size));
         assert_eq!(args(&["--select"]), Err(CliError::Select));
+        assert_eq!(
+            args(&["--tray", "--wait-for", "42"])
+                .expect("args")
+                .wait_for,
+            Some(42)
+        );
+        assert_eq!(args(&["--wait-for", "x"]), Err(CliError::WaitFor));
+        assert_eq!(args(&["--wait-for", "0"]), Err(CliError::WaitFor));
     }
 
     #[test]

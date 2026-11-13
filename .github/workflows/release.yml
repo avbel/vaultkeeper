@@ -104,6 +104,9 @@ jobs:
           ln -s /Applications "$STAGE/Applications"
           mkdir -p out
           hdiutil create -volname Vaultkeeper -srcfolder "$STAGE" -format UDZO -ov "out/Vaultkeeper-$TAG-arm64.dmg"
+          # The in-app updater downloads this zip: unpacking it needs no disk image mounted
+          # before the signature is checked.
+          ditto -c -k --keepParent target/bundle/Vaultkeeper.app "out/Vaultkeeper-$TAG-arm64.app.zip"
 
       - name: Remove signing keychain
         if: always()
@@ -112,7 +115,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: out/*.dmg
+          path: |
+            out/*.dmg
+            out/*.app.zip
           if-no-files-found: error
 
   extensions:

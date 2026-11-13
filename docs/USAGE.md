@@ -257,6 +257,26 @@ window at launch.
 - After a crash macOS starts Vaultkeeper again (`KeepAlive` on a failed exit); *Quit* from the tray
   stays quit. An agent written by an older version is updated on its next start at login.
 
+## Updates
+
+The tray item above *Quit* checks for a new release on GitHub. Settings → Security → *Update automatically*
+(on by default) checks once a day, downloads a new version in the background and installs it once the
+vault is locked and no window is open; Vaultkeeper then restarts in the menu bar and you unlock it as
+after any restart. With the setting off, nothing is checked until you click *Check for Updates…*, and a
+downloaded update waits for *Install Vaultkeeper X and Restart*.
+
+- An update installs only when it is signed with the same certificate as the running app and uses the
+  hardened runtime; anything else is discarded. It is unpacked and checked in
+  `~/Library/Application Support/vaultkeeper/update/`, then swapped into place in one step.
+- Updates downloaded by the app are not quarantined, so macOS does not ask to confirm them again.
+- If macOS refuses to replace the app, or a copy cannot replace itself, the item only offers *Download Vaultkeeper X…*, which opens the release page:
+  for example a copy run from the disk image or from Downloads, one in a folder you may not write to (a standard
+  account and `/Applications`), or a build signed ad hoc.
+- The previous version stays in `update/previous.app` for a minute after the restart. If the new one
+  does not start, quit Vaultkeeper and move `previous.app` back to `/Applications/Vaultkeeper.app`.
+- When the running copy was started at login (by launchd), it exits with status 75 so that launchd
+  starts the new one; otherwise it opens the new one itself.
+
 ## Themes
 
 Settings → Appearance → Theme: *System* (follows macOS live), *Light*, or *Dark*. Text size is there too.

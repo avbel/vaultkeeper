@@ -39,6 +39,7 @@ export component SettingsWindow inherits Window {
     in property <[string]> clipboard-options;
     in-out property <int> clipboard-index;
     in-out property <bool> start-at-login;
+    in-out property <bool> auto-update;
     in-out property <bool> ask-unlock-on-start;
     in-out property <bool> lock-on-sleep: true;
     in-out property <bool> require-master-password;
@@ -84,6 +85,7 @@ export component SettingsWindow inherits Window {
     callback lock-selected(int);
     callback clipboard-selected(int);
     callback start-at-login-toggled(bool);
+    callback auto-update-toggled(bool);
     callback ask-unlock-toggled(bool);
     callback lock-on-sleep-toggled(bool);
     callback require-master-password-toggled(bool);
@@ -211,6 +213,12 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 Toggle { text: "Start at login"; checked <=> root.start-at-login; toggled(v) => { root.start-at-login-toggled(v); } }
+                Toggle {
+                    text: "Update automatically";
+                    description: "Checks GitHub daily and installs once the vault is locked";
+                    checked <=> root.auto-update;
+                    toggled(v) => { root.auto-update-toggled(v); }
+                }
                 Toggle { text: "Ask to unlock on start"; checked <=> root.ask-unlock-on-start; toggled(v) => { root.ask-unlock-toggled(v); } }
                 Toggle {
                     text: "Require master password on app start";

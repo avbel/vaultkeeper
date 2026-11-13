@@ -15,6 +15,8 @@ pub enum TrayAction {
     LockToggle,
     SyncNow,
     SwitchAccount(i32),
+    /// The update item: check, install a staged update, or open the release page.
+    Update,
     Quit,
 }
 
@@ -25,6 +27,7 @@ pub enum Effect {
     Lock,
     Sync,
     SwitchAccount(Arc<str>),
+    Update,
     Quit,
 }
 
@@ -61,6 +64,7 @@ pub fn tray(
             _ => Vec::new(),
         },
         TrayAction::SwitchAccount(index) => switch_account(index, accounts),
+        TrayAction::Update => vec![Effect::Update],
         TrayAction::Quit => vec![Effect::Quit],
     }
 }

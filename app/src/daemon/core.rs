@@ -40,6 +40,7 @@ use super::{
     ssh::{SshControl, purpose},
     target::{FrontmostApp, SystemFrontmost, outside},
     tray_sync::{self, TraySync},
+    update,
 };
 use crate::{
     os::{
@@ -82,6 +83,8 @@ pub struct DaemonConfig {
     pub ui_hang_after: Duration,
     /// Where the Quick Panel's auto-type goes, read when the hotkey or tray asks for the panel.
     pub frontmost: Arc<dyn FrontmostApp>,
+    /// Check GitHub for releases and install them ([`super::update`]); only the real daemon.
+    pub self_update: bool,
 }
 
 impl DaemonConfig {
@@ -97,6 +100,7 @@ impl DaemonConfig {
             clipboard: Keeper::system(),
             ui_hang_after: UI_HANG_AFTER,
             frontmost: Arc::new(SystemFrontmost),
+            self_update: false,
         }
     }
 }
@@ -129,6 +133,9 @@ pub struct Daemon {
     browser: browser_glue::BrowserState,
     cli_access: cli_access::CliAccessState,
     site_icons: Arc<SiteIcons>,
+    updater: Option<Arc<update::Updater>>,
+    /// Set once an update was swapped in: the bundle to start again after shutdown.
+    restart: Mutex<Option<PathBuf>>,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -149,6 +156,7 @@ impl Daemon {
             clipboard,
             ui_hang_after,
             frontmost,
+            self_update,
         } = config;
         let runtime = Handle::current();
         let device = device::load_or_create(&data_dir).context("read the device id")?;
@@ -177,6 +185,17 @@ impl Daemon {
                 .await
                 .context("listen on the UI socket")?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
+        let updater = if self_update {
+            match update::Updater::new(data_dir.join("update")) {
+                Ok(updater) => Some(Arc::new(updater)),
+                Err(error) => {
+                    tracing::warn!(error = format!("{error:#}"), "updates are off");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
         let daemon = Arc::new(Self {
             ssh: SshControl::new(data_dir.join(SSH_SOCKET), approvals),
@@ -204,6 +223,8 @@ impl Daemon {
             browser: browser_glue::BrowserState::new(),
             cli_access: cli_access::CliAccessState::default(),
             site_icons,
+            updater,
+            restart: Mutex::new(None),
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -234,6 +255,12 @@ impl Daemon {
             self.runtime.spawn(lock_timer(Arc::clone(self))),
         ];
         guard(&self.tasks).extend(tasks);
+        if let Some(updater) = &self.updater {
+            let task = self
+                .runtime
+                .spawn(update::run(Arc::clone(self), Arc::clone(updater)));
+            guard(&self.tasks).push(task);
+        }
     }
 
     #[must_use]
@@ -273,6 +300,40 @@ impl Daemon {
         guard(&self.server)
             .as_ref()
             .is_some_and(ServerHandle::is_ui_connected)
+    }
+
+    /// `None` when this daemon does not update itself (tests, a build outside a bundle).
+    #[must_use]
+    pub fn subscribe_update(&self) -> Option<watch::Receiver<update::Status>> {
+        self.updater.as_ref().map(|updater| updater.subscribe())
+    }
+
+    /// Whether an automatic update may restart the app now: the vault is not unlocked and no
+    /// window is open, so nobody is in the middle of using it.
+    #[must_use]
+    pub fn quiet_for_update(&self) -> bool {
+        update::quiet(
+            &self.vault.state(),
+            self.ui_connected() || self.launcher.is_running(),
+        )
+    }
+
+    /// The new app is in place: quit the event loop so `run` shuts down and starts `bundle`.
+    pub fn restart_for_update(&self, bundle: PathBuf) {
+        *guard(&self.restart) = Some(bundle);
+        if let Err(error) = slint::invoke_from_event_loop(|| {
+            if let Err(error) = slint::quit_event_loop() {
+                tracing::error!(%error, "cannot quit the event loop for the update");
+            }
+        }) {
+            tracing::error!(%error, "cannot reach the event loop for the update");
+        }
+    }
+
+    /// The bundle to start after shutdown, if an update was installed.
+    #[must_use]
+    pub fn restart_after_shutdown(&self) -> Option<PathBuf> {
+        guard(&self.restart).clone()
     }
 
     #[must_use]
@@ -318,6 +379,11 @@ impl Daemon {
             Effect::SwitchAccount(id) => {
                 if let Err(error) = self.vault.switch_account(&id) {
                     tracing::warn!(%error, "account switch failed");
+                }
+            }
+            Effect::Update => {
+                if let Some(updater) = &self.updater {
+                    updater.clicked();
                 }
             }
             // The shell quits its event loop and then calls `shutdown`.

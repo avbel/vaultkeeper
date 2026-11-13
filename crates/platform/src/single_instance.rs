@@ -38,6 +38,26 @@ impl Command {
     }
 }
 
+/// Waits until process `pid` has exited, at most `timeout`; returns whether it did. An updated
+/// app started by the old one waits here, so it does not find the old one still holding the lock.
+#[cfg(unix)]
+#[must_use]
+pub fn wait_for_exit(pid: i32, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        // SAFETY: signal 0 only checks that the process exists; no signal is sent.
+        let alive = unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !alive {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Returns the guard if we are the first instance; otherwise forwards `command` to the
 /// running instance and returns [`crate::Error::AlreadyRunning`]. `on_command` runs on a
 /// background thread for commands from later launches.

@@ -16,8 +16,9 @@ pub mod ssh;
 pub mod target;
 mod tray;
 pub mod tray_sync;
+pub mod update;
 
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use vk_platform::single_instance;
@@ -58,8 +59,18 @@ impl TestOverrides {
     }
 }
 
-pub fn run(launch: Launch) -> anyhow::Result<()> {
+/// The exit status that asks launchd's `KeepAlive` to start the (updated) app again.
+const RESTART_EXIT: i32 = 75;
+/// How long an updated app waits for the old daemon to finish shutting down.
+const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
+
+pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     let overrides = TestOverrides::from_env();
+    if let Some(pid) = wait_for
+        && !single_instance::wait_for_exit(pid, WAIT_FOR_PREVIOUS)
+    {
+        tracing::warn!(pid, "the previous vaultkeeper is still running");
+    }
     if launch == Launch::Tray {
         refresh_login_agent();
     }
@@ -98,6 +109,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     if !overrides.no_ui {
         config.ui_exe = Some(std::env::current_exe().context("locate the vaultkeeper binary")?);
     }
+    config.self_update = !overrides.headless;
     let daemon = runtime.block_on(Daemon::start(config))?;
     let forwarder = {
         let daemon = Arc::clone(&daemon);
@@ -128,12 +140,50 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     runtime.block_on(daemon.shutdown());
     signals.abort();
     drop((shell, power, network));
+    // Still holding the single-instance lock: a browser host or a Dock click must not become the
+    // daemon between this one quitting and the updated one starting.
+    if let Some(bundle) = daemon.restart_after_shutdown() {
+        relaunch(&bundle);
+    }
     drop(instance);
     if forwarder.join().is_err() {
         tracing::error!("second-launch listener panicked");
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
     ran
+}
+
+/// Starts the updated app. When launchd started this process as the login agent's job, a non-zero
+/// exit makes it start the same path again (`KeepAlive { SuccessfulExit = false }`), so the new
+/// daemon stays launchd's job and is restarted after a crash; the exit releases the lock.
+/// Otherwise LaunchServices opens a new instance, which waits for this process to exit before
+/// taking the single-instance lock.
+fn relaunch(bundle: &Path) {
+    if vk_platform::autostart::started_by_login_agent() {
+        tracing::info!("exiting for launchd to start the updated app");
+        std::process::exit(RESTART_EXIT);
+    }
+    let pid = std::process::id().to_string();
+    let opened = std::process::Command::new("/usr/bin/open")
+        .args(["-n", "-g"])
+        .arg(bundle)
+        .args(["--args", "--tray", "--wait-for", &pid])
+        .status();
+    match opened {
+        Ok(status) if status.success() => {
+            tracing::info!("started the updated app");
+            return;
+        }
+        Ok(status) => tracing::error!(%status, "LaunchServices did not start the updated app"),
+        Err(error) => tracing::error!(%error, "LaunchServices did not start the updated app"),
+    }
+    // Without LaunchServices the app is not registered as launched, but it runs.
+    if let Err(error) = std::process::Command::new(bundle.join("Contents/MacOS/vaultkeeper"))
+        .args(["--tray", "--wait-for", &pid])
+        .spawn()
+    {
+        tracing::error!(%error, "cannot start the updated app");
+    }
 }
 
 /// Gives a login agent written by an older version the restart-after-crash setting.

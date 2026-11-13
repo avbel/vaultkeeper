@@ -132,6 +132,9 @@ pub struct Settings {
     pub require_master_password_on_start: bool,
     pub ssh_agent: bool,
     pub cli_access: bool,
+    /// Check GitHub daily and install a verified update once the vault is locked; off makes no
+    /// update requests until "Check for Updates…" is clicked.
+    pub auto_update: bool,
     pub ssh_approval: SshApproval,
     pub ssh_touch_id: bool,
     pub browser_integration: bool,
@@ -174,6 +177,7 @@ impl Default for Settings {
             require_master_password_on_start: false,
             ssh_agent: false,
             cli_access: false,
+            auto_update: true,
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
             browser_integration: false,
@@ -435,6 +439,7 @@ mod tests {
         );
         assert!(!settings.require_master_password_on_start);
         assert!(!settings.ssh_agent);
+        assert!(settings.auto_update);
     }
 
     #[test]
@@ -576,6 +581,7 @@ mod tests {
             require_master_password_on_start: true,
             ssh_agent: false,
             cli_access: true,
+            auto_update: false,
             ssh_approval: SshApproval::RememberUntilLock,
             ssh_touch_id: true,
             browser_integration: true,

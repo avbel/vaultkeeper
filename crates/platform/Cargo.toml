@@ -24,6 +24,8 @@ zeroize.workspace = true
 libc = "0.2.191"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The updater's signature checks (code_signature.rs); the version security-framework uses.
+core-foundation = "0.10.1"
 security-framework.workspace = true
 
 [target.'cfg(target_os = "macos")'.build-dependencies]

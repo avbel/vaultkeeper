@@ -63,9 +63,11 @@ spike's window was dropped). See the "Step 0 result" section of
    path, and the browser extension cannot find it there.
 2. The app is signed with a self-signed certificate, not an Apple Developer ID, so macOS refuses the first launch with
    "Apple could not verify…". Open it once, then choose **Open Anyway** in System Settings → Privacy & Security, or run
-   `xattr -dr com.apple.quarantine /Applications/Vaultkeeper.app`. Repeat this after each update.
-3. For the browser extension, install Vaultkeeper from the Chrome Web Store or Firefox Add-ons and turn on browser
-   integration in the app's settings.
+   `xattr -dr com.apple.quarantine /Applications/Vaultkeeper.app`. From version 0.1.7 on, only the first install
+   needs this: later versions install from the tray or automatically (see "Updates" in [docs/USAGE.md](docs/USAGE.md)).
+3. For the browser extension, install Vaultkeeper from the Chrome Web Store or
+   [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/) and turn on browser integration in the
+   app's settings.
 
 Each release lists SHA-256 checksums in `SHA256SUMS`. Windows and Linux builds are coming soon.
 
@@ -168,6 +170,10 @@ app's own, which start a real daemon process and drive it over IPC. Docker is re
 - The daemon and UI process talk over a Unix socket with mode 0600. The daemon checks the peer's uid and code signature
   (audit token plus `SecCode`) and accepts only a UI process with its own signature.
 - Release bundles are signed with the hardened runtime, so other processes cannot inject code into them.
+- Updates install only when signed with the same certificate as the running app. That self-signed certificate is the
+  maintainer's: its key is in the maintainer's keychain (local builds use it too) and in the release workflow's secrets,
+  so either of those controls updates. Installed copies trust that one certificate: a new key would mean installing
+  the next version by hand.
 
 Design and threat model: [docs/solutions/vaultkeeper-architecture.md](docs/solutions/vaultkeeper-architecture.md).
 Vaultkeeper has not had an independent security audit.
