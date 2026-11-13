@@ -172,7 +172,7 @@ impl Default for Settings {
             start_at_login: false,
             ask_unlock_on_start: false,
             require_master_password_on_start: false,
-            ssh_agent: true,
+            ssh_agent: false,
             cli_access: false,
             ssh_approval: SshApproval::Always,
             ssh_touch_id: false,
@@ -434,6 +434,7 @@ mod tests {
             Some(Duration::from_secs(30))
         );
         assert!(!settings.require_master_password_on_start);
+        assert!(!settings.ssh_agent);
     }
 
     #[test]

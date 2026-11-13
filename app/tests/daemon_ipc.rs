@@ -66,6 +66,13 @@ fn write_settings(dir: &Path, settings: &Settings) {
     SettingsFile::write(&dir.join(SETTINGS_FILE), settings).unwrap();
 }
 
+fn agent_on() -> Settings {
+    Settings {
+        ssh_agent: true,
+        ..Settings::default()
+    }
+}
+
 async fn start(dir: &DataDir) -> Arc<Daemon> {
     start_with_clipboard(dir, Arc::new(FakeClipboard::default())).await
 }
@@ -325,7 +332,7 @@ async fn the_agent_follows_the_saved_setting() {
     assert!(!socket.exists());
     let (vault, _events) = connect(&dir).await;
 
-    write_settings(dir.path(), &Settings::default());
+    write_settings(dir.path(), &agent_on());
     vault.notify(UiNotice::SettingsChanged).unwrap();
     eventually(|| daemon.ssh_agent_running()).await;
     assert!(socket.exists(), "the agent listens at {}", socket.display());
@@ -572,6 +579,7 @@ async fn assert_cli_fields(socket: &Path) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_logged_out_agent_serves_no_keys() {
     let dir = DataDir::new();
+    write_settings(dir.path(), &agent_on());
     let daemon = start(&dir).await;
     let socket = dir.path().join(SSH_SOCKET);
     eventually(|| socket.exists()).await;
@@ -594,6 +602,7 @@ async fn a_logged_out_agent_serves_no_keys() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_tells_the_ui_and_removes_the_sockets() {
     let dir = DataDir::new();
+    write_settings(dir.path(), &agent_on());
     let daemon = start(&dir).await;
     let (_vault, mut events) = connect(&dir).await;
     let ui_socket = dir.path().join(UI_SOCKET);

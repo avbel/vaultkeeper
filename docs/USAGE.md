@@ -143,7 +143,7 @@ Settings → Security → Touch ID → *Enrol* (while unlocked).
 
 ## SSH agent
 
-Settings → SSH agent → turn on *SSH agent* (the socket path has a copy button there). The keys come from the vault's SSH-key items. The socket is
+The agent is off by default. Settings → SSH agent → turn on *SSH agent* (the socket path has a copy button there). The keys come from the vault's SSH-key items. The socket is
 `~/Library/Application Support/vaultkeeper/ssh-agent.sock`.
 
 Your `~/.ssh/config` currently points every host at the App Store Bitwarden agent:
