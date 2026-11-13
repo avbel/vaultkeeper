@@ -1,0 +1,50 @@
+name: Cargo cache
+
+# A tag build can restore caches saved on main but not ones saved by earlier tags, so main seeds
+# the release build's dependency cache. The key must match the macos job in release.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/cargo-cache.yml
+  # Caches unused for 7 days are evicted; a run that hits the cache only restores it, which keeps it.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-cache
+  cancel-in-progress: true
+
+jobs:
+  deps:
+    name: Release dependencies (cache only)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin
+
+      # The key ignores workspace crate versions, so a release version bump is a full hit and skips the cook.
+      - id: cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release
+
+      # rust-cache never stores workspace crates, so cooking only the dependencies saves the same cache
+      # as a full app build. The flags must match scripts/bundle-macos.sh or the tag build rebuilds them.
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          command -v cargo-chef || cargo install cargo-chef --locked --version 0.1.78
+          cargo chef prepare --recipe-path "$RUNNER_TEMP/recipe.json"
+          cargo chef cook --release --locked --target aarch64-apple-darwin -p vaultkeeper \
+            --recipe-path "$RUNNER_TEMP/recipe.json"
