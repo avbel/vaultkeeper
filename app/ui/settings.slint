@@ -33,6 +33,7 @@ export component SettingsWindow inherits Window {
 
     in property <string> server;
     in-out property <int> theme-index;
+    in-out property <int> tray-icon-index;
     in-out property <int> scale-index;
     in property <[string]> lock-options;
     in-out property <int> lock-index;
@@ -81,6 +82,7 @@ export component SettingsWindow inherits Window {
     in property <string> error-text;
 
     callback theme-selected(int);
+    callback tray-icon-selected(int);
     callback scale-selected(int);
     callback lock-selected(int);
     callback clipboard-selected(int);
@@ -171,6 +173,16 @@ export component SettingsWindow inherits Window {
                         options: ["System", "Light", "Dark"];
                         index <=> root.theme-index;
                         selected(i) => { root.theme-selected(i); }
+                    }
+                }
+                SettingRow {
+                    text: "Menu bar icon";
+                    Segmented {
+                        width: 220px;
+                        label: "Menu bar icon";
+                        options: ["Auto", "White", "Black"];
+                        index <=> root.tray-icon-index;
+                        selected(i) => { root.tray-icon-selected(i); }
                     }
                 }
                 SettingRow {

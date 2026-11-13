@@ -66,6 +66,42 @@ pub fn system_dark() -> Option<bool> {
     }
 }
 
+/// Whether the menu bar is drawn dark; `None` off the main thread or before the tray's status
+/// item has a window.
+#[must_use]
+pub fn menu_bar_dark() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::menu_bar_dark()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub use macos::MenuBarWatch;
+/// Stands in for the key-value observation handle, which only exists on macOS.
+#[cfg(not(target_os = "macos"))]
+pub struct MenuBarWatch;
+
+/// Calls `on_change` on the main thread whenever the menu bar's appearance changes, until the
+/// returned handle is dropped. `None` off the main thread or before the tray's status item has a
+/// window; the caller retries.
+#[must_use]
+pub fn watch_menu_bar(on_change: impl Fn() + 'static) -> Option<MenuBarWatch> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::watch_menu_bar(on_change)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = on_change;
+        None
+    }
+}
+
 /// How often the Dock icon is matched to the system appearance while it is shown. Slint follows
 /// the theme on its own, so nothing tells this code when it changes; one AppKit read per tick.
 #[cfg(target_os = "macos")]
@@ -116,14 +152,23 @@ impl WindowPlacement for CursorScreen {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::cell::{Cell, RefCell};
-
-    use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{
-        NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
-        NSApplicationActivationPolicy, NSEvent, NSImage, NSScreen,
+    use std::{
+        cell::{Cell, RefCell},
+        ffi::c_void,
     };
-    use objc2_foundation::{NSArray, NSData};
+
+    use objc2::{
+        AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+        rc::Retained, runtime::AnyObject,
+    };
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSApplication, NSApplicationActivationPolicy, NSEvent, NSImage, NSScreen, NSWindow,
+    };
+    use objc2_foundation::{
+        NSArray, NSData, NSDictionary, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
+        NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, ns_string,
+    };
 
     use super::{ICON_THEME_POLL, ScreenRect};
 
@@ -234,12 +279,98 @@ mod macos {
 
     pub(super) fn system_dark() -> Option<bool> {
         let mtm = MainThreadMarker::new()?;
-        let appearance = NSApplication::sharedApplication(mtm).effectiveAppearance();
+        is_dark(&NSApplication::sharedApplication(mtm).effectiveAppearance())
+    }
+
+    fn is_dark(appearance: &NSAppearance) -> Option<bool> {
         // SAFETY: the appearance names are immutable framework constants.
         let (aqua, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
         let best =
             appearance.bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[aqua, dark]))?;
         Some(&*best == dark)
+    }
+
+    /// The appearance the menu bar is drawn in, which follows the wallpaper behind it (a bright
+    /// wallpaper gives a light bar even in a dark system) and so differs from `system_dark`. Read
+    /// from the status item's own window; `None` until that window exists.
+    pub(super) fn menu_bar_dark() -> Option<bool> {
+        let window = status_bar_window(MainThreadMarker::new()?)?;
+        is_dark(&window.effectiveAppearance())
+    }
+
+    fn status_bar_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
+        NSApplication::sharedApplication(mtm)
+            .windows()
+            .iter()
+            .find(|window| {
+                AnyObject::class(window.as_ref())
+                    .name()
+                    .to_string_lossy()
+                    .contains("StatusBar")
+            })
+    }
+
+    struct ObserverIvars {
+        on_change: Box<dyn Fn()>,
+    }
+
+    define_class!(
+        #[unsafe(super = NSObject)]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = ObserverIvars]
+        struct AppearanceObserver;
+
+        unsafe impl NSObjectProtocol for AppearanceObserver {}
+
+        impl AppearanceObserver {
+            #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+            fn observe(
+                &self,
+                _key_path: Option<&NSString>,
+                _object: Option<&AnyObject>,
+                _change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
+                _context: *mut c_void,
+            ) {
+                (self.ivars().on_change)();
+            }
+        }
+    );
+
+    /// Keeps the key-value observation alive; dropping it unregisters the observer.
+    pub struct MenuBarWatch {
+        window: Retained<NSWindow>,
+        observer: Retained<AppearanceObserver>,
+    }
+
+    impl Drop for MenuBarWatch {
+        fn drop(&mut self) {
+            // SAFETY: registered for this key path in `watch_menu_bar` and not removed since.
+            unsafe {
+                self.window
+                    .removeObserver_forKeyPath(&self.observer, ns_string!("effectiveAppearance"));
+            }
+        }
+    }
+
+    pub(super) fn watch_menu_bar(on_change: impl Fn() + 'static) -> Option<MenuBarWatch> {
+        let mtm = MainThreadMarker::new()?;
+        let window = status_bar_window(mtm)?;
+        let this = AppearanceObserver::alloc(mtm).set_ivars(ObserverIvars {
+            on_change: Box::new(on_change),
+        });
+        // SAFETY: plain `init` on a freshly allocated NSObject subclass.
+        let observer: Retained<AppearanceObserver> = unsafe { msg_send![super(this), init] };
+        // SAFETY: the observer outlives the registration (`MenuBarWatch` removes it on drop) and
+        // implements `observeValueForKeyPath:ofObject:change:context:`.
+        unsafe {
+            window.addObserver_forKeyPath_options_context(
+                &observer,
+                ns_string!("effectiveAppearance"),
+                NSKeyValueObservingOptions::New,
+                std::ptr::null_mut(),
+            );
+        }
+        Some(MenuBarWatch { window, observer })
     }
 
     pub(super) fn screens_and_mouse() -> Option<(Vec<ScreenRect>, (f64, f64))> {

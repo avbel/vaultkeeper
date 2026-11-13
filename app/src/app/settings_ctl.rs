@@ -78,6 +78,7 @@ impl<S: VaultService> App<S> {
                 .into(),
         );
         window.set_theme_index(settings.theme.index());
+        window.set_tray_icon_index(settings.tray_icon.index());
         window.set_scale_index(settings.text_scale.index());
         let lock_labels: Vec<SharedString> = LOCK_OPTIONS
             .iter()
@@ -93,8 +94,8 @@ impl<S: VaultService> App<S> {
         window.set_clipboard_options(ModelRc::new(VecModel::from(clip_labels)));
         window.set_clipboard_index(option_index(&CLIPBOARD_OPTIONS, &settings.clipboard_clear));
         window.set_start_at_login(settings.start_at_login);
-        window.set_ask_unlock_on_start(settings.ask_unlock_on_start);
         window.set_auto_update(settings.auto_update);
+        window.set_ask_unlock_on_start(settings.ask_unlock_on_start);
         window.set_require_master_password(settings.require_master_password_on_start);
         let biometrics = &self.hooks.biometrics;
         window.set_touch_id_available(biometrics.is_available());
@@ -165,6 +166,11 @@ impl<S: VaultService> App<S> {
                 app.set_theme(theme);
             }
         }));
+        window.on_tray_icon_selected(handler!(self, |app, index| {
+            if let Some(choice) = ThemeChoice::from_index(index) {
+                app.update_settings(|settings| settings.tray_icon = choice);
+            }
+        }));
         window.on_scale_selected(handler!(self, |app, index| {
             if let Some(scale) = TextScale::from_index(index) {
                 app.update_settings(|settings| settings.text_scale = scale);
@@ -191,14 +197,14 @@ impl<S: VaultService> App<S> {
             app.update_settings(|settings| settings.start_at_login = enabled);
             app.report(app.hooks.autostart.set_enabled(enabled));
         }));
+        window.on_auto_update_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.auto_update = enabled);
+        }));
         window.on_ask_unlock_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.ask_unlock_on_start = enabled);
         }));
         window.on_require_master_password_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.require_master_password_on_start = enabled);
-        }));
-        window.on_auto_update_toggled(handler!(self, |app, enabled| {
-            app.update_settings(|settings| settings.auto_update = enabled);
         }));
         window.on_touch_id_enroll(handler!(self, |app| app.enroll_touch_id()));
         window.on_touch_id_remove(handler!(self, |app| app.remove_touch_id()));

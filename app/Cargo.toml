@@ -113,8 +113,11 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSArray",
     "NSData",
+    "NSDictionary",
     "NSEnumerator",
     "NSGeometry",
+    "NSKeyValueObserving",
+    "NSObject",
     "NSString",
 ] }
 # Native open/save panels for attachments; no portal or Wayland backends on macOS.

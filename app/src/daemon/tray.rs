@@ -2,7 +2,7 @@
 //! are routed like every other trigger, and it follows the vault and settings through watches on
 //! the Slint event loop.
 
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc, time::Duration};
 
 use slint::{ModelRc, SharedString, VecModel, language::ColorScheme};
 use vk_vault::{VaultService, model::SessionState};
@@ -12,9 +12,12 @@ use super::{
     routing::{self, Effect, TrayAction},
 };
 use crate::{
+    settings::ThemeChoice,
     ui::TrayIcon,
     viewmodel::{host, local_time, tray_sync_label},
 };
+
+const ATTACH_RETRY: Duration = Duration::from_millis(250);
 
 pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     let tray = TrayIcon::new()?;
@@ -34,6 +37,7 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.on_switch_account(move |index| run(&switch, TrayAction::SwitchAccount(index)));
     refresh(&tray, daemon);
     tray.show()?;
+    follow_menu_bar(&tray, daemon);
     watch(&tray, daemon)?;
     Ok(tray)
 }
@@ -90,13 +94,60 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
             .into(),
     );
     tray.set_update_enabled(update.is_none_or(|status| status.tray_enabled()));
-    // Re-read on every refresh: a system appearance switch shows on the next vault or settings
-    // change (a sync runs at least every 30 minutes).
-    tray.set_menu_bar_scheme(match crate::os::appkit::system_dark() {
+    refresh_scheme(tray, daemon);
+}
+
+/// The bar's appearance follows the wallpaper; `follow_menu_bar` calls this when it changes.
+/// Before the status item has a window the system appearance is the best guess. The Settings
+/// choice overrides both; the icon is the opposite shade of the bar it must read on,
+/// so "White" is the scheme of a dark bar.
+fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
+    let dark = match daemon.settings().tray_icon {
+        ThemeChoice::Light => Some(true),
+        ThemeChoice::Dark => Some(false),
+        ThemeChoice::System => {
+            crate::os::appkit::menu_bar_dark().or_else(crate::os::appkit::system_dark)
+        }
+    };
+    tray.set_menu_bar_scheme(match dark {
         Some(true) => ColorScheme::Dark,
         Some(false) => ColorScheme::Light,
         None => ColorScheme::Unknown,
     });
+}
+
+/// Slint creates the status item on its first event-loop turn, so the window to observe does not
+/// exist yet right after `show()`; a short retry timer bridges that gap and stops once attached.
+fn follow_menu_bar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
+    let weak = tray.as_weak();
+    let daemon = Arc::clone(daemon);
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, ATTACH_RETRY, move || {
+        let Some(tray) = weak.upgrade() else {
+            return;
+        };
+        let on_change = {
+            let weak = tray.as_weak();
+            let daemon = Arc::clone(&daemon);
+            move || {
+                if let Some(tray) = weak.upgrade() {
+                    refresh_scheme(&tray, &daemon);
+                }
+            }
+        };
+        if let Some(watch) = crate::os::appkit::watch_menu_bar(on_change) {
+            MENU_BAR_WATCH.with_borrow_mut(|slot| *slot = Some(watch));
+            SCHEME_TIMER.with_borrow(|timer| timer.iter().for_each(slint::Timer::stop));
+            refresh_scheme(&tray, &daemon);
+        }
+    });
+    SCHEME_TIMER.with_borrow_mut(|slot| *slot = Some(timer));
+}
+
+thread_local! {
+    static SCHEME_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    static MENU_BAR_WATCH: RefCell<Option<crate::os::appkit::MenuBarWatch>> =
+        const { RefCell::new(None) };
 }
 
 fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {

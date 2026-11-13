@@ -1,7 +1,7 @@
 // Self-contained: the daemon hosts this component in a window-less process, so it shares no
 // state with the window components. Slint 1.18's SystemTrayIcon has no template-image flag, so
-// monochrome variants are switched by the menu bar appearance, which the daemon reads from AppKit
-// and sets. `Palette.color-scheme` must not be used here: reading it makes Slint create a hidden
+// monochrome variants are switched by the menu bar appearance (it follows the wallpaper, not the
+// system theme), which the daemon observes in AppKit and sets. `Palette.color-scheme` must not be used here: reading it makes Slint create a hidden
 // window for the tray process (measured: an 800×600 window). While the appearance is unknown the
 // neutral grey variant reads on both bars.
 export component TrayIcon inherits SystemTrayIcon {
@@ -48,6 +48,13 @@ export component TrayIcon inherits SystemTrayIcon {
             title: "Settings…";
             activated => { root.settings(); }
         }
+        Menu {
+            title: "Accounts";
+            for account[i] in root.accounts: MenuItem {
+                title: account;
+                activated => { root.switch-account(i); }
+            }
+        }
         MenuSeparator { }
         MenuItem {
             title: root.locked ? "Unlock" : "Lock";
@@ -62,13 +69,6 @@ export component TrayIcon inherits SystemTrayIcon {
         if root.sync-label != "" && root.logged-in: MenuItem {
             title: root.sync-label;
             enabled: false;
-        }
-        Menu {
-            title: "Accounts";
-            for account[i] in root.accounts: MenuItem {
-                title: account;
-                activated => { root.switch-account(i); }
-            }
         }
         MenuSeparator { }
         if root.update-label != "": MenuItem {

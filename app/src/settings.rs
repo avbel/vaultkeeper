@@ -119,6 +119,9 @@ impl WindowGeometry {
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeChoice,
+    /// Menu bar icon colour: `System` follows the menu bar, `Light` is the white icon, `Dark` the
+    /// black one.
+    pub tray_icon: ThemeChoice,
     pub text_scale: TextScale,
     /// Website icons on login rows, fetched through the account's server.
     pub show_site_icons: bool,
@@ -166,6 +169,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::System,
+            tray_icon: ThemeChoice::System,
             text_scale: TextScale::Default,
             show_site_icons: true,
             manager_geometry: None,
@@ -564,6 +568,7 @@ mod tests {
     fn json_round_trips_every_field() {
         let settings = Settings {
             theme: ThemeChoice::Dark,
+            tray_icon: ThemeChoice::Light,
             text_scale: TextScale::Larger,
             show_site_icons: false,
             manager_geometry: Some(WindowGeometry {
