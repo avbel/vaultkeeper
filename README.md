@@ -4,6 +4,8 @@ Vaultkeeper is a lightweight native macOS (Apple silicon) desktop client for sel
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden) servers, which speak the Bitwarden API. It is written in Rust with a
 [Slint](https://slint.dev) UI, lives in the menu bar, and opens a window only when you need one.
 
+**Windows and Linux are coming soon** (see the [roadmap](#roadmap-cross-platform)).
+
 Vaultkeeper is an independent project. It is **not affiliated with, endorsed by or supported by Bitwarden Inc. or the
 Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/compose.yaml`).
 
@@ -49,12 +51,25 @@ spike's window was dropped). See the "Step 0 result" section of
 
 ## Requirements
 
-- macOS 13 or newer on Apple silicon
+- macOS 13 or newer on Apple silicon (Windows and Linux are coming soon)
 - Rust toolchain: the version is pinned in `rust-toolchain.toml` and installed automatically by `rustup`
 - Xcode Command Line Tools (`xcode-select --install`), needed to build the Swift shim in `crates/platform/swift`
 - A Vaultwarden server (or try the demo vault below)
 
-## Build and install
+## Install
+
+1. Download `Vaultkeeper-<version>-arm64.dmg` from [Releases](https://github.com/avbel/vaultkeeper/releases), open it and
+   drag Vaultkeeper to Applications. Do this before the first launch: an app started from Downloads runs from a temporary
+   path, and the browser extension cannot find it there.
+2. The app is signed with a self-signed certificate, not an Apple Developer ID, so macOS refuses the first launch with
+   "Apple could not verify…". Open it once, then choose **Open Anyway** in System Settings → Privacy & Security, or run
+   `xattr -dr com.apple.quarantine /Applications/Vaultkeeper.app`. Repeat this after each update.
+3. For the browser extension, install Vaultkeeper from the Chrome Web Store or Firefox Add-ons and turn on browser
+   integration in the app's settings.
+
+Each release lists SHA-256 checksums in `SHA256SUMS`. Windows and Linux builds are coming soon.
+
+## Build from source
 
 ```sh
 git clone https://github.com/avbel/vaultkeeper.git

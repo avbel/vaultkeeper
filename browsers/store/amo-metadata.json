@@ -1,0 +1,15 @@
+{
+  "categories": { "firefox": ["privacy-security"] },
+  "summary": {
+    "en-US": "Fill logins and passkeys from the Vaultkeeper app, a native client for self-hosted Vaultwarden servers. macOS now; Windows and Linux are coming soon."
+  },
+  "description": {
+    "en-US": "Vaultkeeper fills logins and passkeys on web pages from the Vaultkeeper desktop app, a lightweight native client for self-hosted Vaultwarden servers, and offers to save new passwords.\n\nThe extension is a thin client. It never holds your vault, your master password or a list of logins: each request goes to the app over native messaging, and the app shows its own window to choose a login.\n\nRequires the Vaultkeeper app on macOS 13 or newer (Apple silicon): https://github.com/avbel/vaultkeeper/releases\n\nWindows and Linux are coming soon.\n\nVaultkeeper is an independent project, not affiliated with Bitwarden Inc. or the Vaultwarden project."
+  },
+  "homepage": { "en-US": "https://github.com/avbel/vaultkeeper" },
+  "support_url": { "en-US": "https://github.com/avbel/vaultkeeper/issues" },
+  "version": {
+    "license": "GPL-3.0-only",
+    "approval_notes": "Works only together with the Vaultkeeper desktop app (native messaging host org.vaultkeeper.browser), currently macOS only.\n\nThe uploaded add-on is minified. To rebuild it from the attached source: Node.js 24 and pnpm 12.18.0, then in the browsers/ directory run `pnpm install --frozen-lockfile && pnpm run package`. The add-on is built into dist/firefox."
+  }
+}

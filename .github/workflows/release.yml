@@ -1,0 +1,234 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  macos:
+    name: macOS app (dmg)
+    runs-on: macos-latest
+    # The signing key lives in this environment's secrets so it can be limited to tag builds.
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install tools
+        run: |
+          brew install librsvg
+          rustup show active-toolchain || rustup toolchain install
+
+      # A tag run can restore only caches saved on its own tag or on main, so cargo-cache.yml
+      # fills the cache from main and this job only reads it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release
+          save-if: false
+
+      # The same self-signed identity as local builds (scripts/make-signing-cert.sh): keychain items
+      # trust its certificate, so a release build reads them without prompts like a local one.
+      - name: Import signing identity
+        env:
+          P12: ${{ secrets.MACOS_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::MACOS_SIGN_P12 / MACOS_SIGN_P12_PASSWORD are not set in the release environment"
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          WORK=$(mktemp -d)
+          echo "$P12" | base64 --decode > "$WORK/id.p12"
+          KC_PASS=$(openssl rand -hex 24)
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          # The runner keychain is throwaway, so trusting codesign here does not weaken anything.
+          security import "$WORK/id.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # A self-signed certificate is not a valid code-signing identity until it is trusted.
+          openssl pkcs12 -in "$WORK/id.p12" -passin "pass:$P12_PASSWORD" -nokeys -clcerts -out "$WORK/cert.pem" \
+            || openssl pkcs12 -legacy -in "$WORK/id.p12" -passin "pass:$P12_PASSWORD" -nokeys -clcerts -out "$WORK/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$WORK/cert.pem"
+          rm -rf "$WORK"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/^ *1) [0-9A-F]* "\(.*\)"$/\1/p')
+          if [ -z "$IDENTITY" ]; then
+            security find-identity -p codesigning "$KEYCHAIN"
+            echo "::error::the imported identity is not valid for code signing"
+            exit 1
+          fi
+          echo "VAULTKEEPER_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build Vaultkeeper.app
+        run: |
+          scripts/bundle-macos.sh
+          codesign --display --verbose=2 target/bundle/Vaultkeeper.app 2>&1 \
+            | grep -qx "Authority=$VAULTKEEPER_SIGN_IDENTITY" \
+            || { echo "::error::the bundle is not signed with \"$VAULTKEEPER_SIGN_IDENTITY\""; exit 1; }
+
+      - name: Build dmg
+        run: |
+          STAGE=$(mktemp -d)
+          ditto target/bundle/Vaultkeeper.app "$STAGE/Vaultkeeper.app"
+          ln -s /Applications "$STAGE/Applications"
+          mkdir -p out
+          hdiutil create -volname Vaultkeeper -srcfolder "$STAGE" -format UDZO -ov "out/Vaultkeeper-$TAG-arm64.dmg"
+
+      - name: Remove signing keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*.dmg
+          if-no-files-found: error
+
+  extensions:
+    name: Browser extensions
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browsers
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: browsers/package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: browsers/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build Chrome and Firefox packages
+        run: pnpm run package
+
+      # The release zip keeps the manifest `key` so an unpacked install has the id the app allows.
+      # The Web Store rejects that field and keeps the id from the key.pem of the first upload.
+      - name: Collect packages
+        run: |
+          mkdir -p ../out ../store
+          cp release/vaultkeeper-chrome-*.zip "../out/vaultkeeper-chrome-$TAG.zip"
+          STAGE=$(mktemp -d)
+          cp -R dist/chrome/. "$STAGE"
+          jq 'del(.key)' dist/chrome/manifest.json > "$STAGE/manifest.json"
+          (cd "$STAGE" && zip -qr - .) > ../store/chrome.zip
+          # AMO reviewers rebuild the minified add-on from this source (see store/amo-metadata.json).
+          git -C .. archive --format=zip -o store/firefox-source.zip HEAD browsers
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extensions
+          path: out/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store
+          path: |
+            store/
+            browsers/dist/firefox/
+            browsers/store/amo-metadata.json
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [macos, extensions]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: macos
+          path: out
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: extensions
+          path: out
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS
+          gh release create "$TAG" * --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Vaultkeeper $TAG"
+
+  # Store submissions wait for the GitHub release, so a store version never points users at an app
+  # release that failed to build. A missing credential skips the store with a warning.
+  chrome-web-store:
+    name: Chrome Web Store
+    needs: release
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: store
+
+      - name: Upload and publish
+        env:
+          EXTENSION_ID: agkhmlgldbppfjkpiknbbfbknkdleepk
+          PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+        run: |
+          if [ -z "$PUBLISHER_ID" ] || [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ] || [ -z "$REFRESH_TOKEN" ]; then
+            echo "::warning::CWS_* secrets are not set: skipped the Chrome Web Store"
+            exit 0
+          fi
+          npx -y chrome-webstore-upload-cli@4.0.2 --source store/chrome.zip
+
+  firefox-add-ons:
+    name: Firefox Add-ons (AMO)
+    needs: release
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: store
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      # Listed submissions go to AMO review; the job does not wait for approval.
+      - name: Submit
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "::warning::AMO_JWT_ISSUER / AMO_JWT_SECRET are not set: skipped Firefox Add-ons"
+            exit 0
+          fi
+          npx -y web-ext@10.8.0 sign --channel listed --approval-timeout 0 \
+            --source-dir browsers/dist/firefox \
+            --upload-source-code store/firefox-source.zip \
+            --amo-metadata browsers/store/amo-metadata.json

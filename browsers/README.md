@@ -1,6 +1,7 @@
 # Vaultkeeper browser extension
 
-Thin client for the Vaultkeeper app (Chrome and Firefox, Manifest V3). It never holds the vault, the master password or a
+Thin client for the Vaultkeeper app (Chrome and Firefox, Manifest V3). The app runs on macOS; Windows and Linux are
+coming soon. It never holds the vault, the master password or a
 list of logins; see `../BROWSERS.md` for the design, wire protocol and security model.
 
 Layout: `src/background` (native messaging, pairing, router), `src/content` (page detection and fill), `src/ui` (popup,
@@ -66,7 +67,24 @@ pnpm run build
 WEB_EXT_API_KEY=... WEB_EXT_API_SECRET=... pnpm run sign:firefox   # unlisted channel on AMO
 ```
 
-Chrome distribution (Web Store or enterprise policy) is an open decision in `BROWSERS.md` section 12.
+An unlisted signature uses up the version number on AMO, and the release workflow then fails to submit that version to
+the listed channel. Sign by hand only versions you will not release.
+
+## Store releases
+
+A `v*` tag runs `.github/workflows/release.yml`. After the GitHub release it uploads to both stores from the
+`release` environment, and skips a store whose secrets are missing:
+
+- **Chrome Web Store:** `chrome-webstore-upload-cli` uploads `dist/chrome` without the manifest `key` (the store
+  rejects it) and publishes. Secrets: `CWS_PUBLISHER_ID`, `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`
+  ([how to get them](https://github.com/fregante/chrome-webstore-upload-keys)). The API only updates an existing item,
+  so the first upload is manual: zip `dist/chrome` without `key` in its manifest, add the private key as `key.pem` at the
+  zip root so the store keeps the id `agkhmlgldbppfjkpiknbbfbknkdleepk`, and fill the listing from
+  `store/chrome-listing.md`.
+- **Firefox Add-ons:** `web-ext sign --channel listed` submits `dist/firefox` for review together with the source
+  archive and listing in `store/amo-metadata.json`. Secrets: `AMO_JWT_ISSUER`, `AMO_JWT_SECRET`. AMO accepts each
+  version number only once across both channels, so bump `version` in `package.json` and `manifest.base.json` for
+  every release.
 
 `web-ext lint` warns that `data_collection_permissions` is unsupported below Firefox 140; older versions ignore the key
 and AMO requires it for new add-ons, so it stays.
