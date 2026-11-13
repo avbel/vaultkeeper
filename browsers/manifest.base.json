@@ -3,7 +3,6 @@
   "name": "Vaultkeeper",
   "short_name": "Vaultkeeper",
   "description": "Fill logins and passkeys from the Vaultkeeper app and offer to save new passwords.",
-  "version": "0.1.6",
   "permissions": ["nativeMessaging", "contextMenus", "scripting"],
   "host_permissions": ["https://*/*", "http://*/*"],
   "content_scripts": [

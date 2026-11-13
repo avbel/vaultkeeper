@@ -4,11 +4,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-VERSION=$(cargo metadata --no-deps --format-version 1 \
-  | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="vaultkeeper"))')
-EXT_VERSION=$(python3 -c 'import json; print(json.load(open("browsers/package.json"))["version"])')
-CHROME_ZIP="browsers/release/vaultkeeper-chrome-$EXT_VERSION.zip"
-FIREFOX_XPI="browsers/release/vaultkeeper-firefox-$EXT_VERSION.xpi"
+VERSION=$(scripts/version.sh)
+CHROME_ZIP="browsers/release/vaultkeeper-chrome-$VERSION.zip"
+FIREFOX_XPI="browsers/release/vaultkeeper-firefox-$VERSION.xpi"
 
 if [ "${1:-}" != "--no-build" ]; then
   scripts/bundle-macos.sh

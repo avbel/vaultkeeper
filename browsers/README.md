@@ -83,8 +83,10 @@ A `v*` tag runs `.github/workflows/release.yml`. After the GitHub release it upl
   `store/chrome-listing.md`.
 - **Firefox Add-ons:** `web-ext sign --channel listed` submits `dist/firefox` for review together with the source
   archive and listing in `store/amo-metadata.json`. Secrets: `AMO_JWT_ISSUER`, `AMO_JWT_SECRET`. AMO accepts each
-  version number only once across both channels, so bump `version` in `package.json` and `manifest.base.json` for
-  every release.
+  version number only once across both channels, so every release needs a new version.
+
+The extension has no version of its own: `scripts/build.mjs` writes the `[workspace.package]` version from the
+repository's `Cargo.toml` into both manifests, and the release tag must be `v<that version>`.
 
 `web-ext lint` warns that `data_collection_permissions` is unsupported below Firefox 140; older versions ignore the key
 and AMO requires it for new add-ons, so it stays.

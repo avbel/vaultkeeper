@@ -23,8 +23,18 @@ function readJson(name) {
   return JSON.parse(readFileSync(resolve(root, name), "utf8"));
 }
 
-export function mergeManifest(base, target) {
-  return { ...base, ...target };
+// The version lives only in [workspace.package] of the repository's Cargo.toml (see scripts/version.sh).
+export function workspaceVersion(cargoToml) {
+  const section = /^\[workspace\.package\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/m.exec(cargoToml);
+  const version = section && /^version\s*=\s*"([^"]+)"/m.exec(section[1]);
+  if (!version) {
+    throw new Error("no version in [workspace.package] of Cargo.toml");
+  }
+  return version[1];
+}
+
+export function mergeManifest(base, target, version) {
+  return { ...base, ...target, version };
 }
 
 async function bundle(outDir, spec) {
@@ -57,6 +67,7 @@ async function buildTarget(target) {
   const manifest = mergeManifest(
     readJson("manifest.base.json"),
     readJson(`manifest.${target}.json`),
+    workspaceVersion(readFileSync(resolve(root, "../Cargo.toml"), "utf8")),
   );
   for (const spec of ENTRIES) {
     if (spec.optional && !existsSync(resolve(root, spec.entry))) {

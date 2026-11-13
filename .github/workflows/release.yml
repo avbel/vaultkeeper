@@ -16,8 +16,24 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  version:
+    name: Tag matches the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - run: |
+          VERSION=$(scripts/version.sh)
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag $TAG does not match version $VERSION in Cargo.toml"
+            exit 1
+          fi
+
   macos:
     name: macOS app (dmg)
+    needs: version
     runs-on: macos-latest
     # The signing key lives in this environment's secrets so it can be limited to tag builds.
     environment: release
@@ -101,6 +117,7 @@ jobs:
 
   extensions:
     name: Browser extensions
+    needs: version
     runs-on: ubuntu-latest
     defaults:
       run:

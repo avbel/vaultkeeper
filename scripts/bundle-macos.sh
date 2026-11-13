@@ -17,8 +17,7 @@ TARGET=aarch64-apple-darwin
 IDENTITY="${VAULTKEEPER_SIGN_IDENTITY:-vaultkeeper local}"
 OUT=target/bundle
 APP="$OUT/Vaultkeeper.app"
-VERSION=$(cargo metadata --no-deps --format-version 1 \
-  | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="vaultkeeper"))')
+VERSION=$(scripts/version.sh)
 
 rustup target add "$TARGET" >/dev/null
 cargo build --release --locked --target "$TARGET" -p vaultkeeper
