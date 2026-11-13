@@ -47,13 +47,6 @@ jobs:
           brew install librsvg
           rustup show active-toolchain || rustup toolchain install
 
-      # A tag run can restore only caches saved on its own tag or on main, so cargo-cache.yml
-      # fills the cache from main and this job only reads it.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: macos-release
-          save-if: false
-
       # The same self-signed identity as local builds (scripts/make-signing-cert.sh): keychain items
       # trust its certificate, so a release build reads them without prompts like a local one.
       - name: Import signing identity

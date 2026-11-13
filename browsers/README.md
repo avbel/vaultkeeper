@@ -89,8 +89,8 @@ A `v*` tag runs `.github/workflows/release.yml`. After the GitHub release it upl
 The extension has no version of its own: `scripts/build.mjs` writes the `[workspace.package]` version from the
 repository's `Cargo.toml` into both manifests, and the release tag must be `v<that version>`.
 
-`web-ext lint` warns that `data_collection_permissions` is unsupported below Firefox 140; older versions ignore the key
-and AMO requires it for new add-ons, so it stays.
+AMO requires `data_collection_permissions` for new add-ons, and Firefox supports it from 140 (Android: 142), so
+`strict_min_version` is 140.0 and `gecko_android.strict_min_version` is 142.0. A lower minimum makes the AMO validator warn.
 
 ## Pages opened before the extension loaded
 
