@@ -24,13 +24,15 @@ use windows_sys::Win32::{
         ACCESS_ALLOWED_ACE, ACCESS_ALLOWED_OBJECT_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
         AclSizeInformation,
         Authorization::{
-            ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT, SetNamedSecurityInfoW,
-            SetSecurityInfo,
+            ConvertSidToStringSidW, ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
+            SetNamedSecurityInfoW, SetSecurityInfo,
         },
-        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-        GetSecurityDescriptorDacl, GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, SE_DACL_PROTECTED, SYSTEM_MANDATORY_LABEL_ACE,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorSacl,
+        IsWellKnownSid, LABEL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        SYSTEM_MANDATORY_LABEL_ACE, WELL_KNOWN_SID_TYPE, WinBuiltinAdministratorsSid,
+        WinLocalSystemSid,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS,
@@ -51,8 +53,6 @@ use windows_sys::Win32::{
 
 use super::{Refusal, Repair};
 
-const SYSTEM_SID: &str = "S-1-5-18";
-const ADMINISTRATORS_SID: &str = "S-1-5-32-544";
 const MEDIUM_INTEGRITY_SID: &str = "S-1-16-8192";
 
 // These structs are a few dozen bytes, so the casts cannot truncate.
@@ -297,20 +297,21 @@ fn verify(path: &Path, is_dir: bool) -> Result<Repair, Refusal> {
     }
 
     let sid = current_user_sid().map_err(|error| io_refusal(path, error))?;
+    let user = UserSid::parse(&sid).map_err(|error| io_refusal(path, error))?;
     let security = SecurityInfo::read(&handle).map_err(|error| io_refusal(path, error))?;
-    check_owner(path, &security, &sid)?;
-    let dacl_matches = check_dacl(path, &security, &sid, is_dir)?;
+    check_owner(path, &security, &user)?;
+    let dacl_matches = check_dacl(path, &security, &user, is_dir)?;
     let label_matches = label_matches(&security).map_err(|error| io_refusal(path, error))?;
     let attribute_matches = attributes.FileAttributes & FILE_ATTRIBUTE_NOT_CONTENT_INDEXED != 0;
 
+    if dacl_matches && label_matches && attribute_matches {
+        return Ok(Repair::None);
+    }
     let changes = Repair::Rewritten {
         dacl: !dacl_matches,
         label: !label_matches,
         attribute: !attribute_matches,
     };
-    if changes == Repair::None {
-        return Ok(changes);
-    }
     if !writable {
         return Err(io_refusal(path, repair_denied()));
     }
@@ -445,22 +446,78 @@ impl Drop for SecurityInfo {
     }
 }
 
-fn check_owner(path: &Path, security: &SecurityInfo, user: &str) -> Result<(), Refusal> {
+/// The user's SID as a `LocalAlloc`'d binary SID. Comparisons go through `EqualSid`: SDDL text
+/// prints well-known accounts as aliases (the built-in Administrator is `LA`), so a text match
+/// against `S-1-5-…` would call the user's own ACE foreign.
+struct UserSid(PSID);
+
+impl UserSid {
+    fn parse(text: &str) -> io::Result<Self> {
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut sid: PSID = ptr::null_mut();
+        // SAFETY: `wide` is NUL-terminated and lives for the call; `sid` is our out pointer.
+        if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &raw mut sid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(sid))
+    }
+}
+
+impl Drop for UserSid {
+    fn drop(&mut self) {
+        // SAFETY: `ConvertStringSidToSidW` allocated the SID with `LocalAlloc`.
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
+
+fn same_sid(left: PSID, right: PSID) -> bool {
+    // SAFETY: both pointers reference valid SIDs that outlive the call.
+    unsafe { EqualSid(left, right) != 0 }
+}
+
+fn is_well_known(sid: PSID, kind: WELL_KNOWN_SID_TYPE) -> bool {
+    // SAFETY: `sid` references a valid SID that outlives the call.
+    unsafe { IsWellKnownSid(sid, kind) != 0 }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Principal {
+    User,
+    System,
+    Administrators,
+}
+
+fn principal(sid: PSID, user: &UserSid) -> Option<Principal> {
+    if same_sid(sid, user.0) {
+        Some(Principal::User)
+    } else if is_well_known(sid, WinLocalSystemSid) {
+        Some(Principal::System)
+    } else if is_well_known(sid, WinBuiltinAdministratorsSid) {
+        Some(Principal::Administrators)
+    } else {
+        None
+    }
+}
+
+fn check_owner(path: &Path, security: &SecurityInfo, user: &UserSid) -> Result<(), Refusal> {
     if security.owner.is_null() {
         return Err(io_refusal(
             path,
             io::Error::new(io::ErrorKind::InvalidData, "path has no owner"),
         ));
     }
-    let owner = sid_to_string(security.owner).map_err(|error| io_refusal(path, error))?;
-    if owner == user || owner == ADMINISTRATORS_SID {
-        Ok(())
-    } else {
-        Err(Refusal::Owner {
-            path: path.to_path_buf(),
-            owner,
-        })
+    if same_sid(security.owner, user.0)
+        || is_well_known(security.owner, WinBuiltinAdministratorsSid)
+    {
+        return Ok(());
     }
+    let owner = sid_to_string(security.owner).map_err(|error| io_refusal(path, error))?;
+    Err(Refusal::Owner {
+        path: path.to_path_buf(),
+        owner,
+    })
 }
 
 /// Returns whether the DACL is exactly what `private_dir` writes. Files inherit it from the
@@ -468,34 +525,33 @@ fn check_owner(path: &Path, security: &SecurityInfo, user: &str) -> Result<(), R
 fn check_dacl(
     path: &Path,
     security: &SecurityInfo,
-    user: &str,
+    user: &UserSid,
     is_dir: bool,
 ) -> Result<bool, Refusal> {
     if security.dacl.is_null() {
         return Ok(false);
     }
     let aces = dacl_aces(security.dacl).map_err(|error| io_refusal(path, error))?;
-    let allowed = [user, SYSTEM_SID, ADMINISTRATORS_SID];
     let mut full = [false; 3];
     for ace in &aces {
-        let Some(sid) = &ace.sid else { continue };
-        if let Some(index) = allowed
-            .iter()
-            .position(|candidate| *candidate == sid.as_str())
-        {
+        if ace.sid.is_null() {
+            continue;
+        }
+        if let Some(who) = principal(ace.sid, user) {
             if ace.allowed && ace.mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS {
-                full[index] = true;
+                full[who as usize] = true;
             }
         } else if ace.allowed {
+            let sid = sid_to_string(ace.sid).map_err(|error| io_refusal(path, error))?;
             return Err(Refusal::ForeignAce {
                 path: path.to_path_buf(),
-                sid: sid.clone(),
+                sid,
             });
         }
     }
     let protected = !is_dir || security.control & SE_DACL_PROTECTED != 0;
-    Ok(aces.len() == allowed.len()
-        && aces.iter().all(|ace| ace.allowed && ace.sid.is_some())
+    Ok(aces.len() == full.len()
+        && aces.iter().all(|ace| ace.allowed && !ace.sid.is_null())
         && full.iter().all(|granted| *granted)
         && protected)
 }
@@ -524,10 +580,11 @@ fn label_matches(security: &SecurityInfo) -> io::Result<bool> {
     Ok(labels == 1 && matches)
 }
 
+/// `sid` points into the ACL it was read from and is null for non-allow ACEs.
 struct Ace {
     allowed: bool,
     mask: u32,
-    sid: Option<String>,
+    sid: PSID,
 }
 
 fn dacl_aces(dacl: *const ACL) -> io::Result<Vec<Ace>> {
@@ -550,7 +607,7 @@ fn dacl_aces(dacl: *const ACL) -> io::Result<Vec<Ace>> {
                 result.push(Ace {
                     allowed: false,
                     mask: 0,
-                    sid: None,
+                    sid: ptr::null_mut(),
                 });
                 continue;
             }
@@ -558,7 +615,7 @@ fn dacl_aces(dacl: *const ACL) -> io::Result<Vec<Ace>> {
         result.push(Ace {
             allowed: true,
             mask,
-            sid: Some(sid_to_string(sid_start.cast_mut().cast::<c_void>())?),
+            sid: sid_start.cast_mut().cast::<c_void>(),
         });
     }
     Ok(result)
@@ -769,94 +826,39 @@ fn repair_denied() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::c_void, fs};
+    use std::fs;
 
     use super::*;
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
-            SDDL_REVISION_1, SetNamedSecurityInfoW,
-        },
-        Security::PSECURITY_DESCRIPTOR,
-    };
 
-    /// A descriptor allocated by `GetNamedSecurityInfoW` and freed with `LocalFree`.
-    struct OwnedDescriptor(PSECURITY_DESCRIPTOR);
+    /// Reads the DACL back and checks it structurally: SDDL text would show the built-in
+    /// Administrator as an alias, which a SID string cannot match.
+    fn assert_private_dacl(path: &Path) {
+        let handle = open(path, true, false).expect("open");
+        let security = SecurityInfo::read(&handle).expect("security");
+        assert_ne!(
+            security.control & SE_DACL_PROTECTED,
+            0,
+            "DACL not protected"
+        );
+        assert!(!security.dacl.is_null(), "no DACL");
 
-    impl Drop for OwnedDescriptor {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                // SAFETY: `GetNamedSecurityInfoW` allocates the descriptor with `LocalAlloc`.
-                unsafe {
-                    LocalFree(self.0);
-                }
-            }
+        let user = UserSid::parse(&current_user_sid().expect("SID")).expect("user SID");
+        let aces = dacl_aces(security.dacl).expect("aces");
+        assert_eq!(aces.len(), 3);
+        for who in [
+            Principal::User,
+            Principal::System,
+            Principal::Administrators,
+        ] {
+            assert!(
+                aces.iter().any(|ace| {
+                    ace.allowed
+                        && ace.mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS
+                        && principal(ace.sid, &user) == Some(who)
+                }),
+                "missing full-control ACE for one principal"
+            );
         }
-    }
-
-    /// A `LocalAlloc`'d UTF-16 string that frees itself.
-    struct OwnedWide(*mut u16);
-
-    impl Drop for OwnedWide {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                // SAFETY: the string came from a Win32 call that allocates with `LocalAlloc`.
-                unsafe {
-                    LocalFree(self.0.cast::<c_void>());
-                }
-            }
-        }
-    }
-
-    impl OwnedWide {
-        fn text(&self) -> String {
-            let mut len = 0;
-            // SAFETY: the string is NUL-terminated.
-            while unsafe { *self.0.add(len) } != 0 {
-                len += 1;
-            }
-            // SAFETY: `0..len` is inside the allocation.
-            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(self.0, len) })
-        }
-    }
-
-    fn dacl_sddl(path: &Path) -> io::Result<String> {
-        let wide = wide_path(path);
-        let mut raw: PSECURITY_DESCRIPTOR = ptr::null_mut();
-        // SAFETY: `wide` is NUL-terminated, and every out pointer is ours.
-        let status = unsafe {
-            GetNamedSecurityInfoW(
-                wide.as_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                &raw mut raw,
-            )
-        };
-        if status != ERROR_SUCCESS {
-            return Err(win32_error(status));
-        }
-        let descriptor = OwnedDescriptor(raw);
-
-        let mut text: *mut u16 = ptr::null_mut();
-        // SAFETY: the descriptor is alive and read-only for the call; `text` is our out pointer.
-        if unsafe {
-            ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                descriptor.0,
-                SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION,
-                &raw mut text,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(OwnedWide(text).text())
     }
 
     #[test]
@@ -872,10 +874,7 @@ mod tests {
         assert_ne!(attributes, INVALID_FILE_ATTRIBUTES);
         assert_ne!(attributes & FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, 0);
 
-        let dacl = dacl_sddl(&nested).expect("DACL");
-        assert!(dacl.starts_with("D:P"), "DACL must be protected: {dacl}");
-        let sid = current_user_sid().expect("SID");
-        assert!(dacl.contains(&sid), "user lost access: {dacl}");
+        assert_private_dacl(&nested);
     }
 
     fn set_dacl(path: &Path, sddl: &str) {

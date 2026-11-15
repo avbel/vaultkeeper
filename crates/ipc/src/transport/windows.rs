@@ -17,7 +17,10 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf as TokioReadHalf, WriteHalf as TokioWriteHalf},
+    io::{
+        AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf, ReadHalf as TokioReadHalf,
+        WriteHalf as TokioWriteHalf,
+    },
     net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions},
     runtime::Handle,
     sync::{Mutex as AsyncMutex, mpsc},
@@ -44,6 +47,8 @@ const SILENCE_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_millis(50);
 /// How long a client waits through a busy pipe (all pooled instances taken) before giving up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a finished connection waits for its client to close before the instance is recycled.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A named-pipe listener backed by a fixed pool of instances.
 pub struct Listener {
@@ -283,12 +288,37 @@ impl Drop for Stream {
         };
         // Disconnect frees this instance for the next client; the handle itself must be reused,
         // since the DACL denies creating a replacement.
-        if server.disconnect().is_err() {
-            tracing::warn!(pipe = %pool.name, "cannot recycle a named pipe instance");
-            return;
-        }
-        pool.arm(server);
+        //
+        // DisconnectNamedPipe discards whatever the client has not read yet, so a reply written
+        // just before this drop would be lost. FlushFileBuffers would wait for the client to read
+        // it, but it blocks a thread and cannot be cancelled. Waiting for the client to close its
+        // end instead means it has read everything it wanted, costs no thread, and the timeout
+        // bounds a client that never closes.
+        let handle = pool.handle.clone();
+        handle.spawn(async move {
+            let mut server = server;
+            wait_for_client_close(&mut server).await;
+            if server.disconnect().is_err() {
+                tracing::warn!(pipe = %pool.name, "cannot recycle a named pipe instance");
+                return;
+            }
+            pool.arm(server);
+        });
     }
+}
+
+/// Reads and discards until the client closes its end (EOF or a broken pipe) or the budget runs out.
+async fn wait_for_client_close(server: &mut NamedPipeServer) {
+    let mut sink = [0_u8; 256];
+    let closed = async {
+        loop {
+            match server.read(&mut sink).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
+    };
+    let _ = tokio::time::timeout(DRAIN_TIMEOUT, closed).await;
 }
 
 /// The read end of a [`Stream`], owned so it can move to its own task.

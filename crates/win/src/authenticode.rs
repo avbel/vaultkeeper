@@ -15,7 +15,7 @@ use std::{
 
 use windows_sys::Win32::Security::{
     Cryptography::{
-        CERT_CONTEXT, CERT_FIND_SUBJECT_CERT, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+        CERT_CONTEXT, CERT_FIND_SUBJECT_CERT, CERT_INFO, CERT_NAME_SIMPLE_DISPLAY_TYPE,
         CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED, CERT_QUERY_FORMAT_FLAG_BINARY,
         CERT_QUERY_OBJECT_FILE, CMSG_SIGNER_INFO, CMSG_SIGNER_INFO_PARAM, CertCloseStore,
         CertFindCertificateInStore, CertFreeCertificateContext, CertGetNameStringW, CryptMsgClose,
@@ -169,20 +169,26 @@ fn signer_subject_of_file(wide: &[u16]) -> io::Result<Option<String>> {
     // SAFETY: the call succeeded, so the buffer starts with a `CMSG_SIGNER_INFO` whose pointers
     // point into the same message; both stay valid until `message` drops.
     let signer_info = unsafe { &*buffer.as_ptr().cast::<CMSG_SIGNER_INFO>() };
-    // SAFETY: `CERT_FIND_SUBJECT_CERT` expects a `CERT_INFO` prefix, which the signer info starts
-    // with (issuer and serial number); `store` is live for the call.
+    // `CERT_FIND_SUBJECT_CERT` reads issuer and serial number from a `CERT_INFO`. The signer info
+    // has the same two blobs but a different layout, so it cannot be passed in its place.
+    // SAFETY: `CERT_INFO` is a plain C struct of integers and pointers, so all-zero is valid.
+    let mut wanted: CERT_INFO = unsafe { zeroed() };
+    wanted.Issuer = signer_info.Issuer;
+    wanted.SerialNumber = signer_info.SerialNumber;
+    // SAFETY: `wanted` is live for the call and its blobs point into `buffer`, which outlives it;
+    // `store` is live too.
     let certificate = unsafe {
         CertFindCertificateInStore(
             store.0,
             X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
             0,
             CERT_FIND_SUBJECT_CERT,
-            ptr::from_ref(signer_info).cast::<c_void>(),
+            ptr::from_ref(&wanted).cast::<c_void>(),
             ptr::null(),
         )
     };
     if certificate.is_null() {
-        return Ok(None);
+        return Err(io::Error::last_os_error());
     }
     // SAFETY: the find call returned a context this process owns.
     let certificate = unsafe { CertificateContext::from_raw(certificate) };
@@ -299,9 +305,12 @@ mod tests {
             // Edge is not installed everywhere; explorer.exe is catalog-signed so it cannot stand in.
             return;
         };
-        let subject = signer_subject(path)
-            .expect("verifying msedge.exe")
-            .expect("msedge.exe carries an embedded signature");
+        let found = signer_subject(path);
+        let subject = found
+            .as_ref()
+            .unwrap_or_else(|error| panic!("signer lookup for msedge.exe failed: {error}"))
+            .as_ref()
+            .unwrap_or_else(|| panic!("msedge.exe reported no embedded signer: {found:?}"));
         assert!(
             subject.contains("Microsoft"),
             "unexpected signer {subject:?} for msedge.exe"

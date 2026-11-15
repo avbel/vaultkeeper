@@ -16,7 +16,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
     runtime::Handle,
     sync::mpsc,
@@ -52,6 +52,9 @@ const POOL_SIZE: usize = 4;
 
 /// Pause before re-arming an instance whose connect failed.
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long a finished connection waits for its client to close before the instance is recycled.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 const SDDL_REVISION_1: u32 = 1;
 
@@ -320,12 +323,30 @@ async fn wait_for_client(server: NamedPipeServer, ready: mpsc::UnboundedSender<N
     }
 }
 
-fn recycle(pool: &Pool, server: NamedPipeServer) {
-    if server.disconnect().is_err() {
-        warn!("Unable to recycle a named pipe instance");
-        return;
-    }
-    pool.arm(server);
+/// DisconnectNamedPipe discards whatever the client has not read yet, so a reply written just
+/// before the connection ends would be lost. FlushFileBuffers would wait for the client to read
+/// it, but it blocks a thread and cannot be cancelled. Waiting for the client to close its end
+/// instead means it has read everything it wanted, costs no thread, and the timeout bounds a
+/// client that never closes.
+fn recycle(pool: Arc<Pool>, mut server: NamedPipeServer) {
+    let handle = pool.handle.clone();
+    handle.spawn(async move {
+        let mut sink = [0_u8; 256];
+        let closed = async {
+            loop {
+                match server.read(&mut sink).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+            }
+        };
+        let _ = tokio::time::timeout(DRAIN_TIMEOUT, closed).await;
+        if server.disconnect().is_err() {
+            warn!("Unable to recycle a named pipe instance");
+            return;
+        }
+        pool.arm(server);
+    });
 }
 
 /// An accepted pipe instance that goes back to the pool when the connection ends.
@@ -345,7 +366,7 @@ impl PooledPipe {
 impl Drop for PooledPipe {
     fn drop(&mut self) {
         if let Some(server) = self.server.take() {
-            recycle(&self.pool, server);
+            recycle(Arc::clone(&self.pool), server);
         }
     }
 }

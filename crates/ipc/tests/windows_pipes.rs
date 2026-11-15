@@ -104,6 +104,11 @@ async fn five_clients_recycle_a_pool_of_four() {
         let mut received = [0_u8; 1];
         server.read_exact(&mut received).await.expect("read");
         assert_eq!(received, [0x01]);
+        // The reply is still unread when the server drops; recycling must not discard it.
+        server.write_all(&[0x02]).await.expect("reply");
+        drop(server);
+        client.read_exact(&mut received).await.expect("read reply");
+        assert_eq!(received, [0x02]);
     }
 }
 
