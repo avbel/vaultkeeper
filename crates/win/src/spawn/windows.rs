@@ -121,7 +121,7 @@ pub fn spawn_hardened(
         .map(|descriptor| descriptor.as_attributes(false));
 
     let mut attributes = AttributeList::new(options)?;
-    attributes.apply(options)?;
+    attributes.apply()?;
 
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = STARTUPINFOEXW_LEN;
@@ -169,10 +169,13 @@ pub fn spawn_hardened(
 }
 
 /// The attribute list buffer must stay put while the kernel reads it, so it is heap allocated and
-/// only ever referenced by pointer.
+/// only ever referenced by pointer. `UpdateProcThreadAttribute` stores the value pointers rather
+/// than copying the values, so the policy and handle list live here until the list is deleted.
 struct AttributeList {
     buffer: Vec<usize>,
     initialized: bool,
+    policy: Box<u64>,
+    handles: Box<[HANDLE]>,
 }
 
 impl AttributeList {
@@ -183,6 +186,8 @@ impl AttributeList {
             return Ok(Self {
                 buffer: Vec::new(),
                 initialized: false,
+                policy: Box::new(0),
+                handles: Box::default(),
             });
         }
 
@@ -223,21 +228,23 @@ impl AttributeList {
         Ok(Self {
             buffer,
             initialized: true,
+            policy: Box::new(options.mitigation_policy),
+            handles: options.inherit_handles.iter().copied().collect(),
         })
     }
 
-    fn apply(&mut self, options: &SpawnOptions) -> io::Result<()> {
-        if options.mitigation_policy != 0 {
-            let policy = options.mitigation_policy;
-            // SAFETY: the list is initialized for two attributes at most, and `policy` is a live
-            // 8-byte value the kernel copies out.
+    fn apply(&mut self) -> io::Result<()> {
+        if *self.policy != 0 {
+            // SAFETY: the list is initialized for two attributes at most, and `policy` is a boxed
+            // 8-byte value owned by `self`, so its address stays valid until the list is deleted
+            // in `Drop`, after `CreateProcessW` has read it.
             if unsafe {
                 UpdateProcThreadAttribute(
                     self.list(),
                     0,
                     usize::try_from(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY)
                         .expect("attribute ids fit in usize"),
-                    (&raw const policy).cast::<c_void>(),
+                    (&raw const *self.policy).cast::<c_void>(),
                     size_of::<u64>(),
                     ptr::null_mut(),
                     ptr::null(),
@@ -248,18 +255,17 @@ impl AttributeList {
             }
         }
 
-        if !options.inherit_handles.is_empty() {
-            let handles = &options.inherit_handles;
-            let bytes = handles.len() * size_of::<HANDLE>();
-            // SAFETY: the list is initialized, the slice is live for the call, and the byte count
-            // matches `HANDLE` elements.
+        if !self.handles.is_empty() {
+            let bytes = self.handles.len() * size_of::<HANDLE>();
+            // SAFETY: the list is initialized, the boxed slice is owned by `self` and outlives the
+            // list, and the byte count matches `HANDLE` elements.
             if unsafe {
                 UpdateProcThreadAttribute(
                     self.list(),
                     0,
                     usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)
                         .expect("attribute ids fit in usize"),
-                    handles.as_ptr().cast::<c_void>(),
+                    self.handles.as_ptr().cast::<c_void>(),
                     bytes,
                     ptr::null_mut(),
                     ptr::null(),
@@ -403,6 +409,39 @@ mod tests {
         assert_ne!(child.pid(), 0);
         let status = wait_for(&child.handle).expect("wait");
         assert_eq!(status.code(), Some(3));
+    }
+
+    #[test]
+    fn spawns_with_a_mitigation_policy_and_a_handle_list() {
+        use windows_sys::Win32::{Foundation::TRUE, Security::SECURITY_ATTRIBUTES};
+
+        let inheritable = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).expect("small"),
+            lpSecurityDescriptor: ptr::null_mut(),
+            bInheritHandle: TRUE,
+        };
+        // SAFETY: the attributes are a live struct for the call and the name is null.
+        let event = unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(
+                &raw const inheritable,
+                1,
+                0,
+                ptr::null(),
+            )
+        };
+        assert!(!event.is_null(), "{}", io::Error::last_os_error());
+        // SAFETY: `event` is a fresh handle we own.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+
+        let options = SpawnOptions {
+            // PROCESS_CREATION_MITIGATION_POLICY_DEP_ENABLE
+            mitigation_policy: 0x1,
+            inherit_handles: vec![event.as_raw_handle()],
+            ..SpawnOptions::default()
+        };
+        let child = spawn_hardened(Path::new(CMD), &["/c", "exit", "0"], &options).expect("spawn");
+        let status = wait_for(&child.handle).expect("wait");
+        assert_eq!(status.code(), Some(0));
     }
 
     #[test]

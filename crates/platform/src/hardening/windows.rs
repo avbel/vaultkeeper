@@ -41,13 +41,13 @@ const BINARY_SIGNATURE_FLAGS: u32 = 0b1;
 /// A mitigation policy and the flag word Windows takes for it.
 pub type Policy = (PROCESS_MITIGATION_POLICY, u32);
 
-/// The policies every UI process runs under. Exported so the daemon can pass the same set to
+/// The policies every UI process runs under. `ProhibitDynamicCode` is not in the set: it can break
+/// IMEs and screen readers that inject code, so the UI gets it only in strict mode. Exported so the daemon can pass the same set to
 /// `spawn_hardened` (step 2e), where a policy must be in place before the UI's first instruction.
 /// The UI deliberately never gets `MicrosoftSignedOnly`: its file dialog loads third-party shell
 /// extensions (OneDrive, Dropbox, TortoiseGit).
 pub const UI_MITIGATIONS: &[Policy] = &[
     (ProcessImageLoadPolicy, IMAGE_LOAD_FLAGS),
-    (ProcessDynamicCodePolicy, DYNAMIC_CODE_FLAGS),
     (ProcessStrictHandleCheckPolicy, STRICT_HANDLE_FLAGS),
 ];
 
@@ -70,7 +70,7 @@ pub(super) fn harden(role: Role) {
     }
 }
 
-/// `MicrosoftSignedOnly` and the UI's `ExtensionPointDisable` stay off until the antivirus, IME
+/// `MicrosoftSignedOnly` and the UI's `ProhibitDynamicCode` and `ExtensionPointDisable` stay off until the antivirus, IME
 /// and screen-reader tests in checklist 7a pass; they break common same-user software.
 fn strict_enabled() -> bool {
     std::env::var("VAULTKEEPER_STRICT_MITIGATIONS").is_ok_and(|value| value == "1")
@@ -79,6 +79,7 @@ fn strict_enabled() -> bool {
 fn policies(role: Role, strict: bool) -> Vec<Policy> {
     let mut policies = UI_MITIGATIONS.to_vec();
     if role == Role::Daemon || strict {
+        policies.push((ProcessDynamicCodePolicy, DYNAMIC_CODE_FLAGS));
         policies.push((ProcessExtensionPointDisablePolicy, EXTENSION_POINT_FLAGS));
     }
     if role == Role::Daemon && strict {
@@ -192,6 +193,7 @@ mod tests {
                 contains(&policies, ProcessExtensionPointDisablePolicy),
                 strict
             );
+            assert_eq!(contains(&policies, ProcessDynamicCodePolicy), strict);
         }
     }
 

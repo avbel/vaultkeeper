@@ -13,6 +13,8 @@
 mod consent;
 mod envelope;
 #[cfg(windows)]
+mod owner_window;
+#[cfg(windows)]
 mod passport;
 #[cfg(target_os = "macos")]
 mod secure_enclave;

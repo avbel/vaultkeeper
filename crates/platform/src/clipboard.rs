@@ -76,13 +76,21 @@ impl ClipboardBackend for SystemClipboard {
         {
             use arboard::SetExtWindows as _;
 
-            self.inner
+            let result = self
+                .inner
                 .set()
                 .exclude_from_monitoring()
                 .exclude_from_cloud()
                 .exclude_from_history()
-                .text(text)
-                .map_err(|err| clipboard_error(&err))
+                .text(text);
+            if let Err(err) = result {
+                // The text may already be on the clipboard without its exclusion markers, where
+                // history and cloud sync would pick it up.
+                let ours = digest(text);
+                let _ = clear_if_holds(self, &ours);
+                return Err(clipboard_error(&err));
+            }
+            Ok(())
         }
     }
 

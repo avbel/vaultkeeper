@@ -36,7 +36,7 @@ jobs:
 
       # The key ignores workspace crate versions, so a release version bump is a full hit and skips the cook.
       - id: cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: macos-release
 
@@ -65,7 +65,7 @@ jobs:
 
       # Same key as the windows-build job in release.yml, so the tag build only restores.
       - id: cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-release
 

@@ -73,6 +73,19 @@ async fn round_trip_through_bind_and_connect() {
 }
 
 #[tokio::test]
+async fn a_name_can_be_bound_again_after_shutdown() {
+    let endpoint = Endpoint::pipe(unique_name("rebind"));
+    let first = Listener::bind(&endpoint).expect("bind");
+    let ((server, _peer), client) = accept_and_connect(&first, &endpoint).await;
+    drop(client);
+    drop(server);
+    first.shutdown().await;
+
+    let second = Listener::bind(&endpoint).expect("rebind after shutdown");
+    let _ = accept_and_connect(&second, &endpoint).await;
+}
+
+#[tokio::test]
 async fn a_second_bind_of_the_same_name_fails() {
     let endpoint = Endpoint::pipe(unique_name("squat"));
     let _listener = Listener::bind(&endpoint).expect("bind");

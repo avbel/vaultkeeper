@@ -11,7 +11,7 @@ use windows_sys::Win32::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     },
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 /// Encrypts `data` under the current user's DPAPI key.
 ///
@@ -101,6 +101,9 @@ unsafe fn take_blob(blob: CRYPT_INTEGER_BLOB) -> Vec<u8> {
     let len = usize::try_from(blob.cbData).expect("u32 fits in usize on 64-bit");
     // SAFETY: the caller promises the buffer is `cbData` bytes long and still ours.
     let copied = unsafe { slice::from_raw_parts(blob.pbData, len) }.to_vec();
+    // The buffer may hold decrypted secrets and LocalFree does not wipe it.
+    // SAFETY: the same `cbData` bytes, still ours and not aliased by `copied`.
+    unsafe { slice::from_raw_parts_mut(blob.pbData, len) }.zeroize();
     // SAFETY: `LocalFree` matches the allocation the DPAPI call made.
     unsafe {
         LocalFree(blob.pbData.cast());

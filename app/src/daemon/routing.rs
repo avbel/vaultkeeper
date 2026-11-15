@@ -119,6 +119,19 @@ pub const fn second_launch(command: vk_platform::single_instance::Command) -> Ef
     }
 }
 
+/// Runs what a second launch asked for: `Quit` takes the graceful path the tray's Quit takes
+/// (`quit`), everything else goes through `apply`.
+pub fn dispatch_second_launch(
+    command: vk_platform::single_instance::Command,
+    apply: impl FnOnce(Effect),
+    quit: impl FnOnce(),
+) {
+    match second_launch(command) {
+        Effect::Quit => quit(),
+        effect => apply(effect),
+    }
+}
+
 /// What to show right after start. "Ask to unlock on start" applies to autostart only; a plain
 /// launch opens the Manager, which shows the lock or login screen itself.
 #[must_use]
@@ -297,6 +310,30 @@ mod tests {
         assert_eq!(forwarded(Launch::QuickPanel), Command::ShowQuickPanel);
         assert_eq!(forwarded(Launch::Tray), Command::ShowManager);
         assert_eq!(second_launch(Command::Quit), Effect::Quit);
+    }
+
+    #[test]
+    fn a_forwarded_quit_reaches_the_quit_path_and_nothing_else() {
+        use std::cell::Cell;
+
+        let applied = Cell::new(0);
+        let quits = Cell::new(0);
+        dispatch_second_launch(
+            Command::Quit,
+            |_| applied.set(applied.get() + 1),
+            || quits.set(quits.get() + 1),
+        );
+        assert_eq!((applied.get(), quits.get()), (0, 1));
+
+        dispatch_second_launch(
+            Command::ShowManager,
+            |effect| {
+                assert_eq!(effect, Effect::Show(UiCommand::ShowManager));
+                applied.set(applied.get() + 1);
+            },
+            || quits.set(quits.get() + 1),
+        );
+        assert_eq!((applied.get(), quits.get()), (1, 1));
     }
 
     #[test]

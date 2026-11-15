@@ -11,7 +11,10 @@ use std::{
     io,
     os::windows::io::AsRawHandle,
     pin::{pin, Pin},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     task::{Context, Poll},
 };
 
@@ -57,6 +60,13 @@ const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 /// How long a finished connection waits for its client to close before the instance is recycled.
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Resets tried (with a doubling pause) before an instance is given up as lost.
+const RESET_ATTEMPTS: u32 = 4;
+
+/// How long a bind waits for a previous listener's aborted instances to close before it reports
+/// the name as taken.
+const REBIND_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Bounds each step of clearing an instance's stale I/O state; they normally finish in microseconds
 /// because every operation on a disconnected pipe fails at once.
 const RESET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
@@ -70,7 +80,7 @@ stop and disable it, or turn off Vaultkeeper's SSH agent";
 /// Windows named pipe listener for the SSH agent server
 pub(crate) struct WindowsListener {
     pool: Arc<Pool>,
-    connected: mpsc::UnboundedReceiver<NamedPipeServer>,
+    connected: mpsc::UnboundedReceiver<Ready>,
 }
 
 impl WindowsListener {
@@ -95,7 +105,7 @@ impl WindowsListener {
         // and the final one is applied to every instance afterwards.
         let setup = format!("D:P(A;;0x14019f;;;{sid})");
         let strict = format!("D:P(A;;0x12019b;;;{sid})(A;;RC;;;OW)");
-        let servers = create_instances(name, &setup)?;
+        let servers = create_instances_when_free(name, &setup)?;
         tighten(name, &servers, &strict)?;
 
         info!(pipe_name = name, "Named pipe listener ready");
@@ -113,7 +123,29 @@ impl WindowsListener {
 
 impl Drop for WindowsListener {
     fn drop(&mut self) {
-        self.pool.shutdown();
+        drop(self.pool.shutdown());
+        self.connected.close();
+        while self.connected.try_recv().is_ok() {}
+    }
+}
+
+/// A just-dropped listener's aborted tasks release their handles on the runtime a moment later,
+/// during which the name still looks taken; only a name that stays taken is a squatter.
+fn create_instances_when_free(name: &str, sddl: &str) -> Result<Vec<NamedPipeServer>> {
+    let deadline = std::time::Instant::now() + REBIND_WINDOW;
+    loop {
+        match create_instances(name, sddl) {
+            Err(error)
+                if std::time::Instant::now() < deadline
+                    && error
+                        .root_cause()
+                        .downcast_ref::<io::Error>()
+                        .is_some_and(is_access_denied_io) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            result => return result,
+        }
     }
 }
 
@@ -122,12 +154,13 @@ impl Listener for WindowsListener {
     type Stream = PooledPipe;
 
     async fn accept(&mut self) -> Result<Connection<Self::Stream>> {
+        if self.pool.live.load(Ordering::Acquire) == 0 {
+            return Err(pool_exhausted());
+        }
         // `recv` is cancel safe: an instance that connected while nobody was accepting stays queued.
-        let server = self
-            .connected
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("The named pipe pool is closed"))?;
+        let Some(Some(server)) = self.connected.recv().await else {
+            return Err(pool_exhausted());
+        };
         let peer_info = get_peer_info(&server);
         Ok(Connection {
             stream: PooledPipe {
@@ -268,65 +301,117 @@ fn current_user_sid() -> Result<String> {
     Ok(text?)
 }
 
+fn pool_exhausted() -> anyhow::Error {
+    anyhow!("Every named pipe instance was lost; the agent cannot serve clients any more")
+}
+
 /// Re-arms instances: each idle one waits for a client in its own task, because Windows hands a
 /// connecting client to any listening instance, not to one we picked.
 struct Pool {
     handle: Handle,
-    ready: mpsc::UnboundedSender<NamedPipeServer>,
+    /// `None` is the wake-up sent when the last instance is lost, so a pending `accept` can fail.
+    ready: mpsc::UnboundedSender<Ready>,
+    /// Instances not lost yet, idle or in use. The DACL forbids creating replacements.
+    live: AtomicUsize,
+    /// Every task that owns an instance (waiting or recycling), so shutdown reaches all of them.
     /// `None` once the listener is gone, so late recycles drop their instance instead of arming it.
     tasks: Mutex<Option<JoinSet<()>>>,
 }
 
+/// A connected instance, or the signal that the pool is empty.
+type Ready = Option<NamedPipeServer>;
+
 impl Pool {
-    fn new(handle: Handle) -> (Arc<Self>, mpsc::UnboundedReceiver<NamedPipeServer>) {
+    fn new(handle: Handle) -> (Arc<Self>, mpsc::UnboundedReceiver<Ready>) {
         let (ready, connected) = mpsc::unbounded_channel();
         let pool = Arc::new(Self {
             handle,
             ready,
+            live: AtomicUsize::new(POOL_SIZE),
             tasks: Mutex::new(Some(JoinSet::new())),
         });
         (pool, connected)
     }
 
-    fn arm(&self, server: NamedPipeServer) {
+    fn arm(self: &Arc<Self>, server: NamedPipeServer) {
+        self.spawn(|pool| wait_for_client(server, pool));
+    }
+
+    /// Drains a finished connection's instance and re-arms it, as a tracked task.
+    fn recycle(self: &Arc<Self>, server: NamedPipeServer) {
+        self.spawn(|pool| recycle_instance(server, pool));
+    }
+
+    fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(
+        self: &Arc<Self>,
+        task: impl FnOnce(Arc<Self>) -> F,
+    ) {
         let mut guard = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(tasks) = guard.as_mut() else {
             return;
         };
         while tasks.try_join_next().is_some() {}
-        let ready = self.ready.clone();
-        tasks.spawn_on(wait_for_client(server, ready), &self.handle);
+        tasks.spawn_on(task(Arc::clone(self)), &self.handle);
     }
 
-    /// Aborting the armed tasks drops their instances, which releases the pipe.
-    fn shutdown(&self) {
-        self.tasks
+    /// Aborts every owning task, which drops their instances and releases the pipe.
+    fn shutdown(&self) -> JoinSet<()> {
+        let mut tasks = self
+            .tasks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take();
+            .take()
+            .unwrap_or_default();
+        tasks.abort_all();
+        tasks
+    }
+
+    /// Gives up an instance that cannot be reset. The pool does not refill, so the last loss makes
+    /// `accept` fail instead of waiting for a client nobody can serve.
+    fn lose(&self, error: &io::Error) {
+        let remaining = self.live.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+        tracing::error!(%error, remaining, "Lost a named pipe instance");
+        if remaining == 0 {
+            let _ = self.ready.send(None);
+        }
     }
 }
 
 /// A failed connect (a client that vanished early) must not shrink the fixed pool, so the instance
 /// is reset and armed again after a pause that keeps a persistent error from spinning.
-async fn wait_for_client(
-    mut server: NamedPipeServer,
-    ready: mpsc::UnboundedSender<NamedPipeServer>,
-) {
+async fn wait_for_client(mut server: NamedPipeServer, pool: Arc<Pool>) {
     loop {
         match server.connect().await {
             Ok(()) => {
-                let _ = ready.send(server);
+                let _ = pool.ready.send(Some(server));
                 return;
             }
             Err(error) => {
                 tracing::debug!(%error, "A named pipe connect failed; re-arming the instance");
                 tokio::time::sleep(RETRY_DELAY).await;
-                if let Err(error) = reset_instance(&mut server).await {
-                    warn!(%error, "Unable to recycle a named pipe instance");
+                if let Err(error) = reset_with_retry(&mut server).await {
+                    pool.lose(&error);
                     return;
                 }
             }
+        }
+    }
+}
+
+/// A reset can fail transiently (a client mid-teardown); losing the instance is permanent, so
+/// retry with a growing pause first.
+async fn reset_with_retry(server: &mut NamedPipeServer) -> io::Result<()> {
+    let mut pause = RETRY_DELAY;
+    let mut attempt = 1;
+    loop {
+        match reset_instance(server).await {
+            Err(error) if attempt < RESET_ATTEMPTS => {
+                tracing::debug!(%error, attempt, "Resetting a named pipe instance failed; retrying");
+                tokio::time::sleep(pause).await;
+                pause *= 2;
+                attempt += 1;
+            }
+            result => return result,
         }
     }
 }
@@ -419,25 +504,22 @@ async fn flush_stale_read(server: &mut NamedPipeServer) -> bool {
 /// it, but it blocks a thread and cannot be cancelled. Waiting for the client to close its end
 /// instead means it has read everything it wanted, costs no thread, and the timeout bounds a
 /// client that never closes.
-fn recycle(pool: Arc<Pool>, mut server: NamedPipeServer) {
-    let handle = pool.handle.clone();
-    handle.spawn(async move {
-        let mut sink = [0_u8; 256];
-        let closed = async {
-            loop {
-                match server.read(&mut sink).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(_) => {}
-                }
+async fn recycle_instance(mut server: NamedPipeServer, pool: Arc<Pool>) {
+    let mut sink = [0_u8; 256];
+    let closed = async {
+        loop {
+            match server.read(&mut sink).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
             }
-        };
-        let _ = tokio::time::timeout(DRAIN_TIMEOUT, closed).await;
-        if let Err(error) = reset_instance(&mut server).await {
-            warn!(%error, "Unable to recycle a named pipe instance");
-            return;
         }
-        pool.arm(server);
-    });
+    };
+    let _ = tokio::time::timeout(DRAIN_TIMEOUT, closed).await;
+    if let Err(error) = reset_with_retry(&mut server).await {
+        pool.lose(&error);
+        return;
+    }
+    pool.arm(server);
 }
 
 /// An accepted pipe instance that goes back to the pool when the connection ends.
@@ -457,7 +539,7 @@ impl PooledPipe {
 impl Drop for PooledPipe {
     fn drop(&mut self) {
         if let Some(server) = self.server.take() {
-            recycle(Arc::clone(&self.pool), server);
+            self.pool.recycle(server);
         }
     }
 }

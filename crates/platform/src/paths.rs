@@ -8,10 +8,11 @@ use crate::Result;
 
 const APP_DIR: &str = "vaultkeeper";
 
-/// Creates the directory (mode 0700) if missing, and tightens its mode if it exists.
+/// Creates the directory (mode 0700) if missing, and tightens its mode if it exists. On Windows an
+/// existing directory is only verified later by the startup check.
 pub fn data_dir() -> Result<PathBuf> {
     let dir = project_data_dir()?;
-    crate::fs::ensure_private_dir(&dir)?;
+    crate::fs::create_private_dir_if_missing(&dir)?;
     Ok(dir)
 }
 

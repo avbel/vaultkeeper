@@ -19,10 +19,17 @@ jobs:
   version:
     name: Tag matches the version
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      # Every later job checks out this commit, so a tag moved after the environment approval
+      # cannot change what gets built or signed.
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
+
+      - id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - run: |
           VERSION=$(scripts/version.sh)
@@ -40,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
 
       - name: Install tools
         run: |
@@ -49,7 +56,7 @@ jobs:
 
       # A tag run can restore only caches saved on its own tag or on main, so cargo-cache.yml
       # fills the dependency cache from main and this job only reads it.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: macos-release
           save-if: false
@@ -130,7 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -182,15 +189,13 @@ jobs:
     name: Windows build (unsigned, no secrets)
     needs: version
     runs-on: windows-latest
-    outputs:
-      inno: ${{ steps.inno.outputs.installed }}
     env:
       # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
 
       - name: Install toolchain
         run: |
@@ -198,7 +203,7 @@ jobs:
           rustup target add x86_64-pc-windows-msvc
 
       # cargo-cache.yml fills this cache from main; a tag run only restores it.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-release
           save-if: false
@@ -207,36 +212,10 @@ jobs:
         shell: pwsh
         run: scripts/bundle-windows.ps1 -Build
 
-      # The signing job installs no packages, so a missing Inno Setup is installed here and handed
-      # over as an artifact.
-      - name: Inno Setup
-        id: inno
-        shell: pwsh
-        run: |
-          $installed = $false
-          $paths = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
-          if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue) -and -not ($paths | Where-Object { Test-Path $_ })) {
-            choco install innosetup -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'choco install innosetup failed' }
-            $dir = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1 | Split-Path
-            if (-not $dir) { throw 'Inno Setup is still missing after the install' }
-            New-Item -ItemType Directory -Force -Path out/inno | Out-Null
-            Copy-Item -Path "$dir\*" -Destination out/inno -Recurse
-            $installed = $true
-          }
-          "installed=$($installed.ToString().ToLower())" >> $env:GITHUB_OUTPUT
-
       - uses: actions/upload-artifact@v4
         with:
           name: windows-unsigned
           path: out/stage/vaultkeeper.exe
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        if: steps.inno.outputs.installed == 'true'
-        with:
-          name: windows-inno
-          path: out/inno
           if-no-files-found: error
 
   # Signing material (Authenticode certificate, SignPath token, update key) is only visible here.
@@ -244,7 +223,7 @@ jobs:
   # still built and released, only unsigned: the in-app updater and winget then skip it.
   windows-package:
     name: Windows installer (sign)
-    needs: windows-build
+    needs: [version, windows-build]
     runs-on: windows-latest
     environment: release
     permissions:
@@ -255,23 +234,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
 
+      # Data, not code: this vaultkeeper.exe is what gets signed, so signing it vouches for the
+      # tagged commit's build, which is inherent. Nothing from this artifact is executed here.
       - uses: actions/download-artifact@v5
         with:
           name: windows-unsigned
           path: out/stage
 
-      - uses: actions/download-artifact@v5
-        if: needs.windows-build.outputs.inno == 'true'
-        with:
-          name: windows-inno
-          path: out/inno
-
-      - name: Inno Setup from the build job
-        if: needs.windows-build.outputs.inno == 'true'
+      # Inno Setup comes from the runner image by absolute path: no tool from the build job's
+      # artifacts is ever executed or put on PATH in this job.
+      - name: Locate Inno Setup
         shell: pwsh
-        run: '"$PWD\out\inno" >> $env:GITHUB_PATH'
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "$iscc not found on the runner image" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
 
       # Secrets cannot be tested in a step condition, so the choice is made here once.
       - name: Choose signers
@@ -285,6 +264,14 @@ jobs:
           UPDATE_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           pfx=false; signpath=false; minisign=false
+          if { [ -n "$PFX" ] && [ -z "$PFX_PASSWORD" ]; } || { [ -z "$PFX" ] && [ -n "$PFX_PASSWORD" ]; }; then
+            echo "::error::exactly one of WINDOWS_SIGN_PFX / WINDOWS_SIGN_PFX_PASSWORD is set"
+            exit 1
+          fi
+          if { [ -n "$SIGNPATH_TOKEN" ] && [ -z "$SIGNPATH_ORG" ]; } || { [ -z "$SIGNPATH_TOKEN" ] && [ -n "$SIGNPATH_ORG" ]; }; then
+            echo "::error::exactly one of SIGNPATH_API_TOKEN / SIGNPATH_ORGANIZATION_ID is set"
+            exit 1
+          fi
           if [ -n "$PFX" ] && [ -n "$PFX_PASSWORD" ]; then
             pfx=true
           elif [ -n "$SIGNPATH_TOKEN" ] && [ -n "$SIGNPATH_ORG" ]; then
@@ -352,7 +339,7 @@ jobs:
 
       - name: Build installer and zip
         shell: pwsh
-        run: scripts/bundle-windows.ps1 -Package
+        run: scripts/bundle-windows.ps1 -Package -Iscc $env:ISCC
 
       - name: Sign the setup exe (signtool)
         if: steps.signers.outputs.pfx == 'true'
@@ -439,16 +426,22 @@ jobs:
           } > "out/$asset.minisig"
 
       - id: result
-        shell: bash
+        shell: pwsh
         env:
-          PFX: ${{ steps.signers.outputs.pfx }}
-          SIGNPATH: ${{ steps.signers.outputs.signpath }}
+          SIGNED: ${{ steps.signers.outputs.pfx == 'true' || steps.signers.outputs.signpath == 'true' }}
         run: |
-          if [ "$PFX" = true ] || [ "$SIGNPATH" = true ]; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          fi
+          if ($env:SIGNED -eq 'true') {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw 'signtool.exe not found on the runner' }
+            foreach ($f in @('out/stage/vaultkeeper.exe', (Get-Item out/*-x64-setup.exe).FullName)) {
+              & $signtool.FullName verify /pa /all $f
+              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $f" }
+            }
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "signed=false" >> $env:GITHUB_OUTPUT
+          }
 
       - uses: actions/upload-artifact@v4
         with:

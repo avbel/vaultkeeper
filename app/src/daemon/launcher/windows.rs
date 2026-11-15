@@ -16,11 +16,24 @@ const PROHIBIT_DYNAMIC_CODE: u64 = 1 << 36;
 const IMAGE_LOAD_NO_REMOTE: u64 = 1 << 52;
 const IMAGE_LOAD_NO_LOW_LABEL: u64 = 1 << 56;
 const IMAGE_LOAD_PREFER_SYSTEM32: u64 = 1 << 60;
-const UI_CREATION_MITIGATIONS: u64 = STRICT_HANDLE_CHECKS
-    | PROHIBIT_DYNAMIC_CODE
+const BASE_CREATION_MITIGATIONS: u64 = STRICT_HANDLE_CHECKS
     | IMAGE_LOAD_NO_REMOTE
     | IMAGE_LOAD_NO_LOW_LABEL
     | IMAGE_LOAD_PREFER_SYSTEM32;
+
+// ProhibitDynamicCode can break input methods, file dialogs and screen readers that inject code,
+// so it waits for the hardware checklist like the other risky mitigations in vk-platform.
+fn creation_mitigations(strict: bool) -> u64 {
+    if strict {
+        BASE_CREATION_MITIGATIONS | PROHIBIT_DYNAMIC_CODE
+    } else {
+        BASE_CREATION_MITIGATIONS
+    }
+}
+
+fn strict_enabled() -> bool {
+    std::env::var("VAULTKEEPER_STRICT_MITIGATIONS").is_ok_and(|value| value == "1")
+}
 
 /// Creates the channel, spawns the UI with it and gives the server end to the daemon's IPC
 /// server. Must run inside the Tokio runtime that serves the pipe.
@@ -39,7 +52,7 @@ pub fn spawn(
         process_sddl: Some(sddl::process(&sid)?),
         thread_sddl: Some(sddl::thread(&sid)?),
         inherit_handles: vec![handle],
-        mitigation_policy: UI_CREATION_MITIGATIONS,
+        mitigation_policy: creation_mitigations(strict_enabled()),
         creation_flags: 0,
     };
     let args = ui_args_with_pipe(first_unlock, no_activate, handle as usize);
@@ -51,4 +64,15 @@ pub fn spawn(
         return Err(io::Error::other(error));
     }
     Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_code_is_prohibited_only_in_strict_mode() {
+        assert_eq!(creation_mitigations(false) & PROHIBIT_DYNAMIC_CODE, 0);
+        assert_ne!(creation_mitigations(true) & PROHIBIT_DYNAMIC_CODE, 0);
+    }
 }

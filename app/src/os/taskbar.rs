@@ -306,13 +306,16 @@ mod windows {
             let Some(slot) = index.checked_sub(1) else {
                 return;
             };
-            on_change();
             let Some((key, event)) = watched.get(slot as usize) else {
                 return;
             };
+            // Re-arm first: a change that lands while `on_change` runs would otherwise be lost.
             if !arm(key, event) {
+                tracing::warn!("cannot re-arm the taskbar theme watcher; it stops here");
+                on_change();
                 return;
             }
+            on_change();
         }
     }
 }

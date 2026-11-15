@@ -69,6 +69,38 @@ pub(super) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     set_not_content_indexed(path)
 }
 
+/// Creates the last component only when it is missing, so an existing directory is never touched
+/// before `verify_private_dir` has seen it: `SetNamedSecurityInfoW` follows reparse points and
+/// would overwrite a foreign ACE the check must refuse.
+pub(super) fn create_private_dir_if_missing(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+        let attributes =
+            std::os::windows::fs::MetadataExt::file_attributes(&std::fs::symlink_metadata(parent)?);
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{} is a reparse point", parent.display()),
+            ));
+        }
+    }
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    apply_private_dacl(path)?;
+    set_not_content_indexed(path)
+}
+
 fn apply_private_dacl(path: &Path) -> io::Result<()> {
     let wide = wide_path(path);
     let sid = current_user_sid()?;

@@ -15,7 +15,7 @@ use std::{
 use common::{ACCESS_2, EMAIL, Fake, Harness, PASSWORD, USER_ID, harness_in, timings};
 use serde_json::json;
 use vk_vault::{
-    Error, SealedFileStore, SecretStore, VaultService,
+    BlobWrapper, Error, SealedFileStore, SecretStore, SecretStoreError, VaultService,
     model::{LoginStep, SessionState},
 };
 use wiremock::{
@@ -228,5 +228,55 @@ async fn a_token_sealed_under_another_user_key_is_deleted_and_sync_asks_to_log_i
     assert!(
         !token_path(&dir, USER_ID).exists(),
         "the undecryptable token is deleted"
+    );
+}
+
+/// Wraps like the identity but can never unwrap, like a DPAPI blob from another profile.
+struct UnwrapFails;
+
+impl BlobWrapper for UnwrapFails {
+    fn wrap(&self, _user_id: &str, plaintext: &[u8]) -> Result<Vec<u8>, SecretStoreError> {
+        Ok(plaintext.to_vec())
+    }
+
+    fn unwrap(&self, _user_id: &str, _blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
+        Err(SecretStoreError::undecryptable())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undecryptable_remember_token_is_deleted_and_login_proceeds_without_it() {
+    let fake = Fake::start().await;
+    let dir = temp_dir();
+    let store = Arc::new(
+        SealedFileStore::new(dir.clone(), |path, bytes| std::fs::write(path, bytes))
+            .with_wrapper(Arc::new(UnwrapFails)),
+    );
+    let harness = harness_in(
+        dir.clone(),
+        slow_timings(),
+        Some(Arc::clone(&store) as Arc<dyn SecretStore>),
+    );
+    login(&harness, &fake).await;
+
+    let remember_key = format!("{USER_ID}.two_factor_remember");
+    store.set(&remember_key, b"remembered").unwrap();
+    let remember_path = dir
+        .join("accounts")
+        .join(USER_ID)
+        .join("two_factor_remember.enc");
+    assert!(remember_path.is_file());
+
+    harness.vault.begin_add_account();
+    fake.mount_sync(Vec::new()).await;
+    let step = harness
+        .vault
+        .login(fake.request(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(step, LoginStep::Done);
+    assert!(
+        !remember_path.exists(),
+        "the undecryptable remember token is deleted"
     );
 }

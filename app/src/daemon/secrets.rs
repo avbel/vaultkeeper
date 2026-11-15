@@ -101,9 +101,28 @@ impl BlobWrapper for DpapiWrapper {
     }
 
     fn unwrap(&self, user_id: &str, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
-        vk_platform::dpapi::unprotect(blob, &entropy(user_id))
-            .map_err(|_| SecretStoreError::undecryptable())
+        vk_platform::dpapi::unprotect(blob, &entropy(user_id)).map_err(|error| {
+            if is_definitive_dpapi_failure(&error) {
+                SecretStoreError::undecryptable()
+            } else {
+                dpapi_error(&error)
+            }
+        })
     }
+}
+
+/// Only these codes mean the blob can never be opened again (corrupt, or bound to another
+/// profile or machine). Anything else may be transient, and an undecryptable answer deletes the
+/// refresh token.
+#[cfg(windows)]
+fn is_definitive_dpapi_failure(error: &std::io::Error) -> bool {
+    const ERROR_INVALID_DATA: i32 = 13;
+    const NTE_BAD_DATA: i32 = 0x8009_0005_u32.cast_signed();
+    const NTE_BAD_KEY_STATE: i32 = 0x8009_000B_u32.cast_signed();
+    matches!(
+        error.raw_os_error(),
+        Some(ERROR_INVALID_DATA | NTE_BAD_DATA | NTE_BAD_KEY_STATE)
+    )
 }
 
 #[cfg(windows)]

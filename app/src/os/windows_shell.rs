@@ -84,14 +84,14 @@ impl WindowPlacement for WindowsPlacement {
             return None;
         }
         let mut dpi = 0_u32;
-        // SAFETY: `monitor` is valid; `dpi` is an out pointer and the y-DPI pointer is null, which
-        // the API allows when only the horizontal DPI is wanted.
+        let mut dpi_y = 0_u32;
+        // SAFETY: `monitor` is valid; both DPI pointers are live locals.
         if unsafe {
             GetDpiForMonitor(
                 monitor,
                 windows_sys::Win32::UI::HiDpi::MDT_EFFECTIVE_DPI,
                 &raw mut dpi,
-                std::ptr::null_mut(),
+                &raw mut dpi_y,
             )
         } < 0
         {

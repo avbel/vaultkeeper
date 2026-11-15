@@ -27,7 +27,7 @@ For every run, paste into the chat (or the PR):
 
 - the **full console output** of commands that print something;
 - what you saw versus what the checklist expects (a phone photo of a prompt is fine);
-- after a problem, the log files from `%LOCALAPPDATA%\Vaultkeeper\logs` (`daemon.log`, `ui.log`);
+- after a problem, the log files from `%LOCALAPPDATA%\vaultkeeper\logs` (`daemon.log`, `ui.log`);
 - once per machine: `winver` build, antivirus products, display scaling, and whether you were local or over RDP.
 
 ## 3. What is testable when
@@ -104,5 +104,5 @@ Then follow the checklist sections in this order (most valuable first):
   `vaultkeeper.exe` in Task Manager, then start again.
 - **"The Windows OpenSSH Authentication Agent service is running"**: Services → OpenSSH Authentication Agent → Stop,
   and set Startup type to Disabled (or turn off Vaultkeeper's SSH agent in Settings).
-- **A test leaves the app in a strange state**: quit it, delete `%LOCALAPPDATA%\Vaultkeeper` (you will log in again),
+- **A test leaves the app in a strange state**: quit it, delete `%LOCALAPPDATA%\vaultkeeper` (you will log in again),
   and start over.

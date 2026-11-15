@@ -6,7 +6,9 @@
 [CmdletBinding()]
 param(
   [switch]$Build,
-  [switch]$Package
+  [switch]$Package,
+  # Absolute path of ISCC.exe. Never looked up on PATH: the release job passes the runner image's copy.
+  [string]$Iscc
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,15 +35,13 @@ function Get-WorkspaceVersion {
 }
 
 function Find-Iscc {
-  $cmd = Get-Command iscc.exe -ErrorAction SilentlyContinue
-  if ($cmd) { return $cmd.Source }
   $roots = @(${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA 'Programs')) |
     Where-Object { $_ }
   foreach ($r in $roots) {
     $candidate = Join-Path $r 'Inno Setup 6\ISCC.exe'
     if (Test-Path -LiteralPath $candidate) { return $candidate }
   }
-  throw 'iscc.exe (Inno Setup 6) not found: install it (winget install JRSoftware.InnoSetup) or add it to PATH.'
+  throw 'ISCC.exe (Inno Setup 6) not found: install it (winget install JRSoftware.InnoSetup) or pass -Iscc.'
 }
 
 function Invoke-Checked {
@@ -73,7 +73,12 @@ if ($Package) {
     throw "$stagedExe not found: run with -Build first (or place the signed exe there)."
   }
   $version = Get-WorkspaceVersion
-  $iscc = Find-Iscc
+  if ($Iscc) {
+    if (-not (Test-Path -LiteralPath $Iscc)) { throw "$Iscc not found" }
+    $iscc = $Iscc
+  } else {
+    $iscc = Find-Iscc
+  }
   New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
   Invoke-Checked $iscc @(

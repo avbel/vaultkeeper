@@ -147,7 +147,7 @@ Run the daemon and UI from the release build, with Windows Defender first.
 - [ ] Upgrade over the previous release while the daemon runs: `--quit` runs and is waited for, files are replaced,
       the version in Add/Remove Programs and `vaultkeeper --version` match, data survives, tray restarts.
 - [ ] Uninstall: daemon stopped, Run value, native-messaging keys, shortcut and `PATH` entry removed;
-      `%LOCALAPPDATA%\Vaultkeeper` stays unless the checkbox is ticked.
+      `%LOCALAPPDATA%\vaultkeeper` (data and logs) stays unless the checkbox is ticked.
 - [ ] Self-update from a signed older release to a signed newer one: download, signature and Authenticode checks pass,
       the installer runs silently, the app restarts and Add/Remove Programs shows the new version (so winget sees it).
 - [ ] An unsigned build refuses the update and logs the reason; nothing is installed.

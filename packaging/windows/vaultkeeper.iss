@@ -201,7 +201,7 @@ begin
   PurgeUserData := HasParam('/PURGEDATA');
   if (not PurgeUserData) and (not UninstallSilent) then begin
     PurgeUserData := SuppressibleMsgBox(
-      'Also delete your Vaultkeeper data (vault, settings, logs) in %LOCALAPPDATA%\Vaultkeeper?'#13#10#13#10 +
+      'Also delete your Vaultkeeper data (vault, settings, logs) in %LOCALAPPDATA%\vaultkeeper?'#13#10#13#10 +
       'Choose No to keep it for a later reinstall.',
       mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES;
   end;
@@ -227,6 +227,8 @@ begin
   end;
 
   if PurgeUserData then begin
-    DelTree(ExpandConstant('{localappdata}\{#AppName}'), True, True, True);
+    // Holds data\ (vault, settings) and the logs (the app writes them as ...\Vaultkeeper\logs;
+    // the path is case-insensitive).
+    DelTree(ExpandConstant('{localappdata}\vaultkeeper'), True, True, True);
   end;
 end;

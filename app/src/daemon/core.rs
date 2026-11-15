@@ -610,6 +610,7 @@ impl Daemon {
                 self.vault.on_sleep();
                 self.vault.lock();
                 self.clipboard.clear_if_ours();
+                vk_platform::power::session_end_handled();
                 return;
             }
         }

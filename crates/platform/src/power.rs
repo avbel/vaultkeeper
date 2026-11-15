@@ -85,6 +85,14 @@ pub fn subscribe(tx: Sender<PowerEvent>) -> Result<PowerWatcher> {
     }
 }
 
+/// Tells the platform the daemon finished locking and flushing after
+/// [`PowerEvent::SessionEnding`]. Windows holds `WM_ENDSESSION` until then (bounded) so the work
+/// does not race process termination; elsewhere it does nothing.
+pub fn session_end_handled() {
+    #[cfg(windows)]
+    windows::session_end_handled();
+}
+
 #[cfg(windows)]
 mod windows;
 

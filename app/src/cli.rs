@@ -311,6 +311,14 @@ pub enum Mode {
 }
 
 impl Args {
+    /// Whether the process joins its parent's console. Windows starts it without one. The
+    /// detached daemon and the UI process must stay without, or they would die with the shell's
+    /// window; a daemon started from a shell joins it only so that it can re-launch detached.
+    #[must_use]
+    pub const fn wants_console(&self) -> bool {
+        !self.detached && !self.ui
+    }
+
     #[must_use]
     pub const fn mode(&self) -> Mode {
         use crate::daemon::routing::Launch;
@@ -340,6 +348,25 @@ mod mode_tests {
         parse(list.iter().map(|arg| (*arg).to_owned()))
             .expect("args")
             .mode()
+    }
+
+    #[test]
+    fn detached_and_ui_processes_stay_without_a_console() {
+        let wants = |list: &[&str]| {
+            parse(list.iter().map(|arg| (*arg).to_owned()))
+                .expect("args")
+                .wants_console()
+        };
+        assert!(wants(&["--help"]));
+        assert!(wants(&["--version"]));
+        assert!(wants(&["--quit"]));
+        assert!(wants(&[]));
+        assert!(wants(&["--tray"]));
+        assert!(!wants(&["--tray", "--detached"]));
+        assert!(!wants(&["--daemon", "--detached"]));
+        assert!(!wants(&["--ui"]));
+        assert!(!wants(&["--ui", "--help"]));
+        assert!(!wants(&["--quit", "--detached"]));
     }
 
     #[test]

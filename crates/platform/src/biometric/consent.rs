@@ -16,17 +16,23 @@ use windows::{
 
 use windows_future::IAsyncOperation;
 
+use super::owner_window::OwnerWindow;
 use crate::{Error, Result};
 
-/// Only `Verified` passes: cancel, retries exhausted, no Hello set up and policy blocks all deny,
-/// and so does a missing window, because the interop call has nothing to parent the dialog to.
+/// Only `Verified` passes: cancel, retries exhausted, no Hello set up and policy blocks all deny.
+/// Without a UI window the dialog is parented to a transparent window of the daemon's own, so a
+/// check never fails for lack of an owner.
 pub(super) fn authenticate(reason: &str, parent_window: Option<u64>) -> Result<()> {
-    let hwnd = parent_window
-        .and_then(|hwnd| usize::try_from(hwnd).ok())
-        .ok_or_else(|| {
-            tracing::debug!("no UI window to parent the Windows Hello check to");
-            Error::BiometricFailed
-        })?;
+    let ui_window = parent_window.and_then(|hwnd| usize::try_from(hwnd).ok());
+    let owner = if ui_window.is_none() {
+        tracing::debug!("no UI window; parenting the Windows Hello check to a daemon window");
+        Some(OwnerWindow::create().ok_or(Error::BiometricFailed)?)
+    } else {
+        None
+    };
+    let hwnd = ui_window
+        .or_else(|| owner.as_ref().map(OwnerWindow::hwnd))
+        .ok_or(Error::BiometricFailed)?;
     let reason = reason.to_owned();
     // A fresh thread, because WinRT needs the multithreaded apartment and a pooled blocking thread
     // may already be initialised differently.
@@ -34,7 +40,9 @@ pub(super) fn authenticate(reason: &str, parent_window: Option<u64>) -> Result<(
         .name("hello-consent".to_owned())
         .spawn(move || verify(hwnd, &reason))
         .map_err(Error::Io)?;
-    worker.join().map_err(|_| Error::BiometricFailed)?
+    let result = worker.join().map_err(|_| Error::BiometricFailed)?;
+    drop(owner);
+    result
 }
 
 fn verify(hwnd: usize, reason: &str) -> Result<()> {

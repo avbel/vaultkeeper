@@ -28,7 +28,7 @@ use windows_sys::Win32::{
 
 use super::{
     ui_pipe_name,
-    windows::{Stream, credentials},
+    windows::{Stream, credentials, is_pipe_busy},
 };
 
 /// Names tried before giving up: a failed attempt means a same-user process connected to the
@@ -100,7 +100,13 @@ fn try_create(name: &str, sddl: &str) -> io::Result<Option<UiPipe>> {
     // `descriptor`; both outlive the call.
     let server =
         unsafe { options.create_with_security_attributes_raw(name, (&raw mut attributes).cast()) }?;
-    let client = open_inheritable_client(name)?;
+    let client = match open_inheritable_client(name) {
+        Ok(client) => client,
+        // A racing client holds the only instance, so our own open lost; that is the same
+        // "somebody else connected first" outcome as the pid check below.
+        Err(error) if is_pipe_busy(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
 
     let mut client_pid = 0_u32;
     // SAFETY: the server handle is live and its client just connected; `client_pid` is ours.

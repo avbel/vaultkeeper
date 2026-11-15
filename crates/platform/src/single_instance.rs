@@ -96,6 +96,20 @@ pub fn wait_for_exit(pid: i32, timeout: std::time::Duration) -> bool {
     windows::wait_for_exit(pid, timeout)
 }
 
+/// `--quit`: asks the running instance to quit and waits up to `timeout` for it to release the
+/// instance lock. Succeeds when nothing is running; fails when the command was not delivered or
+/// the instance outlived the timeout.
+pub fn quit_running(timeout: std::time::Duration) -> Result<()> {
+    #[cfg(unix)]
+    {
+        unix::quit_running(&crate::paths::data_dir()?, timeout)
+    }
+    #[cfg(windows)]
+    {
+        windows::quit_running(timeout)
+    }
+}
+
 /// Returns the guard if we are the first instance; otherwise forwards `command` to the
 /// running instance and returns [`crate::Error::AlreadyRunning`]. `on_command` runs on a
 /// background thread for commands from later launches.
@@ -140,7 +154,7 @@ mod unix {
             atomic::{AtomicBool, Ordering},
         },
         thread::JoinHandle,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use interprocess::local_socket::{
@@ -159,6 +173,7 @@ mod unix {
     const CONNECT_ATTEMPTS: u32 = 20;
     const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
     const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+    const QUIT_POLL: Duration = Duration::from_millis(50);
 
     pub(super) struct Guard {
         socket: PathBuf,
@@ -182,10 +197,40 @@ mod unix {
         match lock.try_lock() {
             Ok(()) => listen(lock, socket, on_command),
             Err(TryLockError::WouldBlock) => {
-                forward(&socket, command);
+                let _ = forward(&socket, command);
                 Err(Error::AlreadyRunning)
             }
             Err(TryLockError::Error(err)) => Err(err.into()),
+        }
+    }
+
+    pub(super) fn quit_running(dir: &Path, timeout: Duration) -> Result<()> {
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(dir.join(LOCK_FILE))?;
+        let deadline = Instant::now() + timeout;
+        let mut sent = false;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => return Ok(()),
+                Err(TryLockError::Error(err)) => return Err(err.into()),
+                Err(TryLockError::WouldBlock) => {}
+            }
+            if !sent {
+                forward(&dir.join(SOCKET_FILE), Command::Quit)?;
+                sent = true;
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Vaultkeeper accepted the quit request but is still running",
+                )
+                .into());
+            }
+            std::thread::sleep(QUIT_POLL);
         }
     }
 
@@ -255,18 +300,18 @@ mod unix {
         stream.flush()
     }
 
-    fn forward(socket: &Path, command: Command) {
+    fn forward(socket: &Path, command: Command) -> io::Result<()> {
         let mut last_error = None;
         for _ in 0..CONNECT_ATTEMPTS {
             match send(socket, command.code()) {
-                Ok(()) => return,
+                Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err),
             }
             std::thread::sleep(CONNECT_RETRY_DELAY);
         }
-        if let Some(err) = last_error {
-            tracing::warn!(error = %err, "running instance did not accept the command");
-        }
+        let err = last_error.unwrap_or_else(|| io::Error::other("no attempt was made"));
+        tracing::warn!(error = %err, "running instance did not accept the command");
+        Err(err)
     }
 
     impl Drop for Guard {
@@ -395,6 +440,33 @@ mod tests {
             Ok(Command::ShowQuickPanel)
         );
         assert!(rx.try_recv().is_err(), "only the real command is delivered");
+    }
+
+    #[test]
+    fn quit_running_succeeds_when_nothing_runs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        unix::quit_running(dir.path(), Duration::from_secs(1)).expect("nothing to stop");
+    }
+
+    #[test]
+    fn quit_running_delivers_quit_and_waits_for_the_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (rx, on_command) = recorder();
+        let guard = acquire_in(dir.path(), Command::ShowManager, on_command).expect("first");
+        let releaser = std::thread::spawn(move || {
+            assert_eq!(rx.recv_timeout(DELIVERY_TIMEOUT), Ok(Command::Quit));
+            drop(guard);
+        });
+        unix::quit_running(dir.path(), DELIVERY_TIMEOUT).expect("quit and exit");
+        releaser.join().expect("releaser");
+    }
+
+    #[test]
+    fn quit_running_times_out_when_the_instance_stays() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = acquire_in(dir.path(), Command::ShowManager, |_| {}).expect("first");
+        let error = unix::quit_running(dir.path(), Duration::from_millis(300)).expect_err("stays");
+        assert!(matches!(error, Error::Io(err) if err.kind() == std::io::ErrorKind::TimedOut));
     }
 
     #[test]

@@ -12,7 +12,6 @@ use vaultkeeper::{
 };
 
 fn main() -> anyhow::Result<()> {
-    vaultkeeper::os::console::attach_parent_console();
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let role = if raw_args.iter().any(|arg| arg == "--ui") {
         vk_platform::hardening::Role::Ui
@@ -24,13 +23,19 @@ fn main() -> anyhow::Result<()> {
         raw_args.first().map(String::as_str),
         Some("list" | "get_fields" | "get")
     ) {
+        vaultkeeper::os::console::attach_parent_console();
         return vaultkeeper::cli_access::run(&raw_args);
     }
     if let Some(caller) = cli::browser_host_caller(&raw_args) {
         init_logging(Some("browser-host"));
         return vaultkeeper::browser_host::run(caller);
     }
-    let args = cli::parse(raw_args.iter().cloned())?;
+    let args = cli::parse(raw_args.iter().cloned()).inspect_err(|_| {
+        vaultkeeper::os::console::attach_parent_console();
+    })?;
+    if args.wants_console() {
+        vaultkeeper::os::console::attach_parent_console();
+    }
     if args.help {
         writeln!(std::io::stdout(), "{}", cli::USAGE)?;
         return Ok(());
@@ -119,16 +124,13 @@ fn init_logging(file_name: Option<&str>) {
     }));
 }
 
-/// `--quit`: forward `Command::Quit` to a running daemon and exit. Nothing is running when this
-/// process becomes the first instance, so it releases the lock and exits as well.
+/// How long `--quit` waits for the daemon to exit: the installer and updater replace files next.
+const QUIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `--quit`: ask the running daemon to quit and wait until it has. Nothing running is success; a
+/// command that was not delivered, or a daemon that outlives the timeout, is an error.
 fn quit_daemon() -> anyhow::Result<()> {
-    use vk_platform::single_instance::{Command, acquire};
-    match acquire(Command::Quit, |_| {}) {
-        Ok(guard) => drop(guard),
-        Err(vk_platform::Error::AlreadyRunning) => {}
-        Err(error) => return Err(error).context("stop the running Vaultkeeper"),
-    }
-    Ok(())
+    vk_platform::single_instance::quit_running(QUIT_TIMEOUT).context("stop the running Vaultkeeper")
 }
 
 /// `--mock`: the UI alone, in one process with its own tray, on the built-in mock vault.

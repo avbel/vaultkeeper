@@ -6,12 +6,21 @@ use std::path::{Path, PathBuf};
 
 use vk_platform::fs::{self, Refusal, Repair};
 
+use crate::os::layout::{BROWSER_PAIRINGS_FILE, DEVICE_FILE, SETTINGS_FILE};
+
 const ACCOUNTS_FILE: &str = "accounts.json";
 const ACCOUNTS_DIR: &str = "accounts";
+const DATA_DIR_FILES: [&str; 4] = [
+    ACCOUNTS_FILE,
+    BROWSER_PAIRINGS_FILE,
+    SETTINGS_FILE,
+    DEVICE_FILE,
+];
 /// The files of one account directory that carry secrets or the key to them: the cache header,
 /// the sealed tokens and the Windows Hello enrolment.
-const ACCOUNT_FILES: [&str; 4] = [
+const ACCOUNT_FILES: [&str; 5] = [
     "account.json",
+    "vault.json",
     "refresh_token.enc",
     "two_factor_remember.enc",
     "touchid.bin",
@@ -38,8 +47,12 @@ pub fn enforce(data_dir: &Path) -> anyhow::Result<()> {
 
 fn verify(data_dir: &Path) -> Result<Repair, Refusal> {
     let dir = fs::verify_private_dir(data_dir)?;
+    let mut repair = merge(dir, Repair::None);
+    for account_dir in account_dirs(data_dir) {
+        repair = merge(repair, fs::verify_private_dir(&account_dir)?);
+    }
     let files = fs::verify_private_files(&secret_files(data_dir))?;
-    Ok(merge(dir, files))
+    Ok(merge(repair, files))
 }
 
 fn merge(first: Repair, second: Repair) -> Repair {
@@ -67,16 +80,25 @@ fn merge(first: Repair, second: Repair) -> Repair {
 /// Files that may exist; a missing one is skipped by the check. An unreadable accounts directory
 /// is not an error here: the vault reports it when it opens the cache.
 fn secret_files(data_dir: &Path) -> Vec<PathBuf> {
-    let mut files = vec![data_dir.join(ACCOUNTS_FILE)];
-    let accounts = data_dir.join(ACCOUNTS_DIR);
-    let Ok(entries) = std::fs::read_dir(&accounts) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let dir = entry.path();
+    let mut files: Vec<PathBuf> = DATA_DIR_FILES
+        .iter()
+        .map(|name| data_dir.join(name))
+        .collect();
+    for dir in account_dirs(data_dir) {
         files.extend(ACCOUNT_FILES.iter().map(|name| dir.join(name)));
     }
     files
+}
+
+fn account_dirs(data_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join(ACCOUNTS_DIR)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| !kind.is_file()))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 #[cfg(windows)]
@@ -111,9 +133,13 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_accounts_directory_leaves_only_the_index() {
+    fn a_missing_accounts_directory_leaves_the_top_level_files() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(secret_files(dir.path()), [dir.path().join("accounts.json")]);
+        let files = secret_files(dir.path());
+        assert_eq!(files.len(), DATA_DIR_FILES.len());
+        assert!(files.contains(&dir.path().join("accounts.json")));
+        assert!(files.contains(&dir.path().join("browsers.json")));
+        assert!(files.contains(&dir.path().join("settings.json")));
     }
 
     #[test]

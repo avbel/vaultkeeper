@@ -25,7 +25,7 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: macos-ci
 
@@ -51,7 +51,7 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-ci
 
@@ -78,7 +78,7 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-ci
 
@@ -112,7 +112,7 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-test-build
 
@@ -128,13 +128,15 @@ jobs:
         shell: pwsh
         run: |
           $paths = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
-          if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue) -and -not ($paths | Where-Object { Test-Path $_ })) {
+          if (-not ($paths | Where-Object { Test-Path $_ })) {
             choco install innosetup -y --no-progress
             if ($LASTEXITCODE -ne 0) { throw 'choco install innosetup failed' }
           }
+          $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after the install' }
           New-Item -ItemType Directory -Force -Path out/stage | Out-Null
           Copy-Item target/release/vaultkeeper.exe out/stage/vaultkeeper.exe -Force
-          scripts/bundle-windows.ps1 -Package
+          scripts/bundle-windows.ps1 -Package -Iscc $iscc
 
       - name: Stage artifact
         shell: pwsh

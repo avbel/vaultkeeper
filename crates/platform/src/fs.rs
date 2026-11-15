@@ -117,6 +117,20 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Like [`ensure_private_dir`] on Unix. On Windows an existing directory is left alone, so the
+/// startup check can verify it (and refuse a foreign ACE or a reparse point) before any DACL is
+/// written; only a missing directory is created and locked down.
+pub fn create_private_dir_if_missing(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows::create_private_dir_if_missing(path)
+    }
+    #[cfg(not(windows))]
+    {
+        ensure_private_dir(path)
+    }
+}
+
 /// Writes `bytes` to a fresh 0600 file next to `path`, syncs it and renames it over `path`, so
 /// readers see either the old or the new content and the secret is never world-readable.
 pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {

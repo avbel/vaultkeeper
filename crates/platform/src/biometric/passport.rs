@@ -33,7 +33,7 @@ use windows_sys::{
             NCryptFinalizeKey, NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider,
             NCryptSetProperty,
         },
-        UI::WindowsAndMessaging::{GetForegroundWindow, GetSystemMetrics, SM_REMOTESESSION},
+        UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION},
     },
     core::PCWSTR,
 };
@@ -140,6 +140,13 @@ pub(super) fn unlock(
     let bytes = std::fs::read(path)?;
     let envelope = V2Envelope::parse(&bytes)?;
     if envelope.primitive != Primitive::PassportRsaOaep {
+        return Err(Error::BiometricInvalidated);
+    }
+    // An envelope copied from another account can never be opened by this user, so it is a
+    // definitive "enrol again" rather than a transient failure.
+    let sid = current_user_sid()?;
+    if envelope.user_sid != sid || envelope.key_name != key_name(&sid) {
+        tracing::warn!("the Windows Hello enrollment belongs to another user");
         return Err(Error::BiometricInvalidated);
     }
 
@@ -370,13 +377,10 @@ fn prepare_decrypt(key: &Handle, reason: &str, parent_window: Option<u64>) {
     }
 }
 
-/// Parents the prompt to the caller's window; the daemon has none of its own, so without one the
-/// prompt falls back to whatever the user last had in front.
+/// Parents the prompt to the caller's window. Without one the prompt gets no owner: falling back
+/// to the foreground window could parent it to a window that belongs to another program.
 fn parent_prompt(key: &Handle, parent_window: Option<u64>) {
-    let hwnd = parent_window
-        .and_then(|hwnd| usize::try_from(hwnd).ok())
-        .or_else(foreground_window);
-    let Some(hwnd) = hwnd else {
+    let Some(hwnd) = parent_window.and_then(|hwnd| usize::try_from(hwnd).ok()) else {
         tracing::debug!("no window to parent the Hello prompt to");
         return;
     };
@@ -384,12 +388,6 @@ fn parent_prompt(key: &Handle, parent_window: Option<u64>) {
     if let Err(status) = set_property(key.raw(), NCRYPT_WINDOW_HANDLE_PROPERTY, &bytes) {
         tracing::warn!(status = %hex(status), "could not parent the Hello prompt");
     }
-}
-
-fn foreground_window() -> Option<usize> {
-    // SAFETY: `GetForegroundWindow` takes no arguments.
-    let hwnd = unsafe { GetForegroundWindow() };
-    (!hwnd.is_null()).then_some(hwnd as usize)
 }
 
 /// One `NCryptDecrypt` of the wrapped KEK. A successful decrypt must yield exactly 32 bytes.
@@ -400,9 +398,11 @@ fn decrypt_once(key: &Handle, wrapped: &[u8]) -> NcResult<Zeroizing<[u8; KEK_LEN
         pbLabel: null_mut(),
         cbLabel: 0,
     };
-    let mut out = Zeroizing::new([0_u8; KEK_LEN]);
+    // RSA providers can demand a modulus-sized buffer even when the plaintext is shorter.
+    let mut out = Zeroizing::new(vec![0_u8; wrapped.len().max(KEK_LEN)]);
     let mut written = 0_u32;
-    // SAFETY: `wrapped` is a live slice, `out` is KEK_LEN bytes and `info` outlives the call.
+    // SAFETY: `wrapped` is a live slice, `out` is as long as the length passed and `info`
+    // outlives the call.
     let status = unsafe {
         NCryptDecrypt(
             key.raw(),
@@ -426,7 +426,9 @@ fn decrypt_once(key: &Handle, wrapped: &[u8]) -> NcResult<Zeroizing<[u8; KEK_LEN
         );
         return Err(NTE_BAD_LEN);
     }
-    Ok(out)
+    let mut kek = Zeroizing::new([0_u8; KEK_LEN]);
+    kek.copy_from_slice(&out[..KEK_LEN]);
+    Ok(kek)
 }
 
 #[expect(clippy::cast_possible_truncation)]

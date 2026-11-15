@@ -11,7 +11,10 @@ use std::{
     os::windows::io::{AsRawHandle as _, IntoRawHandle as _, RawHandle},
     path::PathBuf,
     pin::{Pin, pin},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -52,12 +55,17 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Bounds each step of clearing an instance's stale I/O state; they normally finish in microseconds
 /// because every operation on a disconnected pipe fails at once.
 const RESET_TIMEOUT: Duration = Duration::from_secs(1);
+/// Resets tried (with a doubling pause) before an instance is given up as lost.
+const RESET_ATTEMPTS: u32 = 4;
+/// How long `bind` waits for a previous listener's aborted instances to close before it reports the
+/// name as taken.
+const REBIND_WINDOW: Duration = Duration::from_millis(500);
 
 /// A named-pipe listener backed by a fixed pool of instances.
 pub struct Listener {
     pool: Arc<Pool>,
     /// An async mutex so concurrent `accept` calls queue instead of needing `&mut self`.
-    connected: AsyncMutex<mpsc::UnboundedReceiver<NamedPipeServer>>,
+    connected: AsyncMutex<mpsc::UnboundedReceiver<Ready>>,
 }
 
 impl Listener {
@@ -69,7 +77,7 @@ impl Listener {
             ));
         };
         let sid = vk_win::current_user_sid()?;
-        let servers = create_instances(name, &sid)?;
+        let servers = create_instances_when_free(name, &sid)?;
         tracing::debug!(pipe = name, "created the IPC pipe pool with its final DACL");
         let (pool, connected) = Pool::new(name, Handle::try_current().map_err(io::Error::other)?);
         for server in servers {
@@ -83,27 +91,64 @@ impl Listener {
 
     /// Accepts a connection from any free instance, with the pid of the process behind it.
     pub async fn accept(&self) -> io::Result<(Stream, PeerCredentials)> {
+        let mut connected = self.connected.lock().await;
+        if self.pool.live.load(Ordering::Acquire) == 0 {
+            return Err(pool_exhausted());
+        }
         // `recv` is cancel safe: an instance that connected while nobody was accepting stays queued.
-        let server = self
-            .connected
-            .lock()
-            .await
-            .recv()
-            .await
-            .ok_or_else(|| io::Error::other("the pipe pool is closed"))?;
-        let peer = credentials(server.as_raw_handle(), false)?;
+        let Some(Some(server)) = connected.recv().await else {
+            return Err(pool_exhausted());
+        };
+        drop(connected);
+        // Wrapped before anything can fail, so an error below recycles the instance on drop.
         let stream = Stream {
             inner: Some(Inner::Server(server)),
             recycle: Some(Arc::clone(&self.pool)),
             silence: Some(Box::pin(tokio::time::sleep(SILENCE_TIMEOUT))),
         };
+        let peer = stream.peer_credentials()?;
         Ok((stream, peer))
+    }
+
+    /// Stops the pool and waits until every idle instance handle is closed, so the same name can
+    /// be bound again right away. Instances held by live connections close when those end.
+    pub async fn shutdown(mut self) {
+        let mut tasks = self.close();
+        while tasks.join_next().await.is_some() {}
+    }
+
+    fn close(&mut self) -> JoinSet<()> {
+        let tasks = self.pool.shutdown();
+        let connected = self.connected.get_mut();
+        connected.close();
+        while connected.try_recv().is_ok() {}
+        tasks
     }
 }
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        self.pool.shutdown();
+        drop(self.close());
+    }
+}
+
+fn pool_exhausted() -> io::Error {
+    io::Error::other("every pipe instance was lost; the pipe cannot serve clients any more")
+}
+
+/// A just-dropped listener's aborted tasks release their handles on the runtime a moment later,
+/// during which the name still looks taken; only a name that stays taken is a squatter.
+fn create_instances_when_free(name: &str, sid: &str) -> io::Result<Vec<NamedPipeServer>> {
+    let deadline = Instant::now() + REBIND_WINDOW;
+    loop {
+        match create_instances(name, sid) {
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
     }
 }
 
@@ -162,64 +207,111 @@ struct Pool {
     /// Only used to name the pipe in log lines about a lost instance.
     name: String,
     handle: Handle,
-    ready: mpsc::UnboundedSender<NamedPipeServer>,
+    /// `None` is the wake-up sent when the last instance is lost, so a pending `accept` can fail.
+    ready: mpsc::UnboundedSender<Ready>,
+    /// Instances not lost yet, idle or in use. The DACL forbids creating replacements.
+    live: AtomicUsize,
+    /// Every task that owns an instance (waiting or recycling), so shutdown reaches all of them.
     /// `None` once the listener is gone, so late recycles drop their instance instead of arming it.
     tasks: Mutex<Option<JoinSet<()>>>,
 }
 
+/// A connected instance, or the signal that the pool is empty.
+type Ready = Option<NamedPipeServer>;
+
 impl Pool {
-    fn new(name: &str, handle: Handle) -> (Arc<Self>, mpsc::UnboundedReceiver<NamedPipeServer>) {
+    fn new(name: &str, handle: Handle) -> (Arc<Self>, mpsc::UnboundedReceiver<Ready>) {
         let (ready, connected) = mpsc::unbounded_channel();
         let pool = Arc::new(Self {
             name: name.to_owned(),
             handle,
             ready,
+            live: AtomicUsize::new(POOL_SIZE),
             tasks: Mutex::new(Some(JoinSet::new())),
         });
         (pool, connected)
     }
 
-    fn arm(&self, server: NamedPipeServer) {
+    fn arm(self: &Arc<Self>, server: NamedPipeServer) {
+        self.spawn(|pool| wait_for_client(server, pool));
+    }
+
+    /// Drains a finished connection's instance and re-arms it, as a tracked task.
+    fn recycle(self: &Arc<Self>, server: NamedPipeServer) {
+        self.spawn(|pool| recycle_instance(server, pool));
+    }
+
+    fn spawn<F: Future<Output = ()> + Send + 'static>(
+        self: &Arc<Self>,
+        task: impl FnOnce(Arc<Self>) -> F,
+    ) {
         let mut guard = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(tasks) = guard.as_mut() else {
             return;
         };
         while tasks.try_join_next().is_some() {}
-        let ready = self.ready.clone();
-        let name = self.name.clone();
-        tasks.spawn_on(wait_for_client(server, ready, name), &self.handle);
+        tasks.spawn_on(task(Arc::clone(self)), &self.handle);
     }
 
-    /// Aborting the armed tasks drops their instances, which releases the pipe.
-    fn shutdown(&self) {
-        self.tasks
+    /// Aborts every owning task, which drops their instances and releases the pipe; the caller can
+    /// await the returned set to know the handles are closed.
+    fn shutdown(&self) -> JoinSet<()> {
+        let mut tasks = self
+            .tasks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take();
+            .take()
+            .unwrap_or_default();
+        tasks.abort_all();
+        tasks
+    }
+
+    /// Gives up an instance that cannot be reset. The pool does not refill, so the last loss makes
+    /// `accept` fail instead of waiting for a client nobody can serve.
+    fn lose(&self, error: &io::Error) {
+        let remaining = self.live.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+        tracing::error!(pipe = %self.name, %error, remaining, "lost a named pipe instance");
+        if remaining == 0 {
+            let _ = self.ready.send(None);
+        }
     }
 }
 
 /// A failed connect (a client that vanished early) must not shrink the fixed pool, so the instance
 /// is reset and armed again after a pause that keeps a persistent error from spinning.
-async fn wait_for_client(
-    mut server: NamedPipeServer,
-    ready: mpsc::UnboundedSender<NamedPipeServer>,
-    name: String,
-) {
+async fn wait_for_client(mut server: NamedPipeServer, pool: Arc<Pool>) {
     loop {
         match server.connect().await {
             Ok(()) => {
-                let _ = ready.send(server);
+                let _ = pool.ready.send(Some(server));
                 return;
             }
             Err(error) => {
-                tracing::debug!(pipe = %name, %error, "a named pipe connect failed; re-arming the instance");
+                tracing::debug!(pipe = %pool.name, %error, "a named pipe connect failed; re-arming the instance");
                 tokio::time::sleep(RETRY_DELAY).await;
-                if let Err(error) = reset_instance(&mut server).await {
-                    tracing::warn!(pipe = %name, %error, "cannot recycle a named pipe instance");
+                if let Err(error) = reset_with_retry(&mut server).await {
+                    pool.lose(&error);
                     return;
                 }
             }
+        }
+    }
+}
+
+/// A reset can fail transiently (a client mid-teardown); losing the instance is permanent, so
+/// retry with a growing pause first.
+async fn reset_with_retry(server: &mut NamedPipeServer) -> io::Result<()> {
+    let mut pause = RETRY_DELAY;
+    let mut attempt = 1;
+    loop {
+        match reset_instance(server).await {
+            Err(error) if attempt < RESET_ATTEMPTS => {
+                tracing::debug!(%error, attempt, "resetting a named pipe instance failed; retrying");
+                tokio::time::sleep(pause).await;
+                pause *= 2;
+                attempt += 1;
+            }
+            result => return result,
         }
     }
 }
@@ -372,25 +464,25 @@ impl Drop for Stream {
         let Inner::Server(server) = inner else {
             return;
         };
-        // Disconnect frees this instance for the next client; the handle itself must be reused,
-        // since the DACL denies creating a replacement.
-        //
-        // DisconnectNamedPipe discards whatever the client has not read yet, so a reply written
-        // just before this drop would be lost. FlushFileBuffers would wait for the client to read
-        // it, but it blocks a thread and cannot be cancelled. Waiting for the client to close its
-        // end instead means it has read everything it wanted, costs no thread, and the timeout
-        // bounds a client that never closes.
-        let handle = pool.handle.clone();
-        handle.spawn(async move {
-            let mut server = server;
-            wait_for_client_close(&mut server).await;
-            if let Err(error) = reset_instance(&mut server).await {
-                tracing::warn!(pipe = %pool.name, %error, "cannot recycle a named pipe instance");
-                return;
-            }
-            pool.arm(server);
-        });
+        pool.recycle(server);
     }
+}
+
+/// Disconnect frees the instance for the next client; the handle itself must be reused, since the
+/// DACL denies creating a replacement.
+///
+/// DisconnectNamedPipe discards whatever the client has not read yet, so a reply written just
+/// before the drop would be lost. FlushFileBuffers would wait for the client to read it, but it
+/// blocks a thread and cannot be cancelled. Waiting for the client to close its end instead means
+/// it has read everything it wanted, costs no thread, and the timeout bounds a client that never
+/// closes.
+async fn recycle_instance(mut server: NamedPipeServer, pool: Arc<Pool>) {
+    wait_for_client_close(&mut server).await;
+    if let Err(error) = reset_with_retry(&mut server).await {
+        pool.lose(&error);
+        return;
+    }
+    pool.arm(server);
 }
 
 /// Reads and discards until the client closes its end (EOF or a broken pipe) or the budget runs out.
@@ -590,6 +682,6 @@ pub(super) fn credentials(handle: RawHandle, peer_is_server: bool) -> io::Result
     })
 }
 
-fn is_pipe_busy(error: &io::Error) -> bool {
+pub(super) fn is_pipe_busy(error: &io::Error) -> bool {
     error.raw_os_error() == i32::try_from(ERROR_PIPE_BUSY).ok()
 }

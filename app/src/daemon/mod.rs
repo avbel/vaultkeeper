@@ -95,7 +95,10 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
             tracing::info!("vaultkeeper is already running; asked it to show a window");
             return Ok(());
         }
-        Err(error) => return Err(error).context("check for a running Vaultkeeper"),
+        Err(error) => {
+            tracing::error!(%error, "cannot start or reach a Vaultkeeper instance");
+            return Err(error).context("check for a running Vaultkeeper");
+        }
     };
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -121,7 +124,11 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
             .name("vaultkeeper-instance".to_owned())
             .spawn(move || {
                 for command in forward_rx {
-                    daemon.apply(routing::second_launch(command));
+                    routing::dispatch_second_launch(
+                        command,
+                        |effect| daemon.apply(effect),
+                        quit_event_loop,
+                    );
                 }
             })
             .context("start the second-launch listener")?

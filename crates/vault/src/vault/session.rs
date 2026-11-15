@@ -145,6 +145,19 @@ impl Inner {
         step
     }
 
+    /// A remember token the current key cannot open (DPAPI profile reset, key rotation) is only a
+    /// convenience: drop the file and fall back to a fresh two-factor prompt.
+    fn read_remember_token(&self, user_id: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        let key = remember_token_key(user_id);
+        match self.secrets.get(&key) {
+            Err(error) if error.is_undecryptable() => {
+                self.secrets.delete(&key).map_err(secret_error)?;
+                Ok(None)
+            }
+            other => other.map_err(secret_error),
+        }
+    }
+
     async fn login_round(
         self: &Arc<Self>,
         request: LoginRequest,
@@ -161,9 +174,7 @@ impl Inner {
         };
         let remembered = match (&two_factor, &known_id) {
             (None, Some(id)) => self
-                .secrets
-                .get(&remember_token_key(id))
-                .map_err(secret_error)?
+                .read_remember_token(id)?
                 .and_then(|token| String::from_utf8(token.to_vec()).ok())
                 .map(Zeroizing::new),
             _ => None,

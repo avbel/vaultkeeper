@@ -1,6 +1,7 @@
-//! Windows half of [`super::subscribe`]: a message-only window on its own thread receives the
+//! Windows half of [`super::subscribe`]: a hidden top-level window on its own thread receives the
 //! three kinds of notification the daemon needs, because all of them arrive as window messages.
-//! The window has no parent and is never shown, so the daemon stays windowless from Slint's view.
+//! It is top-level because message-only windows are not sent `WM_QUERYENDSESSION` or
+//! `WM_ENDSESSION`; it is never shown, so the daemon stays windowless from Slint's view.
 //!
 //! Layout and rationale: docs/solutions/windows-support.md §7.3.
 
@@ -8,20 +9,21 @@ use std::{
     ffi::c_void,
     io, ptr,
     sync::{
+        Condvar, Mutex, PoisonError,
         atomic::{AtomicIsize, Ordering},
         mpsc::Sender,
     },
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use tracing::warn;
 use windows_sys::Win32::{
-    Foundation::{ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM},
     System::{
         LibraryLoader::GetModuleHandleW,
         Power::{
-            HPOWERNOTIFY, PowerRegisterSuspendResumeNotification,
-            PowerUnregisterSuspendResumeNotification,
+            HPOWERNOTIFY, RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification,
         },
         RemoteDesktop::{
             NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
@@ -30,14 +32,38 @@ use windows_sys::Win32::{
     },
     UI::WindowsAndMessaging::{
         CREATESTRUCTW, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow,
-        DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, MSG,
-        PostMessageW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage,
-        UnregisterClassW, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_NCCREATE, WM_POWERBROADCAST,
-        WM_QUERYENDSESSION, WM_WTSSESSION_CHANGE, WNDCLASSW,
+        DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, MSG, PostMessageW,
+        PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, UnregisterClassW,
+        WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_NCCREATE, WM_POWERBROADCAST, WM_QUERYENDSESSION,
+        WM_WTSSESSION_CHANGE, WNDCLASSW,
     },
 };
 
 use super::PowerEvent;
+
+/// How long `WM_ENDSESSION` waits for the daemon to lock and flush. Windows kills a process that
+/// does not return from the message reasonably soon, so the wait must stay bounded.
+const END_SESSION_WAIT: Duration = Duration::from_secs(5);
+
+static END_SESSION_ACK: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+/// Called by the daemon once it has locked and flushed after [`PowerEvent::SessionEnding`], which
+/// lets the blocked `WM_ENDSESSION` return.
+pub(super) fn session_end_handled() {
+    *END_SESSION_ACK
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = true;
+    END_SESSION_ACK.1.notify_all();
+}
+
+fn wait_for_session_end_handled() {
+    let (flag, condvar) = &END_SESSION_ACK;
+    let guard = flag.lock().unwrap_or_else(PoisonError::into_inner);
+    let _ = condvar
+        .wait_timeout_while(guard, END_SESSION_WAIT, |handled| !*handled)
+        .unwrap_or_else(PoisonError::into_inner);
+}
 
 /// Owns the watcher's window and thread; dropping posts `WM_CLOSE` and joins.
 pub(super) struct Subscription {
@@ -108,9 +134,9 @@ fn run(tx: Sender<PowerEvent>, ready: &Sender<io::Result<isize>>) {
         }
     }
     if let Some(handle) = power {
-        // SAFETY: `handle` came from PowerRegisterSuspendResumeNotification.
+        // SAFETY: `handle` came from RegisterSuspendResumeNotification and is released once.
         unsafe {
-            PowerUnregisterSuspendResumeNotification(handle);
+            UnregisterSuspendResumeNotification(handle);
         }
     }
     // SAFETY: if WM_CLOSE already destroyed the window this returns 0 harmlessly; otherwise it
@@ -125,7 +151,7 @@ fn run(tx: Sender<PowerEvent>, ready: &Sender<io::Result<isize>>) {
     }
 }
 
-/// Registers the class and creates the message-only window. Reports the hwnd (or the error) on
+/// Registers the class and creates the hidden top-level window. Reports the hwnd (or the error) on
 /// `ready`; returns `None` only after an error was already reported.
 fn create_window(
     tx: Sender<PowerEvent>,
@@ -162,7 +188,7 @@ fn create_window(
             0,
             0,
             0,
-            HWND_MESSAGE,
+            ptr::null_mut(),
             ptr::null_mut(),
             instance,
             sender.cast(),
@@ -199,17 +225,16 @@ fn register_session(hwnd: HWND) -> bool {
 }
 
 fn register_power(hwnd: HWND) -> Option<HPOWERNOTIFY> {
-    let mut raw: *mut c_void = ptr::null_mut();
-    // SAFETY: `raw` is written only on success; the returned handle is unregistered in `run`.
-    let status = unsafe {
-        PowerRegisterSuspendResumeNotification(DEVICE_NOTIFY_WINDOW_HANDLE, hwnd, &raw mut raw)
-    };
-    if status == ERROR_SUCCESS {
-        Some(raw as HPOWERNOTIFY)
-    } else {
-        warn!(status, "no sleep/wake events; lock on sleep is off");
-        None
+    // SAFETY: `hwnd` is a live window of this thread; the handle is unregistered in `run`.
+    let handle = unsafe { RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE) };
+    if handle == 0 {
+        warn!(
+            error = %io::Error::last_os_error(),
+            "no sleep/wake events; lock on sleep is off"
+        );
+        return None;
     }
+    Some(handle)
 }
 
 fn message_loop() {
@@ -271,7 +296,13 @@ unsafe extern "system" fn wnd_proc(
         WM_QUERYENDSESSION => 1,
         WM_ENDSESSION => {
             if wparam != 0 {
+                // The process may be terminated as soon as this returns, so wait for the daemon.
+                *END_SESSION_ACK
+                    .0
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = false;
                 emit(hwnd, PowerEvent::SessionEnding);
+                wait_for_session_end_handled();
             }
             0
         }
