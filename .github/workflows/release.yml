@@ -186,35 +186,44 @@ jobs:
   # scripts of dependencies execute in windows-build, which has no environment and no secrets, and
   # windows-package, which holds them, only runs signtool, iscc and openssl on the artifact it gets.
   windows-build:
-    name: Windows build (unsigned, no secrets)
+    name: Windows ${{ matrix.arch }} build (unsigned, no secrets)
     needs: version
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, target: x86_64-pc-windows-msvc, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc, prebuilt_nasm: "0"}
     env:
-      # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
-      AWS_LC_SYS_PREBUILT_NASM: "1"
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.sha }}
 
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
+
       - name: Install toolchain
         run: |
           rustup show active-toolchain || rustup toolchain install
-          rustup target add x86_64-pc-windows-msvc
+          rustup target add ${{ matrix.target }}
 
       # cargo-cache.yml fills this cache from main; a tag run only restores it.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: windows-release
+          shared-key: windows-release-${{ matrix.arch }}
           save-if: false
 
       - name: Build vaultkeeper.exe
         shell: pwsh
-        run: scripts/bundle-windows.ps1 -Build
+        run: scripts/bundle-windows.ps1 -Build -Arch ${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-unsigned
+          name: windows-unsigned-${{ matrix.arch }}
           path: out/stage/vaultkeeper.exe
           if-no-files-found: error
 
@@ -222,9 +231,15 @@ jobs:
   # This job runs no cargo and no package manager. Without a signing certificate the installer is
   # still built and released, only unsigned: the in-app updater and winget then skip it.
   windows-package:
-    name: Windows installer (sign)
+    name: Windows ${{ matrix.arch }} installer (sign)
     needs: [version, windows-build]
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest}
+          - {arch: arm64, runner: windows-11-arm}
     environment: release
     permissions:
       contents: read
@@ -240,17 +255,43 @@ jobs:
       # tagged commit's build, which is inherent. Nothing from this artifact is executed here.
       - uses: actions/download-artifact@v5
         with:
-          name: windows-unsigned
+          name: windows-unsigned-${{ matrix.arch }}
           path: out/stage
 
       # Inno Setup comes from the runner image by absolute path: no tool from the build job's
       # artifacts is ever executed or put on PATH in this job.
+      #
+      # The x64 image ships it. If the ARM64 image does not, it is installed here from the official
+      # release, pinned by SHA-256, before any secret is read (the signing steps come later) and never
+      # from the build job.
       - name: Locate Inno Setup
         shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
+          INNO_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path -LiteralPath $iscc)) { throw "$iscc not found on the runner image" }
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            $setup = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+            Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup
+            $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+            if ($hash -ne $env:INNO_SHA256.ToUpperInvariant()) { throw "Inno Setup installer hash mismatch: $hash" }
+            $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Inno Setup installer failed with exit code $($p.ExitCode)" }
+            if (-not (Test-Path -LiteralPath $iscc)) { throw "$iscc not found after installing Inno Setup" }
+          }
           "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      # The x64 signtool runs under emulation on ARM64; the arm64 one is the fallback.
+      - name: Locate signtool
+        shell: pwsh
+        run: |
+          $signtool = foreach ($a in 'x64', 'arm64') {
+            Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\$a\signtool.exe" -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          } | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found on the runner image' }
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
 
       # Secrets cannot be tested in a step condition, so the choice is made here once.
       - name: Choose signers
@@ -297,13 +338,10 @@ jobs:
           PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
           PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $signtool) { throw 'signtool.exe not found on the runner' }
           $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX))
           try {
-            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD out/stage/vaultkeeper.exe
+            & $env:SIGNTOOL sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD out/stage/vaultkeeper.exe
             if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
           } finally {
             Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
@@ -314,7 +352,7 @@ jobs:
         if: steps.signers.outputs.signpath == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe-to-sign
+          name: windows-exe-to-sign-${{ matrix.arch }}
           path: out/stage/vaultkeeper.exe
           if-no-files-found: error
 
@@ -339,7 +377,7 @@ jobs:
 
       - name: Build installer and zip
         shell: pwsh
-        run: scripts/bundle-windows.ps1 -Package -Iscc $env:ISCC
+        run: scripts/bundle-windows.ps1 -Package -Arch ${{ matrix.arch }} -Iscc $env:ISCC
 
       - name: Sign the setup exe (signtool)
         if: steps.signers.outputs.pfx == 'true'
@@ -348,13 +386,10 @@ jobs:
           PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
           PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $signtool) { throw 'signtool.exe not found on the runner' }
           $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX))
           try {
-            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD (Get-Item out/*-x64-setup.exe).FullName
+            & $env:SIGNTOOL sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD (Get-Item out/*-${{ matrix.arch }}-setup.exe).FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
           } finally {
             Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
@@ -365,8 +400,8 @@ jobs:
         if: steps.signers.outputs.signpath == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: windows-setup-to-sign
-          path: out/*-x64-setup.exe
+          name: windows-setup-to-sign-${{ matrix.arch }}
+          path: out/*-${{ matrix.arch }}-setup.exe
           if-no-files-found: error
 
       # SignPath action v3.0
@@ -386,7 +421,7 @@ jobs:
       - name: Use the SignPath-signed setup exe
         if: steps.signers.outputs.signpath == 'true'
         shell: pwsh
-        run: Copy-Item -Path out/signed-setup/*-x64-setup.exe -Destination out -Force
+        run: Copy-Item -Path out/signed-setup/*-${{ matrix.arch }}-setup.exe -Destination out -Force
 
       # The updater's format (app/src/daemon/update/signature.rs) is minisign-style (the same container,
       # a different message): stock minisign can neither produce nor verify it. The Ed25519 signature is over
@@ -403,8 +438,8 @@ jobs:
           trap 'rm -rf "$work"' EXIT
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$work/key.pem"
           version=${TAG#v}
-          asset=$(basename out/Vaultkeeper-v*-x64-setup.exe)
-          if [ "$asset" != "Vaultkeeper-v$version-x64-setup.exe" ]; then
+          asset=$(basename out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe)
+          if [ "$asset" != "Vaultkeeper-v$version-${{ matrix.arch }}-setup.exe" ]; then
             echo "::error::unexpected installer name $asset for version $version"
             exit 1
           fi
@@ -431,11 +466,8 @@ jobs:
           SIGNED: ${{ steps.signers.outputs.pfx == 'true' || steps.signers.outputs.signpath == 'true' }}
         run: |
           if ($env:SIGNED -eq 'true') {
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-              Sort-Object FullName -Descending | Select-Object -First 1
-            if (-not $signtool) { throw 'signtool.exe not found on the runner' }
-            foreach ($f in @('out/stage/vaultkeeper.exe', (Get-Item out/*-x64-setup.exe).FullName)) {
-              & $signtool.FullName verify /pa /all $f
+            foreach ($f in @('out/stage/vaultkeeper.exe', (Get-Item out/*-${{ matrix.arch }}-setup.exe).FullName)) {
+              & $env:SIGNTOOL verify /pa /all $f
               if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $f" }
             }
             "signed=true" >> $env:GITHUB_OUTPUT
@@ -445,11 +477,11 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
+          name: windows-package-${{ matrix.arch }}
           path: |
-            out/Vaultkeeper-v*-x64-setup.exe
-            out/Vaultkeeper-v*-x64-setup.exe.minisig
-            out/Vaultkeeper-v*-x64.zip
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe.minisig
+            out/Vaultkeeper-v*-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   release:
@@ -471,7 +503,8 @@ jobs:
 
       - uses: actions/download-artifact@v5
         with:
-          name: windows
+          pattern: windows-package-*
+          merge-multiple: true
           path: out
 
       - name: Publish
@@ -566,5 +599,5 @@ jobs:
           identifier: avbel.Vaultkeeper
           version: ${{ steps.gate.outputs.version }}
           release-tag: ${{ env.TAG }}
-          installers-regex: '-x64-setup\.exe$'
+          installers-regex: '-${{ matrix.arch }}-setup\.exe$'
           token: ${{ secrets.WINGET_TOKEN }}

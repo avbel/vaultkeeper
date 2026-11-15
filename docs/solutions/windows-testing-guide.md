@@ -6,13 +6,13 @@ the work, and what to send back.
 
 ## 1. Getting the build (no Rust needed)
 
-Use a normal (non-administrator) Windows account on Windows 11 24H2 or newer, x64. Check with `winver` (build 26100+).
+Use a normal (non-administrator) Windows account on Windows 11 24H2 or newer, x64 or ARM64 (a Snapdragon laptop is ARM64). Check with `winver` (build 26100+) and `echo %PROCESSOR_ARCHITECTURE%` (`AMD64` or `ARM64`).
 Nothing needs to be installed: GitHub's Windows runner builds everything.
 
 1. In a browser on the PC, sign in to GitHub and open
    <https://github.com/avbel/vaultkeeper/actions/workflows/ci.yml?query=branch%3Awindows-support>.
 2. Open the newest run with a green check (or the one I name in the chat).
-3. Under **Artifacts**, download **vaultkeeper-windows-x64** and extract the zip to a folder, for example
+3. Under **Artifacts**, download **vaultkeeper-windows-arm64** on an ARM laptop (or **vaultkeeper-windows-x64** on an Intel/AMD PC) and extract the zip to a folder, for example
    `C:k-test`. `BUILD.txt` inside says which commit it is.
 4. Open PowerShell in that folder (in Explorer: File → Open Windows PowerShell, or right-click → "Open in Terminal").
 5. If Windows blocks a file as "downloaded from the internet": right-click it → Properties → tick **Unblock**, or run
@@ -93,7 +93,7 @@ Then follow the checklist sections in this order (most valuable first):
 
 ### Stage D: installer, updates, winget (after phase 6)
 
-- **§9**: install the `Vaultkeeper-<tag>-x64-setup.exe` from the GitHub release artifacts (no UAC prompt), upgrade,
+- **§9**: install the `Vaultkeeper-<tag>-arm64-setup.exe` (ARM laptop; `-x64-` on an x64 PC) from the GitHub release artifacts (no UAC prompt), upgrade,
   uninstall; self-update and `winget install avbel.Vaultkeeper` only once releases are signed.
 
 ## 4. If something goes wrong

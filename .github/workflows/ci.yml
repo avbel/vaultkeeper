@@ -38,14 +38,23 @@ jobs:
         run: cargo test --workspace --no-fail-fast -- --skip a_certificate_requirement_admits_every_build_signed_with_that_certificate
 
   windows:
-    name: Windows
-    runs-on: windows-latest
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
     timeout-minutes: 30
     env:
-      # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
-      AWS_LC_SYS_PREBUILT_NASM: "1"
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
     steps:
       - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
 
       - name: Install toolchain
         run: |
@@ -53,7 +62,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: windows-ci
+          shared-key: windows-ci-${{ matrix.arch }}
 
       - name: Checks
         shell: bash
@@ -66,13 +75,23 @@ jobs:
   # The named-pipe tests alone, so a hang or an access problem shows up in minutes, not after the
   # full Windows job.
   windows-pipes:
-    name: Windows pipes
-    runs-on: windows-latest
+    name: Windows pipes ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
     timeout-minutes: 15
     env:
-      AWS_LC_SYS_PREBUILT_NASM: "1"
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
     steps:
       - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
 
       - name: Install toolchain
         run: |
@@ -80,7 +99,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: windows-ci
+          shared-key: windows-ci-${{ matrix.arch }}
 
       # vk-win has no windows_pipes target, so --test cannot span both packages.
       - name: vk-win
@@ -98,15 +117,25 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast -p vk-platform single_instance
 
-  # Test builds for manual testing on a Windows PC without a Rust toolchain.
+  # Test builds for manual testing on a Windows PC without a Rust toolchain. Both architectures
+  # are built natively: the maintainer's test laptop is Windows on ARM64.
   windows-build:
-    name: Windows Build
-    runs-on: windows-latest
+    name: Windows Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
     env:
-      # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
-      AWS_LC_SYS_PREBUILT_NASM: "1"
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
     steps:
       - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
 
       - name: Install toolchain
         run: |
@@ -114,7 +143,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: windows-test-build
+          shared-key: windows-test-build-${{ matrix.arch }}
 
       - name: Build vaultkeeper
         run: cargo build --release --locked -p vaultkeeper
@@ -136,29 +165,30 @@ jobs:
           if (-not $iscc) { throw 'ISCC.exe not found after the install' }
           New-Item -ItemType Directory -Force -Path out/stage | Out-Null
           Copy-Item target/release/vaultkeeper.exe out/stage/vaultkeeper.exe -Force
-          scripts/bundle-windows.ps1 -Package -Iscc $iscc
+          scripts/bundle-windows.ps1 -Package -Arch ${{ matrix.arch }} -Iscc $iscc
 
       - name: Stage artifact
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path out/vaultkeeper-windows-x64 | Out-Null
+          New-Item -ItemType Directory -Force -Path out/vaultkeeper-windows-${{ matrix.arch }} | Out-Null
           Copy-Item `
             target/release/vaultkeeper.exe, `
             target/release/examples/hello_check.exe, `
-            out/Vaultkeeper-v*-x64-setup.exe, `
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe, `
             scripts/measure-windows.ps1, `
             docs/solutions/windows-testing-guide.md, `
             docs/solutions/windows-test-checklist.md `
-            out/vaultkeeper-windows-x64/
+            out/vaultkeeper-windows-${{ matrix.arch }}/
           @"
           commit: ${{ github.sha }}
           branch: ${{ github.ref_name }}
+          arch: ${{ matrix.arch }}
           date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
-          "@ | Set-Content out/vaultkeeper-windows-x64/BUILD.txt
+          "@ | Set-Content out/vaultkeeper-windows-${{ matrix.arch }}/BUILD.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vaultkeeper-windows-x64
-          path: out/vaultkeeper-windows-x64/
+          name: vaultkeeper-windows-${{ matrix.arch }}
+          path: out/vaultkeeper-windows-${{ matrix.arch }}/
           retention-days: 14
           if-no-files-found: error

@@ -1,12 +1,14 @@
 <#
 .SYNOPSIS
-  Builds and packages the Windows release: -Build compiles and stages the exe, -Package makes the
+  Builds and packages the Windows release for -Arch x64 (default) or arm64: -Build compiles and stages the exe, -Package makes the
   Inno Setup installer and the portable zip from the staged exe.
 #>
 [CmdletBinding()]
 param(
   [switch]$Build,
   [switch]$Package,
+  [ValidateSet('x64', 'arm64')]
+  [string]$Arch = 'x64',
   # Absolute path of ISCC.exe. Never looked up on PATH: the release job passes the runner image's copy.
   [string]$Iscc
 )
@@ -21,7 +23,7 @@ if (-not ($Build -or $Package)) {
 $Root = Split-Path -Parent $PSScriptRoot
 $Out = Join-Path $Root 'out'
 $Stage = Join-Path $Out 'stage'
-$Target = 'x86_64-pc-windows-msvc'
+$Target = if ($Arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
 
 # Same source as scripts/version.sh: [workspace.package] version in Cargo.toml.
 function Get-WorkspaceVersion {
@@ -83,10 +85,11 @@ if ($Package) {
 
   Invoke-Checked $iscc @(
     "/DAppVersion=$version",
+    "/DArch=$Arch",
     "/DStageDir=$Stage",
     (Join-Path $Root 'packaging\windows\vaultkeeper.iss')
   )
-  $setup = Join-Path $Out "Vaultkeeper-v$version-x64-setup.exe"
+  $setup = Join-Path $Out "Vaultkeeper-v$version-$Arch-setup.exe"
   if (-not (Test-Path -LiteralPath $setup)) { throw "iscc did not produce $setup" }
 
   $portable = Join-Path $Out 'portable'
@@ -95,7 +98,7 @@ if ($Package) {
   Copy-Item -LiteralPath $stagedExe -Destination $portable
   Copy-Item -LiteralPath (Join-Path $Root 'LICENSE') -Destination $portable
   Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination $portable
-  $zip = Join-Path $Out "Vaultkeeper-v$version-x64.zip"
+  $zip = Join-Path $Out "Vaultkeeper-v$version-$Arch.zip"
   if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
   Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip
   Remove-Item -LiteralPath $portable -Recurse -Force

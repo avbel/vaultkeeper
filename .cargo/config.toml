@@ -18,3 +18,14 @@ rustflags = [
     "-C",
     "link-arg=/CETCOMPAT",
 ]
+
+# No target-cpu baseline and no /CETCOMPAT here: CET shadow stacks are x86-only.
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "control-flow-guard",
+    "-C",
+    "link-arg=/DEPENDENTLOADFLAG:0x800",
+]

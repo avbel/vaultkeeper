@@ -9,7 +9,7 @@ real machine. Design recommendations in §3–§5 and §8 come from a security d
 
 Build plan: `.plan/windows-support.md`. How to test on hardware: `windows-testing-guide.md` and `windows-test-checklist.md` (same directory). This document is the research; where CI proved it wrong, the section says so ("CI result").
 
-Scope as built: Windows 11 24H2+, **x64 only**. ARM64 (§9) is out of scope.
+Scope as built: Windows 11 24H2+ on **x64 and ARM64** (§9). The maintainer's only test laptop is Snapdragon, so every test artifact exists per architecture, `hello_check.exe` included.
 
 Decided:
 
@@ -26,7 +26,8 @@ Status:
 |---|---|
 | Transport seam, named pipes (UI, CLI, browser host), peer checks, data directory ACL checks, token and sealed stores, single instance, SSH agent pipe, update signature check, installer build | Built, CI-tested on `windows-latest` |
 | Windows Hello unlock (Passport KSP), "SSH requires Windows Hello", auto-type, security keys (`webauthn.dll`), tray theme and DPI, hotkey, capture exclusion, browser registration and native host, strict mitigations, installer, self-update, winget | Built, needs hardware (checklist) |
-| ARM64, per-machine MSI, Store MSIX | Not built |
+| ARM64 build, CI (`windows-11-arm`: tests, pipes, test artifact), installer, updater asset, winget | Built, needs a Snapdragon run (checklist) |
+| Per-machine MSI, Store MSIX | Not built |
 
 CI results that differ from the research:
 
@@ -251,7 +252,7 @@ and inject before hardening runs, or simply run their own copy. It is the Window
   - `/DEPENDENTLOADFLAG:0x800` (`LOAD_LIBRARY_SEARCH_SYSTEM32`) for static imports: free, and it closes DLL planting next to a
     per-user exe. Add `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` first thing for runtime loads.
   - `+crt-static`, because `vcruntime140.dll` is not a KnownDLL.
-  - `-C control-flow-guard`, and `/CETCOMPAT` on x64.
+  - `-C control-flow-guard`, and `/CETCOMPAT` plus `target-cpu=x86-64-v2` on x64 only.
 - **Crash dumps.** `panic = "abort"` already; Windows Error Reporting can still write dumps if LocalDumps is configured.
   `WerRegisterExcludedMemoryBlock` around secure-memory pages is an option [i].
 
@@ -473,7 +474,7 @@ open-source program (theirs or the project's) [i]; it decides what SmartScreen r
 
 ## 9. ARM64
 
-**Out of scope for the current build (x64 only).** Kept as research for a later release.
+**In scope (step 9a).** Built natively per architecture; the research below is what the implementation follows.
 
 - Toolchain: `aarch64-pc-windows-msvc` became Tier 1 in Rust 1.91 (2025-10-30) [v]. The repo pins 1.99.1.
 - CI: `windows-11-arm` hosted runners are GA for public repositories since 2025-08-07 [v].
@@ -481,11 +482,17 @@ open-source program (theirs or the project's) [i]; it decides what SmartScreen r
   `reqwest`, the websocket and the CLI's TLS, and by `rcgen`) as the only crate that builds C [v]. On ARM64 it needs clang-cl
   ("C++ Clang Compiler for Windows" in the VS Build Tools). On x64 it needs NASM or its `prebuilt-nasm` objects [v: aws-lc-rs
   docs]. Everything else is Rust or `windows`/`windows-sys`/`winapi` bindings [v].
-- An x64 build runs on ARM64 Windows 11 under emulation, so x64 can ship first [i].
+- An x64 build runs on ARM64 Windows 11 under emulation, but we ship a native build and the x64 installer refuses to install on ARM64 (`ArchitecturesAllowed=x64os`, not `x64compatible`), so nobody lands on the emulated one by accident [i].
 - Hello, `webauthn.dll` and named pipes have no architecture-specific code paths [i]. Still test Hello on a Snapdragon machine
   (face and fingerprint drivers differ). `/CETCOMPAT` is x64-only.
-- Release work: a second job, a second installer (or one installer carrying both), signing both, and a per-arch asset name the
-  updater picks.
+- As built: `[target.aarch64-pc-windows-msvc]` flags without x86-64-v2 and /CETCOMPAT; `VK_WIN_TARGET` in
+  `scripts/check-windows.sh`; ci.yml runs `windows`, `windows-pipes` and `windows-build` as a matrix over `windows-latest`
+  (x64) and `windows-11-arm` (arm64) with per-arch cache keys; release.yml builds and packages per arch (two installers,
+  `Vaultkeeper-v<ver>-x64-setup.exe` / `-arm64-setup.exe`, one AppId, both signed, both in SHA256SUMS and the winget
+  `installers-regex`); the updater picks the asset by `cfg(target_arch)`.
+- CI details: the `ensure-clang-cl` composite action uses Visual Studio's clang-cl and falls back to `choco install llvm`
+  (build jobs only, never the signing job). `AWS_LC_SYS_PREBUILT_NASM` is x64-only. The ARM64 package job installs Inno Setup
+  6.7.4 from the official release pinned by SHA-256 if the image lacks it, before any secret is read.
 
 ## 10. Open risks and decisions
 

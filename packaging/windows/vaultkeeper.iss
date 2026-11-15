@@ -1,4 +1,4 @@
-; Per-user installer for Vaultkeeper. Build: iscc /DAppVersion=<x.y.z> [/DStageDir=<dir>] vaultkeeper.iss
+; Per-user installer for Vaultkeeper. Build: iscc /DAppVersion=<x.y.z> [/DArch=x64|arm64] [/DStageDir=<dir>] vaultkeeper.iss
 ; (scripts/bundle-windows.ps1 -Package does this).
 
 #ifndef AppVersion
@@ -6,6 +6,13 @@
 #endif
 #ifndef StageDir
   #define StageDir "..\..\out\stage"
+#endif
+
+#ifndef Arch
+  #define Arch "x64"
+#endif
+#if Arch != "x64" && Arch != "arm64"
+  #error Arch must be x64 or arm64
 #endif
 
 #define AppName "Vaultkeeper"
@@ -21,14 +28,21 @@ DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; One AppId, two installers. x64os (not x64compatible) rejects the x64 build on an ARM64 PC, so
+; Windows on ARM users get the native build instead of the emulated one.
+#if Arch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
+#endif
 MinVersion=10.0.26100
 LicenseFile=..\..\LICENSE
 SetupIconFile=vaultkeeper.ico
 UninstallDisplayIcon={app}\{#AppExe}
 OutputDir=..\..\out
-OutputBaseFilename=Vaultkeeper-v{#AppVersion}-x64-setup
+OutputBaseFilename=Vaultkeeper-v{#AppVersion}-{#Arch}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

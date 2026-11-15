@@ -19,4 +19,5 @@ export PATH
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${VK_XWIN_TARGET_DIR:-$HOME/Library/Caches/vaultkeeper-xwin}}"
 export CARGO_TARGET_DIR
 
-exec cargo xwin clippy --target x86_64-pc-windows-msvc "$@" -- -D warnings
+# VK_WIN_TARGET=aarch64-pc-windows-msvc checks the ARM64 build.
+exec cargo xwin clippy --target "${VK_WIN_TARGET:-x86_64-pc-windows-msvc}" "$@" -- -D warnings

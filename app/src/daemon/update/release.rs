@@ -88,10 +88,20 @@ struct WireAsset {
 #[must_use]
 pub fn asset_name(version: Version) -> String {
     if cfg!(target_os = "windows") {
-        format!("Vaultkeeper-v{version}-x64-setup.exe")
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        windows_setup_name(version, arch)
     } else {
         format!("Vaultkeeper-v{version}-arm64.app.zip")
     }
+}
+
+/// One native installer per architecture; the x64 one refuses to install on ARM64.
+fn windows_setup_name(version: Version, arch: &str) -> String {
+    format!("Vaultkeeper-v{version}-{arch}-setup.exe")
 }
 
 #[must_use]
@@ -160,7 +170,9 @@ mod tests {
         .into_bytes()
     }
 
-    const ASSET: &str = if cfg!(windows) {
+    const ASSET: &str = if cfg!(all(windows, target_arch = "aarch64")) {
+        "Vaultkeeper-v0.2.0-arm64-setup.exe"
+    } else if cfg!(windows) {
         "Vaultkeeper-v0.2.0-x64-setup.exe"
     } else {
         "Vaultkeeper-v0.2.0-arm64.app.zip"
@@ -168,6 +180,19 @@ mod tests {
 
     fn asset_url() -> String {
         format!("https://github.com/avbel/vaultkeeper/releases/download/v0.2.0/{ASSET}")
+    }
+
+    #[test]
+    fn windows_setup_names_follow_the_architecture() {
+        let version: Version = "0.2.0".parse().expect("version");
+        assert_eq!(
+            windows_setup_name(version, "x64"),
+            "Vaultkeeper-v0.2.0-x64-setup.exe"
+        );
+        assert_eq!(
+            windows_setup_name(version, "arm64"),
+            "Vaultkeeper-v0.2.0-arm64-setup.exe"
+        );
     }
 
     #[test]

@@ -51,23 +51,32 @@ jobs:
             --recipe-path "$RUNNER_TEMP/recipe.json"
 
   windows-deps:
-    name: Windows release dependencies (cache only)
-    runs-on: windows-latest
+    name: Windows ${{ matrix.arch }} release dependencies (cache only)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, target: x86_64-pc-windows-msvc, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc, prebuilt_nasm: "0"}
     env:
-      AWS_LC_SYS_PREBUILT_NASM: "1"
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
     steps:
       - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
 
       - name: Install toolchain
         run: |
           rustup show active-toolchain || rustup toolchain install
-          rustup target add x86_64-pc-windows-msvc
+          rustup target add ${{ matrix.target }}
 
-      # Same key as the windows-build job in release.yml, so the tag build only restores.
+      # Same key as the windows-build job in release.yml (one per architecture), so the tag build only restores.
       - id: cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: windows-release
+          shared-key: windows-release-${{ matrix.arch }}
 
       # Same split as the macOS job: only the dependencies are cooked, because rust-cache never
       # stores workspace crates. The flags must match scripts/bundle-windows.ps1.
@@ -77,5 +86,5 @@ jobs:
         run: |
           command -v cargo-chef || cargo install cargo-chef --locked --version 0.1.78
           cargo chef prepare --recipe-path "$RUNNER_TEMP/recipe.json"
-          cargo chef cook --release --locked --target x86_64-pc-windows-msvc -p vaultkeeper \
+          cargo chef cook --release --locked --target ${{ matrix.target }} -p vaultkeeper \
             --recipe-path "$RUNNER_TEMP/recipe.json"

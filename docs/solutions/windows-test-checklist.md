@@ -1,8 +1,8 @@
-# Windows 11 test checklist (24H2+, x64)
+# Windows 11 test checklist (24H2+, x64 and ARM64)
 
-Manual checks that need real hardware, one section per risk in `windows-support.md` §10 that applies to x64.
-Run them on a Windows 11 24H2 (build 26100) or newer x64 machine, as a normal user (not Administrator), with the
-release build from the same commit. ARM64 is out of scope for now (§9).
+Manual checks that need real hardware, one section per risk in `windows-support.md` §10 that applies.
+Run them on a Windows 11 24H2 (build 26100) or newer machine (x64 or ARM64), as a normal user (not Administrator), with the
+release build from the same commit. The primary test machine is a Snapdragon (ARM64) laptop; use the `arm64` artifacts there.
 
 Record for the run: `winver` build, antivirus products, display scaling, RDP or local session, and the build tag.
 Tick each line only after the expected result, and paste outputs (Hello HRESULTs, hardening log lines, the memory
@@ -13,8 +13,8 @@ table) into the pull request. Two groups change a default, so their result must 
 
 ## 0. Setup
 
-- [ ] `winver` reports 24H2, build 26100 or newer; `echo %PROCESSOR_ARCHITECTURE%` is `AMD64`.
-- [ ] Use the CI artifact `vaultkeeper-windows-x64` of the commit under test (no Rust needed), or `out\Vaultkeeper-<tag>-x64-setup.exe` (signed for the update and SmartScreen
+- [ ] `winver` reports 24H2, build 26100 or newer; `echo %PROCESSOR_ARCHITECTURE%` is `AMD64` (x64 PC) or `ARM64` (Snapdragon).
+- [ ] Use the CI artifact of the commit under test: `vaultkeeper-windows-arm64` on ARM64, `vaultkeeper-windows-x64` on x64 (no Rust needed), or `out\Vaultkeeper-<tag>-<arch>-setup.exe` (signed for the update and SmartScreen
       sections; an unsigned build is fine elsewhere).
 - [ ] At least one login saved, CLI access enabled in Settings, and one login allowed for CLI access.
 - [ ] Chrome or Edge plus Firefox installed, one FIDO2 security key, and a second local Windows account is not
@@ -23,9 +23,11 @@ table) into the pull request. Two groups change a default, so their result must 
 
 ## 1. Windows Hello (risks 1, 2, 9)
 
-Use `hello_check.exe` from the CI artifact `vaultkeeper-windows-x64` (see windows-testing-guide.md); run it from a
+Use `hello_check.exe` from the CI artifact of your architecture (`vaultkeeper-windows-arm64` on Snapdragon, see windows-testing-guide.md); run it from a
 console so its window can be passed as `NCRYPT_WINDOW_HANDLE_PROPERTY`.
 
+- [ ] On the Snapdragon laptop: run the native ARM64 `hello_check.exe`; face and fingerprint drivers differ from x64 PCs, so
+      report the statuses of every enrolled method (face, fingerprint, PIN) separately.
 - [ ] `hello_check.exe`: print the key name that worked (`<SID>//Vaultkeeper//Vaultkeeper` or the variant it fell
       back to), whether RSA-OAEP-SHA256 or PKCS#1 v1.5 was accepted, and every HRESULT/NTSTATUS. Expect no error.
 - [ ] `hello_check.exe --strict`: same output with `harden_process(Role::Daemon)` applied first. The credential
@@ -179,3 +181,11 @@ $pipe = [System.IO.Pipes.NamedPipeServerStream]::new(
 [void](Read-Host)
 $pipe.Dispose()
 ```
+
+## ARM64 (Snapdragon)
+
+- [ ] `vaultkeeper.exe` is an ARM64 binary (Task Manager, Details: Architecture column, or `dumpbin /headers`: `AA64`).
+- [ ] The x64 setup exe refuses to install on this PC; the arm64 one installs, upgrades and uninstalls without UAC.
+- [ ] Emulation note: an x64 `vaultkeeper.exe` run under emulation is not a supported configuration; only note Hello,
+      tray and hotkey behaviour if you try it, do not file it as a bug.
+- [ ] After a signed release, the in-app update downloads `-arm64-setup.exe`, and `winget install avbel.Vaultkeeper` picks the arm64 installer.

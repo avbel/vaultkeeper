@@ -11,5 +11,8 @@ Installers:
     InstallerUrl: https://github.com/avbel/vaultkeeper/releases/download/v0.1.10/Vaultkeeper-v0.1.10-x64-setup.exe
     # Replace with the SHA-256 of the published setup exe (komac and wingetcreate fill it in).
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+  - Architecture: arm64
+    InstallerUrl: https://github.com/avbel/vaultkeeper/releases/download/v0.1.10/Vaultkeeper-v0.1.10-arm64-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: installer
 ManifestVersion: 1.10.0

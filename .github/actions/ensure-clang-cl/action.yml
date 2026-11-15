@@ -1,0 +1,26 @@
+name: Ensure clang-cl
+description: >-
+  aws-lc-sys needs clang-cl to build for aarch64-pc-windows-msvc (the MSVC ARM64 compiler cannot
+  assemble its sources). Uses the one from Visual Studio when the runner image has it, otherwise
+  installs LLVM with Chocolatey. Only call this from jobs that hold no secrets.
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        if (Get-Command clang-cl -ErrorAction SilentlyContinue) { return }
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path -LiteralPath $vswhere) {
+          $vs = & $vswhere -latest -products * -property installationPath
+          foreach ($sub in 'ARM64', 'x64') {
+            $dir = Join-Path $vs "VC\Tools\Llvm\$sub\bin"
+            if (Test-Path -LiteralPath (Join-Path $dir 'clang-cl.exe')) {
+              $dir >> $env:GITHUB_PATH
+              Write-Host "Using Visual Studio's clang-cl in $dir"
+              return
+            }
+          }
+        }
+        choco install llvm -y --no-progress
+        if ($LASTEXITCODE -ne 0) { throw 'choco install llvm failed' }
+        "$env:ProgramFiles\LLVM\bin" >> $env:GITHUB_PATH

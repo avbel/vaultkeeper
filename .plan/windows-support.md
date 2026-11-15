@@ -643,3 +643,11 @@ Next, in order:
 - Known limitations to state in the PR: auto-type restores the target app's top window, not the exact HWND; browser signer allowlist is name-only; mio slot reset relies on mio internals (keep mio pinned); single-instance ack flush can stall on a stalled verified client.
 - User's manual Windows test pass (docs/solutions/windows-testing-guide.md), Hello spike output → correct passport.rs if needed.
 - 8a: open the PR to main once Windows CI is green.
+
+## 9a ARM64 Windows builds
+files: .cargo/config.toml, scripts/check-windows.sh, .github/workflows/, scripts/bundle-windows.ps1, packaging/windows/, packaging/winget/, app/src/daemon/update/, docs/solutions/
+do: The user reversed "x64 only": their test laptop is Windows 11 on ARM64. Add `aarch64-pc-windows-msvc` everywhere x64 exists: target rustflags (no x86-64-v2, no /CETCOMPAT), the cross-check script, CI build+test on `windows-11-arm`, release build/package per arch, an ARM64 Inno installer, updater asset selection by arch, winget manifests with both installers, and docs.
+done-when: `scripts/check-windows.sh --workspace --all-targets`; `VK_WIN_TARGET=aarch64-pc-windows-msvc scripts/check-windows.sh --workspace --all-targets`; `cargo test -p vaultkeeper update`
+needs: 6c
+difficulty: medium
+kind: change
