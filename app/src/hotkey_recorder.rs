@@ -16,9 +16,16 @@ pub struct Mods {
     pub shift: bool,
 }
 
+/// The modifiers `accelerator` accepts, spelled the way this platform labels the keys.
+pub const MODIFIER_HINT: &str = if cfg!(windows) {
+    "Ctrl, Alt or Win"
+} else {
+    "⌘, ⌥ or ⌃"
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Reject {
-    #[error("Add ⌘, ⌥ or ⌃ to the shortcut")]
+    #[error("Add {} to the shortcut", MODIFIER_HINT)]
     NeedsModifier,
     #[error("This key can't be a global shortcut")]
     UnsupportedKey,

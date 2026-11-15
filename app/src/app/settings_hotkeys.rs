@@ -17,7 +17,7 @@ use super::{App, handler};
 use crate::{
     hooks::{HookError, HookResult},
     hotkey_recorder::{Mods, accelerator, is_modifier_text, key_from_text, physical_accelerator},
-    settings::{Settings, hotkey_symbols},
+    settings::{Settings, hotkey_display, hotkey_symbols},
     ui::SettingsWindow,
 };
 
@@ -40,13 +40,32 @@ impl Slot {
 
 pub(super) fn show_hotkeys(window: &SettingsWindow, settings: &Settings) {
     window.set_hotkey(settings.hotkey.as_str().into());
-    window.set_hotkey_shown(hotkey_symbols(&settings.hotkey).into());
+    window.set_hotkey_shown(hotkey_display(&settings.hotkey).into());
     window.set_generator_hotkey(settings.generator_hotkey.as_str().into());
-    window.set_generator_hotkey_shown(hotkey_symbols(&settings.generator_hotkey).into());
+    window.set_generator_hotkey_shown(hotkey_display(&settings.generator_hotkey).into());
+}
+
+/// Slint reports ⌘ as `control` and ⌃ as `meta` on macOS; on Windows `control` is Ctrl and
+/// `meta` is the Win key.
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "mirrors the Slint callback"
+)]
+fn slint_mods(control: bool, meta: bool, alt: bool, shift: bool) -> Mods {
+    let (cmd, ctrl) = if cfg!(windows) {
+        (meta, control)
+    } else {
+        (control, meta)
+    };
+    Mods {
+        cmd,
+        ctrl,
+        alt,
+        shift,
+    }
 }
 
 impl<S: VaultService> App<S> {
-    /// Slint reports ⌘ as `control` and ⌃ as `meta` on macOS.
     pub(super) fn bind_hotkeys(&self, window: &SettingsWindow) {
         window.on_hotkey_accepted(handler!(self, |app, accelerator| {
             app.accept_hotkey(Slot::QuickPanel, &accelerator);
@@ -61,12 +80,7 @@ impl<S: VaultService> App<S> {
                 app.record_text(
                     Slot::QuickPanel,
                     &text,
-                    Mods {
-                        cmd: control,
-                        ctrl: meta,
-                        alt,
-                        shift,
-                    },
+                    slint_mods(control, meta, alt, shift),
                 )
             }
         ));
@@ -77,12 +91,7 @@ impl<S: VaultService> App<S> {
                 app.record_text(
                     Slot::Generator,
                     &text,
-                    Mods {
-                        cmd: control,
-                        ctrl: meta,
-                        alt,
-                        shift,
-                    },
+                    slint_mods(control, meta, alt, shift),
                 )
             }
         ));
@@ -103,7 +112,7 @@ impl<S: VaultService> App<S> {
     /// Records by physical key before Slint sees the press: Slint's key text is what the layout
     /// typed (⌥G gives "©", ⌥E is a dead key Slint drops, a Cyrillic layout gives "п"), while
     /// the daemon registers the physical key. Presses this cannot record (Esc, Delete, a key
-    /// without ⌘/⌥/⌃) go on to the recorder's own handling. A no-op off the winit backend.
+    /// without a modifier the recorder accepts) go on to the recorder's own handling. A no-op off the winit backend.
     fn filter_recorder_keys(&self, window: &SettingsWindow) {
         let app = std::rc::Weak::clone(&self.me);
         let weak = window.as_weak();

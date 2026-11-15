@@ -11,7 +11,10 @@ fn the_manager_shows_its_hints() {
     h.app.start(false);
     let manager = h.app.manager_window().expect("manager");
     assert!(exists(&manager, "New item"), "the icon-only New button");
-    assert!(exists(&manager, "⌘F"), "the search field's key cap");
+    assert!(
+        exists(&manager, if cfg!(windows) { "Ctrl+F" } else { "⌘F" }),
+        "the search field's key cap"
+    );
     assert!(exists(&manager, "Lock"), "the icon-only Lock button");
 }
 

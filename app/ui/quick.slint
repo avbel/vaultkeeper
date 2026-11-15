@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Btn, BtnKind, Divider, EmptyState, Field, Icon, KeyCap, Toast } from "kit.slint";
 import { ItemRow, RowData } from "row.slint";
 
@@ -215,11 +216,11 @@ export component QuickPanel inherits Window {
                         alignment: center;
                         spacing: Theme.s3;
                         Hint { enter: true; text: "password"; }
-                        Hint { key: "⌘"; enter: true; text: "TOTP"; }
-                        Hint { key: "⇧"; enter: true; text: "username"; }
-                        Hint { key: "⌘⇧"; enter: true; text: "auto-type"; }
-                        Hint { key: "⌘O"; text: "open"; }
-                        Hint { key: "⌘L"; text: "lock"; }
+                        Hint { key: Keys.cmd-cap; enter: true; text: "TOTP"; }
+                        Hint { key: Keys.shift-cap; enter: true; text: "username"; }
+                        Hint { key: Keys.cmd-shift-cap; enter: true; text: "auto-type"; }
+                        Hint { key: Keys.cmd + "O"; text: "open"; }
+                        Hint { key: Keys.cmd + "L"; text: "lock"; }
                     }
                 }
             }

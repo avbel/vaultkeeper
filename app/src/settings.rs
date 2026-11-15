@@ -404,6 +404,59 @@ pub fn hotkey_symbols(accelerator: &str) -> String {
     text
 }
 
+/// The shortcut as this platform shows it: macOS symbols, or "Ctrl+Shift+Space" on Windows.
+#[must_use]
+pub fn hotkey_display(accelerator: &str) -> String {
+    if cfg!(windows) {
+        hotkey_names(accelerator)
+    } else {
+        hotkey_symbols(accelerator)
+    }
+}
+
+/// "Ctrl+Shift+Space": modifiers by name in Windows order (Ctrl, Alt, Shift, Win) joined with `+`.
+#[must_use]
+pub fn hotkey_names(accelerator: &str) -> String {
+    const ORDER: [(&str, &[&str]); 4] = [
+        (
+            "Ctrl",
+            &["ctrl", "control", "cmdorctrl", "commandorcontrol"],
+        ),
+        ("Alt", &["alt", "option"]),
+        ("Shift", &["shift"]),
+        ("Win", &["cmd", "command", "super", "meta"]),
+    ];
+    let parts: Vec<&str> = accelerator
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    let Some((key, modifiers)) = parts.split_last() else {
+        return String::new();
+    };
+    let mut names: Vec<String> = ORDER
+        .iter()
+        .filter(|(_, aliases)| {
+            modifiers
+                .iter()
+                .any(|modifier| aliases.contains(&modifier.to_ascii_lowercase().as_str()))
+        })
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    let key = key
+        .strip_prefix("Key")
+        .or_else(|| key.strip_prefix("Digit"))
+        .filter(|rest| rest.len() == 1)
+        .or_else(|| key.strip_prefix("Arrow"))
+        .unwrap_or(key);
+    names.push(if key.len() == 1 {
+        key.to_ascii_uppercase()
+    } else {
+        key.to_owned()
+    });
+    names.join("+")
+}
+
 pub const LOCK_OPTIONS: [LockTimeout; 6] = [
     LockTimeout::Minutes(1),
     LockTimeout::Minutes(5),
@@ -621,6 +674,16 @@ mod tests {
         assert_eq!(hotkey_symbols("Cmd+Enter"), "⌘↩");
         assert_eq!(hotkey_symbols("Cmd+Shift+Tab"), "⇧⌘⇥");
         assert_eq!(hotkey_symbols("Cmd+Alt+,"), "⌥⌘,");
+    }
+
+    #[test]
+    fn hotkey_names_follow_the_windows_convention() {
+        assert_eq!(hotkey_names("Ctrl+Shift+Space"), "Ctrl+Shift+Space");
+        assert_eq!(hotkey_names("Shift+Cmd+KeyK"), "Shift+Win+K");
+        assert_eq!(hotkey_names("shift+alt+ctrl+Digit1"), "Ctrl+Alt+Shift+1");
+        assert_eq!(hotkey_names("Ctrl+ArrowLeft"), "Ctrl+Left");
+        assert_eq!(hotkey_names("Ctrl+Alt+,"), "Ctrl+Alt+,");
+        assert_eq!(hotkey_names(""), "");
         assert_eq!(hotkey_symbols(""), "");
     }
 

@@ -109,8 +109,14 @@ impl ManifestBrowser {
     /// The full `HKCU` subkey whose default value points at this browser's manifest (§7.8).
     #[must_use]
     pub fn registry_key(self) -> String {
+        self.registry_key_under("Software")
+    }
+
+    /// [`Self::registry_key`] below another base key, so tests can write somewhere disposable.
+    #[must_use]
+    pub fn registry_key_under(self, base: &str) -> String {
         format!(
-            "Software\\{}\\NativeMessagingHosts\\{HOST_NAME}",
+            "{base}\\{}\\NativeMessagingHosts\\{HOST_NAME}",
             self.registry_software_key()
         )
     }

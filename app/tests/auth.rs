@@ -17,6 +17,16 @@ fn locked() -> common::Harness {
     })
 }
 
+/// The scroll view only lays out what fits the window, and Windows has more rows above the
+/// biometric one than macOS, so the button must be given room before it can be found.
+fn enrol_touch_id(settings: &impl slint::ComponentHandle) {
+    settings
+        .window()
+        .set_size(slint::LogicalSize::new(520.0, 1800.0));
+    pump();
+    click(settings, "Enrol Touch ID");
+}
+
 #[test]
 fn unlock_success_closes_the_lock_screen_and_opens_the_manager() {
     let h = locked();
@@ -84,7 +94,7 @@ fn touch_id_unlock_after_enrolment() {
     h.app.start(false);
     h.app.open_settings();
     let settings = h.app.settings_window().expect("settings");
-    click(&settings, "Enrol Touch ID");
+    enrol_touch_id(&settings);
     assert!(settings.get_biometric_enrolled());
     h.app.lock();
     let lock = h.app.lock_window().expect("lock window");
@@ -543,10 +553,7 @@ fn enter_on_an_empty_field_uses_touch_id_when_enrolled() {
     let h = harness(Setup::default());
     h.app.start(false);
     h.app.open_settings();
-    click(
-        &h.app.settings_window().expect("settings"),
-        "Enrol Touch ID",
-    );
+    enrol_touch_id(&h.app.settings_window().expect("settings"));
     h.app.lock();
     let lock = h.app.lock_window().expect("lock window");
     assert!(lock.get_biometric_available());
@@ -570,10 +577,7 @@ fn ask_to_unlock_on_start_offers_touch_id_once_and_stays_in_the_tray() {
         ..Setup::default()
     });
     h.app.open_settings();
-    click(
-        &h.app.settings_window().expect("settings"),
-        "Enrol Touch ID",
-    );
+    enrol_touch_id(&h.app.settings_window().expect("settings"));
     h.app.lock();
     h.app.start(true);
     assert!(
@@ -599,10 +603,7 @@ fn ask_to_unlock_on_start_waits_for_the_password_when_it_is_required() {
         ..Setup::default()
     });
     h.app.open_settings();
-    click(
-        &h.app.settings_window().expect("settings"),
-        "Enrol Touch ID",
-    );
+    enrol_touch_id(&h.app.settings_window().expect("settings"));
     h.app.lock();
     h.app.start(true);
     assert!(matches!(h.vault.state(), SessionState::Locked { .. }));
@@ -648,10 +649,7 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
     });
     h.app.start(false);
     h.app.open_settings();
-    click(
-        &h.app.settings_window().expect("settings"),
-        "Enrol Touch ID",
-    );
+    enrol_touch_id(&h.app.settings_window().expect("settings"));
     h.app.lock();
     let lock = h.app.lock_window().expect("lock");
     assert!(
@@ -677,10 +675,7 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
     });
     later.app.start(false);
     later.app.open_settings();
-    click(
-        &later.app.settings_window().expect("settings"),
-        "Enrol Touch ID",
-    );
+    enrol_touch_id(&later.app.settings_window().expect("settings"));
     later.app.lock();
     assert!(
         !later

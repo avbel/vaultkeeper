@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Icon, CopyBtn, KindChip } from "kit.slint";
 
 // Kinds: 0 login, 1 note, 2 card, 3 identity, 4 SSH key, 5 unsupported, 6 Send.
@@ -53,7 +54,7 @@ component AutoTypeBtn inherits Rectangle {
         spacing: Theme.s1;
         padding-right: (Theme.control-height - 16px * Theme.scale) / 2;
         if root.enabled && root.hint-shown: Text {
-            text: "⌘⇧↩";
+            text: Keys.cmd-shift + Keys.enter;
             color: Theme.text-muted;
             font-size: Theme.font-meta;
             vertical-alignment: center;

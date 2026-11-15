@@ -1,0 +1,12 @@
+// Shortcut labels per platform: ⌘ and ⇧ on macOS, Ctrl and Shift on Windows (Slint reports the
+// Ctrl key as `control` there, so the in-window shortcuts use the same key the hint names).
+export global Keys {
+    out property <bool> windows: Platform.os == OperatingSystemType.windows;
+    out property <string> cmd: root.windows ? "Ctrl+" : "⌘";
+    out property <string> shift: root.windows ? "Shift+" : "⇧";
+    out property <string> cmd-shift: root.cmd + root.shift;
+    out property <string> enter: root.windows ? "Enter" : "↩";
+    out property <string> cmd-cap: root.windows ? "Ctrl" : "⌘";
+    out property <string> shift-cap: root.windows ? "Shift" : "⇧";
+    out property <string> cmd-shift-cap: root.windows ? "Ctrl+Shift" : "⌘⇧";
+}

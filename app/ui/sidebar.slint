@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Field, Icon, IconBtn, InlineConfirm, KindChip, MenuRow, PopupPanel, Spinner } from "kit.slint";
 
 // Entry kinds: 0 section header, 1 filter, 2 folder (manageable), 3 organization, 4 collection.
@@ -262,7 +263,7 @@ export component Sidebar inherits Rectangle {
         y: Theme.s1;
         icon: @image-url("icons/sidebar.svg");
         label: root.collapsed ? "Show sidebar" : "Hide sidebar";
-        hint: "⌘\\";
+        hint: Keys.cmd + "\\";
         clicked => { root.toggle(); }
     }
 
