@@ -34,6 +34,8 @@ export component SettingsWindow inherits Window {
     in property <string> server;
     in-out property <int> theme-index;
     in-out property <int> tray-icon-index;
+    // "Tray icon" on Windows, "Menu bar icon" on macOS.
+    in property <string> tray-icon-label: "Menu bar icon";
     in-out property <int> scale-index;
     in property <[string]> lock-options;
     in-out property <int> lock-index;
@@ -176,11 +178,11 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 SettingRow {
-                    text: "Menu bar icon";
+                    text: root.tray-icon-label;
                     Segmented {
-                        width: 220px;
-                        label: "Menu bar icon";
-                        options: ["Auto", "White", "Black"];
+                        width: 240px;
+                        label: root.tray-icon-label;
+                        options: ["Auto", "White", "Black", "Blue"];
                         index <=> root.tray-icon-index;
                         selected(i) => { root.tray-icon-selected(i); }
                     }

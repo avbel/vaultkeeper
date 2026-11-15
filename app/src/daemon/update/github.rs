@@ -11,6 +11,9 @@ use super::release::{Release, ReleaseError, parse_latest};
 const LATEST: &str = "https://api.github.com/repos/avbel/vaultkeeper/releases/latest";
 /// Release zips are about 15 MB; anything far larger is not ours.
 const MAX_ZIP: u64 = 200 * 1024 * 1024;
+/// A minisign signature is a few hundred bytes; a cap guards the size check.
+#[cfg(windows)]
+const MAX_SIGNATURE: usize = 4096;
 const TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -96,17 +99,17 @@ impl GitHub {
         }
     }
 
-    /// Streams the release's zip into `dest`, refusing anything larger than the size GitHub
+    /// Streams the release's asset into `dest`, refusing anything larger than the size GitHub
     /// announced (and [`MAX_ZIP`]) or shorter than it.
     pub async fn download(&self, release: &Release, dest: &Path) -> anyhow::Result<()> {
         anyhow::ensure!(
-            release.zip_size > 0 && release.zip_size <= MAX_ZIP,
+            release.asset_size > 0 && release.asset_size <= MAX_ZIP,
             "unexpected update size {} bytes",
-            release.zip_size
+            release.asset_size
         );
         let mut response = self
             .http
-            .get(release.zip.clone())
+            .get(release.asset.clone())
             .timeout(DOWNLOAD_TIMEOUT)
             .send()
             .await?
@@ -116,17 +119,41 @@ impl GitHub {
         while let Some(chunk) = response.chunk().await? {
             written += chunk.len() as u64;
             anyhow::ensure!(
-                written <= release.zip_size,
+                written <= release.asset_size,
                 "the download is larger than announced"
             );
             file.write_all(&chunk).await?;
         }
         anyhow::ensure!(
-            written == release.zip_size,
+            written == release.asset_size,
             "the download stopped after {written} of {} bytes",
-            release.zip_size
+            release.asset_size
         );
         file.sync_all().await?;
+        Ok(())
+    }
+
+    /// Fetches the release's detached `.minisig` signature; it is tiny, so it is read whole.
+    #[cfg(windows)]
+    pub async fn download_signature(&self, release: &Release, dest: &Path) -> anyhow::Result<()> {
+        let url = release
+            .signature
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("the release has no signature"))?;
+        let response = self
+            .http
+            .get(url)
+            .timeout(TIMEOUT)
+            .send()
+            .await?
+            .error_for_status()?;
+        let body = response.bytes().await?;
+        anyhow::ensure!(
+            !body.is_empty() && body.len() <= MAX_SIGNATURE,
+            "unexpected signature size {} bytes",
+            body.len()
+        );
+        tokio::fs::write(dest, body).await?;
         Ok(())
     }
 
@@ -158,6 +185,10 @@ mod tests {
                 "name": "Vaultkeeper-v9.0.0-arm64.app.zip",
                 "browser_download_url": "https://github.com/avbel/vaultkeeper/releases/download/v9.0.0/Vaultkeeper-v9.0.0-arm64.app.zip",
                 "size": 5
+            }, {
+                "name": "Vaultkeeper-v9.0.0-arm64.app.zip.minisig",
+                "browser_download_url": "https://github.com/avbel/vaultkeeper/releases/download/v9.0.0/Vaultkeeper-v9.0.0-arm64.app.zip.minisig",
+                "size": 128
             }]
         })
     }
@@ -228,24 +259,25 @@ mod tests {
         let dest = dir.path().join("update.zip");
         let mut release = Release {
             version: "9.0.0".parse().expect("version"),
-            zip: Url::parse(&format!("{}/zip", server.uri())).expect("url"),
-            zip_size: 5,
+            asset: Url::parse(&format!("{}/zip", server.uri())).expect("url"),
+            asset_size: 5,
+            signature: None,
             page: Url::parse("https://github.com/avbel/vaultkeeper").expect("url"),
         };
         github.download(&release, &dest).await.expect("download");
         assert_eq!(std::fs::read(&dest).expect("read"), b"hello");
 
-        release.zip_size = 4;
+        release.asset_size = 4;
         assert!(
             github.download(&release, &dest).await.is_err(),
             "larger than announced"
         );
-        release.zip_size = 6;
+        release.asset_size = 6;
         assert!(
             github.download(&release, &dest).await.is_err(),
             "shorter than announced"
         );
-        release.zip_size = MAX_ZIP + 1;
+        release.asset_size = MAX_ZIP + 1;
         assert!(github.download(&release, &dest).await.is_err(), "too large");
     }
 }

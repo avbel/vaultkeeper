@@ -56,6 +56,8 @@ pub use protocol::{
     BrowserPrompt, BrowserReply, PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt,
     TouchIdFailure, TypingTarget, UiCommand, UiNotice,
 };
-pub use server::{DaemonEvent, ServeOptions, ServerHandle, serve, serve_with};
+pub use server::{
+    DaemonEvent, ServeOptions, ServerHandle, UiSink, serve, serve_inherited, serve_with,
+};
 pub use site_icons::{IconFuture, SiteIcon, SiteIconHost};
 pub use touch_id::TouchIdBackend;

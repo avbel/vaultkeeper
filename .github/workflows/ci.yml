@@ -33,7 +33,9 @@ jobs:
         run: scripts/check.sh
 
       - name: Tests
-        run: cargo test --workspace
+        # --no-fail-fast runs every test so one failure doesn't hide the rest.
+        # The skipped test needs a code-signing identity the GitHub macOS runner cannot trust.
+        run: cargo test --workspace --no-fail-fast -- --skip a_certificate_requirement_admits_every_build_signed_with_that_certificate
 
   windows:
     name: Windows
@@ -61,4 +63,4 @@ jobs:
 
       - name: Tests
         shell: bash
-        run: cargo test $WINDOWS_PACKAGES
+        run: cargo test $WINDOWS_PACKAGES --no-fail-fast

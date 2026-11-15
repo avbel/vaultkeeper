@@ -68,22 +68,28 @@ impl WindowsListener {
     ///
     /// Returns an error if the named pipe cannot be created, or if another program owns the name.
     pub(crate) fn new() -> Result<Self> {
+        Self::with_name(PIPE_NAME)
+    }
+
+    /// Binds to the given pipe path instead of the OpenSSH one. Tests use this to avoid colliding
+    /// with the runner's own OpenSSH agent service, which owns `PIPE_NAME`.
+    pub(crate) fn with_name(name: &str) -> Result<Self> {
         let sid = current_user_sid().map_err(|e| anyhow!("Unable to read the user SID: {e}"))?;
         let strict = format!("D:P(A;;0x12019b;;;{sid})(A;;RC;;;OW)");
-        let servers = match create_instances(&strict, false) {
+        let servers = match create_instances(name, &strict, false) {
             Ok(servers) => servers,
             Err(e) if is_access_denied(&e) => {
                 // The strict DACL denies FILE_CREATE_PIPE_INSTANCE to us too, so the remaining
                 // instances need a DACL that grants it; each one is locked down afterwards.
                 let builder = format!("D:P(A;;0x14019f;;;{sid})(A;;RC;;;OW)");
-                let servers = create_instances(&builder, true)?;
-                tighten(&servers, &strict)?;
+                let servers = create_instances(name, &builder, true)?;
+                tighten(name, &servers, &strict)?;
                 servers
             }
-            Err(e) => return Err(anyhow!("Unable to create named pipe {PIPE_NAME}: {e}")),
+            Err(e) => return Err(anyhow!("Unable to create named pipe {name}: {e}")),
         };
 
-        info!(pipe_name = PIPE_NAME, "Named pipe listener ready");
+        info!(pipe_name = name, "Named pipe listener ready");
 
         Ok(Self {
             pool: Arc::new(Pool {
@@ -112,7 +118,7 @@ impl Listener for WindowsListener {
 
 /// Creates the pool. The first instance sets `FILE_FLAG_FIRST_PIPE_INSTANCE`, which turns a name
 /// owned by another program into an error instead of silently attaching to its pipe.
-fn create_instances(sddl: &str, write_dac: bool) -> Result<Vec<NamedPipeServer>> {
+fn create_instances(name: &str, sddl: &str, write_dac: bool) -> Result<Vec<NamedPipeServer>> {
     let descriptor = SecurityDescriptor::from_sddl(sddl)?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())?,
@@ -129,21 +135,21 @@ fn create_instances(sddl: &str, write_dac: bool) -> Result<Vec<NamedPipeServer>>
         // SAFETY: `attributes` is a live, initialised SECURITY_ATTRIBUTES whose descriptor is
         // owned by `descriptor`; both outlive every call in the loop.
         let created = unsafe {
-            options.create_with_security_attributes_raw(PIPE_NAME, (&raw mut attributes).cast())
+            options.create_with_security_attributes_raw(name, (&raw mut attributes).cast())
         };
         match created {
             Ok(server) => servers.push(server),
             Err(e) if index == 0 && is_access_denied_io(&e) => {
                 return Err(anyhow::Error::new(e).context(NAME_TAKEN_MESSAGE));
             }
-            Err(e) => return Err(anyhow!("Unable to create named pipe {PIPE_NAME}: {e}")),
+            Err(e) => return Err(anyhow!("Unable to create named pipe {name}: {e}")),
         }
     }
     Ok(servers)
 }
 
 /// Replaces the DACL of every pooled instance; each instance keeps its own descriptor.
-fn tighten(servers: &[NamedPipeServer], strict_sddl: &str) -> Result<()> {
+fn tighten(name: &str, servers: &[NamedPipeServer], strict_sddl: &str) -> Result<()> {
     let descriptor = SecurityDescriptor::from_sddl(strict_sddl)?;
     for server in servers {
         // SAFETY: the instance handle is live, was opened with WRITE_DAC, and `descriptor`
@@ -155,7 +161,7 @@ fn tighten(servers: &[NamedPipeServer], strict_sddl: &str) -> Result<()> {
                 descriptor.0,
             )
         }
-        .map_err(|e| anyhow!("Unable to lock down named pipe {PIPE_NAME}: {e}"))?;
+        .map_err(|e| anyhow!("Unable to lock down named pipe {name}: {e}"))?;
     }
     Ok(())
 }
@@ -402,22 +408,32 @@ fn get_peer_info(server: &NamedPipeServer) -> Option<PeerInfo> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use tokio::net::windows::named_pipe::ClientOptions;
 
     use super::*;
 
+    // The GitHub runner's own OpenSSH agent service owns PIPE_NAME, so tests bind to unique names.
+    fn pipe_name() -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!(r"\\.\pipe\vk-ssh-test-{}-{}", std::process::id(), counter)
+    }
+
     #[serial_test::serial]
     #[tokio::test]
     async fn test_new_creates_pipe() {
-        WindowsListener::new().unwrap();
+        WindowsListener::with_name(&pipe_name()).unwrap();
     }
 
     #[serial_test::serial]
     #[tokio::test]
     async fn test_second_listener_is_refused_with_the_service_hint() {
-        let _first = WindowsListener::new().unwrap();
+        let name = pipe_name();
+        let _first = WindowsListener::with_name(&name).unwrap();
 
-        let error = WindowsListener::new().err().unwrap();
+        let error = WindowsListener::with_name(&name).err().unwrap();
 
         assert!(error.to_string().contains("OpenSSH Authentication Agent"));
     }
@@ -425,9 +441,10 @@ mod tests {
     #[serial_test::serial]
     #[tokio::test]
     async fn test_get_peer_info_connected_client_returns_some() {
-        let mut listener = WindowsListener::new().unwrap();
+        let name = pipe_name();
+        let mut listener = WindowsListener::with_name(&name).unwrap();
         // Keep the client alive so the connection stays open for the duration of the check
-        let _client = ClientOptions::new().open(PIPE_NAME).unwrap();
+        let _client = ClientOptions::new().open(&name).unwrap();
 
         let connection = listener.accept().await.unwrap();
 
@@ -437,9 +454,10 @@ mod tests {
     #[serial_test::serial]
     #[tokio::test]
     async fn test_instance_is_recycled_after_the_client_disconnects() {
-        let mut listener = WindowsListener::new().unwrap();
+        let name = pipe_name();
+        let mut listener = WindowsListener::with_name(&name).unwrap();
         for _ in 0..=POOL_SIZE {
-            let client = ClientOptions::new().open(PIPE_NAME).unwrap();
+            let client = ClientOptions::new().open(&name).unwrap();
             let connection = listener.accept().await.unwrap();
             drop(connection);
             drop(client);

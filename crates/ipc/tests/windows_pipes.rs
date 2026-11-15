@@ -107,3 +107,13 @@ async fn a_verifier_for_another_executable_rejects_our_peer() {
     let foreign = SameExecutable::new(Path::new(r"C:\Windows\explorer.exe")).expect("verifier");
     assert!(!foreign.verify(&peer));
 }
+
+#[tokio::test]
+async fn the_ui_pipe_serves_its_server_end_to_the_adopted_client() {
+    let mut pipe = vk_ipc::transport::UiPipe::create().expect("create");
+    assert!(pipe.client_handle().is_some());
+    // This process is both ends here, so the parent-pid check of `adopt_ui_pipe` is not exercised;
+    // the daemon-side pid check already ran inside `create`.
+    pipe.close_client();
+    drop(pipe.into_stream());
+}

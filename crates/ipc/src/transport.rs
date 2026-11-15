@@ -16,9 +16,29 @@ pub(crate) mod unix;
 pub use unix::{Listener, ReadHalf, Stream, WriteHalf, connect};
 
 #[cfg(windows)]
+mod inherited;
+#[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub use inherited::{UiPipe, adopt_ui_pipe};
+#[cfg(windows)]
 pub use windows::{Listener, ReadHalf, Stream, WriteHalf, connect};
+
+/// The name of one UI channel's pipe. 128 random bits make it unguessable, but pipe names can be
+/// listed, so the daemon still checks who connected (`docs/solutions/windows-support.md` §5.2).
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows UI channel uses it")
+)]
+pub(crate) fn ui_pipe_name(random: [u8; 16]) -> String {
+    use std::fmt::Write as _;
+
+    let mut name = String::from(r"\\.\pipe\vaultkeeper.ui.");
+    for byte in random {
+        let _ = write!(name, "{byte:02x}");
+    }
+    name
+}
 
 /// Where a local IPC server listens.
 ///
@@ -95,6 +115,17 @@ impl From<&PathBuf> for Endpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ui_pipe_name_is_the_random_bytes_in_lowercase_hex() {
+        let mut random = [0_u8; 16];
+        random[0] = 0xab;
+        random[15] = 0x0f;
+        assert_eq!(
+            ui_pipe_name(random),
+            r"\\.\pipe\vaultkeeper.ui.ab00000000000000000000000000000f"
+        );
+    }
 
     #[test]
     fn endpoints_expose_only_their_own_kind() {

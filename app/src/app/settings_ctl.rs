@@ -8,12 +8,22 @@ use vk_vault::VaultService;
 use super::{App, handler, hide, retire, show};
 use crate::{
     settings::{
-        CLIPBOARD_OPTIONS, LOCK_OPTIONS, Settings, SshApproval, TextScale, ThemeChoice, option_at,
-        option_index,
+        CLIPBOARD_OPTIONS, LOCK_OPTIONS, Settings, SshApproval, TextScale, ThemeChoice,
+        TrayIconChoice, option_at, option_index,
     },
     ui::SettingsWindow,
     viewmodel::host,
 };
+
+/// The tray icon is a menu bar icon on macOS and a taskbar icon on Windows.
+#[must_use]
+pub fn tray_icon_label() -> &'static str {
+    if cfg!(windows) {
+        "Tray icon"
+    } else {
+        "Menu bar icon"
+    }
+}
 
 fn cli_path_setup() -> String {
     std::env::current_exe()
@@ -79,6 +89,7 @@ impl<S: VaultService> App<S> {
         );
         window.set_theme_index(settings.theme.index());
         window.set_tray_icon_index(settings.tray_icon.index());
+        window.set_tray_icon_label(tray_icon_label().into());
         window.set_scale_index(settings.text_scale.index());
         let lock_labels: Vec<SharedString> = LOCK_OPTIONS
             .iter()
@@ -167,7 +178,7 @@ impl<S: VaultService> App<S> {
             }
         }));
         window.on_tray_icon_selected(handler!(self, |app, index| {
-            if let Some(choice) = ThemeChoice::from_index(index) {
+            if let Some(choice) = TrayIconChoice::from_index(index) {
                 app.update_settings(|settings| settings.tray_icon = choice);
             }
         }));

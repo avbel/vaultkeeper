@@ -12,7 +12,7 @@ use super::{
     routing::{self, Effect, TrayAction},
 };
 use crate::{
-    settings::ThemeChoice,
+    settings::TrayIconChoice,
     ui::TrayIcon,
     viewmodel::{host, local_time, tray_sync_label},
 };
@@ -100,15 +100,18 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
 /// The bar's appearance follows the wallpaper; `follow_menu_bar` calls this when it changes.
 /// Before the status item has a window the system appearance is the best guess. The Settings
 /// choice overrides both; the icon is the opposite shade of the bar it must read on,
-/// so "White" is the scheme of a dark bar.
+/// so "White" is the scheme of a dark bar. `Blue` ignores the bar entirely.
 fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
-    let dark = match daemon.settings().tray_icon {
-        ThemeChoice::Light => Some(true),
-        ThemeChoice::Dark => Some(false),
-        ThemeChoice::System => {
+    let choice = daemon.settings().tray_icon;
+    let dark = match choice {
+        TrayIconChoice::Blue => None,
+        TrayIconChoice::White => Some(true),
+        TrayIconChoice::Black => Some(false),
+        TrayIconChoice::Auto => {
             crate::os::appkit::menu_bar_dark().or_else(crate::os::appkit::system_dark)
         }
     };
+    tray.set_blue_icon(choice == TrayIconChoice::Blue);
     tray.set_menu_bar_scheme(match dark {
         Some(true) => ColorScheme::Dark,
         Some(false) => ColorScheme::Light,

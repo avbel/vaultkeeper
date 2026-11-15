@@ -138,6 +138,49 @@ pub struct Daemon {
     restart: Mutex<Option<PathBuf>>,
 }
 
+/// What the launcher needs to hand a UI process its channel: nothing on macOS, where the UI
+/// connects to `ui.sock`, and the sink for the server end of each spawned process's pipe on Windows.
+#[cfg(not(windows))]
+type UiLink = ();
+#[cfg(windows)]
+type UiLink = vk_ipc::UiSink;
+
+#[cfg(not(windows))]
+async fn listen_ui(
+    data_dir: &Path,
+    vault: Arc<Vault>,
+    queue: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> anyhow::Result<(ServerHandle, UiLink)> {
+    let ui_socket = layout::socket_path(&layout::ui_endpoint(data_dir))
+        .context("the UI channel is not a socket file")?;
+    let server = vk_ipc::serve_with(ui_socket, vault, queue, options)
+        .await
+        .context("listen on the UI socket")?;
+    Ok((server, ()))
+}
+
+#[cfg(windows)]
+#[allow(clippy::unused_async, reason = "keeps the macOS signature")]
+async fn listen_ui(
+    _data_dir: &Path,
+    vault: Arc<Vault>,
+    queue: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> anyhow::Result<(ServerHandle, UiLink)> {
+    Ok(vk_ipc::serve_inherited(vault, queue, options))
+}
+
+#[cfg(not(windows))]
+fn launcher(ui_exe: Option<PathBuf>, (): UiLink) -> Launcher {
+    Launcher::new(ui_exe)
+}
+
+#[cfg(windows)]
+fn launcher(ui_exe: Option<PathBuf>, sink: UiLink) -> Launcher {
+    Launcher::new(ui_exe).with_ui_sink(sink)
+}
+
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -180,14 +223,10 @@ impl Daemon {
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
         .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>)
         .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))));
-        let ui_socket = layout::socket_path(&layout::ui_endpoint(&data_dir))
-            .context("the UI channel is not a socket file")?;
-        let server = vk_ipc::serve_with(ui_socket, Arc::clone(&vault), queue, options)
-            .await
-            .context("listen on the UI socket")?;
+        let (server, ui_link) = listen_ui(&data_dir, Arc::clone(&vault), queue, options).await?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
         let updater = if self_update {
-            match update::Updater::new(data_dir.join("update")) {
+            match update::Updater::new(&data_dir) {
                 Ok(updater) => Some(Arc::new(updater)),
                 Err(error) => {
                     tracing::warn!(error = format!("{error:#}"), "updates are off");
@@ -211,7 +250,7 @@ impl Daemon {
             data_dir,
             events,
             server: Mutex::new(Some(server)),
-            launcher: Launcher::new(ui_exe),
+            launcher: launcher(ui_exe, ui_link),
             hang: HangWatch::new(ui_hang_after),
             activity: Activity::new(),
             lock_wake: Notify::new(),

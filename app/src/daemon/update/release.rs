@@ -46,8 +46,11 @@ impl Version {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub version: Version,
-    pub zip: Url,
-    pub zip_size: u64,
+    pub asset: Url,
+    pub asset_size: u64,
+    /// Only Windows requires and fetches a detached signature; macOS trusts the bundle's code
+    /// signature alone.
+    pub signature: Option<Url>,
     pub page: Url,
 }
 
@@ -83,8 +86,24 @@ struct WireAsset {
 }
 
 #[must_use]
-pub fn zip_name(version: Version) -> String {
-    format!("Vaultkeeper-v{version}-arm64.app.zip")
+pub fn asset_name(version: Version) -> String {
+    if cfg!(target_os = "windows") {
+        format!("Vaultkeeper-v{version}-x64-setup.exe")
+    } else {
+        format!("Vaultkeeper-v{version}-arm64.app.zip")
+    }
+}
+
+#[must_use]
+pub fn signature_name(version: Version) -> String {
+    format!("{}.minisig", asset_name(version))
+}
+
+fn find_asset<'a>(wire: &'a Wire, name: &str) -> Result<&'a WireAsset, ReleaseError> {
+    wire.assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .ok_or_else(|| ReleaseError::MissingAsset(name.to_owned()))
 }
 
 /// `None` for a draft or a pre-release (`/releases/latest` excludes both; this is a second
@@ -96,16 +115,19 @@ pub fn parse_latest(json: &[u8]) -> Result<Option<Release>, ReleaseError> {
         return Ok(None);
     }
     let version: Version = wire.tag_name.parse()?;
-    let name = zip_name(version);
-    let asset = wire
-        .assets
-        .iter()
-        .find(|asset| asset.name == name)
-        .ok_or(ReleaseError::MissingAsset(name))?;
+    let asset = find_asset(&wire, &asset_name(version))?;
+    let signature = if cfg!(windows) {
+        Some(github_url(
+            &find_asset(&wire, &signature_name(version))?.browser_download_url,
+        )?)
+    } else {
+        None
+    };
     Ok(Some(Release {
         version,
-        zip: github_url(&asset.browser_download_url)?,
-        zip_size: asset.size,
+        asset: github_url(&asset.browser_download_url)?,
+        asset_size: asset.size,
+        signature,
         page: github_url(&wire.html_url)?,
     }))
 }
@@ -130,7 +152,8 @@ mod tests {
             "prerelease": false,
             "assets": [
                 { "name": "SHA256SUMS", "browser_download_url": "https://github.com/a/b", "size": 1 },
-                { "name": asset, "browser_download_url": url, "size": 4096 }
+                { "name": asset, "browser_download_url": url, "size": 4096 },
+                { "name": format!("{asset}.minisig"), "browser_download_url": format!("{url}.minisig"), "size": 128 }
             ]
         })
         .to_string()
@@ -172,8 +195,12 @@ mod tests {
             .expect("parse")
             .expect("a release");
         assert_eq!(release.version, "0.2.0".parse().expect("version"));
-        assert_eq!(release.zip.as_str(), ZIP_URL);
-        assert_eq!(release.zip_size, 4096);
+        assert_eq!(release.asset.as_str(), ZIP_URL);
+        assert_eq!(release.asset_size, 4096);
+        assert_eq!(
+            release.signature.as_ref().map(Url::as_str),
+            cfg!(windows).then_some(format!("{ZIP_URL}.minisig").as_str())
+        );
         assert!(release.page.as_str().ends_with("/releases/tag/v0.2.0"));
     }
 

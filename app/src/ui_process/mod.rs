@@ -1,8 +1,9 @@
 //! `vaultkeeper --ui`: the windows. Started by the daemon on demand, it proxies `VaultService` to the
-//! daemon over `ui.sock`, shows what the daemon asks for, and exits 120 s after its last window
+//! daemon over `ui.sock` (an inherited pipe on Windows), shows what the daemon asks for, and exits 120 s after its last window
 //! closed, at once when the daemon goes away. Copies go to the daemon, which clears them.
 
 pub mod bridge;
+pub mod channel;
 pub mod linger;
 
 use std::{
@@ -22,14 +23,15 @@ use self::{
 use crate::{
     app::{App, UiCommand},
     hooks::Hooks,
-    os::{Notifier, layout::ui_endpoint},
+    os::Notifier,
     run::{Backend, UiOptions, run_ui, select_backend},
 };
 
 /// Activity notices reset the daemon's lock timer, which counts in minutes.
 const ACTIVITY_EVERY: Duration = Duration::from_secs(30);
 
-pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
+pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow::Result<()> {
+    channel::check(pipe)?;
     let data_dir = crate::os::layout::data_dir().context("locate the data directory")?;
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -38,7 +40,7 @@ pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
         .enable_all()
         .build()
         .context("start the async runtime")?;
-    let (remote, events) = match runtime.block_on(RemoteVault::connect(ui_endpoint(&data_dir))) {
+    let (remote, events) = match runtime.block_on(channel::connect(&data_dir, pipe)) {
         Ok(connected) => connected,
         Err(IpcError::Busy) => {
             tracing::info!("another UI process is connected to the daemon");

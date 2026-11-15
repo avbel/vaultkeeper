@@ -263,9 +263,19 @@ impl Stream {
     }
 
     /// A client pipe: no pool to recycle and no idle-timeout budget.
-    fn client(client: NamedPipeClient) -> Self {
+    pub(super) fn client(client: NamedPipeClient) -> Self {
         Self {
             inner: Some(Inner::Client(client)),
+            recycle: None,
+            silence: None,
+        }
+    }
+
+    /// A server instance that is not part of a pool, with no silence budget: its client is the
+    /// UI process the daemon just spawned.
+    pub(super) fn server(server: NamedPipeServer) -> Self {
+        Self {
+            inner: Some(Inner::Server(server)),
             recycle: None,
             silence: None,
         }
@@ -454,7 +464,7 @@ fn verify_server(client: &NamedPipeClient) -> io::Result<()> {
 
 /// Reads the peer's pid and session off a connected pipe handle. `peer_is_server` names which side
 /// the handle we hold is on, so the peer is the other one.
-fn credentials(handle: RawHandle, peer_is_server: bool) -> io::Result<PeerCredentials> {
+pub(super) fn credentials(handle: RawHandle, peer_is_server: bool) -> io::Result<PeerCredentials> {
     let mut pid = 0_u32;
     let mut session = 0_u32;
     // SAFETY: the handle is live and connected; both out pointers are ours.

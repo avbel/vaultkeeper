@@ -35,11 +35,15 @@ type Frame = Zeroizing<Vec<u8>>;
 
 pub(super) async fn handle<S: VaultService>(
     stream: Stream,
-    peer: PeerCredentials,
+    peer: Option<PeerCredentials>,
     shared: Arc<Shared<S>>,
     stop: watch::Receiver<bool>,
 ) {
-    if peer.uid != shared.uid || !shared.verifier.verify(&peer) {
+    // `None`: the daemon handed in a channel it made for the process it spawned.
+    let pid = peer.as_ref().map(|peer| peer.pid);
+    if let Some(peer) = &peer
+        && (peer.uid != shared.uid || !shared.verifier.verify(peer))
+    {
         tracing::warn!(
             uid = peer.uid,
             pid = peer.pid,
@@ -49,8 +53,8 @@ pub(super) async fn handle<S: VaultService>(
         return;
     }
     match accept(stream, &shared, stop).await {
-        Ok(()) => tracing::debug!(pid = peer.pid, "UI process disconnected"),
-        Err(error) => tracing::info!(%error, pid = peer.pid, "IPC connection ended"),
+        Ok(()) => tracing::debug!(pid, "UI process disconnected"),
+        Err(error) => tracing::info!(%error, pid, "IPC connection ended"),
     }
 }
 

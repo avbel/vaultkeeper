@@ -15,6 +15,56 @@ pub enum ThemeChoice {
     Dark,
 }
 
+/// Tray icon style. `Auto` follows the menu bar (macOS) or the taskbar theme (Windows); `White`
+/// and `Black` are the monochrome glyphs; `Blue` is the brand colour, independent of the bar.
+/// The wire names stay the old `system`/`light`/`dark` so a file written by this build still
+/// loads in a released one; the new names are accepted as aliases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayIconChoice {
+    #[serde(rename = "system", alias = "auto")]
+    Auto,
+    #[serde(rename = "light", alias = "white")]
+    White,
+    #[serde(rename = "dark", alias = "black")]
+    Black,
+    Blue,
+}
+
+impl Default for TrayIconChoice {
+    #[cfg(windows)]
+    fn default() -> Self {
+        Self::Blue
+    }
+    #[cfg(not(windows))]
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl TrayIconChoice {
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::Auto => 0,
+            Self::White => 1,
+            Self::Black => 2,
+            Self::Blue => 3,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Auto),
+            1 => Some(Self::White),
+            2 => Some(Self::Black),
+            3 => Some(Self::Blue),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LockTimeout {
@@ -119,9 +169,8 @@ impl WindowGeometry {
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeChoice,
-    /// Menu bar icon colour: `System` follows the menu bar, `Light` is the white icon, `Dark` the
-    /// black one.
-    pub tray_icon: ThemeChoice,
+    /// Tray icon style (see [`TrayIconChoice`]).
+    pub tray_icon: TrayIconChoice,
     pub text_scale: TextScale,
     /// Website icons on login rows, fetched through the account's server.
     pub show_site_icons: bool,
@@ -169,7 +218,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::System,
-            tray_icon: ThemeChoice::System,
+            tray_icon: TrayIconChoice::default(),
             text_scale: TextScale::Default,
             show_site_icons: true,
             manager_geometry: None,
@@ -568,7 +617,7 @@ mod tests {
     fn json_round_trips_every_field() {
         let settings = Settings {
             theme: ThemeChoice::Dark,
-            tray_icon: ThemeChoice::Light,
+            tray_icon: TrayIconChoice::White,
             text_scale: TextScale::Larger,
             show_site_icons: false,
             manager_geometry: Some(WindowGeometry {
@@ -697,5 +746,60 @@ mod tests {
             assert_eq!(ThemeChoice::from_index(choice.index()), Some(choice));
         }
         assert_eq!(ThemeChoice::from_index(3), None);
+    }
+
+    #[test]
+    fn tray_icon_index_round_trips() {
+        for choice in [
+            TrayIconChoice::Auto,
+            TrayIconChoice::White,
+            TrayIconChoice::Black,
+            TrayIconChoice::Blue,
+        ] {
+            assert_eq!(TrayIconChoice::from_index(choice.index()), Some(choice));
+        }
+        assert_eq!(TrayIconChoice::from_index(4), None);
+        assert_eq!(TrayIconChoice::from_index(-1), None);
+    }
+
+    #[test]
+    fn old_tray_icon_names_still_load() {
+        for (json, expected) in [
+            (r#"{"tray_icon":"system"}"#, TrayIconChoice::Auto),
+            (r#"{"tray_icon":"light"}"#, TrayIconChoice::White),
+            (r#"{"tray_icon":"dark"}"#, TrayIconChoice::Black),
+            (r#"{"tray_icon":"auto"}"#, TrayIconChoice::Auto),
+            (r#"{"tray_icon":"white"}"#, TrayIconChoice::White),
+            (r#"{"tray_icon":"black"}"#, TrayIconChoice::Black),
+        ] {
+            let settings: Settings = serde_json::from_str(json).expect(json);
+            assert_eq!(settings.tray_icon, expected, "{json}");
+        }
+    }
+
+    #[test]
+    fn tray_icon_blue_round_trips() {
+        let settings = Settings {
+            tray_icon: TrayIconChoice::Blue,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<Settings>(&json)
+                .expect("decode")
+                .tray_icon,
+            TrayIconChoice::Blue
+        );
+        assert!(json.contains(r#""tray_icon":"blue""#), "{json}");
+    }
+
+    #[test]
+    fn tray_icon_keeps_old_wire_names() {
+        let settings = Settings {
+            tray_icon: TrayIconChoice::White,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("encode");
+        assert!(json.contains(r#""tray_icon":"light""#), "{json}");
     }
 }

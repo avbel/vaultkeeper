@@ -42,10 +42,11 @@ const MAX_USER_ID_LEN: usize = 64;
 
 type WriteFn = Arc<dyn Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync>;
 
-/// Machine binding around a stored blob: DPAPI on Windows, absent elsewhere.
+/// Machine binding around a stored blob: DPAPI on Windows, absent elsewhere. `user_id` names the
+/// account, so the wrapper can bind each blob to it (DPAPI's entropy) and not only to the machine.
 pub trait BlobWrapper: Send + Sync + 'static {
-    fn wrap(&self, plaintext: &[u8]) -> Result<Vec<u8>, SecretStoreError>;
-    fn unwrap(&self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError>;
+    fn wrap(&self, user_id: &str, plaintext: &[u8]) -> Result<Vec<u8>, SecretStoreError>;
+    fn unwrap(&self, user_id: &str, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError>;
 }
 
 pub struct SealedFileStore {
@@ -120,7 +121,7 @@ impl SealedFileStore {
             return Ok(None);
         };
         let (nonce, body) = split_sealed(bytes.as_slice())?;
-        let ciphertext = self.unwrap(body)?;
+        let ciphertext = self.unwrap(user_id, body)?;
         let aad = associated_data(user_id, name);
         Aes256Gcm::new(&(*key).into())
             .decrypt(
@@ -143,7 +144,7 @@ impl SealedFileStore {
         let Some(bytes) = read_optional(&self.path(user_id, name))? else {
             return Ok(None);
         };
-        self.unwrap(bytes.as_slice()).map(Some)
+        self.unwrap(user_id, bytes.as_slice()).map(Some)
     }
 
     fn put_sealed(&self, user_id: &str, name: &str, secret: &[u8]) -> Result<(), SecretStoreError> {
@@ -160,7 +161,7 @@ impl SealedFileStore {
                 },
             )
             .map_err(|_| SecretStoreError::other("AES-GCM refused the secret"))?;
-        let body = self.wrap(&ciphertext)?;
+        let body = self.wrap(user_id, &ciphertext)?;
         let mut bytes = Vec::with_capacity(HEADER_LEN + body.len());
         bytes.extend_from_slice(MAGIC);
         bytes.push(VERSION);
@@ -175,20 +176,20 @@ impl SealedFileStore {
         name: &str,
         secret: &[u8],
     ) -> Result<(), SecretStoreError> {
-        let body = self.wrap(secret)?;
+        let body = self.wrap(user_id, secret)?;
         self.write_file(&self.path(user_id, name), &body)
     }
 
-    fn wrap(&self, data: &[u8]) -> Result<Vec<u8>, SecretStoreError> {
+    fn wrap(&self, user_id: &str, data: &[u8]) -> Result<Vec<u8>, SecretStoreError> {
         match &self.wrapper {
-            Some(wrapper) => wrapper.wrap(data),
+            Some(wrapper) => wrapper.wrap(user_id, data),
             None => Ok(data.to_vec()),
         }
     }
 
-    fn unwrap(&self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
+    fn unwrap(&self, user_id: &str, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
         match &self.wrapper {
-            Some(wrapper) => wrapper.unwrap(blob),
+            Some(wrapper) => wrapper.unwrap(user_id, blob),
             None => Ok(Zeroizing::new(blob.to_vec())),
         }
     }
@@ -348,11 +349,15 @@ mod tests {
     struct XorWrapper;
 
     impl BlobWrapper for XorWrapper {
-        fn wrap(&self, plaintext: &[u8]) -> Result<Vec<u8>, SecretStoreError> {
+        fn wrap(&self, _user_id: &str, plaintext: &[u8]) -> Result<Vec<u8>, SecretStoreError> {
             Ok(plaintext.iter().map(|byte| byte ^ 0x5a).collect())
         }
 
-        fn unwrap(&self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
+        fn unwrap(
+            &self,
+            _user_id: &str,
+            blob: &[u8],
+        ) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
             Ok(Zeroizing::new(
                 blob.iter().map(|byte| byte ^ 0x5a).collect(),
             ))

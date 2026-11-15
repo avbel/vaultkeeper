@@ -58,6 +58,12 @@ impl Stream {
     }
 }
 
+impl From<UnixStream> for Stream {
+    fn from(inner: UnixStream) -> Self {
+        Self { inner }
+    }
+}
+
 /// The read end of a [`Stream`], owned so it can move to its own task.
 pub type ReadHalf = OwnedReadHalf;
 /// The write end of a [`Stream`], owned so it can move to its own task.

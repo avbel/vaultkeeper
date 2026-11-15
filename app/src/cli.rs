@@ -93,6 +93,8 @@ pub struct Args {
     pub ui: bool,
     /// With `--ui`: no unlock happened since the daemon started.
     pub first_unlock: bool,
+    /// With `--ui` on Windows: the inherited pipe handle that carries the daemon connection.
+    pub ui_pipe: Option<usize>,
     pub no_activate: bool,
     pub tray: bool,
     pub offline: bool,
@@ -123,6 +125,8 @@ pub enum CliError {
     Select,
     #[error("--wait-for needs a process id")]
     WaitFor,
+    #[error("--ui-pipe needs a handle value")]
+    UiPipe,
 }
 
 fn parse_size(text: Option<&str>) -> Result<(u32, u32), CliError> {
@@ -161,6 +165,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
                         .and_then(|pid| pid.parse().ok())
                         .filter(|pid: &i32| *pid > 0)
                         .ok_or(CliError::WaitFor)?,
+                );
+            }
+            "--ui-pipe" => {
+                parsed.ui_pipe = Some(
+                    args.next()
+                        .and_then(|handle| handle.parse().ok())
+                        .filter(|handle: &usize| *handle != 0)
+                        .ok_or(CliError::UiPipe)?,
                 );
             }
             "-h" | "--help" => parsed.help = true,
@@ -252,6 +264,17 @@ mod tests {
     }
 
     #[test]
+    fn the_ui_pipe_is_a_nonzero_handle_value() {
+        assert_eq!(
+            args(&["--ui", "--ui-pipe", "4660"]).expect("args").ui_pipe,
+            Some(4660)
+        );
+        for bad in [&["--ui-pipe"][..], &["--ui-pipe", "0"], &["--ui-pipe", "x"]] {
+            assert_eq!(args(bad), Err(CliError::UiPipe));
+        }
+    }
+
+    #[test]
     fn rejects_unknown_and_bad_theme() {
         assert_eq!(
             args(&["--nope"]),
@@ -266,7 +289,10 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Mock,
-    Ui { first_unlock: bool },
+    Ui {
+        first_unlock: bool,
+        pipe: Option<usize>,
+    },
     Daemon(crate::daemon::routing::Launch),
 }
 
@@ -279,6 +305,7 @@ impl Args {
         } else if self.ui {
             Mode::Ui {
                 first_unlock: self.first_unlock,
+                pipe: self.ui_pipe,
             }
         } else if self.daemon || self.tray {
             Mode::Daemon(Launch::Tray)
@@ -310,12 +337,16 @@ mod mode_tests {
         assert_eq!(
             mode(&["--ui"]),
             Mode::Ui {
-                first_unlock: false
+                first_unlock: false,
+                pipe: None
             }
         );
         assert_eq!(
-            mode(&["--ui", "--first-unlock"]),
-            Mode::Ui { first_unlock: true }
+            mode(&["--ui", "--first-unlock", "--ui-pipe", "812"]),
+            Mode::Ui {
+                first_unlock: true,
+                pipe: Some(812)
+            }
         );
         assert_eq!(mode(&["--mock", "--tray"]), Mode::Mock);
     }

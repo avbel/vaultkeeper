@@ -16,6 +16,9 @@ mod install;
 #[path = "install_unavailable.rs"]
 mod install;
 pub mod release;
+// Verification is called on Windows only; macOS relies on the bundle's code signature.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod signature;
 
 use std::{
     path::{Path, PathBuf},
@@ -84,6 +87,9 @@ impl Status {
 pub struct Updater {
     github: GitHub,
     installer: Result<Installer, Blocked>,
+    /// Owner-only root for downloaded assets, under the data directory.
+    #[cfg(windows)]
+    updates: PathBuf,
     /// Set when macOS refused the swap: later releases only link to their page.
     swap_refused: AtomicBool,
     status: watch::Sender<Status>,
@@ -95,9 +101,9 @@ pub struct Updater {
 }
 
 impl Updater {
-    /// `work` is an owner-only directory in the app's data directory.
-    pub fn new(work: PathBuf) -> anyhow::Result<Self> {
-        let installer = Installer::for_running_app(work);
+    /// `data_dir` is the app's data directory; updates and their downloads live under it.
+    pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
+        let installer = Installer::for_running_app(data_dir.join("update"));
         match &installer {
             // A development build run from target/ has no release to update to.
             #[cfg(target_os = "macos")]
@@ -108,6 +114,8 @@ impl Updater {
         Ok(Self {
             github: GitHub::new()?,
             installer,
+            #[cfg(windows)]
+            updates: data_dir.join("updates"),
             swap_refused: AtomicBool::new(false),
             status: watch::Sender::new(Status::Idle),
             wake: Notify::new(),
@@ -255,6 +263,7 @@ async fn check(updater: &Updater, manual: bool) -> Duration {
     CHECK_EVERY
 }
 
+#[cfg(not(windows))]
 async fn download_and_stage(
     updater: &Updater,
     installer: &Installer,
@@ -266,6 +275,60 @@ async fn download_and_stage(
     // Unpacking and the signature check block; the daemon's multi-thread runtime moves other
     // tasks off this worker meanwhile.
     tokio::task::block_in_place(|| installer.stage(&zip, version))
+}
+
+#[cfg(windows)]
+async fn download_and_stage(
+    updater: &Updater,
+    installer: &Installer,
+    release: &Release,
+) -> anyhow::Result<PathBuf> {
+    // Fail closed before spending bandwidth on an update that can never verify.
+    signature::public_key()?;
+    let downloads = Downloads::create(&updater.updates)?;
+    let asset = downloads.path().join(release::asset_name(release.version));
+    let signature_file = downloads
+        .path()
+        .join(release::signature_name(release.version));
+    updater.github.download(release, &asset).await?;
+    updater
+        .github
+        .download_signature(release, &signature_file)
+        .await?;
+    let version = release.version;
+    tokio::task::block_in_place(|| {
+        signature::verify(&asset, &signature_file, release)?;
+        installer.stage(&asset, version)
+    })
+}
+
+/// A private, randomly named directory under the data directory (never the shared temp
+/// directory, where another process could swap a file between verification and use), removed
+/// when dropped.
+#[cfg(windows)]
+struct Downloads(PathBuf);
+
+#[cfg(windows)]
+impl Downloads {
+    fn create(root: &Path) -> anyhow::Result<Self> {
+        vk_platform::fs::ensure_private_dir(root)?;
+        let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
+        vk_platform::fs::ensure_private_dir(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Downloads {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            tracing::debug!(%error, "download directory not removed");
+        }
+    }
 }
 
 /// A refused swap (macOS may protect apps in `/Applications` from other apps) is not retried:
