@@ -14,11 +14,16 @@ export component TrayIcon inherits SystemTrayIcon {
     in property <ColorScheme> menu-bar-scheme: ColorScheme.unknown;
     // The brand-blue glyph ignores the bar appearance (the Windows default).
     in property <bool> blue-icon: false;
+    // Windows: the glyph rasterised at the notification area's pixel size; it replaces the SVG
+    // choice below once the daemon has rendered one.
+    in property <image> rendered-icon;
+    in property <bool> use-rendered-icon: false;
     // The update item ("Check for Updates…", "Install Vaultkeeper 0.2.0 and Restart", …); empty
     // hides it in a daemon that does not update itself.
     in property <string> update-label;
     in property <bool> update-enabled: true;
-    icon: root.blue-icon ? @image-url("icons/tray-blue.svg")
+    icon: root.use-rendered-icon ? root.rendered-icon
+        : root.blue-icon ? @image-url("icons/tray-blue.svg")
         : root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
         : @image-url("icons/tray-neutral.svg");

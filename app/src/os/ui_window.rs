@@ -19,8 +19,8 @@ fn accept_window(
 
 #[cfg(windows)]
 pub use windows::{
-    allow_foreground, bring_to_front, clear_ui_pid, set_ui_pid, trusted_parent_window,
-    window_handle,
+    allow_foreground, bring_to_front, clear_ui_pid, exclude_from_capture, set_capture_exclusion,
+    set_ui_pid, trusted_parent_window, window_handle,
 };
 
 #[cfg(not(windows))]
@@ -28,6 +28,12 @@ pub const fn allow_foreground(_pid: u32) {}
 
 #[cfg(not(windows))]
 pub const fn bring_to_front(_window: &slint::Window) {}
+
+#[cfg(not(windows))]
+pub const fn exclude_from_capture(_window: &slint::Window) {}
+
+#[cfg(not(windows))]
+pub const fn set_capture_exclusion(_enabled: bool) {}
 
 /// macOS has no parent window for the Touch ID sheet.
 #[cfg(not(windows))]
@@ -48,15 +54,23 @@ mod windows {
     use std::{
         ffi::c_void,
         ptr,
-        sync::atomic::{AtomicU32, Ordering},
+        sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
 
     use slint::winit_030::{
         WinitWindowAccessor,
         winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
+    use windows_sys::{
+        Win32::{
+            Foundation::{HWND, LPARAM},
+            System::Threading::GetCurrentThreadId,
+            UI::WindowsAndMessaging::{
+                AllowSetForegroundWindow, EnumThreadWindows, GetWindowThreadProcessId, IsWindow,
+                SetForegroundWindow, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+            },
+        },
+        core::BOOL,
     };
 
     use super::accept_window;
@@ -101,6 +115,52 @@ mod windows {
         // SAFETY: the handle belongs to this process's live window; a stale one only fails.
         if unsafe { SetForegroundWindow(ptr::with_exposed_provenance_mut::<c_void>(hwnd)) } == 0 {
             tracing::debug!("SetForegroundWindow refused");
+        }
+    }
+
+    /// Whether windows shown from now on are excluded from capture; mirrors the setting.
+    static CAPTURE_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+    /// Applies the setting to the windows that are already open and to every one shown later. A
+    /// toggle must take effect without reopening windows, and `WDA_NONE` has to be set back
+    /// explicitly because the exclusion is a property of the window, not of the process.
+    pub fn set_capture_exclusion(enabled: bool) {
+        CAPTURE_HIDDEN.store(enabled, Ordering::Release);
+        // SAFETY: the callback only reads its `LPARAM` flag and calls a thread-safe Win32 API on
+        // handles the enumeration just produced; it outlives the synchronous call.
+        unsafe {
+            EnumThreadWindows(
+                GetCurrentThreadId(),
+                Some(apply_to_thread_window),
+                LPARAM::from(enabled),
+            );
+        }
+    }
+
+    unsafe extern "system" fn apply_to_thread_window(hwnd: HWND, enabled: LPARAM) -> BOOL {
+        set_affinity(hwnd, enabled != 0);
+        1
+    }
+
+    /// Called when a window is shown; the native window only exists from then on.
+    pub fn exclude_from_capture(window: &slint::Window) {
+        if !CAPTURE_HIDDEN.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(hwnd) = window_handle(window).and_then(|hwnd| usize::try_from(hwnd).ok()) {
+            set_affinity(ptr::with_exposed_provenance_mut::<c_void>(hwnd), true);
+        }
+    }
+
+    fn set_affinity(hwnd: HWND, hidden: bool) {
+        let affinity = if hidden {
+            WDA_EXCLUDEFROMCAPTURE
+        } else {
+            WDA_NONE
+        };
+        // SAFETY: takes a handle value and a flag; a stale or foreign handle only makes it fail.
+        if unsafe { SetWindowDisplayAffinity(hwnd, affinity) } == 0 {
+            tracing::debug!(hidden, "SetWindowDisplayAffinity failed");
         }
     }
 

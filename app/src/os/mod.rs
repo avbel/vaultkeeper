@@ -15,6 +15,7 @@ mod misc;
 mod security_key;
 pub mod settings_file;
 pub mod startup_check;
+pub mod taskbar;
 pub mod ui_window;
 pub mod windows_shell;
 

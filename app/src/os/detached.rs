@@ -16,7 +16,7 @@ fn with_marker(args: &[String]) -> Vec<String> {
 }
 
 #[cfg(windows)]
-pub use self::windows::{relaunch_if_attached, start_daemon};
+pub use self::windows::{relaunch_if_attached, spawn_detached, start_daemon};
 
 #[cfg(windows)]
 mod windows {
@@ -52,7 +52,7 @@ mod windows {
         !unsafe { GetConsoleWindow() }.is_null()
     }
 
-    fn spawn_detached(exe: &Path, args: &[String]) -> io::Result<()> {
+    pub fn spawn_detached(exe: &Path, args: &[String]) -> io::Result<()> {
         let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
         let spawn = |creation_flags| {
             vk_win::spawn_hardened(

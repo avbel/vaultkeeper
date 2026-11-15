@@ -18,7 +18,9 @@ mod tray;
 pub mod tray_sync;
 pub mod update;
 
-use std::{path::Path, sync::Arc, time::Duration};
+#[cfg(not(windows))]
+use std::path::Path;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use vk_platform::single_instance;
@@ -60,6 +62,7 @@ impl TestOverrides {
 }
 
 /// The exit status that asks launchd's `KeepAlive` to start the (updated) app again.
+#[cfg(not(windows))]
 const RESTART_EXIT: i32 = 75;
 /// How long an updated app waits for the old daemon to finish shutting down.
 #[cfg(unix)]
@@ -144,6 +147,14 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     // Still holding the single-instance lock: a browser host or a Dock click must not become the
     // daemon between this one quitting and the updated one starting.
     if let Some(bundle) = daemon.restart_after_shutdown() {
+        #[cfg(windows)]
+        if let Err(error) = daemon.run_update_installer(&bundle) {
+            tracing::error!(
+                error = format!("{error:#}"),
+                "the update installer did not start"
+            );
+        }
+        #[cfg(not(windows))]
         relaunch(&bundle);
     }
     drop(instance);
@@ -159,6 +170,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
 /// daemon stays launchd's job and is restarted after a crash; the exit releases the lock.
 /// Otherwise LaunchServices opens a new instance, which waits for this process to exit before
 /// taking the single-instance lock.
+#[cfg(not(windows))]
 fn relaunch(bundle: &Path) {
     if vk_platform::autostart::started_by_login_agent() {
         tracing::info!("exiting for launchd to start the updated app");

@@ -12,10 +12,18 @@
 mod github;
 #[cfg(target_os = "macos")]
 mod install;
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+#[path = "install_windows.rs"]
+mod install;
+#[cfg(not(any(target_os = "macos", windows)))]
 #[path = "install_unavailable.rs"]
 mod install;
 pub mod release;
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows installer uses it")
+)]
+mod setup_policy;
 // Verification is called on Windows only; macOS relies on the bundle's code signature.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod signature;
@@ -33,9 +41,11 @@ use tokio::sync::{Notify, watch};
 use url::Url;
 use vk_vault::model::SessionState;
 
+#[cfg(not(windows))]
+use self::install::SwapError;
 use self::{
     github::{CheckError, GitHub},
-    install::{Blocked, Installer, SwapError},
+    install::{Blocked, Installer},
     release::{Release, Version},
 };
 use super::Daemon;
@@ -87,9 +97,6 @@ impl Status {
 pub struct Updater {
     github: GitHub,
     installer: Result<Installer, Blocked>,
-    /// Owner-only root for downloaded assets, under the data directory.
-    #[cfg(windows)]
-    updates: PathBuf,
     /// Set when macOS refused the swap: later releases only link to their page.
     swap_refused: AtomicBool,
     status: watch::Sender<Status>,
@@ -103,7 +110,8 @@ pub struct Updater {
 impl Updater {
     /// `data_dir` is the app's data directory; updates and their downloads live under it.
     pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
-        let installer = Installer::for_running_app(data_dir.join("update"));
+        let work = data_dir.join(if cfg!(windows) { "updates" } else { "update" });
+        let installer = Installer::for_running_app(work);
         match &installer {
             // A development build run from target/ has no release to update to.
             #[cfg(target_os = "macos")]
@@ -114,8 +122,6 @@ impl Updater {
         Ok(Self {
             github: GitHub::new()?,
             installer,
-            #[cfg(windows)]
-            updates: data_dir.join("updates"),
             swap_refused: AtomicBool::new(false),
             status: watch::Sender::new(Status::Idle),
             wake: Notify::new(),
@@ -123,6 +129,16 @@ impl Updater {
             install_requested: AtomicBool::new(false),
             staged: Mutex::new(None),
         })
+    }
+
+    /// Starts the verified installer after the daemon has shut down.
+    #[cfg(windows)]
+    pub fn run_installer(&self, setup: &Path) -> anyhow::Result<()> {
+        let installer = self
+            .installer
+            .as_ref()
+            .map_err(|blocked| anyhow::anyhow!("{blocked}"))?;
+        installer.run(setup)
     }
 
     #[must_use]
@@ -285,8 +301,9 @@ async fn download_and_stage(
 ) -> anyhow::Result<PathBuf> {
     // Fail closed before spending bandwidth on an update that can never verify.
     signature::public_key()?;
-    let downloads = Downloads::create(&updater.updates)?;
-    let asset = downloads.path().join(release::asset_name(release.version));
+    let downloads = installer.new_download()?;
+    let name = release::asset_name(release.version);
+    let asset = downloads.path().join(&name);
     let signature_file = downloads
         .path()
         .join(release::signature_name(release.version));
@@ -295,44 +312,29 @@ async fn download_and_stage(
         .github
         .download_signature(release, &signature_file)
         .await?;
-    let version = release.version;
     tokio::task::block_in_place(|| {
-        signature::verify(&asset, &signature_file, release)?;
-        installer.stage(&asset, version)
+        installer.stage(downloads, &name, |asset| {
+            signature::verify(asset, &signature_file, release).map_err(Into::into)
+        })
     })
 }
 
-/// A private, randomly named directory under the data directory (never the shared temp
-/// directory, where another process could swap a file between verification and use), removed
-/// when dropped.
+/// The daemon quits through its normal path (which closes the SSH, CLI, browser and UI servers
+/// and kills and waits for the UI process), then starts the installer; see
+/// [`Updater::run_installer`].
 #[cfg(windows)]
-struct Downloads(PathBuf);
-
-#[cfg(windows)]
-impl Downloads {
-    fn create(root: &Path) -> anyhow::Result<Self> {
-        vk_platform::fs::ensure_private_dir(root)?;
-        let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
-        vk_platform::fs::ensure_private_dir(&dir)?;
-        Ok(Self(dir))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Downloads {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.0) {
-            tracing::debug!(%error, "download directory not removed");
-        }
-    }
+fn install(daemon: &Arc<Daemon>, updater: &Updater, version: Version, staged: &Path, _page: Url) {
+    *updater
+        .staged
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+    tracing::info!(%version, "update verified; quitting to run the installer");
+    daemon.restart_for_update(staged.to_path_buf());
 }
 
 /// A refused swap (macOS may protect apps in `/Applications` from other apps) is not retried:
 /// this and later releases then only link to their page instead of downloading again.
+#[cfg(not(windows))]
 fn install(daemon: &Arc<Daemon>, updater: &Updater, version: Version, staged: &Path, page: Url) {
     let Ok(installer) = &updater.installer else {
         return;

@@ -151,6 +151,15 @@ impl Launcher {
         kill.is_some_and(|kill| kill.send(()).is_ok())
     }
 
+    /// Waits up to `limit` for the killed child to be reaped.
+    #[cfg(windows)]
+    pub async fn stopped(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while self.is_running() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     /// Spawns the UI unless one is connected or running. Must run inside the Tokio runtime
     /// (the child is reaped by a task); `on_exit` gets how long it ran.
     pub fn ensure(

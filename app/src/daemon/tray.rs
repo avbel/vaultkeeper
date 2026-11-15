@@ -2,7 +2,11 @@
 //! are routed like every other trigger, and it follows the vault and settings through watches on
 //! the Slint event loop.
 
-use std::{cell::RefCell, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+    time::Duration,
+};
 
 use slint::{ModelRc, SharedString, VecModel, language::ColorScheme};
 use vk_vault::{VaultService, model::SessionState};
@@ -12,6 +16,7 @@ use super::{
     routing::{self, Effect, TrayAction},
 };
 use crate::{
+    os::taskbar::{self, Glyph},
     settings::TrayIconChoice,
     ui::TrayIcon,
     viewmodel::{host, local_time, tray_sync_label},
@@ -38,6 +43,7 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     refresh(&tray, daemon);
     tray.show()?;
     follow_menu_bar(&tray, daemon);
+    follow_taskbar(&tray, daemon);
     watch(&tray, daemon)?;
     Ok(tray)
 }
@@ -100,13 +106,15 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
 /// The bar's appearance follows the wallpaper; `follow_menu_bar` calls this when it changes.
 /// Before the status item has a window the system appearance is the best guess. The Settings
 /// choice overrides both; the icon is the opposite shade of the bar it must read on,
-/// so "White" is the scheme of a dark bar. `Blue` ignores the bar entirely.
+/// so "White" is the scheme of a dark bar. `Blue` ignores the bar entirely. Windows has no
+/// template images, so there the glyph is rasterised for the taskbar's theme and pixel size.
 fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
     let choice = daemon.settings().tray_icon;
     let dark = match choice {
         TrayIconChoice::Blue => None,
         TrayIconChoice::White => Some(true),
         TrayIconChoice::Black => Some(false),
+        TrayIconChoice::Auto if cfg!(windows) => taskbar::taskbar_dark(),
         TrayIconChoice::Auto => {
             crate::os::appkit::menu_bar_dark().or_else(crate::os::appkit::system_dark)
         }
@@ -117,6 +125,39 @@ fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
         Some(false) => ColorScheme::Light,
         None => ColorScheme::Unknown,
     });
+    render_icon(tray, Glyph::choose(choice, dark));
+}
+
+/// Skips the work while neither the glyph nor the pixel size changed, because `refresh` runs on
+/// every vault and sync event.
+fn render_icon(tray: &TrayIcon, glyph: Glyph) {
+    let Some(px) = taskbar::icon_pixel_size() else {
+        return;
+    };
+    if RENDERED.get() == Some((glyph, px)) {
+        return;
+    }
+    let Some(image) = taskbar::rasterise(glyph, px) else {
+        tracing::warn!(?glyph, px, "cannot rasterise the tray icon");
+        return;
+    };
+    tray.set_rendered_icon(image);
+    tray.set_use_rendered_icon(true);
+    RENDERED.set(Some((glyph, px)));
+}
+
+/// The taskbar theme changes on a registry watcher thread; the refresh itself runs on the event
+/// loop.
+fn follow_taskbar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
+    let weak = tray.as_weak();
+    let daemon = Arc::clone(daemon);
+    let watch = taskbar::watch_taskbar_theme(move || {
+        let daemon = Arc::clone(&daemon);
+        if let Err(error) = weak.upgrade_in_event_loop(move |tray| refresh_scheme(&tray, &daemon)) {
+            tracing::debug!(%error, "tray gone before a taskbar theme change");
+        }
+    });
+    TASKBAR_WATCH.with_borrow_mut(|slot| *slot = watch);
 }
 
 /// Slint creates the status item on its first event-loop turn, so the window to observe does not
@@ -148,6 +189,8 @@ fn follow_menu_bar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
 }
 
 thread_local! {
+    static RENDERED: Cell<Option<(Glyph, u32)>> = const { Cell::new(None) };
+    static TASKBAR_WATCH: RefCell<Option<taskbar::ThemeWatch>> = const { RefCell::new(None) };
     static SCHEME_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
     static MENU_BAR_WATCH: RefCell<Option<crate::os::appkit::MenuBarWatch>> =
         const { RefCell::new(None) };

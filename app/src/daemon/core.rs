@@ -55,6 +55,10 @@ use crate::{
 const EVENT_QUEUE: usize = 32;
 const NOTICE_QUEUE: usize = 16;
 const APPROVAL_QUEUE: usize = 8;
+/// How long shutdown waits for the killed UI process to be gone before an installer may replace
+/// its exe.
+#[cfg(windows)]
+const UI_EXIT_WAIT: Duration = Duration::from_secs(3);
 /// A UI whose main loop has not got to a command after this long is killed and restarted. Cold
 /// starts measure well under a second; the margin covers a loaded machine.
 const UI_HANG_AFTER: Duration = Duration::from_secs(20);
@@ -372,6 +376,13 @@ impl Daemon {
         }
     }
 
+    /// Runs the verified setup exe once the daemon has shut down (Windows).
+    #[cfg(windows)]
+    pub fn run_update_installer(&self, setup: &Path) -> anyhow::Result<()> {
+        let updater = self.updater.as_ref().context("updates are off")?;
+        updater.run_installer(setup)
+    }
+
     /// The bundle to start after shutdown, if an update was installed.
     #[must_use]
     pub fn restart_after_shutdown(&self) -> Option<PathBuf> {
@@ -634,6 +645,9 @@ impl Daemon {
         }
         // A UI that is hung never reads the Shutdown it was just sent.
         self.launcher.kill();
+        // The installer replaces the exe the UI process runs from.
+        #[cfg(windows)]
+        self.launcher.stopped(UI_EXIT_WAIT).await;
         for task in guard(&self.tasks).drain(..) {
             task.abort();
         }

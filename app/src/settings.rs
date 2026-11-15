@@ -174,6 +174,8 @@ pub struct Settings {
     pub text_scale: TextScale,
     /// Website icons on login rows, fetched through the account's server.
     pub show_site_icons: bool,
+    /// Windows only: keep Vaultkeeper windows out of screenshots, screen sharing and Recall.
+    pub hide_from_capture: bool,
     pub manager_geometry: Option<WindowGeometry>,
     pub lock_timeout: LockTimeout,
     /// Lock when the Mac sleeps or the screen locks, whatever the timeout.
@@ -221,6 +223,7 @@ impl Default for Settings {
             tray_icon: TrayIconChoice::default(),
             text_scale: TextScale::Default,
             show_site_icons: true,
+            hide_from_capture: true,
             manager_geometry: None,
             lock_timeout: LockTimeout::Minutes(15),
             lock_on_sleep: true,
@@ -528,6 +531,18 @@ mod tests {
     }
 
     #[test]
+    fn capture_exclusion_is_on_unless_a_file_says_otherwise() {
+        assert!(Settings::default().hide_from_capture);
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
+        assert!(old.hide_from_capture);
+        let off: Settings =
+            serde_json::from_str(r#"{"hide_from_capture":false}"#).expect("explicit off");
+        assert!(!off.hide_from_capture);
+        let json = serde_json::to_string(&off).expect("serialize");
+        assert!(json.contains(r#""hide_from_capture":false"#), "{json}");
+    }
+
+    #[test]
     fn option_lists_round_trip() {
         for (index, option) in LOCK_OPTIONS.iter().enumerate() {
             let index = i32::try_from(index).expect("small");
@@ -626,6 +641,7 @@ mod tests {
             tray_icon: TrayIconChoice::White,
             text_scale: TextScale::Larger,
             show_site_icons: false,
+            hide_from_capture: false,
             manager_geometry: Some(WindowGeometry {
                 x: 10,
                 y: 20,

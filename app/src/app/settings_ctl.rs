@@ -90,6 +90,8 @@ impl<S: VaultService> App<S> {
         window.set_theme_index(settings.theme.index());
         window.set_tray_icon_index(settings.tray_icon.index());
         window.set_tray_icon_label(tray_icon_label().into());
+        window.set_capture_exclusion_available(cfg!(windows));
+        window.set_hide_from_capture(settings.hide_from_capture);
         window.set_scale_index(settings.text_scale.index());
         let lock_labels: Vec<SharedString> = LOCK_OPTIONS
             .iter()
@@ -195,6 +197,10 @@ impl<S: VaultService> App<S> {
             if let Some(timeout) = option_at(&LOCK_OPTIONS, index) {
                 app.update_settings(|settings| settings.lock_timeout = timeout);
             }
+        }));
+        window.on_hide_from_capture_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.hide_from_capture = enabled);
+            crate::os::ui_window::set_capture_exclusion(enabled);
         }));
         window.on_lock_on_sleep_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.lock_on_sleep = enabled);

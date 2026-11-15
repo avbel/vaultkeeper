@@ -59,6 +59,9 @@ export component SettingsWindow inherits Window {
     in-out property <bool> ssh-touch-id;
     in-out property <bool> touch-id-right-away;
     in-out property <bool> show-site-icons: true;
+    // Windows only; the row stays hidden elsewhere.
+    in property <bool> capture-exclusion-available: false;
+    in-out property <bool> hide-from-capture: true;
     // Saved accelerators ("Cmd+Shift+Space") and the same in symbols ("⇧⌘Space").
     in property <string> hotkey;
     in property <string> generator-hotkey;
@@ -85,6 +88,7 @@ export component SettingsWindow inherits Window {
 
     callback theme-selected(int);
     callback tray-icon-selected(int);
+    callback hide-from-capture-toggled(bool);
     callback scale-selected(int);
     callback lock-selected(int);
     callback clipboard-selected(int);
@@ -214,6 +218,12 @@ export component SettingsWindow inherits Window {
                         index <=> root.lock-index;
                         selected(i) => { root.lock-selected(i); }
                     }
+                }
+                if root.capture-exclusion-available: Toggle {
+                    text: "Hide Vaultkeeper from screenshots and screen sharing";
+                    description: "Windows shows the windows as black in captures and keeps them out of Recall";
+                    checked <=> root.hide-from-capture;
+                    toggled(v) => { root.hide-from-capture-toggled(v); }
                 }
                 Toggle { text: "Lock on sleep or screen lock"; checked <=> root.lock-on-sleep; toggled(v) => { root.lock-on-sleep-toggled(v); } }
                 SettingRow {

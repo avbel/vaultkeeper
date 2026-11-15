@@ -169,6 +169,7 @@ pub struct App<S: VaultService> {
 impl<S: VaultService> App<S> {
     pub fn new(vault: Arc<S>, exec: Exec, hooks: Hooks) -> Rc<Self> {
         let settings = hooks.settings.load();
+        crate::os::ui_window::set_capture_exclusion(settings.hide_from_capture);
         let settings_generator = settings.generator.clone();
         let epoch = hooks.clock.unix_now();
         let phase = Phase::of(&vault.state());
@@ -612,6 +613,7 @@ fn show<C: ComponentHandle>(component: &C, what: &str) {
         tracing::error!(%error, what, "cannot show window");
         return;
     }
+    crate::os::ui_window::exclude_from_capture(component.window());
     crate::os::ui_window::bring_to_front(component.window());
 }
 
