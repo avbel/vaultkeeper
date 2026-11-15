@@ -36,12 +36,15 @@ const WINTRUST_FILE_INFO_LEN: u32 = size_of::<WINTRUST_FILE_INFO>() as u32;
 
 /// The subject name of the certificate that signed `path`, or `None` when the file is unsigned or
 /// its signature does not verify.
+///
+/// Only embedded signatures are inspected. Catalog-signed files (such as `explorer.exe`) have no
+/// embedded signer and are reported as unsigned (`Ok(None)`).
 pub fn signer_subject(path: &Path) -> io::Result<Option<String>> {
     let wide = wide_path(path);
     if !verify_trust(&wide) {
         return Ok(None);
     }
-    signer_subject_of_file(&wide).map(Some)
+    signer_subject_of_file(&wide)
 }
 
 /// Whether `path` carries a signature that chains to a trusted root. Revocation is not checked.
@@ -99,7 +102,7 @@ fn verify_trust(wide: &[u16]) -> bool {
     status == 0
 }
 
-fn signer_subject_of_file(wide: &[u16]) -> io::Result<String> {
+fn signer_subject_of_file(wide: &[u16]) -> io::Result<Option<String>> {
     let mut store: HCERTSTORE = ptr::null_mut();
     let mut message: *mut c_void = ptr::null_mut();
     // SAFETY: `wide` is NUL-terminated and lives for the call; the store and message out pointers
@@ -120,7 +123,8 @@ fn signer_subject_of_file(wide: &[u16]) -> io::Result<String> {
         )
     };
     if query == 0 {
-        return Err(io::Error::last_os_error());
+        // No embedded PKCS#7 signature: the file is unsigned or catalog-signed.
+        return Ok(None);
     }
     // SAFETY: the query succeeded, so both handles are ours and each wrapper closes its own.
     let store = unsafe { CertStore::from_raw(store) };
@@ -178,10 +182,7 @@ fn signer_subject_of_file(wide: &[u16]) -> io::Result<String> {
         )
     };
     if certificate.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "the signature has no matching signer certificate",
-        ));
+        return Ok(None);
     }
     // SAFETY: the find call returned a context this process owns.
     let certificate = unsafe { CertificateContext::from_raw(certificate) };
@@ -206,7 +207,7 @@ fn signer_subject_of_file(wide: &[u16]) -> io::Result<String> {
         ));
     }
     let written = usize::try_from(written).expect("u32 fits in usize on 64-bit");
-    Ok(String::from_utf16_lossy(&name[..written - 1]))
+    Ok(Some(String::from_utf16_lossy(&name[..written - 1])))
 }
 
 fn subject_len(certificate: &CertificateContext) -> u32 {
@@ -287,16 +288,34 @@ mod tests {
 
     use super::{is_validly_signed, signer_subject};
 
+    const EDGE_PATHS: [&str; 2] = [
+        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    ];
+
     #[test]
-    fn explorer_reports_a_microsoft_signer() {
-        let path = Path::new("C:\\Windows\\explorer.exe");
+    fn edge_reports_a_microsoft_signer() {
+        let Some(path) = EDGE_PATHS.iter().map(Path::new).find(|path| path.exists()) else {
+            // Edge is not installed everywhere; explorer.exe is catalog-signed so it cannot stand in.
+            return;
+        };
         let subject = signer_subject(path)
-            .expect("verifying explorer.exe")
-            .expect("explorer.exe is signed on Windows 11");
+            .expect("verifying msedge.exe")
+            .expect("msedge.exe carries an embedded signature");
         assert!(
             subject.contains("Microsoft"),
-            "unexpected signer {subject:?} for explorer.exe"
+            "unexpected signer {subject:?} for msedge.exe"
         );
         assert!(is_validly_signed(path));
+    }
+
+    #[test]
+    fn catalog_signed_files_have_no_embedded_signer() {
+        let path = Path::new("C:\\Windows\\explorer.exe");
+        assert!(
+            signer_subject(path)
+                .expect("looking up explorer.exe")
+                .is_none()
+        );
     }
 }

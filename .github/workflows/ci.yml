@@ -90,12 +90,15 @@ jobs:
         run: cargo test --no-fail-fast -p vk-win
 
       - name: IPC pipes
+        if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast -p vk-ipc --test windows_pipes
 
       - name: SSH agent
+        if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast -p ssh_agent
 
       - name: Single instance
+        if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast -p vk-platform single_instance
 
   # Test builds for manual testing on a Windows PC without a Rust toolchain.
