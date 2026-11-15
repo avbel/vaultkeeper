@@ -633,3 +633,13 @@ done-when: `scripts/check-windows.sh -p vaultkeeper --all-targets`; `cargo test 
 needs: 1o
 difficulty: easy
 kind: change
+
+## Status (stopped 2026-11-15 on user request)
+Done and pushed to `windows-support` (last commit 1e31838): every code step 0a–6c, 7a, 7b; the Opus xhigh review (7c) and all its fixes except the ones below. Last full Windows CI with green results: 9370fbc; the run for 1e31838 (review fixes + 26 app-test expectation fixes) was started but not checked.
+Next, in order:
+- Check CI for 1e31838 (`gh run list --branch windows-support`); fix any Windows failures.
+- Hotkey display on Windows: Settings shows macOS symbols ("⌃⇧Space") and the recorder says "Add ⌘, ⌥ or ⌃"; show "Ctrl+Shift+Space" style on Windows (tests in app/tests/hotkey_recorder.rs and generator_settings.rs pin the current strings).
+- Native messaging registry has no Windows test (app/src/os/browser/windows.rs); add tests under a throwaway HKCU\Software\VaultkeeperTest-* base.
+- Known limitations to state in the PR: auto-type restores the target app's top window, not the exact HWND; browser signer allowlist is name-only; mio slot reset relies on mio internals (keep mio pinned); single-instance ack flush can stall on a stalled verified client.
+- User's manual Windows test pass (docs/solutions/windows-testing-guide.md), Hello spike output → correct passport.rs if needed.
+- 8a: open the PR to main once Windows CI is green.
