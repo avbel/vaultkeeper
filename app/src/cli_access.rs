@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     cli::USAGE,
-    os::layout::{CLI_SOCKET, data_dir},
+    os::layout::{cli_endpoint, data_dir},
 };
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
@@ -36,11 +36,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         }
         _ => bail!("Invalid CLI arguments. See vaultkeeper --help."),
     };
-    let socket = data_dir()?.join(CLI_SOCKET);
+    let socket = cli_endpoint(&data_dir()?);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    match runtime.block_on(cli_access::call(&socket, &request)) {
+    match runtime.block_on(cli_access::call(socket, &request)) {
         Ok(Response::Keys(keys)) => write_json(&keys),
         Ok(Response::Fields(fields)) => write_json(&fields),
         Ok(Response::Value(value)) => write_output(value.as_bytes()),

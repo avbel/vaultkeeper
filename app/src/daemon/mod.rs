@@ -62,15 +62,20 @@ impl TestOverrides {
 /// The exit status that asks launchd's `KeepAlive` to start the (updated) app again.
 const RESTART_EXIT: i32 = 75;
 /// How long an updated app waits for the old daemon to finish shutting down.
+#[cfg(unix)]
 const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
 
 pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     let overrides = TestOverrides::from_env();
+    // Windows: step 3b - the restart hand-off waits on the old process handle.
+    #[cfg(unix)]
     if let Some(pid) = wait_for
         && !single_instance::wait_for_exit(pid, WAIT_FOR_PREVIOUS)
     {
         tracing::warn!(pid, "the previous vaultkeeper is still running");
     }
+    #[cfg(not(unix))]
+    let _ = wait_for;
     if launch == Launch::Tray {
         refresh_login_agent();
     }
@@ -300,6 +305,7 @@ fn watch_network(daemon: &Arc<Daemon>) -> Option<vk_platform::network::NetworkWa
 }
 
 /// SIGTERM (logout, `launchctl`, `kill`) and SIGINT quit like the tray's Quit.
+#[cfg(unix)]
 async fn quit_on_signal() {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut term), Ok(mut interrupt)) = (
@@ -321,4 +327,10 @@ async fn quit_on_signal() {
     if let Err(error) = quit {
         tracing::error!(%error, "cannot reach the event loop to quit");
     }
+}
+
+// Windows: step 3b - SIGTERM has no equivalent; console and session-end quits arrive then.
+#[cfg(not(unix))]
+async fn quit_on_signal() {
+    std::future::pending::<()>().await;
 }

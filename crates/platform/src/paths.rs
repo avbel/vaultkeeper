@@ -19,14 +19,26 @@ pub fn data_dir() -> Result<PathBuf> {
 // organization as well.
 fn project_data_dir() -> Result<PathBuf> {
     ProjectDirs::from_path(PathBuf::from(APP_DIR))
-        .map(|dirs| dirs.data_dir().to_path_buf())
+        .map(|dirs| local_data_dir(&dirs).to_path_buf())
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found").into()
         })
 }
 
+// Roaming data would sync the sealed key blobs to other machines, where DPAPI cannot open them.
+#[cfg(windows)]
+fn local_data_dir(dirs: &ProjectDirs) -> &std::path::Path {
+    dirs.data_local_dir()
+}
+
+#[cfg(not(windows))]
+fn local_data_dir(dirs: &ProjectDirs) -> &std::path::Path {
+    dirs.data_dir()
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(target_os = "macos")]

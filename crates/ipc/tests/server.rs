@@ -1,6 +1,8 @@
 //! Connection lifecycle, events, peer checks and failure handling between `serve` and
 //! `RemoteVault`.
 
+#![cfg(unix)]
+
 mod common;
 
 use std::{

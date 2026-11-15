@@ -1,6 +1,9 @@
-//! Network path changes from `NWPathMonitor`: the path became usable (or changed interface while
-//! usable), or it went away. Events arrive on a system dispatch queue, from the first update the
-//! monitor sends right after [`subscribe`] onwards; no run loop is needed.
+//! Network path changes: the path became usable (or changed interface while usable), or it went
+//! away.
+//!
+//! macOS observes `NWPathMonitor` on a system dispatch queue, from the first update the monitor
+//! sends right after [`subscribe`] onwards; no run loop is needed. Windows uses the connectivity
+//! hint callback registered with [`subscribe`], which reports the current hint immediately.
 
 use std::sync::mpsc::Sender;
 
@@ -23,6 +26,18 @@ impl NetworkEvent {
             _ => None,
         }
     }
+
+    /// Windows `NL_NETWORK_CONNECTIVITY_HINT.ConnectivityLevel`. Unknown and hidden hints carry no
+    /// usable signal; a hidden hint is not a disconnect, so it must not wake the probe either.
+    /// Kept portable so the mapping is unit-tested on macOS too.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    const fn from_connectivity_level(level: i32) -> Option<Self> {
+        match level {
+            1 => Some(Self::Unusable),
+            2..=4 => Some(Self::Usable),
+            _ => None,
+        }
+    }
 }
 
 /// Dropping it stops the monitor; no event is sent after `drop` returns.
@@ -30,6 +45,8 @@ impl NetworkEvent {
 pub struct NetworkWatcher {
     #[cfg(target_os = "macos")]
     _subscription: macos::Subscription,
+    #[cfg(windows)]
+    _subscription: windows::Subscription,
 }
 
 /// Sends every path update to `tx` until the returned watcher is dropped. Events sent after the
@@ -41,12 +58,21 @@ pub fn subscribe(tx: Sender<NetworkEvent>) -> Result<NetworkWatcher> {
             _subscription: macos::Subscription::new(tx),
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Ok(NetworkWatcher {
+            _subscription: windows::Subscription::new(tx)?,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         drop(tx);
         Err(crate::Error::Unsupported)
     }
 }
+
+#[cfg(windows)]
+mod windows;
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -114,6 +140,22 @@ mod tests {
         assert_eq!(NetworkEvent::from_code(1), Some(NetworkEvent::Usable));
         assert_eq!(NetworkEvent::from_code(2), None);
         assert_eq!(NetworkEvent::from_code(-1), None);
+    }
+
+    #[test]
+    fn windows_connectivity_levels_map_to_events() {
+        assert_eq!(
+            NetworkEvent::from_connectivity_level(1),
+            Some(NetworkEvent::Unusable)
+        );
+        for usable in 2..=4 {
+            assert_eq!(
+                NetworkEvent::from_connectivity_level(usable),
+                Some(NetworkEvent::Usable)
+            );
+        }
+        assert_eq!(NetworkEvent::from_connectivity_level(0), None);
+        assert_eq!(NetworkEvent::from_connectivity_level(5), None);
     }
 
     /// NWPathMonitor reports the current path right after it starts, whatever the network is,

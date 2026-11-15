@@ -10,7 +10,7 @@ use vk_ipc::{
 use vk_vault::{Error, VaultService};
 
 use super::{Daemon, guard};
-use crate::os::layout::CLI_SOCKET;
+use crate::os::layout::cli_endpoint;
 
 const UNLOCK_PROMPT_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -39,7 +39,7 @@ impl Daemon {
         let daemon = Arc::downgrade(self);
         let _runtime = self.runtime.enter();
         match cli_access::serve(
-            self.data_dir.join(CLI_SOCKET),
+            cli_endpoint(&self.data_dir),
             self.vault.changes(),
             move |request| {
                 daemon.upgrade().map_or(Response::Unavailable, |daemon| {

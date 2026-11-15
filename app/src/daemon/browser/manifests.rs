@@ -2,10 +2,11 @@
 //!
 //! Every function takes the `Application Support` root explicitly so tests can use a temp dir.
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
     fs,
     io::{self, Write as _},
-    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
 };
 
@@ -16,6 +17,7 @@ use super::ids;
 pub const HOST_NAME: &str = "org.vaultkeeper.browser";
 pub const MANIFEST_FILE: &str = "org.vaultkeeper.browser.json";
 const HOSTS_DIR: &str = "NativeMessagingHosts";
+#[cfg(unix)]
 const MANIFEST_MODE: u32 = 0o644;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -212,7 +214,11 @@ fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
         return Ok(Existing::Differs);
     }
     let current = fs::read(target)?;
+    // Windows: step 5d - manifests move to registry registration; file modes do not apply.
+    #[cfg(unix)]
     let mode_ok = metadata.permissions().mode() & 0o777 == MANIFEST_MODE;
+    #[cfg(not(unix))]
+    let mode_ok = true;
     Ok(if current == wanted && mode_ok {
         Existing::Matches
     } else {
@@ -234,19 +240,21 @@ fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
 }
 
 fn write_temp(temp: &Path, data: &[u8]) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(MANIFEST_MODE)
-        .open(temp)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(MANIFEST_MODE);
+    let mut file = options.open(temp)?;
     file.write_all(data)?;
     // The umask may have stripped bits from the creation mode.
+    #[cfg(unix)]
     file.set_permissions(fs::Permissions::from_mode(MANIFEST_MODE))?;
     file.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -267,6 +275,7 @@ mod tests {
         root
     }
 
+    #[cfg(unix)]
     fn read_json(path: &Path) -> serde_json::Value {
         serde_json::from_slice(&fs::read(path).expect("manifest")).expect("json")
     }
@@ -378,6 +387,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Restored);
     }
 
+    #[cfg(unix)]
     #[test]
     fn restores_a_manifest_with_loosened_mode() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -427,6 +437,7 @@ mod tests {
         assert_eq!(leftovers, [MANIFEST_FILE]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn manifest_mode_is_0644() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -436,6 +447,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o644);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_at_the_manifest_path_is_replaced_not_followed() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -459,6 +471,7 @@ mod tests {
         assert_eq!(read_json(&path)["name"], HOST_NAME);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_to_identical_content_is_still_replaced() {
         let root = root_with(ManifestBrowser::Chrome);

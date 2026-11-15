@@ -5,6 +5,7 @@
 //! macOS asks for no permission: FIDO devices (HID usage page 0xF1D0) are not keyboards, so
 //! Input Monitoring does not apply to them.
 
+#[cfg(not(windows))]
 use std::{
     sync::{
         Arc, Mutex, PoisonError,
@@ -13,6 +14,7 @@ use std::{
     thread,
 };
 
+#[cfg(not(windows))]
 use authenticator::{
     Pin, SignResult, StatusPinUv, StatusUpdate,
     authenticatorservice::{AuthenticatorService, SignArgs},
@@ -23,17 +25,38 @@ use authenticator::{
     errors::{AuthenticatorError, PinError, U2FTokenError},
     statecallback::StateCallback,
 };
-use vk_webauthn::{Assertion, Ceremony, ClientDataJson, RequestOptions, UserVerification};
+use vk_webauthn::RequestOptions;
+#[cfg(not(windows))]
+use vk_webauthn::{Assertion, Ceremony, ClientDataJson, UserVerification};
+#[cfg(not(windows))]
 use zeroize::Zeroizing;
 
-use crate::hooks::{HookError, HookResult, KeyCeremony, KeyEvent, KeyEvents, SecurityKeys};
+#[cfg(not(windows))]
+use crate::hooks::KeyEvent;
+use crate::hooks::{HookError, HookResult, KeyCeremony, KeyEvents, SecurityKeys};
 
 /// Vaultwarden asks for 60 s; a missing or absurd timeout gets the WebAuthn default range.
+#[cfg(not(windows))]
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
+#[cfg(not(windows))]
 const MAX_TIMEOUT_MS: u64 = 600_000;
 
 pub struct UsbSecurityKeys;
 
+#[cfg(windows)]
+impl SecurityKeys for UsbSecurityKeys {
+    fn sign(
+        &self,
+        _options: RequestOptions,
+        _origin: String,
+        _events: KeyEvents,
+    ) -> HookResult<Box<dyn KeyCeremony>> {
+        // Windows: step 5c, the webauthn.dll backend draws its own PIN and touch UI.
+        Err(HookError::Unavailable("Security key access"))
+    }
+}
+
+#[cfg(not(windows))]
 impl SecurityKeys for UsbSecurityKeys {
     fn sign(
         &self,
@@ -118,9 +141,11 @@ impl SecurityKeys for UsbSecurityKeys {
 }
 
 /// Where the key's last PIN request waits for the answer.
+#[cfg(not(windows))]
 #[derive(Clone, Default)]
 struct PinSlot(Arc<Mutex<Option<Sender<Pin>>>>);
 
+#[cfg(not(windows))]
 impl PinSlot {
     fn wait(&self, sender: Sender<Pin>) {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
@@ -131,11 +156,13 @@ impl PinSlot {
     }
 }
 
+#[cfg(not(windows))]
 struct UsbCeremony {
     service: Mutex<AuthenticatorService>,
     pin: PinSlot,
 }
 
+#[cfg(not(windows))]
 impl KeyCeremony for UsbCeremony {
     fn enter_pin(&self, pin: Zeroizing<String>) {
         if let Some(sender) = self.pin.take() {
@@ -157,6 +184,7 @@ impl KeyCeremony for UsbCeremony {
     }
 }
 
+#[cfg(not(windows))]
 fn status_event(update: StatusUpdate, pin: &PinSlot) -> Option<KeyEvent> {
     match update {
         StatusUpdate::PresenceRequired => Some(KeyEvent::Touch),
@@ -187,6 +215,7 @@ fn status_event(update: StatusUpdate, pin: &PinSlot) -> Option<KeyEvent> {
 
 /// CTAP2 lets a key leave out the credential when the allow list had a single entry, and
 /// authenticator-rs passes that on: `only_allowed` is that entry.
+#[cfg(not(windows))]
 fn outcome(
     result: authenticator::Result<SignResult>,
     client_data: &ClientDataJson,
@@ -209,6 +238,7 @@ fn outcome(
     })
 }
 
+#[cfg(not(windows))]
 fn sign_error(error: AuthenticatorError) -> HookError {
     let text = match error {
         AuthenticatorError::CancelledByUser => return HookError::Cancelled,
@@ -227,6 +257,7 @@ fn sign_error(error: AuthenticatorError) -> HookError {
     HookError::Failed(text.to_owned())
 }
 
+#[cfg(not(windows))]
 fn pin_error(error: &PinError) -> HookError {
     let text = match error {
         PinError::PinBlocked => "The security key's PIN is blocked: reset the key to use it again",
@@ -239,6 +270,7 @@ fn pin_error(error: &PinError) -> HookError {
     HookError::Failed(text.to_owned())
 }
 
+#[cfg(not(windows))]
 fn platform_error(error: &AuthenticatorError) -> HookError {
     tracing::warn!(%error, "security key access failed");
     HookError::Unavailable("Security key access")

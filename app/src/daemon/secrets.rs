@@ -35,7 +35,7 @@ impl Default for KeychainStore {
 
 #[allow(clippy::needless_pass_by_value)] // shaped for `map_err`
 fn store_error(error: vk_platform::Error) -> SecretStoreError {
-    SecretStoreError(error.to_string())
+    SecretStoreError::other(error.to_string())
 }
 
 impl SecretStore for KeychainStore {

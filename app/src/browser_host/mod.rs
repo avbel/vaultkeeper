@@ -3,16 +3,22 @@
 mod native;
 mod parent;
 
+use std::io;
+#[cfg(unix)]
 use std::os::fd::AsFd as _;
+#[cfg(windows)]
+use std::os::windows::io::AsHandle as _;
+#[cfg(unix)]
 use std::{
-    io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
 };
 
 use anyhow::Context;
-use tokio::{io::AsyncWriteExt, net::UnixStream};
+use tokio::io::AsyncWriteExt;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use vk_ipc::{
     browser::{
         BROWSER_MAX_FRAME,
@@ -42,8 +48,12 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         HostCaller::Chromium { origin } => Caller::Chromium { origin },
         HostCaller::Firefox { extension_id } => Caller::Firefox { extension_id },
     };
-    let socket = layout::data_dir()?.join(layout::BROWSER_SOCKET);
-    let mut stream = match connect(&socket).await {
+    let endpoint = layout::browser_endpoint(&layout::data_dir()?);
+    let connected = match layout::socket_path(&endpoint) {
+        Ok(socket) => connect(&socket).await,
+        Err(error) => Err(error),
+    };
+    let mut stream = match connected {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, "browser daemon unavailable");
@@ -70,9 +80,15 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         unavailable(reason).await?;
         return Ok(());
     }
+    #[cfg(unix)]
     let (mut read, mut write) = stream.into_split();
+    #[cfg(not(unix))]
+    let (mut read, mut write) = tokio::io::split(stream);
     let mut stdin = tokio::io::stdin();
+    #[cfg(unix)]
     let mut stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned()?);
+    #[cfg(windows)]
+    let mut stdout = std::fs::File::from(std::io::stdout().as_handle().try_clone_to_owned()?);
     let upstream = async {
         while let Some(body) = native::read_message(&mut stdin).await? {
             write_socket(&mut write, &body).await?;
@@ -109,7 +125,22 @@ async fn unavailable(reason: &str) -> io::Result<()> {
     native::write_message(&mut tokio::io::stdout(), &body).await
 }
 
+// Windows: step 5f - the browser host speaks to a named pipe; until then it reports the
+// daemon as unavailable.
+#[cfg(not(unix))]
+type Socket = tokio::io::DuplexStream;
+
+#[cfg(not(unix))]
+#[allow(clippy::unused_async, reason = "same signature as the Unix connect")]
+async fn connect(_path: &std::path::Path) -> io::Result<Socket> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the browser socket is not available on this platform yet",
+    ))
+}
+
 // Cancel-safe: cancelling a connection attempt drops its socket.
+#[cfg(unix)]
 async fn connect(path: &Path) -> io::Result<UnixStream> {
     match UnixStream::connect(path).await {
         Ok(stream) => return Ok(stream),
@@ -136,6 +167,7 @@ async fn connect(path: &Path) -> io::Result<UnixStream> {
     }
 }
 
+#[cfg(unix)]
 fn bundle_path(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
@@ -146,6 +178,7 @@ fn bundle_path(exe: &Path) -> Option<PathBuf> {
     .then(|| bundle.to_path_buf())
 }
 
+#[cfg(unix)]
 fn start_daemon() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let mut command = if let Some(bundle) = bundle_path(&exe) {

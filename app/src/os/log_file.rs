@@ -9,13 +9,17 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
 /// About 10 000 lines at the default `info` level.
 pub const LOG_CAP: u64 = 1024 * 1024;
+#[cfg(unix)]
 const FILE_MODE: u32 = 0o600;
+#[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
 
 /// `~/Library/Logs/vaultkeeper`. Builds with the `vw-it` feature log into
@@ -41,10 +45,7 @@ pub struct BoundedLog {
 impl BoundedLog {
     /// Opens (or creates) `<dir>/<name>.log`, rotating first if it is already full.
     pub fn open(dir: &Path, name: &str, cap: u64) -> io::Result<Self> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(DIR_MODE)
-            .create(dir)?;
+        create_log_dir(dir)?;
         let path = dir.join(format!("{name}.log"));
         let file = open_append(&path)?;
         let written = file.metadata()?.len();
@@ -70,12 +71,31 @@ impl BoundedLog {
     }
 }
 
+#[cfg(unix)]
+fn create_log_dir(dir: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(DIR_MODE)
+        .create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_log_dir(dir: &Path) -> io::Result<()> {
+    fs::DirBuilder::new().recursive(true).create(dir)
+}
+
+#[cfg(unix)]
 fn open_append(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .create(true)
         .append(true)
         .mode(FILE_MODE)
         .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_append(path: &Path) -> io::Result<File> {
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 impl Write for BoundedLog {
@@ -98,6 +118,7 @@ impl Write for BoundedLog {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
@@ -152,6 +173,7 @@ mod tests {
         assert_eq!(size(&dir.path().join("ui.log.1")), 100);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_file_and_directory_are_private() {
         let dir = tempfile::tempdir().expect("tempdir");

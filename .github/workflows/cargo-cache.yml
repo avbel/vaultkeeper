@@ -1,7 +1,8 @@
 name: Cargo cache
 
 # A tag build can restore caches saved on main but not ones saved by earlier tags, so main seeds
-# the release build's dependency cache. The key must match the macos job in release.yml.
+# the release build's dependency cache. The keys must match the macos and windows-build jobs in
+# release.yml.
 on:
   push:
     branches: [main]
@@ -47,4 +48,34 @@ jobs:
           command -v cargo-chef || cargo install cargo-chef --locked --version 0.1.78
           cargo chef prepare --recipe-path "$RUNNER_TEMP/recipe.json"
           cargo chef cook --release --locked --target aarch64-apple-darwin -p vaultkeeper \
+            --recipe-path "$RUNNER_TEMP/recipe.json"
+
+  windows-deps:
+    name: Windows release dependencies (cache only)
+    runs-on: windows-latest
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-pc-windows-msvc
+
+      # Same key as the windows-build job in release.yml, so the tag build only restores.
+      - id: cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+
+      # Same split as the macOS job: only the dependencies are cooked, because rust-cache never
+      # stores workspace crates. The flags must match scripts/bundle-windows.ps1.
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          command -v cargo-chef || cargo install cargo-chef --locked --version 0.1.78
+          cargo chef prepare --recipe-path "$RUNNER_TEMP/recipe.json"
+          cargo chef cook --release --locked --target x86_64-pc-windows-msvc -p vaultkeeper \
             --recipe-path "$RUNNER_TEMP/recipe.json"

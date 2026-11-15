@@ -13,6 +13,7 @@ use crate::{
 
 /// Pause between keystrokes and between checks while waiting. Not measured: a common pace for
 /// synthesized typing that browsers' per-key form handlers keep up with.
+#[cfg(target_os = "macos")]
 const TICK: Duration = Duration::from_millis(15);
 /// How long the target may take to come back to the front.
 const ACTIVATE_TIMEOUT: Duration = Duration::from_secs(1);

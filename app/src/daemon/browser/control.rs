@@ -10,6 +10,7 @@ use tokio::{
 use vk_ipc::{
     SameExecutable,
     browser::{BrowserConnection, BrowserServeOptions, BrowserServerHandle, serve_browser},
+    transport::Endpoint,
 };
 
 use super::pairing::PairingStore;
@@ -23,7 +24,7 @@ pub struct BrowserControl {
 impl BrowserControl {
     /// Bind only after the runtime and store checks succeed. Dropping this value closes the
     /// listener and transport tasks; the owner must also cancel its session tasks.
-    pub async fn start(socket: PathBuf, store_path: PathBuf) -> anyhow::Result<Self> {
+    pub async fn start(socket: Endpoint, store_path: PathBuf) -> anyhow::Result<Self> {
         ensure!(
             runtime_allowed(),
             "browser integration requires a hardened runtime"
@@ -82,6 +83,7 @@ impl BrowserControl {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn cancelling_control_aborts_accepted_sessions() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -96,9 +98,12 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temporary directory");
         let socket = dir.path().join("browser.sock");
-        let control = BrowserControl::start(socket.clone(), dir.path().join("browsers.json"))
-            .await
-            .expect("start");
+        let control = BrowserControl::start(
+            Endpoint::path(socket.clone()),
+            dir.path().join("browsers.json"),
+        )
+        .await
+        .expect("start");
         let dropped = Arc::new(AtomicBool::new(false));
         let (started_tx, mut started_rx) = mpsc::channel(1);
         let signal = Arc::clone(&dropped);
@@ -149,14 +154,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("temporary directory");
         let socket = dir.path().join("browser.sock");
         let store = dir.path().join("browsers.json");
-        let control = BrowserControl::start(socket.clone(), store.clone())
+        let control = BrowserControl::start(Endpoint::path(socket.clone()), store.clone())
             .await
             .expect("start");
         assert!(socket.exists());
         drop(control);
         assert!(!socket.exists());
         std::fs::write(&store, b"not json").expect("corrupt store");
-        assert!(BrowserControl::start(socket.clone(), store).await.is_err());
+        assert!(
+            BrowserControl::start(Endpoint::path(socket.clone()), store)
+                .await
+                .is_err()
+        );
         assert!(!socket.exists());
     }
 }

@@ -312,6 +312,11 @@ impl Inner {
         let sync = pending.client.sync(&tokens.access).await?;
         let id = sync.profile.id.clone();
         self.store.account_dir(&id)?;
+        // The refresh token is sealed under the user key, so the store needs it before
+        // `store_login_secrets` writes the token.
+        self.secrets
+            .provide_key(&id, user_key.to_bytes().as_slice())
+            .map_err(secret_error)?;
         let settings = self
             .store
             .load_account(&id)
@@ -402,13 +407,14 @@ impl Inner {
         token: AccessToken,
         unlocked: Unlocked,
     ) -> Result<()> {
+        let id = record.id.clone();
         let entry = IndexEntry {
-            id: record.id.clone(),
+            id: id.clone(),
             server: record.server.clone(),
             email: record.email.clone(),
         };
         let active = Active {
-            id: Arc::from(record.id.as_str()),
+            id: Arc::from(id.as_str()),
             record,
             client,
             token: Some(token),
@@ -422,7 +428,16 @@ impl Inner {
             (previous, state.index.clone(), state.epoch)
         };
         drop(self.stop_background());
-        drop(previous);
+        if let Some(previous) = previous {
+            // Re-logging into the same account keeps the key just provided; another account's
+            // sealed tokens must not stay readable behind its back.
+            let forget = *previous.id != *id;
+            let previous_id = Arc::clone(&previous.id);
+            drop(previous);
+            if forget {
+                self.secrets.forget_key(&previous_id);
+            }
+        }
         self.clear_pending();
         self.set_offline(false);
         self.store.save_index(&index)?;
@@ -529,6 +544,7 @@ impl Inner {
             Some(cached) => cached.sync.profile.clone(),
             None => empty_profile(record),
         };
+        let user_key_bytes = user_key.to_bytes();
         let keys = KeyRing::build(
             user_key,
             record.private_key.as_deref(),
@@ -539,6 +555,11 @@ impl Inner {
             Some(cached) => VaultData::build(cached.sync, &keys).with_complete(cached.complete),
             None => VaultData::empty(profile),
         };
+        // The cached vault decrypted with this key, so the sealed token store can read the
+        // refresh token from here on.
+        self.secrets
+            .provide_key(&record.id, user_key_bytes.as_slice())
+            .map_err(secret_error)?;
         let unlocked = Unlocked::new(keys, data);
         let epoch = {
             let mut state = self.write_state();
@@ -572,21 +593,24 @@ impl Inner {
 
     pub(crate) fn lock_session(&self) {
         self.clear_pending();
-        let previous = {
+        let (previous, id) = {
             let mut state = self.write_state();
             let state = &mut *state;
             match state.active.as_mut() {
                 Some(active) if active.unlocked.is_some() => {
                     state.epoch += 1;
                     active.token = None;
-                    active.unlocked.take()
+                    (active.unlocked.take(), Some(Arc::clone(&active.id)))
                 }
-                _ => None,
+                _ => (None, None),
             }
         };
         drop(self.stop_background());
         if let Some(previous) = previous {
             drop(previous);
+            if let Some(id) = id {
+                self.secrets.forget_key(&id);
+            }
             self.bump();
             self.bump_ssh();
         }
@@ -609,7 +633,11 @@ impl Inner {
             (state.active.replace(active), state.index.clone())
         };
         drop(self.stop_background());
-        drop(previous);
+        if let Some(previous) = previous {
+            let id = Arc::clone(&previous.id);
+            drop(previous);
+            self.secrets.forget_key(&id);
+        }
         self.clear_pending();
         self.set_offline(false);
         self.bump();
@@ -624,7 +652,11 @@ impl Inner {
             state.active.take()
         };
         drop(self.stop_background());
-        drop(previous);
+        if let Some(previous) = previous {
+            let id = Arc::clone(&previous.id);
+            drop(previous);
+            self.secrets.forget_key(&id);
+        }
         self.clear_pending();
         self.set_offline(false);
         self.bump();

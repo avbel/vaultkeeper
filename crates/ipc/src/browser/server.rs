@@ -1,6 +1,6 @@
 use std::{
     fs, io,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -10,7 +10,6 @@ use std::{
 
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     sync::{Semaphore, mpsc},
     task::{JoinHandle, JoinSet},
 };
@@ -20,7 +19,14 @@ use super::{
     BROWSER_MAX_FRAME,
     protocol::{HostHello, PROTOCOL_VERSION, Refusal},
 };
-use crate::{IpcError, PeerVerifier, frame::read_frame_with_limit, peer, server};
+#[cfg(unix)]
+use crate::peer;
+use crate::{
+    IpcError, PeerCredentials, PeerVerifier,
+    frame::read_frame_with_limit,
+    server,
+    transport::{Endpoint, Listener as TransportListener, Stream},
+};
 
 pub struct BrowserConnection {
     pub id: u64,
@@ -37,17 +43,18 @@ pub struct BrowserServeOptions {
 
 #[must_use = "dropping the handle stops the browser server"]
 pub struct BrowserServerHandle {
-    path: PathBuf,
+    endpoint: Endpoint,
     task: JoinHandle<()>,
 }
 
 impl Drop for BrowserServerHandle {
     fn drop(&mut self) {
         self.task.abort();
-        if let Err(error) = fs::remove_file(&self.path)
+        if let Some(path) = self.endpoint.as_path()
+            && let Err(error) = fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            tracing::warn!(%error, path = %self.path.display(), "cannot remove browser socket");
+            tracing::warn!(%error, path = %path.display(), "cannot remove browser socket");
         }
     }
 }
@@ -55,7 +62,14 @@ impl Drop for BrowserServerHandle {
 impl BrowserServerHandle {
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        self.endpoint
+            .as_path()
+            .expect("a Unix browser server always binds a socket path")
+    }
+
+    #[must_use]
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 }
 
@@ -63,20 +77,20 @@ impl BrowserServerHandle {
 ///
 /// Cancel-safe: all setup happens before the returned future first yields.
 pub async fn serve_browser(
-    path: PathBuf,
+    endpoint: impl Into<Endpoint>,
     options: BrowserServeOptions,
     connections: mpsc::Sender<BrowserConnection>,
 ) -> Result<BrowserServerHandle, IpcError> {
-    server::prepare_directory(&path)?;
-    server::remove_stale_socket(&path)?;
-    let listener = server::bind(&path)?;
+    let endpoint = endpoint.into();
+    server::prepare_endpoint(&endpoint)?;
+    let listener = server::bind_endpoint(&endpoint)?;
     let task = tokio::spawn(accept_loop(listener, options, connections));
-    Ok(BrowserServerHandle { path, task })
+    Ok(BrowserServerHandle { endpoint, task })
 }
 
 // Cancel-safe: dropping the loop aborts its owned connection tasks.
 async fn accept_loop(
-    listener: UnixListener,
+    listener: TransportListener,
     options: BrowserServeOptions,
     connections: mpsc::Sender<BrowserConnection>,
 ) {
@@ -93,10 +107,10 @@ async fn accept_loop(
                 }
             }
             accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
                     // Bound pending handshakes as well as established sessions.
                     if tasks.len() >= options.max_connections.saturating_add(16) { continue; }
-                    tasks.spawn(handle(stream, Arc::clone(&options), Arc::clone(&slots), Arc::clone(&ids), connections.clone()));
+                    tasks.spawn(handle(stream, peer, Arc::clone(&options), Arc::clone(&slots), Arc::clone(&ids), connections.clone()));
                 }
                 Err(error) => {
                     tracing::warn!(%error, "browser accept failed");
@@ -107,18 +121,24 @@ async fn accept_loop(
     }
 }
 
+fn trusted(peer: &PeerCredentials, options: &BrowserServeOptions) -> bool {
+    #[cfg(unix)]
+    if peer.uid != peer::own_uid() {
+        return false;
+    }
+    options.verifier.verify(peer)
+}
+
 // Not cancel-safe mid-frame; cancellation always drops the socket.
 async fn handle(
-    mut stream: UnixStream,
+    mut stream: Stream,
+    peer: PeerCredentials,
     options: Arc<BrowserServeOptions>,
     slots: Arc<Semaphore>,
     ids: Arc<AtomicU64>,
     connections: mpsc::Sender<BrowserConnection>,
 ) {
-    let Ok(peer) = peer::credentials(&stream) else {
-        return;
-    };
-    if peer.uid != peer::own_uid() || !options.verifier.verify(&peer) {
+    if !trusted(&peer, &options) {
         return;
     }
     let Ok(Ok(Some(body))) = tokio::time::timeout(

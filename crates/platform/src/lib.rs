@@ -4,6 +4,8 @@ pub mod autostart;
 pub mod biometric;
 pub mod clipboard;
 pub mod code_signature;
+#[cfg(windows)]
+pub mod dpapi;
 mod error;
 pub mod fs;
 pub mod hardening;

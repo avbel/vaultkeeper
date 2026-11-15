@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, windows-support]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push supersedes the previous run's checks; only the tip matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-ci
+
+      - name: Checks
+        run: scripts/check.sh
+
+      - name: Tests
+        run: cargo test --workspace
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    env:
+      # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      # The crates already ported to Windows. Later steps extend this list; step 3o drops it.
+      WINDOWS_PACKAGES: -p vk-win -p vk-ipc -p vk-ssh -p vk-crypto -p vk-gen -p vk-api -p vk-vault -p vk-platform -p vk-webauthn -p secure_memory -p ssh_agent
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-ci
+
+      # Git Bash splits WINDOWS_PACKAGES into separate arguments; PowerShell would pass it as one.
+      - name: Checks
+        shell: bash
+        run: cargo clippy $WINDOWS_PACKAGES --all-targets -- -D warnings
+
+      - name: Tests
+        shell: bash
+        run: cargo test $WINDOWS_PACKAGES

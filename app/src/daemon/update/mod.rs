@@ -10,6 +10,10 @@
 //! touches the network until "Check for Updates…" is clicked.
 
 mod github;
+#[cfg(target_os = "macos")]
+mod install;
+#[cfg(not(target_os = "macos"))]
+#[path = "install_unavailable.rs"]
 mod install;
 pub mod release;
 
@@ -96,6 +100,7 @@ impl Updater {
         let installer = Installer::for_running_app(work);
         match &installer {
             // A development build run from target/ has no release to update to.
+            #[cfg(target_os = "macos")]
             Err(Blocked::NotBundled) => anyhow::bail!("not running from an app bundle"),
             Err(blocked) => tracing::info!(%blocked, "updates will only link to the release page"),
             Ok(_) => {}
@@ -299,15 +304,9 @@ fn install(daemon: &Arc<Daemon>, updater: &Updater, version: Version, staged: &P
     }
 }
 
-/// `open` hands the URL to the browser and returns at once; waiting reaps it.
 fn open_page(page: &Url) {
-    match std::process::Command::new("/usr/bin/open")
-        .arg(page.as_str())
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(status) => tracing::warn!(%status, "cannot open the release page"),
-        Err(error) => tracing::warn!(%error, "cannot open the release page"),
+    if let Err(error) = crate::os::open_in_browser(page) {
+        tracing::warn!(%error, "cannot open the release page");
     }
 }
 

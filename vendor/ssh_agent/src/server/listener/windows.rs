@@ -1,11 +1,42 @@
 //! Windows named pipe listener for the SSH agent server
+//!
+//! vk patch: the pipe is created with an explicit DACL that withholds
+//! `FILE_CREATE_PIPE_INSTANCE` from everyone, so no same-user process can add an instance and
+//! steal the next client. The listener therefore builds a fixed pool of instances up front and
+//! recycles each one after its client disconnects (same approach as `vk-ipc`'s transport).
 
-use std::{mem, os::windows::io::AsRawHandle};
+use std::{
+    io,
+    os::windows::io::AsRawHandle,
+    pin::Pin,
+    sync::{Arc, Mutex, PoisonError},
+    task::{Context, Poll},
+};
 
 use anyhow::{anyhow, Result};
-use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    sync::Notify,
+};
 use tracing::{info, warn};
-use windows::Win32::{Foundation::HANDLE, System::Pipes::GetNamedPipeClientProcessId};
+use windows::{
+    core::{PCWSTR, PWSTR},
+    Win32::{
+        Foundation::{CloseHandle, LocalFree, ERROR_ACCESS_DENIED, HANDLE, HLOCAL},
+        Security::{
+            Authorization::{
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            },
+            GetTokenInformation, SetKernelObjectSecurity, TokenUser, DACL_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+        },
+        System::{
+            Pipes::GetNamedPipeClientProcessId,
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    },
+};
 
 use super::Listener;
 use crate::server::{connection::Connection, peer_info::PeerInfo};
@@ -13,48 +44,341 @@ use crate::server::{connection::Connection, peer_info::PeerInfo};
 /// The fixed named pipe path that OpenSSH clients expect on Windows
 const PIPE_NAME: &str = r"\\.\pipe\openssh-ssh-agent";
 
+/// The DACL denies creating more instances later, so this is the ceiling for concurrent clients.
+const POOL_SIZE: usize = 4;
+
+const SDDL_REVISION_1: u32 = 1;
+
+/// Shown when another program already owns the pipe name; the OpenSSH service is the usual one.
+const NAME_TAKEN_MESSAGE: &str = "The Windows OpenSSH Authentication Agent service is running; \
+stop and disable it, or turn off Vaultkeeper's SSH agent";
+
 /// Windows named pipe listener for the SSH agent server
 pub(crate) struct WindowsListener {
-    inner: NamedPipeServer,
+    pool: Arc<Pool>,
 }
 
 impl WindowsListener {
     /// Creates a new [`WindowsListener`], binding to the OpenSSH named pipe path.
     ///
-    /// The first pipe server instance is created synchronously so the pipe name is
-    /// registered in the OS before this function returns.
+    /// The whole pool is created synchronously so the pipe name is registered in the OS before
+    /// this function returns.
     ///
     /// # Errors
     ///
-    /// Returns an error if the named pipe cannot be created.
+    /// Returns an error if the named pipe cannot be created, or if another program owns the name.
     pub(crate) fn new() -> Result<Self> {
-        let server = ServerOptions::new()
-            .create(PIPE_NAME)
-            .map_err(|e| anyhow!("Unable to create named pipe {PIPE_NAME}: {e}"))?;
+        let sid = current_user_sid().map_err(|e| anyhow!("Unable to read the user SID: {e}"))?;
+        let strict = format!("D:P(A;;0x12019b;;;{sid})(A;;RC;;;OW)");
+        let servers = match create_instances(&strict, false) {
+            Ok(servers) => servers,
+            Err(e) if is_access_denied(&e) => {
+                // The strict DACL denies FILE_CREATE_PIPE_INSTANCE to us too, so the remaining
+                // instances need a DACL that grants it; each one is locked down afterwards.
+                let builder = format!("D:P(A;;0x14019f;;;{sid})(A;;RC;;;OW)");
+                let servers = create_instances(&builder, true)?;
+                tighten(&servers, &strict)?;
+                servers
+            }
+            Err(e) => return Err(anyhow!("Unable to create named pipe {PIPE_NAME}: {e}")),
+        };
 
         info!(pipe_name = PIPE_NAME, "Named pipe listener ready");
 
-        Ok(Self { inner: server })
+        Ok(Self {
+            pool: Arc::new(Pool {
+                slots: Mutex::new(servers),
+                free: Notify::new(),
+            }),
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl Listener for WindowsListener {
-    type Stream = NamedPipeServer;
+    type Stream = PooledPipe;
 
     async fn accept(&mut self) -> Result<Connection<Self::Stream>> {
-        self.inner.connect().await?;
+        let mut slot = self.pool.acquire().await;
+        slot.server()?.connect().await?;
+        slot.connected = true;
+        let peer_info = get_peer_info(slot.server()?);
+        Ok(Connection {
+            stream: slot.into_stream(),
+            peer_info,
+        })
+    }
+}
 
-        // Create the next server instance before handing off the current one, so the
-        // pipe name remains available for subsequent clients without a gap.
-        let next = ServerOptions::new()
-            .create(PIPE_NAME)
-            .map_err(|e| anyhow!("Failed to create next pipe instance after accept: {e}"))?;
+/// Creates the pool. The first instance sets `FILE_FLAG_FIRST_PIPE_INSTANCE`, which turns a name
+/// owned by another program into an error instead of silently attaching to its pipe.
+fn create_instances(sddl: &str, write_dac: bool) -> Result<Vec<NamedPipeServer>> {
+    let descriptor = SecurityDescriptor::from_sddl(sddl)?;
+    let mut attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())?,
+        lpSecurityDescriptor: descriptor.0 .0,
+        bInheritHandle: false.into(),
+    };
+    let mut servers = Vec::with_capacity(POOL_SIZE);
+    for index in 0..POOL_SIZE {
+        let mut options = ServerOptions::new();
+        options
+            .first_pipe_instance(index == 0)
+            .reject_remote_clients(true)
+            .write_dac(write_dac);
+        // SAFETY: `attributes` is a live, initialised SECURITY_ATTRIBUTES whose descriptor is
+        // owned by `descriptor`; both outlive every call in the loop.
+        let created = unsafe {
+            options.create_with_security_attributes_raw(PIPE_NAME, (&raw mut attributes).cast())
+        };
+        match created {
+            Ok(server) => servers.push(server),
+            Err(e) if index == 0 && is_access_denied_io(&e) => {
+                return Err(anyhow::Error::new(e).context(NAME_TAKEN_MESSAGE));
+            }
+            Err(e) => return Err(anyhow!("Unable to create named pipe {PIPE_NAME}: {e}")),
+        }
+    }
+    Ok(servers)
+}
 
-        let stream = mem::replace(&mut self.inner, next);
-        let peer_info = get_peer_info(&stream);
+/// Replaces the DACL of every pooled instance; each instance keeps its own descriptor.
+fn tighten(servers: &[NamedPipeServer], strict_sddl: &str) -> Result<()> {
+    let descriptor = SecurityDescriptor::from_sddl(strict_sddl)?;
+    for server in servers {
+        // SAFETY: the instance handle is live, was opened with WRITE_DAC, and `descriptor`
+        // outlives the call.
+        unsafe {
+            SetKernelObjectSecurity(
+                HANDLE(server.as_raw_handle().cast()),
+                DACL_SECURITY_INFORMATION,
+                descriptor.0,
+            )
+        }
+        .map_err(|e| anyhow!("Unable to lock down named pipe {PIPE_NAME}: {e}"))?;
+    }
+    Ok(())
+}
 
-        Ok(Connection { stream, peer_info })
+fn is_access_denied_io(error: &io::Error) -> bool {
+    error.raw_os_error() == i32::try_from(ERROR_ACCESS_DENIED.0).ok()
+}
+
+fn is_access_denied(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<io::Error>())
+        .any(is_access_denied_io)
+}
+
+/// A LocalAlloc'd security descriptor, freed on drop.
+struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+impl SecurityDescriptor {
+    fn from_sddl(sddl: &str) -> Result<Self> {
+        let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: `wide` is NUL-terminated and outlives the call; `descriptor` is a local out
+        // pointer that receives a LocalAlloc'd buffer.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(wide.as_ptr()),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                None,
+            )
+        }
+        .map_err(|e| anyhow!("Unable to build the pipe security descriptor: {e}"))?;
+        Ok(Self(descriptor))
+    }
+}
+
+impl Drop for SecurityDescriptor {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        // which documents LocalFree as the way to release it.
+        unsafe { LocalFree(Some(HLOCAL(self.0 .0))) };
+    }
+}
+
+/// Closes the process token on every exit path.
+struct TokenHandle(HANDLE);
+
+impl Drop for TokenHandle {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from OpenProcessToken and is closed exactly once here.
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+fn current_user_sid() -> Result<String> {
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo handle from GetCurrentProcess needs no close; `token` is a local out
+    // pointer.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }?;
+    let token = TokenHandle(token);
+
+    let mut needed = 0_u32;
+    // SAFETY: a null buffer with length 0 only asks for the required size.
+    let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &raw mut needed) };
+    // u64 elements give the TOKEN_USER the alignment it needs.
+    let mut buffer = vec![0_u64; usize::try_from(needed)?.div_ceil(8).max(1)];
+    // SAFETY: `buffer` holds at least `needed` bytes and outlives the call.
+    unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            Some(buffer.as_mut_ptr().cast()),
+            needed,
+            &raw mut needed,
+        )
+    }?;
+
+    // SAFETY: GetTokenInformation filled `buffer` with a TOKEN_USER whose SID points into it.
+    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut string = PWSTR::null();
+    // SAFETY: `sid` is a valid SID inside `buffer`; `string` receives a LocalAlloc'd string.
+    unsafe { ConvertSidToStringSidW(sid, &raw mut string) }?;
+    // SAFETY: on success `string` is a valid NUL-terminated wide string until LocalFree.
+    let text = unsafe { string.to_string() };
+    // SAFETY: `string` was allocated by ConvertSidToStringSidW and is not used afterwards.
+    unsafe { LocalFree(Some(HLOCAL(string.0.cast()))) };
+    Ok(text?)
+}
+
+/// The instances not currently serving a client, plus a wake-up for acceptors waiting on one.
+struct Pool {
+    slots: Mutex<Vec<NamedPipeServer>>,
+    free: Notify,
+}
+
+impl Pool {
+    async fn acquire(self: &Arc<Self>) -> Slot {
+        loop {
+            let available = self
+                .slots
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop();
+            if let Some(server) = available {
+                return Slot {
+                    server: Some(server),
+                    connected: false,
+                    pool: Arc::clone(self),
+                };
+            }
+            self.free.notified().await;
+        }
+    }
+
+    fn release(&self, server: NamedPipeServer) {
+        self.slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(server);
+        self.free.notify_one();
+    }
+}
+
+/// An instance taken from the pool while it waits for a client. Dropping it returns the instance,
+/// which covers a cancelled accept: `connect` is cancel safe.
+struct Slot {
+    server: Option<NamedPipeServer>,
+    connected: bool,
+    pool: Arc<Pool>,
+}
+
+impl Slot {
+    fn server(&mut self) -> io::Result<&mut NamedPipeServer> {
+        self.server
+            .as_mut()
+            .ok_or_else(|| io::Error::other("the pipe instance was taken"))
+    }
+
+    fn into_stream(mut self) -> PooledPipe {
+        PooledPipe {
+            server: self.server.take(),
+            pool: Arc::clone(&self.pool),
+        }
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let Some(server) = self.server.take() else {
+            return;
+        };
+        recycle(&self.pool, server, self.connected);
+    }
+}
+
+fn recycle(pool: &Pool, server: NamedPipeServer, connected: bool) {
+    if connected && server.disconnect().is_err() {
+        warn!("Unable to recycle a named pipe instance");
+        return;
+    }
+    pool.release(server);
+}
+
+/// An accepted pipe instance that goes back to the pool when the connection ends.
+pub(crate) struct PooledPipe {
+    server: Option<NamedPipeServer>,
+    pool: Arc<Pool>,
+}
+
+impl PooledPipe {
+    fn server(&mut self) -> io::Result<&mut NamedPipeServer> {
+        self.server
+            .as_mut()
+            .ok_or_else(|| io::Error::other("the pipe instance was taken"))
+    }
+}
+
+impl Drop for PooledPipe {
+    fn drop(&mut self) {
+        if let Some(server) = self.server.take() {
+            recycle(&self.pool, server, true);
+        }
+    }
+}
+
+impl AsyncRead for PooledPipe {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut().server() {
+            Ok(server) => Pin::new(server).poll_read(cx, buf),
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+}
+
+impl AsyncWrite for PooledPipe {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut().server() {
+            Ok(server) => Pin::new(server).poll_write(cx, buf),
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut().server() {
+            Ok(server) => Pin::new(server).poll_flush(cx),
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut().server() {
+            Ok(server) => Pin::new(server).poll_shutdown(cx),
+            Err(e) => Poll::Ready(Err(e)),
+        }
     }
 }
 
@@ -90,14 +414,35 @@ mod tests {
 
     #[serial_test::serial]
     #[tokio::test]
+    async fn test_second_listener_is_refused_with_the_service_hint() {
+        let _first = WindowsListener::new().unwrap();
+
+        let error = WindowsListener::new().err().unwrap();
+
+        assert!(error.to_string().contains("OpenSSH Authentication Agent"));
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
     async fn test_get_peer_info_connected_client_returns_some() {
-        let server = ServerOptions::new().create(PIPE_NAME).unwrap();
+        let mut listener = WindowsListener::new().unwrap();
         // Keep the client alive so the connection stays open for the duration of the check
         let _client = ClientOptions::new().open(PIPE_NAME).unwrap();
-        server.connect().await.unwrap();
 
-        let peer_info = get_peer_info(&server);
+        let connection = listener.accept().await.unwrap();
 
-        assert!(peer_info.is_some());
+        assert!(connection.peer_info.is_some());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_instance_is_recycled_after_the_client_disconnects() {
+        let mut listener = WindowsListener::new().unwrap();
+        for _ in 0..=POOL_SIZE {
+            let client = ClientOptions::new().open(PIPE_NAME).unwrap();
+            let connection = listener.accept().await.unwrap();
+            drop(connection);
+            drop(client);
+        }
     }
 }

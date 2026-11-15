@@ -31,42 +31,59 @@ pub trait ClipboardBackend: Send + 'static {
     fn clear(&mut self) -> Result<()>;
 }
 
-/// The general pasteboard via arboard (macOS only).
+/// The general pasteboard via arboard (macOS and Windows).
 pub struct SystemClipboard {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     inner: arboard::Clipboard,
 }
 
 impl SystemClipboard {
     pub fn new() -> Result<Self> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             Ok(Self {
                 inner: arboard::Clipboard::new().map_err(|err| clipboard_error(&err))?,
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             Err(Error::Unsupported)
         }
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn clipboard_error(err: &arboard::Error) -> Error {
     Error::Clipboard(err.to_string())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl ClipboardBackend for SystemClipboard {
     fn set_secret(&mut self, text: &str) -> Result<()> {
-        use arboard::SetExtApple as _;
+        #[cfg(target_os = "macos")]
+        {
+            use arboard::SetExtApple as _;
 
-        self.inner
-            .set()
-            .exclude_from_history()
-            .text(text)
-            .map_err(|err| clipboard_error(&err))
+            self.inner
+                .set()
+                .exclude_from_history()
+                .text(text)
+                .map_err(|err| clipboard_error(&err))
+        }
+        // Every marker, not only `ExcludeClipboardContentFromMonitorProcessing`: older builds and
+        // third-party clipboard managers honour different subsets (§7.4).
+        #[cfg(windows)]
+        {
+            use arboard::SetExtWindows as _;
+
+            self.inner
+                .set()
+                .exclude_from_monitoring()
+                .exclude_from_cloud()
+                .exclude_from_history()
+                .text(text)
+                .map_err(|err| clipboard_error(&err))
+        }
     }
 
     fn text(&mut self) -> Result<Option<Zeroizing<String>>> {
@@ -82,7 +99,7 @@ impl ClipboardBackend for SystemClipboard {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 impl ClipboardBackend for SystemClipboard {
     fn set_secret(&mut self, _text: &str) -> Result<()> {
         Err(Error::Unsupported)

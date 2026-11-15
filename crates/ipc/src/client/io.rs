@@ -1,13 +1,9 @@
-//! The client's I/O thread: handshake, then one reader and one writer over the socket.
+//! The client's I/O thread: handshake, then one reader and one writer over the transport.
 
-use std::{sync::Arc, thread, time::Duration};
+use std::{io, sync::Arc, thread, time::Duration};
 
 use tokio::{
     io::AsyncWriteExt,
-    net::{
-        UnixStream,
-        unix::{OwnedReadHalf, OwnedWriteHalf},
-    },
     sync::{mpsc, oneshot, watch},
     task::JoinSet,
 };
@@ -20,6 +16,7 @@ use crate::{
         BrowserReply, DaemonMessage, Event, PROTOCOL_VERSION, Refusal, SshDecision, UiMessage,
         Welcome,
     },
+    transport::{self, Endpoint, ReadHalf, Stream, WriteHalf},
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -33,20 +30,43 @@ pub(super) struct IoThread {
 }
 
 impl IoThread {
-    pub(super) fn spawn(
-        stream: std::os::unix::net::UnixStream,
+    pub(super) fn connect(
+        endpoint: Endpoint,
+        events: mpsc::UnboundedSender<UiEvent>,
+        ready: Ready,
+    ) -> std::io::Result<Self> {
+        Self::spawn(Source::Endpoint(endpoint), events, ready)
+    }
+
+    pub(super) fn from_stream(
+        stream: Stream,
+        events: mpsc::UnboundedSender<UiEvent>,
+        ready: Ready,
+    ) -> std::io::Result<Self> {
+        Self::spawn(Source::Stream(stream), events, ready)
+    }
+
+    fn spawn(
+        source: Source,
         events: mpsc::UnboundedSender<UiEvent>,
         ready: Ready,
     ) -> std::io::Result<Self> {
         let (stop, stopped) = oneshot::channel();
         let thread = thread::Builder::new()
             .name("vk-ipc".to_owned())
-            .spawn(move || run(stream, events, ready, stopped))?;
+            .spawn(move || run(source, events, ready, stopped))?;
         Ok(Self {
             stop: Some(stop),
             thread: Some(thread),
         })
     }
+}
+
+/// Where the I/O thread gets its stream. Connecting inside the thread keeps the socket registered
+/// with the runtime that reads and writes it.
+enum Source {
+    Endpoint(Endpoint),
+    Stream(Stream),
 }
 
 impl Drop for IoThread {
@@ -61,7 +81,7 @@ impl Drop for IoThread {
 }
 
 fn run(
-    stream: std::os::unix::net::UnixStream,
+    source: Source,
     events: mpsc::UnboundedSender<UiEvent>,
     ready: Ready,
     mut stopped: oneshot::Receiver<()>,
@@ -78,6 +98,17 @@ fn run(
         }
     };
     runtime.block_on(async move {
+        let stream = tokio::select! {
+            stream = open(source) => stream,
+            _ = &mut stopped => return,
+        };
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = ready.send(Err(error.into()));
+                return;
+            }
+        };
         let connected = tokio::select! {
             connected = connect(stream) => connected,
             _ = &mut stopped => return,
@@ -103,15 +134,21 @@ fn run(
     });
 }
 
-type Connected = (OwnedReadHalf, OutboxWriter, Arc<Shared>, watch::Sender<u64>);
+async fn open(source: Source) -> io::Result<Stream> {
+    match source {
+        Source::Endpoint(endpoint) => transport::connect(&endpoint).await,
+        Source::Stream(stream) => Ok(stream),
+    }
+}
+
+type Connected = (ReadHalf, OutboxWriter, Arc<Shared>, watch::Sender<u64>);
 
 struct OutboxWriter {
-    write: OwnedWriteHalf,
+    write: WriteHalf,
     outbox: mpsc::UnboundedReceiver<Frame>,
 }
 
-async fn connect(stream: std::os::unix::net::UnixStream) -> Result<Connected, IpcError> {
-    let stream = UnixStream::from_std(stream)?;
+async fn connect(stream: Stream) -> Result<Connected, IpcError> {
     let (mut read, mut write) = stream.into_split();
     let welcome = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(&mut read, &mut write))
         .await
@@ -125,10 +162,7 @@ async fn connect(stream: std::os::unix::net::UnixStream) -> Result<Connected, Ip
     Ok((read, OutboxWriter { write, outbox }, shared, changes))
 }
 
-async fn handshake(
-    read: &mut OwnedReadHalf,
-    write: &mut OwnedWriteHalf,
-) -> Result<Welcome, IpcError> {
+async fn handshake(read: &mut ReadHalf, write: &mut WriteHalf) -> Result<Welcome, IpcError> {
     let hello = encode(&UiMessage::Hello {
         protocol_version: PROTOCOL_VERSION,
     })?;
@@ -176,7 +210,7 @@ fn hung_up(error: std::io::Error) -> IpcError {
 /// Runs until the daemon goes away, a frame is malformed, or `RemoteVault` is dropped. The
 /// reader never waits on the writer or the UI, so responses keep flowing whatever the UI does.
 async fn session(
-    read: OwnedReadHalf,
+    read: ReadHalf,
     writer: OutboxWriter,
     shared: &Shared,
     changes: &watch::Sender<u64>,
@@ -198,7 +232,7 @@ async fn write_frames(mut writer: OutboxWriter) -> Result<(), IpcError> {
 }
 
 async fn read_messages(
-    mut read: OwnedReadHalf,
+    mut read: ReadHalf,
     shared: &Shared,
     changes: &watch::Sender<u64>,
     events: &mpsc::UnboundedSender<UiEvent>,

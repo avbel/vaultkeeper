@@ -3,25 +3,118 @@
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
+#[cfg(windows)]
+mod windows;
+
+#[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
 const FILE_MODE: u32 = 0o600;
+
+/// What a startup permission check changed, so the daemon and UI can log the repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Repair {
+    #[default]
+    None,
+    /// Each flag records which part differed and was rewritten.
+    Rewritten {
+        dacl: bool,
+        label: bool,
+        attribute: bool,
+    },
+}
+
+impl Repair {
+    #[cfg(windows)]
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::None, other) => other,
+            (this, Self::None) => this,
+            (
+                Self::Rewritten {
+                    dacl: first_dacl,
+                    label: first_label,
+                    attribute: first_attribute,
+                },
+                Self::Rewritten {
+                    dacl: second_dacl,
+                    label: second_label,
+                    attribute: second_attribute,
+                },
+            ) => Self::Rewritten {
+                dacl: first_dacl || second_dacl,
+                label: first_label || second_label,
+                attribute: first_attribute || second_attribute,
+            },
+        }
+    }
+}
+
+/// Why a startup permission check refused a path. A refusal stops startup: the path is not ours,
+/// or someone was granted access that Vaultkeeper never gives.
+#[derive(Debug, thiserror::Error)]
+pub enum Refusal {
+    #[error("{} is a reparse point", path.display())]
+    ReparsePoint { path: PathBuf },
+    #[error("{} is owned by {owner}, not the user or Administrators", path.display())]
+    Owner { path: PathBuf, owner: String },
+    #[error("{} grants access to {sid}", path.display())]
+    ForeignAce { path: PathBuf, sid: String },
+    #[error("cannot check {}: {source}", path.display())]
+    Io { path: PathBuf, source: io::Error },
+}
+
+/// Checks ownership, DACL, mandatory label and index attribute of the data directory, repairing
+/// them when the owner is right. On Unix this is a no-op until the Linux permission checks use it.
+pub fn verify_private_dir(path: &Path) -> Result<Repair, Refusal> {
+    #[cfg(windows)]
+    {
+        windows::verify_private_dir(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(Repair::None)
+    }
+}
+
+/// Runs the same checks on files expected inside the data directory. A missing file is normal (a
+/// token that was never stored) and is skipped.
+pub fn verify_private_files<P: AsRef<Path>>(paths: &[P]) -> Result<Repair, Refusal> {
+    #[cfg(windows)]
+    {
+        windows::verify_private_files(paths)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = paths;
+        Ok(Repair::None)
+    }
+}
 
 /// Creates `path` (and parents) as owner-only, and tightens it if it already exists.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    builder.mode(DIR_MODE);
-    builder.create(path)?;
-    #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(DIR_MODE))?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        windows::ensure_private_dir(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        builder.mode(DIR_MODE);
+        builder.create(path)?;
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(DIR_MODE))?;
+        Ok(())
+    }
 }
 
 /// Writes `bytes` to a fresh 0600 file next to `path`, syncs it and renames it over `path`, so
@@ -38,7 +131,7 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     temp_name.push(format!(".{:016x}.tmp", rand::random::<u64>()));
     let temp = dir.join(temp_name);
 
-    let result = write_new(&temp, bytes).and_then(|()| fs::rename(&temp, path));
+    let result = write_new(&temp, bytes).and_then(|()| rename_atomic(&temp, path));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
@@ -88,6 +181,13 @@ pub fn is_writable_dir(dir: &Path) -> bool {
     })
 }
 
+/// Whether this user may create and rename entries in `dir`.
+#[cfg(windows)]
+#[must_use]
+pub fn is_writable_dir(dir: &Path) -> bool {
+    windows::is_writable_dir(dir)
+}
+
 /// Whether `path` lies on a volume mounted read-only (a disk image, a translocated app).
 #[cfg(unix)]
 pub fn is_on_read_only_volume(path: &Path) -> io::Result<bool> {
@@ -105,6 +205,12 @@ pub fn is_on_read_only_volume(path: &Path) -> io::Result<bool> {
     Ok(info.f_flag & libc::ST_RDONLY != 0)
 }
 
+/// Whether `path` lies on a volume mounted read-only (a disk image, a translocated app).
+#[cfg(windows)]
+pub fn is_on_read_only_volume(path: &Path) -> io::Result<bool> {
+    windows::is_on_read_only_volume(path)
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -113,6 +219,17 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = options.open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+fn rename_atomic(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows::rename_with_retry(from, to)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(from, to)
+    }
 }
 
 #[cfg(test)]
@@ -192,5 +309,17 @@ mod tests {
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).expect("chmod");
         ensure_private_dir(&nested).expect("tighten");
         assert_eq!(mode(&nested), 0o700);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn startup_checks_are_a_noop_off_windows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(verify_private_dir(dir.path()).expect("dir"), Repair::None);
+        let missing = dir.path().join("missing");
+        assert_eq!(
+            verify_private_files(&[missing]).expect("files"),
+            Repair::None
+        );
     }
 }

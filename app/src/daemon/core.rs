@@ -45,7 +45,7 @@ use super::{
 use crate::{
     os::{
         ClipboardKeeper, DaemonBiometrics, Keeper, TouchId,
-        layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
+        layout::{self, SETTINGS_FILE},
         settings_file::SettingsFile,
     },
     settings::{Settings, SshApproval},
@@ -180,10 +180,11 @@ impl Daemon {
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
         .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>)
         .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))));
-        let server =
-            vk_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
-                .await
-                .context("listen on the UI socket")?;
+        let ui_socket = layout::socket_path(&layout::ui_endpoint(&data_dir))
+            .context("the UI channel is not a socket file")?;
+        let server = vk_ipc::serve_with(ui_socket, Arc::clone(&vault), queue, options)
+            .await
+            .context("listen on the UI socket")?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
         let updater = if self_update {
             match update::Updater::new(data_dir.join("update")) {
@@ -197,8 +198,10 @@ impl Daemon {
             None
         };
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
+        let ssh_socket = layout::socket_path(&layout::ssh_endpoint(&data_dir))
+            .context("the SSH agent endpoint is not a socket file")?;
         let daemon = Arc::new(Self {
-            ssh: SshControl::new(data_dir.join(SSH_SOCKET), approvals),
+            ssh: SshControl::new(ssh_socket, approvals),
             unlocked_once: AtomicBool::new(false),
             was_unlocked: AtomicBool::new(false),
             settings: watch::Sender::new(Arc::new(settings)),
@@ -545,6 +548,15 @@ impl Daemon {
             }
             PowerEvent::ScreenLocked => self.forget_browser_approvals(),
             PowerEvent::ScreenUnlocked => {}
+            PowerEvent::SessionEnding => {
+                // The session is ending and this process dies with it: flush the background
+                // worker and lock now, rather than running the full shutdown, which needs the
+                // UI and the event loop.
+                self.vault.on_sleep();
+                self.vault.lock();
+                self.clipboard.clear_if_ours();
+                return;
+            }
         }
         if lock::locks_on(event, self.settings().lock_on_sleep) {
             tracing::info!(?event, "locking on sleep / screen lock");

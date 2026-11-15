@@ -28,9 +28,6 @@ vw-it = []
 
 [dependencies]
 anyhow.workspace = true
-# Security keys over USB HID (CTAP2 with PIN, CTAP1/U2F with the AppID fallback); Firefox's
-# implementation. Pure-Rust crypto for the PIN protocol instead of the default NSS.
-authenticator = { version = "0.5.0", default-features = false, features = ["crypto_rust"] }
 base64.workspace = true
 hmac.workspace = true
 image.workspace = true
@@ -73,6 +70,18 @@ tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+# Security keys over USB HID (CTAP2 with PIN, CTAP1/U2F with the AppID fallback); Firefox's
+# implementation. Pure-Rust crypto for the PIN protocol instead of the default NSS. Fails to build
+# on Windows (libc vs winapi c_void); there the webauthn.dll backend takes over (step 5c).
+authenticator = { version = "0.5.0", default-features = false, features = ["crypto_rust"] }
+
+[target.'cfg(windows)'.dependencies]
+# Native open/save panels for attachments; IFileDialog, no portal or Wayland backends.
+rfd = { version = "0.18.0", default-features = false }
+vk-win.workspace = true
+windows-sys.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Activation policy (Dock icon only while the Manager is open) and the cursor's screen for the

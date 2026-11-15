@@ -25,6 +25,7 @@ impl Inner {
         // 2. Keys, decrypted rows, MRU and the access token zeroize on drop. The SSH agent and
         //    UI learn through the change channels below; the app clears the clipboard.
         drop(previous);
+        self.secrets.forget_key(&id);
         self.clear_pending();
         self.set_offline(false);
         lock(&self.last_sync).remove(&id);

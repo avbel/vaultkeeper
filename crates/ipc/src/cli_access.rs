@@ -1,11 +1,6 @@
 //! The terminal commands talk to the tray through a separate, read-only TLS endpoint.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{fs, io, sync::Arc, time::Duration};
 
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
@@ -14,7 +9,6 @@ use rustls::{
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncWriteExt,
-    net::{UnixListener, UnixStream},
     sync::watch,
     task::{JoinHandle, JoinSet},
     time::{sleep, timeout},
@@ -23,7 +17,12 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use vk_vault::model::{CliLoginField, CliLoginKey};
 use zeroize::Zeroizing;
 
-use crate::{IpcError, PeerVerifier, SameExecutable, frame, peer, server};
+#[cfg(unix)]
+use crate::peer;
+use crate::{
+    IpcError, PeerCredentials, PeerVerifier, SameExecutable, frame, server,
+    transport::{self, Endpoint, Listener as TransportListener, Stream},
+};
 
 const SERVER_NAME: &str = "vaultkeeper-cli.local";
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -59,14 +58,15 @@ pub enum Response {
 
 #[must_use = "dropping the handle stops the CLI socket"]
 pub struct Listener {
-    path: PathBuf,
+    endpoint: Endpoint,
     task: JoinHandle<()>,
 }
 
 impl Drop for Listener {
     fn drop(&mut self) {
         self.task.abort();
-        if let Err(error) = fs::remove_file(&self.path)
+        if let Some(path) = self.endpoint.as_path()
+            && let Err(error) = fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
             tracing::warn!(%error, "cannot remove the CLI socket");
@@ -76,10 +76,11 @@ impl Drop for Listener {
 
 /// Must run inside the daemon's Tokio runtime. `changes` invalidates pending vault responses.
 pub fn serve(
-    path: PathBuf,
+    endpoint: impl Into<Endpoint>,
     changes: watch::Receiver<u64>,
     handle: impl Fn(Request) -> Response + Send + Sync + 'static,
 ) -> Result<Listener, IpcError> {
+    let endpoint = endpoint.into();
     let verifier = SameExecutable::current()?;
     let identity = rcgen::generate_simple_self_signed(vec![SERVER_NAME.to_owned()])
         .map_err(io::Error::other)?;
@@ -95,9 +96,8 @@ pub fn serve(
     .map_err(io::Error::other)?;
     tls.send_tls13_tickets = 0;
     let acceptor = TlsAcceptor::from(Arc::new(tls));
-    server::prepare_directory(&path)?;
-    server::remove_stale_socket(&path)?;
-    let socket = server::bind(&path)?;
+    server::prepare_endpoint(&endpoint)?;
+    let socket = server::bind_endpoint(&endpoint)?;
     let task = tokio::spawn(accept(
         socket,
         verifier,
@@ -106,11 +106,11 @@ pub fn serve(
         changes,
         Arc::new(handle),
     ));
-    Ok(Listener { path, task })
+    Ok(Listener { endpoint, task })
 }
 
 async fn accept(
-    socket: UnixListener,
+    socket: TransportListener,
     verifier: SameExecutable,
     acceptor: TlsAcceptor,
     certificate: CertificateDer<'static>,
@@ -123,7 +123,7 @@ async fn accept(
             biased;
             Some(_) = connections.join_next() => {}
             accepted = socket.accept() => match accepted {
-                Ok((stream, _)) if connections.len() < MAX_CONNECTIONS => {
+                Ok((stream, peer)) if connections.len() < MAX_CONNECTIONS => {
                     let verifier = verifier.clone();
                     let acceptor = acceptor.clone();
                     let certificate = certificate.clone();
@@ -132,7 +132,7 @@ async fn accept(
                     connections.spawn(async move {
                         let _ = timeout(
                             DEADLINE,
-                            respond(stream, &verifier, acceptor, &certificate, changes, &*handle),
+                            respond(stream, peer, &verifier, acceptor, &certificate, changes, &*handle),
                         ).await;
                     });
                 }
@@ -146,9 +146,14 @@ async fn accept(
     }
 }
 
-fn verify(stream: &UnixStream, verifier: &SameExecutable) -> Result<(), IpcError> {
-    let peer = peer::credentials(stream)?;
-    if peer.uid != peer::own_uid() || !verifier.verify(&peer) {
+fn verify(peer: &PeerCredentials, verifier: &SameExecutable) -> Result<(), IpcError> {
+    #[cfg(unix)]
+    if peer.uid != peer::own_uid() {
+        return Err(
+            io::Error::new(io::ErrorKind::PermissionDenied, "untrusted CLI socket peer").into(),
+        );
+    }
+    if !verifier.verify(peer) {
         return Err(
             io::Error::new(io::ErrorKind::PermissionDenied, "untrusted CLI socket peer").into(),
         );
@@ -157,14 +162,15 @@ fn verify(stream: &UnixStream, verifier: &SameExecutable) -> Result<(), IpcError
 }
 
 async fn respond(
-    mut stream: UnixStream,
+    mut stream: Stream,
+    peer: PeerCredentials,
     verifier: &SameExecutable,
     acceptor: TlsAcceptor,
     certificate: &[u8],
     mut changes: watch::Receiver<u64>,
     handle: &impl Fn(Request) -> Response,
 ) -> Result<(), IpcError> {
-    verify(&stream, verifier)?;
+    verify(&peer, verifier)?;
     // Only the public certificate crosses the kernel-authenticated socket before TLS.
     let size = u32::try_from(certificate.len()).map_err(io::Error::other)?;
     stream.write_u32_le(size).await?;
@@ -194,15 +200,16 @@ async fn respond(
     Ok(())
 }
 
-pub async fn call(path: &Path, request: &Request) -> Result<Response, IpcError> {
-    timeout(DEADLINE, exchange(path, request))
+pub async fn call(endpoint: impl Into<Endpoint>, request: &Request) -> Result<Response, IpcError> {
+    let endpoint = endpoint.into();
+    timeout(DEADLINE, exchange(&endpoint, request))
         .await
         .map_err(|_| IpcError::Timeout(DEADLINE))?
 }
 
-async fn exchange(path: &Path, request: &Request) -> Result<Response, IpcError> {
-    let mut stream = UnixStream::connect(path).await?;
-    verify(&stream, &SameExecutable::current()?)?;
+async fn exchange(endpoint: &Endpoint, request: &Request) -> Result<Response, IpcError> {
+    let mut stream = transport::connect(endpoint).await?;
+    verify(&stream.peer_credentials()?, &SameExecutable::current()?)?;
     let certificate = frame::read_frame_with_limit(&mut stream, MAX_CERTIFICATE)
         .await?
         .ok_or(IpcError::Disconnected)?;
@@ -229,9 +236,14 @@ async fn exchange(path: &Path, request: &Request) -> Result<Response, IpcError> 
     frame::decode(&body)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use tokio::net::UnixStream;
 
     use super::*;
 

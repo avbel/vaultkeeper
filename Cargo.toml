@@ -10,6 +10,7 @@ members = [
     "crates/ssh",
     "crates/vault",
     "crates/webauthn",
+    "crates/win",
     "vendor/secure_memory",
     "vendor/ssh_agent",
 ]
@@ -30,6 +31,7 @@ vk-platform = { path = "crates/platform" }
 vk-ssh = { path = "crates/ssh" }
 vk-vault = { path = "crates/vault" }
 vk-webauthn = { path = "crates/webauthn" }
+vk-win = { path = "crates/win" }
 secure_memory = { path = "vendor/secure_memory" }
 ssh_agent = { path = "vendor/ssh_agent" }
 
@@ -72,6 +74,38 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.29.1", features = ["v4", "serde"] }
+# The union of features the Windows plan needs, declared once: Cargo unifies them across the
+# workspace anyway, and a single list keeps parallel Windows steps out of each other's manifests.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_Networking_WindowsWebServices",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Security_WinTrust",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 wiremock = "0.6.5"
 zeroize = { version = "1.9.1", features = ["derive"] }
 

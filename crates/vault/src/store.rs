@@ -318,12 +318,15 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
 
 /// Like [`create_private_dir`] but fails with `NotFound` when the parent is gone.
 fn create_private_child_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
         builder.mode(0o700);
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = fs::DirBuilder::new();
     match builder.create(path) {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
         other => other,

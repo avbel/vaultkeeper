@@ -1,7 +1,7 @@
-//! The Touch ID enrollment file and the wrap/unwrap of the user key, independent of the Secure
-//! Enclave so it can be tested with a software P-256 key.
+//! The biometric enrollment file and the wrap/unwrap of the user key, independent of the Secure
+//! Enclave or the Passport KSP so it can be tested without hardware.
 //!
-//! Version 1 layout (multi-byte lengths big-endian):
+//! Version 1 (macOS, multi-byte lengths big-endian):
 //!
 //! | field                   | size        |
 //! |-------------------------|-------------|
@@ -19,6 +19,28 @@
 //! Everything before the ciphertext is the AES-GCM associated data, so no field can be swapped
 //! without failing decryption. Wrapping key = HKDF-SHA256(ikm = ECDH x-coordinate,
 //! salt = ephemeral public ‖ device public, info = "vaultkeeper touchid v1").
+//!
+//! Version 2 (Windows, same magic and big-endian lengths):
+//!
+//! | field                | size          |
+//! |----------------------|---------------|
+//! | magic `BWLT`         | 4             |
+//! | version (`2`)        | 1             |
+//! | primitive id         | 1             |
+//! | key name length      | 2             |
+//! | key name (UTF-8)     | name length   |
+//! | public key length    | 2             |
+//! | public key blob      | as exported   |
+//! | user SID length      | 2             |
+//! | user SID (UTF-8)     | sid length    |
+//! | wrapped KEK length   | 2             |
+//! | wrapped KEK          | as wrapped    |
+//! | AES-GCM nonce        | 12            |
+//! | ciphertext + tag     | rest (>=16)   |
+//!
+//! The user key is encrypted under a random 32-byte key-encryption key; the backend wraps that
+//! KEK for its hardware (RSA-OAEP in the Passport KSP). Version 1 keeps using the Secure Enclave
+//! ECDH wrapping key and is the only version macOS writes.
 
 use aes_gcm::{
     Aes256Gcm, KeyInit,
@@ -72,6 +94,12 @@ pub(super) enum EnvelopeError {
     Truncated,
     #[error("Touch ID file holds an invalid public key")]
     BadPublicKey,
+    #[error("Touch ID file uses reserved envelope primitive {0}")]
+    ReservedPrimitive(u8),
+    #[error("unsupported Touch ID file primitive {0}")]
+    UnsupportedPrimitive(u8),
+    #[error("Touch ID file holds invalid text")]
+    BadText,
     #[error("user key failed to decrypt")]
     Decrypt,
 }
@@ -166,6 +194,15 @@ impl<'a> Reader<'a> {
         self.pos = end;
         Ok(slice)
     }
+
+    fn take_field(&mut self) -> Result<&'a [u8], EnvelopeError> {
+        let len = u16::from_be_bytes(
+            self.take(2)?
+                .try_into()
+                .map_err(|_| EnvelopeError::Truncated)?,
+        );
+        self.take(usize::from(len))
+    }
 }
 
 fn parse_point(bytes: &[u8]) -> Result<PublicKey, EnvelopeError> {
@@ -258,6 +295,194 @@ pub(super) fn open(bytes: &[u8], agreement: &impl KeyAgreement) -> Result<Zeroiz
     let envelope = Envelope::parse(bytes)?;
     let shared = agreement.shared_secret(&envelope.key, &envelope.ephemeral_public)?;
     Ok(envelope.decrypt(&shared)?)
+}
+
+/// Version 2 envelope used by the Windows Passport KSP. It stays portable and tested here; the
+/// backend only wraps and unwraps the KEK.
+///
+/// Only macOS builds have no v2 caller yet, because macOS keeps writing v1.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(super) mod v2 {
+    use aes_gcm::{
+        Aes256Gcm, KeyInit,
+        aead::{Aead, Payload},
+    };
+    use rand::{TryRng, rngs::SysRng};
+    use zeroize::Zeroizing;
+
+    use super::{
+        EnvelopeError, Error, KEY_LEN, MAGIC, NONCE_LEN, Reader, Result, TAG_LEN, rng_error,
+    };
+
+    const VERSION: u8 = 2;
+
+    /// Which hardware key wraps the KEK. A file from another backend can never be unwrapped, so
+    /// the caller reports it as an enrollment that has to be recreated.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Primitive {
+        /// Secure Enclave P-256 ECDH (macOS today, still written as v1).
+        SecureEnclaveEcdh,
+        /// Passport KSP RSA-OAEP-wrapped KEK (Windows).
+        PassportRsaOaep,
+    }
+
+    impl Primitive {
+        const fn id(self) -> u8 {
+            match self {
+                Self::SecureEnclaveEcdh => 1,
+                Self::PassportRsaOaep => 2,
+            }
+        }
+
+        fn from_id(id: u8) -> Result<Self, EnvelopeError> {
+            match id {
+                1 => Ok(Self::SecureEnclaveEcdh),
+                2 => Ok(Self::PassportRsaOaep),
+                // Reserved for a KeyCredential signature PRF and RequestDeriveSharedSecretAsync.
+                3 | 4 => Err(EnvelopeError::ReservedPrimitive(id)),
+                other => Err(EnvelopeError::UnsupportedPrimitive(other)),
+            }
+        }
+    }
+
+    /// The authenticated part of a v2 file, before the nonce and ciphertext.
+    #[derive(Debug)]
+    pub(crate) struct V2Header<'a> {
+        pub primitive: Primitive,
+        pub key_name: &'a str,
+        pub public_key: &'a [u8],
+        pub user_sid: &'a str,
+        pub wrapped_kek: &'a [u8],
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct V2Envelope<'a> {
+        pub primitive: Primitive,
+        pub key_name: &'a str,
+        pub public_key: &'a [u8],
+        pub user_sid: &'a str,
+        pub wrapped_kek: &'a [u8],
+        pub nonce: [u8; NONCE_LEN],
+        header: &'a [u8],
+        ciphertext: &'a [u8],
+    }
+
+    impl<'a> V2Envelope<'a> {
+        pub fn parse(bytes: &'a [u8]) -> Result<Self, EnvelopeError> {
+            let mut reader = Reader { bytes, pos: 0 };
+            if reader.take(MAGIC.len())? != MAGIC {
+                return Err(EnvelopeError::BadMagic);
+            }
+            let version = reader.take(1)?[0];
+            if version != VERSION {
+                return Err(EnvelopeError::UnsupportedVersion(version));
+            }
+            let primitive = Primitive::from_id(reader.take(1)?[0])?;
+            let key_name = text(reader.take_field()?)?;
+            let public_key = reader.take_field()?;
+            let user_sid = text(reader.take_field()?)?;
+            let wrapped_kek = reader.take_field()?;
+            let nonce = reader
+                .take(NONCE_LEN)?
+                .try_into()
+                .map_err(|_| EnvelopeError::Truncated)?;
+            let (header, ciphertext) = bytes.split_at(reader.pos);
+            if ciphertext.len() < TAG_LEN {
+                return Err(EnvelopeError::Truncated);
+            }
+            Ok(Self {
+                primitive,
+                key_name,
+                public_key,
+                user_sid,
+                wrapped_kek,
+                nonce,
+                header,
+                ciphertext,
+            })
+        }
+
+        pub fn decrypt(
+            &self,
+            kek: &Zeroizing<[u8; KEY_LEN]>,
+        ) -> Result<Zeroizing<Vec<u8>>, EnvelopeError> {
+            Aes256Gcm::new((&**kek).into())
+                .decrypt(
+                    &self.nonce.into(),
+                    Payload {
+                        msg: self.ciphertext,
+                        aad: self.header,
+                    },
+                )
+                .map(Zeroizing::new)
+                .map_err(|_| EnvelopeError::Decrypt)
+        }
+    }
+
+    /// Seals `user_key` under `kek`, with `wrapped_kek` as the backend's wrapped copy of it.
+    pub(crate) fn seal_v2(
+        header: &V2Header<'_>,
+        kek: &Zeroizing<[u8; KEY_LEN]>,
+        user_key: &[u8],
+    ) -> Result<Vec<u8>> {
+        let mut nonce = [0_u8; NONCE_LEN];
+        SysRng.try_fill_bytes(&mut nonce).map_err(rng_error)?;
+        seal_v2_with(header, kek, nonce, user_key)
+    }
+
+    fn seal_v2_with(
+        header: &V2Header<'_>,
+        kek: &Zeroizing<[u8; KEY_LEN]>,
+        nonce: [u8; NONCE_LEN],
+        user_key: &[u8],
+    ) -> Result<Vec<u8>> {
+        let fields = [
+            header.key_name.as_bytes(),
+            header.public_key,
+            header.user_sid.as_bytes(),
+            header.wrapped_kek,
+        ];
+        let lengths = fields.map(|field| {
+            u16::try_from(field.len()).map_err(|_| {
+                Error::Io(std::io::Error::other(
+                    "biometric envelope field exceeds 64 KiB",
+                ))
+            })
+        });
+        let mut out = Vec::with_capacity(
+            MAGIC.len()
+                + 2
+                + 2 * fields.len()
+                + fields.iter().map(|field| field.len()).sum::<usize>()
+                + NONCE_LEN
+                + user_key.len()
+                + TAG_LEN,
+        );
+        out.extend_from_slice(MAGIC);
+        out.push(VERSION);
+        out.push(header.primitive.id());
+        for (field, length) in fields.into_iter().zip(lengths) {
+            out.extend_from_slice(&length?.to_be_bytes());
+            out.extend_from_slice(field);
+        }
+        out.extend_from_slice(&nonce);
+
+        let ciphertext = Aes256Gcm::new((&**kek).into())
+            .encrypt(
+                &nonce.into(),
+                Payload {
+                    msg: user_key,
+                    aad: &out,
+                },
+            )
+            .map_err(|_| std::io::Error::other("AES-GCM refused the user key"))?;
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    fn text(bytes: &[u8]) -> Result<&str, EnvelopeError> {
+        std::str::from_utf8(bytes).map_err(|_| EnvelopeError::BadText)
+    }
 }
 
 fn rng_error(err: rand::rngs::SysError) -> Error {
@@ -530,6 +755,148 @@ mod tests {
         assert_eq!(
             shared.as_slice(),
             hex("D6840F6B42F6EDAFD13116E0E12565202FEF8E9ECE7DCE03812464D04B9442DE")
+        );
+    }
+
+    const V2_PUBLIC_KEY: &[u8] = &[0xaa; 65];
+    const V2_WRAPPED_KEK: &[u8] = &[0xbb; 256];
+    const V2_KEY_NAME: &str = "S-1-5-21-1//Vaultkeeper//Vaultkeeper";
+    const V2_USER_SID: &str = "S-1-5-21-1";
+
+    fn v2_kek() -> Zeroizing<[u8; KEY_LEN]> {
+        Zeroizing::new([0x33; KEY_LEN])
+    }
+
+    fn v2_header() -> v2::V2Header<'static> {
+        v2::V2Header {
+            primitive: v2::Primitive::PassportRsaOaep,
+            key_name: V2_KEY_NAME,
+            public_key: V2_PUBLIC_KEY,
+            user_sid: V2_USER_SID,
+            wrapped_kek: V2_WRAPPED_KEK,
+        }
+    }
+
+    fn sealed_v2() -> Vec<u8> {
+        v2::seal_v2(&v2_header(), &v2_kek(), USER_KEY).expect("seal v2")
+    }
+
+    #[test]
+    fn v1_files_still_open_unchanged() {
+        let device = SoftwareKey::random();
+        let bytes = sealed_for(&device);
+        assert_eq!(bytes[4], 1);
+        assert_eq!(
+            v2::V2Envelope::parse(&bytes).expect_err("v2 parser"),
+            EnvelopeError::UnsupportedVersion(1)
+        );
+        let unwrapped = open(&bytes, &device).expect("open v1");
+        assert_eq!(unwrapped.as_slice(), USER_KEY.as_slice());
+    }
+
+    #[test]
+    fn v2_round_trip_with_a_wrapped_kek() {
+        let bytes = sealed_v2();
+        assert_eq!(&bytes[..4], b"BWLT");
+        assert_eq!(bytes[4], 2);
+        assert_eq!(bytes[5], 2);
+
+        let envelope = v2::V2Envelope::parse(&bytes).expect("parse v2");
+        assert_eq!(envelope.primitive, v2::Primitive::PassportRsaOaep);
+        assert_eq!(envelope.key_name, V2_KEY_NAME);
+        assert_eq!(envelope.public_key, V2_PUBLIC_KEY);
+        assert_eq!(envelope.user_sid, V2_USER_SID);
+        assert_eq!(envelope.wrapped_kek, V2_WRAPPED_KEK);
+        let unwrapped = envelope.decrypt(&v2_kek()).expect("decrypt v2");
+        assert_eq!(unwrapped.as_slice(), USER_KEY.as_slice());
+    }
+
+    #[test]
+    fn v2_each_seal_uses_a_fresh_nonce() {
+        let first = sealed_v2();
+        let second = sealed_v2();
+        let first = v2::V2Envelope::parse(&first).expect("first");
+        let second = v2::V2Envelope::parse(&second).expect("second");
+        assert_ne!(first.nonce, second.nonce);
+    }
+
+    #[test]
+    fn v2_a_wrong_kek_fails_to_decrypt() {
+        let bytes = sealed_v2();
+        let envelope = v2::V2Envelope::parse(&bytes).expect("parse");
+        let wrong = Zeroizing::new([0x44; KEY_LEN]);
+        assert_eq!(
+            envelope.decrypt(&wrong).expect_err("wrong kek"),
+            EnvelopeError::Decrypt
+        );
+    }
+
+    #[test]
+    fn v2_tampering_with_any_byte_is_rejected() {
+        let bytes = sealed_v2();
+        for offset in 0..bytes.len() {
+            let mut tampered = bytes.clone();
+            tampered[offset] ^= 0x01;
+            let opened =
+                v2::V2Envelope::parse(&tampered).and_then(|envelope| envelope.decrypt(&v2_kek()));
+            assert!(opened.is_err(), "offset {offset}");
+        }
+    }
+
+    #[test]
+    fn v2_reserved_and_unknown_primitives_need_re_enrolment() {
+        let sealed = sealed_v2();
+        for id in [1, 2] {
+            let mut bytes = sealed.clone();
+            bytes[5] = id;
+            assert!(v2::V2Envelope::parse(&bytes).is_ok(), "id {id}");
+        }
+        for id in [3, 4] {
+            let mut bytes = sealed.clone();
+            bytes[5] = id;
+            assert_eq!(
+                v2::V2Envelope::parse(&bytes).expect_err("reserved"),
+                EnvelopeError::ReservedPrimitive(id)
+            );
+        }
+        for id in [0, 5, 255] {
+            let mut bytes = sealed.clone();
+            bytes[5] = id;
+            assert_eq!(
+                v2::V2Envelope::parse(&bytes).expect_err("unknown"),
+                EnvelopeError::UnsupportedPrimitive(id)
+            );
+        }
+        let err: Error = EnvelopeError::ReservedPrimitive(3).into();
+        assert!(matches!(err, Error::BiometricInvalidated));
+    }
+
+    #[test]
+    fn v2_truncation_and_oversized_lengths_are_rejected() {
+        let bytes = sealed_v2();
+        for len in [0, 3, 4, 5, 6, 7, 8, bytes.len() - 1] {
+            let opened = v2::V2Envelope::parse(&bytes[..len])
+                .and_then(|envelope| envelope.decrypt(&v2_kek()));
+            assert!(opened.is_err(), "len {len}");
+        }
+
+        let mut oversized = bytes;
+        // Key name length sits after magic, version and primitive id.
+        oversized[6..8].copy_from_slice(&u16::MAX.to_be_bytes());
+        assert_eq!(
+            v2::V2Envelope::parse(&oversized).expect_err("oversized"),
+            EnvelopeError::Truncated
+        );
+    }
+
+    #[test]
+    fn v2_invalid_utf8_names_are_rejected() {
+        let mut bytes = sealed_v2();
+        // The key name starts right after its two-byte length.
+        bytes[8] = 0xff;
+        assert_eq!(
+            v2::V2Envelope::parse(&bytes).expect_err("utf8"),
+            EnvelopeError::BadText
         );
     }
 

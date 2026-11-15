@@ -236,6 +236,8 @@ mod tests {
         assert_eq!(ui_args(false, true), ["--ui", "--no-activate"]);
     }
 
+    // Windows: step 2e - these spawn Unix tools; the inherited-channel launcher gets its own tests.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_started_child_is_tracked_until_it_exits() {
         let launcher = std::sync::Arc::new(Launcher::new(Some(PathBuf::from("/usr/bin/true"))));
@@ -269,6 +271,7 @@ mod tests {
         assert_eq!(judge(2, 3, true), Hang::Wait);
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_hung_child_is_killed_and_reaped() {
         use std::os::unix::fs::PermissionsExt;

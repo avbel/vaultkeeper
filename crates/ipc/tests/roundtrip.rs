@@ -1,6 +1,8 @@
 //! Every `VaultService` method through `RemoteVault` against the fake, and every `Call` variant
 //! that `RemoteVault` serves from its cache, sent by hand.
 
+#![cfg(unix)]
+
 mod common;
 
 use std::{path::PathBuf, sync::Arc};

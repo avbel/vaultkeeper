@@ -22,7 +22,7 @@ use self::{
 use crate::{
     app::{App, UiCommand},
     hooks::Hooks,
-    os::{Notifier, layout::UI_SOCKET},
+    os::{Notifier, layout::ui_endpoint},
     run::{Backend, UiOptions, run_ui, select_backend},
 };
 
@@ -38,7 +38,7 @@ pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
         .enable_all()
         .build()
         .context("start the async runtime")?;
-    let (remote, events) = match runtime.block_on(RemoteVault::connect(data_dir.join(UI_SOCKET))) {
+    let (remote, events) = match runtime.block_on(RemoteVault::connect(ui_endpoint(&data_dir))) {
         Ok(connected) => connected,
         Err(IpcError::Busy) => {
             tracing::info!("another UI process is connected to the daemon");

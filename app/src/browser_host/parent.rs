@@ -1,7 +1,10 @@
-use vk_ipc::browser::protocol::{KnownBrowser, ParentInfo};
+#[cfg(unix)]
+use vk_ipc::browser::protocol::KnownBrowser;
+use vk_ipc::browser::protocol::ParentInfo;
 
 use crate::cli::HostCaller;
 
+#[cfg(unix)]
 pub fn identify(caller: &HostCaller) -> ParentInfo {
     let pid = vk_ipc::parent_pid();
     let executable = vk_ipc::process_executable(pid)
@@ -34,7 +37,17 @@ fn identify_browser(pid: i32, caller: &HostCaller) -> Option<KnownBrowser> {
     vk_ipc::check_pid(pid, requirement).ok().map(|()| browser)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn identify_browser(_pid: i32, _caller: &HostCaller) -> Option<KnownBrowser> {
     None
+}
+
+// Windows: step 5e - the parent process is identified through its executable's signer.
+#[cfg(not(unix))]
+pub fn identify(_caller: &HostCaller) -> ParentInfo {
+    ParentInfo {
+        pid: 0,
+        executable: String::new(),
+        browser: None,
+    }
 }

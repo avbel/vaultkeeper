@@ -22,7 +22,8 @@ pub use biometrics::{
 };
 pub use clipboard::{ClipboardKeeper, DaemonClipboard, Keeper, NoClipboard};
 pub use misc::{
-    AgentSocket, BrowserOpener, FilePanels, Generator, HotkeyBinding, LaunchAgent, SshKeys, web_url,
+    AgentSocket, BrowserOpener, FilePanels, Generator, HotkeyBinding, LaunchAgent, SshKeys,
+    open_in_browser, web_url,
 };
 pub use settings_file::SettingsFile;
 
@@ -59,7 +60,7 @@ impl Hooks {
                 notify: Arc::clone(notify),
             }),
             ssh_agent: Arc::new(AgentSocket {
-                path: data_dir.join(layout::SSH_SOCKET),
+                endpoint: layout::ssh_endpoint(data_dir),
             }),
             ssh_keys: Arc::new(SshKeys),
             placement: Arc::new(appkit::CursorScreen),

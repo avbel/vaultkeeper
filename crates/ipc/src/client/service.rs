@@ -1,4 +1,4 @@
-use std::{os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use tokio::sync::watch;
 use vk_vault::{
@@ -38,8 +38,17 @@ fn unit(reply: &Reply) -> Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn path_bytes(path: &std::path::Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+
     path.as_os_str().as_bytes().to_vec()
+}
+
+/// Windows has no byte view of a path; the daemon rebuilds it from UTF-8 (steps 1g, 1o).
+#[cfg(not(unix))]
+fn path_bytes(path: &std::path::Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
 }
 
 fn convert_all<D, T: From<D>>(items: Vec<D>) -> Vec<T> {

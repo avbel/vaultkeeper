@@ -12,8 +12,13 @@ use vaultkeeper::{
 };
 
 fn main() -> anyhow::Result<()> {
-    vk_platform::hardening::harden_process();
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let role = if raw_args.iter().any(|arg| arg == "--ui") {
+        vk_platform::hardening::Role::Ui
+    } else {
+        vk_platform::hardening::Role::Daemon
+    };
+    vk_platform::hardening::harden_process(role);
     if matches!(
         raw_args.first().map(String::as_str),
         Some("list" | "get_fields" | "get")

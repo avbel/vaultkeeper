@@ -21,6 +21,7 @@ pub enum Command {
     ShowQuickPanel,
 }
 
+#[cfg(unix)]
 impl Command {
     const fn code(self) -> u8 {
         match self {

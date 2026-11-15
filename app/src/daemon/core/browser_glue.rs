@@ -32,7 +32,7 @@ use crate::{
         pairing::PairingStore,
         save::{Outcome as SaveOutcome, SaveError, SaveManager, SaveSettings},
     },
-    os::layout::{BROWSER_PAIRINGS_FILE, BROWSER_SOCKET},
+    os::layout::{BROWSER_PAIRINGS_FILE, browser_endpoint},
     settings::{BrowserMatch, Settings, ThemeChoice},
 };
 
@@ -149,18 +149,17 @@ impl Daemon {
             if let Some(previous) = previous {
                 let _ = previous.await;
             }
-            let control = match BrowserControl::start(
-                daemon.data_dir.join(BROWSER_SOCKET),
-                daemon.data_dir.join(BROWSER_PAIRINGS_FILE),
-            )
-            .await
-            {
-                Ok(control) => control,
-                Err(error) => {
-                    tracing::warn!(%error, "browser integration not started");
-                    return;
-                }
-            };
+            let socket = browser_endpoint(&daemon.data_dir);
+            let control =
+                match BrowserControl::start(socket, daemon.data_dir.join(BROWSER_PAIRINGS_FILE))
+                    .await
+                {
+                    Ok(control) => control,
+                    Err(error) => {
+                        tracing::warn!(%error, "browser integration not started");
+                        return;
+                    }
+                };
             *guard(&daemon.browser.store) = Some(control.store());
             let fills = Arc::new(RealFills {
                 vault: Arc::clone(&daemon.vault),

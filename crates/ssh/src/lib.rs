@@ -2,14 +2,12 @@
 //!
 //! Every sign request goes to the UI through [`ApprovalRequest`]; the UI answers on the oneshot.
 //!
-//! Unix only: the agent listens on a Unix domain socket.
-
-#[cfg(not(unix))]
-compile_error!("vk-ssh serves a Unix domain socket and supports only Unix targets");
+//! On Unix the agent listens on a Unix domain socket; on Windows it serves the OpenSSH named pipe.
 
 mod approver;
 mod error;
 mod keys;
+#[cfg(unix)]
 mod socket;
 
 use std::{
@@ -71,8 +69,8 @@ pub struct SshAgent {
 }
 
 impl SshAgent {
-    /// Binds the socket (mode 0600) and serves until [`SshAgent::stop`]. Requests needing approval
-    /// are sent on `approvals`; they auto-deny after [`APPROVAL_TIMEOUT`] without an answer.
+    /// Binds the endpoint and serves until [`SshAgent::stop`]. Requests needing approval are sent
+    /// on `approvals`; they auto-deny after [`APPROVAL_TIMEOUT`] without an answer.
     ///
     /// Must be called from inside a Tokio runtime with the IO and time drivers enabled (the
     /// vendored server spawns its accept loop with `tokio::spawn` and binds a Tokio socket): from
@@ -81,9 +79,10 @@ impl SshAgent {
     /// being driven. The agent's tasks live on that runtime, so keep it alive for as long as the
     /// agent runs. Outside a runtime this fails with [`AgentError::NoRuntime`].
     ///
-    /// A missing parent directory is created with mode 0700. A stale socket at `socket_path` is
-    /// replaced; a socket that still accepts connections yields [`AgentError::AlreadyRunning`] and
-    /// any other file type [`AgentError::NotASocket`].
+    /// On Unix, `socket_path` is a socket file: a missing parent directory is created with mode
+    /// 0700, a stale socket is replaced, a live socket yields [`AgentError::AlreadyRunning`] and
+    /// any other file type [`AgentError::NotASocket`]. On Windows the OpenSSH clients connect to a
+    /// fixed pipe name, so `socket_path` is only recorded for display.
     pub fn start(socket_path: PathBuf, approvals: mpsc::Sender<ApprovalRequest>) -> Result<Self> {
         Self::start_with_approval_timeout(socket_path, approvals, APPROVAL_TIMEOUT)
     }
@@ -97,10 +96,14 @@ impl SshAgent {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(AgentError::NoRuntime.into());
         }
+        #[cfg(unix)]
         socket::prepare(&socket_path)?;
         let approver = ChannelApprover::new(approvals, approval_timeout);
         let mut agent = BitwardenSSHAgent::new(InMemoryEncryptedKeyStore::new(), approver);
+        #[cfg(unix)]
         agent.start_at(socket_path.clone())?;
+        #[cfg(windows)]
+        agent.start()?;
         Ok(Self { socket_path, agent })
     }
 
@@ -130,10 +133,11 @@ impl SshAgent {
         self.agent.clear();
     }
 
-    /// Stops serving, clears keys and removes the socket file.
+    /// Stops serving, clears keys and, on Unix, removes the socket file.
     pub fn stop(&mut self) {
         if self.is_running() {
             self.agent.stop();
+            #[cfg(unix)]
             socket::remove(&self.socket_path);
         }
     }

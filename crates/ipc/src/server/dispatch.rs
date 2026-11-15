@@ -1,6 +1,6 @@
 //! Runs one decoded [`Call`] against the real service.
 
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use vk_vault::{
     VaultService,
@@ -307,8 +307,20 @@ fn convert_all<T, D: From<T>>(items: Vec<T>) -> Vec<D> {
     items.into_iter().map(D::from).collect()
 }
 
+#[cfg(unix)]
 fn os_path(bytes: Vec<u8>) -> PathBuf {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+
     PathBuf::from(OsString::from_vec(bytes))
+}
+
+/// Windows has no byte view of a path; the client sends UTF-8 (see `service.rs::path_bytes`).
+#[cfg(not(unix))]
+fn os_path(bytes: Vec<u8>) -> PathBuf {
+    match String::from_utf8(bytes) {
+        Ok(text) => PathBuf::from(text),
+        Err(error) => PathBuf::from(String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    }
 }
 
 async fn blocking<S, T, F>(service: &Arc<S>, work: F) -> Result<T, WireError>
