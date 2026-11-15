@@ -14,8 +14,18 @@ use zeroize::Zeroizing;
 use super::{layout::touch_id_file, ui_window};
 use crate::hooks::{Biometrics, HookError, HookResult};
 
-pub const INVALIDATED: &str =
-    "fingerprints changed since enrolment · unlock with your master password and enrol again";
+/// What the user sees for the system biometric: "Touch ID" on macOS, "Windows Hello" on Windows.
+pub const LABEL: &str = if cfg!(windows) {
+    "Windows Hello"
+} else {
+    "Touch ID"
+};
+
+pub const INVALIDATED: &str = if cfg!(windows) {
+    "Windows Hello was reset since enrolment · unlock with your master password and enrol again"
+} else {
+    "fingerprints changed since enrolment · unlock with your master password and enrol again"
+};
 
 /// What the daemon shows in the system prompt; the UI cannot choose the text.
 const UNLOCK_REASON: &str = "unlock your vault";
@@ -93,7 +103,7 @@ impl TouchIdBackend for TouchId {
 
 impl DaemonBiometrics for TouchId {
     fn authenticate(&self, reason: &str) -> Result<(), TouchIdFailure> {
-        biometric::authenticate(reason).map_err(failure)
+        biometric::authenticate(reason, ui_window::prompt_window()).map_err(failure)
     }
 
     fn is_available(&self) -> bool {
@@ -148,7 +158,7 @@ impl DaemonTouchId {
 
 fn hook_error(failure: TouchIdFailure) -> HookError {
     match failure {
-        TouchIdFailure::Unavailable => HookError::Unavailable("Touch ID"),
+        TouchIdFailure::Unavailable => HookError::Unavailable(LABEL),
         TouchIdFailure::Cancelled => HookError::Cancelled,
         TouchIdFailure::Invalidated => HookError::Failed(INVALIDATED.to_owned()),
         other => HookError::Failed(other.to_string()),

@@ -54,7 +54,7 @@ impl<S: VaultService> App<S> {
         window.set_firefox_installed(installed.contains(&ManifestBrowser::Firefox));
         window.set_browser_chrome(settings.browser_chrome);
         window.set_browser_firefox(settings.browser_firefox);
-        window.set_browser_touch_id(settings.browser_touch_id);
+        window.set_browser_biometric(settings.browser_touch_id);
         window.set_browser_save_prompts(settings.browser_save_prompts);
         window.set_browser_copy_totp(settings.browser_copy_totp);
         window.set_browser_fill_single(settings.browser_fill_single);
@@ -91,7 +91,7 @@ impl<S: VaultService> App<S> {
         window.on_browser_firefox_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.browser_firefox = enabled);
         }));
-        window.on_browser_touch_id_toggled(handler!(self, |app, enabled| {
+        window.on_browser_biometric_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.browser_touch_id = enabled);
         }));
         window.on_browser_save_prompts_toggled(handler!(self, |app, enabled| {

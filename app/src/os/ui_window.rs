@@ -19,8 +19,8 @@ fn accept_window(
 
 #[cfg(windows)]
 pub use windows::{
-    allow_foreground, bring_to_front, clear_ui_pid, exclude_from_capture, set_capture_exclusion,
-    set_ui_pid, trusted_parent_window, window_handle,
+    allow_foreground, bring_to_front, clear_ui_pid, exclude_from_capture, prompt_window,
+    set_capture_exclusion, set_ui_pid, trusted_parent_window, window_handle,
 };
 
 #[cfg(not(windows))]
@@ -39,6 +39,13 @@ pub const fn set_capture_exclusion(_enabled: bool) {}
 #[cfg(not(windows))]
 #[must_use]
 pub const fn trusted_parent_window(_requested: Option<u64>) -> Option<u64> {
+    None
+}
+
+/// macOS has no parent window for the Touch ID sheet.
+#[cfg(not(windows))]
+#[must_use]
+pub const fn prompt_window() -> Option<u64> {
     None
 }
 
@@ -66,8 +73,9 @@ mod windows {
             Foundation::{HWND, LPARAM},
             System::Threading::GetCurrentThreadId,
             UI::WindowsAndMessaging::{
-                AllowSetForegroundWindow, EnumThreadWindows, GetWindowThreadProcessId, IsWindow,
-                SetForegroundWindow, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+                AllowSetForegroundWindow, EnumThreadWindows, EnumWindows, GetWindowThreadProcessId,
+                IsWindow, IsWindowVisible, SetForegroundWindow, SetWindowDisplayAffinity,
+                WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
             },
         },
         core::BOOL,
@@ -173,6 +181,51 @@ mod windows {
             tracing::warn!("ignoring a Hello parent window that is not the UI's");
         }
         accepted
+    }
+
+    /// A top-level window of the UI child this daemon spawned, for prompts the daemon starts on
+    /// its own (the SSH approval has no handle in the request). Taken from the OS by owner pid, so
+    /// it passes the same check as a handle the UI sent; a visible window wins.
+    #[must_use]
+    pub fn prompt_window() -> Option<u64> {
+        let ui_pid = Some(UI_PID.load(Ordering::Acquire)).filter(|pid| *pid != 0)?;
+        let mut search = WindowSearch {
+            ui_pid,
+            visible: None,
+            hidden: None,
+        };
+        let search_ptr = LPARAM::try_from((&raw mut search).expose_provenance()).ok()?;
+        // SAFETY: the callback only touches the `WindowSearch` behind the `LPARAM`, which outlives
+        // this synchronous call.
+        unsafe { EnumWindows(Some(collect_ui_window), search_ptr) };
+        search.visible.or(search.hidden)
+    }
+
+    struct WindowSearch {
+        ui_pid: u32,
+        visible: Option<u64>,
+        hidden: Option<u64>,
+    }
+
+    unsafe extern "system" fn collect_ui_window(hwnd: HWND, search: LPARAM) -> BOOL {
+        let Ok(address) = usize::try_from(search) else {
+            return 0;
+        };
+        // SAFETY: `search` is the pointer `prompt_window` passed and is valid for the whole call.
+        let search = unsafe { &mut *ptr::with_exposed_provenance_mut::<WindowSearch>(address) };
+        let Ok(handle) = u64::try_from(hwnd.addr()) else {
+            return 1;
+        };
+        if owner_pid(handle) != Some(search.ui_pid) {
+            return 1;
+        }
+        // SAFETY: only inspects the handle value.
+        if unsafe { IsWindowVisible(hwnd) } != 0 {
+            search.visible = Some(handle);
+            return 0;
+        }
+        search.hidden.get_or_insert(handle);
+        1
     }
 
     fn owner_pid(hwnd: u64) -> Option<u32> {

@@ -85,10 +85,10 @@ fn touch_id_unlock_after_enrolment() {
     h.app.open_settings();
     let settings = h.app.settings_window().expect("settings");
     click(&settings, "Enrol Touch ID");
-    assert!(settings.get_touch_id_enrolled());
+    assert!(settings.get_biometric_enrolled());
     h.app.lock();
     let lock = h.app.lock_window().expect("lock window");
-    assert!(lock.get_touch_id_available());
+    assert!(lock.get_biometric_available());
     click(&lock, "Unlock with Touch ID");
     assert!(matches!(h.vault.state(), SessionState::Unlocked { .. }));
 }
@@ -545,7 +545,7 @@ fn enter_on_an_empty_field_uses_touch_id_when_enrolled() {
     );
     h.app.lock();
     let lock = h.app.lock_window().expect("lock window");
-    assert!(lock.get_touch_id_available());
+    assert!(lock.get_biometric_available());
     assert!(common::control_exists(&lock, "Unlock with Touch ID"));
     common::key(
         &lock,
@@ -651,7 +651,7 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
     h.app.lock();
     let lock = h.app.lock_window().expect("lock");
     assert!(
-        !lock.get_touch_id_available(),
+        !lock.get_biometric_available(),
         "the app has not been unlocked since it started"
     );
     type_into(&lock, "Master password", MOCK_MASTER_PASSWORD);
@@ -659,7 +659,7 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
     h.app.lock();
     let lock = h.app.lock_window().expect("lock again");
     assert!(
-        lock.get_touch_id_available(),
+        lock.get_biometric_available(),
         "after one password unlock Touch ID is back"
     );
 
@@ -683,7 +683,7 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
             .app
             .lock_window()
             .expect("lock")
-            .get_touch_id_available()
+            .get_biometric_available()
     );
     later.app.set_first_unlock(false);
     assert!(
@@ -691,7 +691,7 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
             .app
             .lock_window()
             .expect("lock")
-            .get_touch_id_available(),
+            .get_biometric_available(),
         "the daemon said an unlock already happened"
     );
 }

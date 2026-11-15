@@ -47,6 +47,7 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .map(ComponentHandle::clone_strong);
         if let Some(window) = existing {
+            self.fill_biometric(&window);
             show(&window, "settings");
             return;
         }
@@ -110,13 +111,7 @@ impl<S: VaultService> App<S> {
         window.set_auto_update(settings.auto_update);
         window.set_ask_unlock_on_start(settings.ask_unlock_on_start);
         window.set_require_master_password(settings.require_master_password_on_start);
-        let biometrics = &self.hooks.biometrics;
-        window.set_touch_id_available(biometrics.is_available());
-        window.set_touch_id_enrolled(
-            account
-                .as_ref()
-                .is_some_and(|account| biometrics.is_enrolled(&account.id)),
-        );
+        self.fill_biometric(window);
         window.set_unlocked(matches!(
             self.vault.state(),
             vk_vault::model::SessionState::Unlocked { .. }
@@ -125,16 +120,35 @@ impl<S: VaultService> App<S> {
         window.set_cli_access(settings.cli_access);
         window.set_cli_path_setup(cli_path_setup().into());
         let socket = self.hooks.ssh_agent.socket_path();
+        window.set_ssh_hint(ssh_hint().into());
         window.set_ssh_config(ssh_config_lines(&socket).into());
         window.set_ssh_socket(socket.into());
         window.set_ssh_approval_index(i32::from(
             settings.ssh_approval == SshApproval::RememberUntilLock,
         ));
-        window.set_ssh_touch_id(settings.ssh_touch_id);
-        window.set_touch_id_right_away(settings.touch_id_right_away);
+        window.set_ssh_biometric(settings.ssh_touch_id);
+        window.set_biometric_right_away(settings.touch_id_right_away);
         window.set_show_site_icons(settings.show_site_icons);
         super::settings_hotkeys::show_hotkeys(window, &settings);
         self.fill_browser_settings(window, &settings);
+    }
+
+    /// Availability can change between openings (Hello is off over RDP and on a locked session),
+    /// so it is read again each time the window is shown.
+    fn fill_biometric(&self, window: &SettingsWindow) {
+        let biometrics = &self.hooks.biometrics;
+        let account = self
+            .vault
+            .accounts()
+            .into_iter()
+            .find(|account| account.active);
+        window.set_hide_missing_biometric(cfg!(windows));
+        window.set_biometric_available(biometrics.is_available());
+        window.set_biometric_enrolled(
+            account
+                .as_ref()
+                .is_some_and(|account| biometrics.is_enrolled(&account.id)),
+        );
     }
 
     fn bind_ssh_settings(&self, window: &SettingsWindow) {
@@ -160,7 +174,7 @@ impl<S: VaultService> App<S> {
             };
             app.update_settings(|settings| settings.ssh_approval = approval);
         }));
-        window.on_ssh_touch_id_toggled(handler!(self, |app, enabled| {
+        window.on_ssh_biometric_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.ssh_touch_id = enabled);
         }));
     }
@@ -223,8 +237,8 @@ impl<S: VaultService> App<S> {
         window.on_require_master_password_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.require_master_password_on_start = enabled);
         }));
-        window.on_touch_id_enroll(handler!(self, |app| app.enroll_touch_id()));
-        window.on_touch_id_remove(handler!(self, |app| app.remove_touch_id()));
+        window.on_biometric_enroll(handler!(self, |app| app.enroll_touch_id()));
+        window.on_biometric_remove(handler!(self, |app| app.remove_touch_id()));
         self.bind_ssh_settings(window);
         window.on_cli_access_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.cli_access = enabled);
@@ -233,7 +247,7 @@ impl<S: VaultService> App<S> {
             let command = zeroize::Zeroizing::new(cli_path_setup());
             app.copy_text("CLI setup command", &command)
         }));
-        window.on_touch_id_right_away_toggled(handler!(self, |app, enabled| {
+        window.on_biometric_right_away_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.touch_id_right_away = enabled);
         }));
         window.on_site_icons_toggled(handler!(self, |app, enabled| {
@@ -292,9 +306,10 @@ impl<S: VaultService> App<S> {
             vk_vault::model::SessionState::Unlocked { .. }
         );
         let (Some(account), true) = (account, unlocked) else {
-            self.report(Err(crate::hooks::HookError::Failed(
-                "Unlock the vault to enrol Touch ID".to_owned(),
-            )));
+            self.report(Err(crate::hooks::HookError::Failed(format!(
+                "Unlock the vault to enrol {}",
+                crate::os::BIOMETRIC_LABEL
+            ))));
             return;
         };
         let biometrics = Arc::clone(&self.hooks.biometrics);
@@ -339,6 +354,13 @@ impl<S: VaultService> App<S> {
     }
 }
 
+/// Shown instead of the config lines on Windows, where `ssh.exe` finds the agent by its pipe name.
+const WINDOWS_SSH_HINT: &str = "Windows OpenSSH (ssh.exe) uses this pipe by itself; stop and disable the \"OpenSSH Authentication Agent\" service first. Git for Windows needs core.sshCommand = C:/Windows/System32/OpenSSH/ssh.exe, and WSL needs a relay such as npiperelay.";
+
+fn ssh_hint() -> &'static str {
+    if cfg!(windows) { WINDOWS_SSH_HINT } else { "" }
+}
+
 /// `~/.ssh/config` lines that send every host's key requests to the agent. The path is quoted
 /// because "Application Support" has a space; ssh expands a leading `~` inside the quotes.
 fn ssh_config_lines(socket: &str) -> String {
@@ -348,6 +370,12 @@ fn ssh_config_lines(socket: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_hint_names_the_pipe_workarounds() {
+        assert!(WINDOWS_SSH_HINT.contains("C:/Windows/System32/OpenSSH/ssh.exe"));
+        assert!(WINDOWS_SSH_HINT.contains("npiperelay"));
+    }
 
     #[test]
     fn ssh_config_lines_quote_the_socket_path() {

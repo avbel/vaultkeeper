@@ -135,7 +135,7 @@ impl<S: VaultService> App<S> {
         window.set_key_name(request.key_name.as_str().into());
         window.set_fingerprint(request.fingerprint.as_str().into());
         window.set_purpose(request.purpose.clone().unwrap_or_default().into());
-        window.set_touch_id_required(self.settings.borrow().ssh_touch_id);
+        window.set_biometric_required(self.settings.borrow().ssh_touch_id);
         window.set_allow_remember(
             self.settings.borrow().ssh_approval == SshApproval::RememberUntilLock,
         );

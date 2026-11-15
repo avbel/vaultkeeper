@@ -176,6 +176,22 @@ Each sign request opens an approval window (process and key fingerprint, auto-de
   connection shows the unlock window first and continues after you unlock. While logged out the
   agent lists no keys.
 
+### SSH agent on Windows
+
+The agent listens on the named pipe `\\.\pipe\openssh-ssh-agent`, which is where Windows OpenSSH
+(`C:\Windows\System32\OpenSSH\ssh.exe`) looks, so there is no `IdentityAgent` line or
+`SSH_AUTH_SOCK` to set. Settings → SSH agent shows the pipe name instead of a socket path.
+
+- The built-in *OpenSSH Authentication Agent* service uses the same pipe name. Stop and disable it
+  (`Stop-Service ssh-agent; Set-Service ssh-agent -StartupType Disabled`), or Vaultkeeper's agent
+  cannot start.
+- Git for Windows bundles its own `ssh`, which does not use the pipe. Point Git at the Windows one:
+  `git config --global core.sshCommand C:/Windows/System32/OpenSSH/ssh.exe`.
+- WSL cannot open a Windows pipe directly; it needs a relay such as `npiperelay` that exposes the
+  pipe as `SSH_AUTH_SOCK` inside the distribution.
+- *SSH requires Windows Hello* asks for a Windows Hello gesture (face, fingerprint or PIN) after
+  you click Approve.
+
 ## Browsers
 
 Chrome and Firefox can fill logins from Vaultkeeper and offer to save new or changed passwords. The

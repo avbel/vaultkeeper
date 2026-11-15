@@ -163,7 +163,7 @@ impl<S: VaultService> App<S> {
         window.set_browser(browser.as_str().into());
         window.set_host(host.as_str().into());
         window.set_insecure(*insecure);
-        window.set_touch_id(*touch_id);
+        window.set_biometric(*touch_id);
         let mut rows: Vec<ItemSummary> = matches.iter().cloned().map(Into::into).collect();
         let matched = rows.iter().map(|item| Arc::clone(&item.id.0)).collect();
         if rows.is_empty() {

@@ -36,10 +36,10 @@ export component LockWindow inherits Window {
     in property <string> error-text;
     in property <int> failed-attempts;
     in property <bool> busy;
-    in property <bool> touch-id-available;
+    in property <bool> biometric-available;
 
     callback unlock(string);
-    callback unlock-touch-id();
+    callback unlock-biometric();
     callback logout-confirmed();
     callback open-settings();
     callback switch-account(int);
@@ -104,20 +104,20 @@ export component LockWindow inherits Window {
             letter-spacing: -0.3px;
             horizontal-alignment: center;
         }
-        // Touch ID is the default action when enrolled: ↵ on an empty password field triggers it,
+        // The biometric unlock is the default action when enrolled: ↵ on an empty password field triggers it,
         // and typing a password falls back to the master password.
-        if root.touch-id-available: Btn {
+        if root.biometric-available: Btn {
             height: 36px * Theme.scale;
-            text: root.busy ? "Waiting for Touch ID…" : "Unlock with Touch ID";
-            label: "Unlock with Touch ID";
+            text: root.busy ? "Waiting for " + Theme.biometric-label + "…" : "Unlock with " + Theme.biometric-label;
+            label: "Unlock with " + Theme.biometric-label;
             hint: "Return";
             has-icon: true;
             icon: @image-url("icons/fingerprint.svg");
             kind: BtnKind.primary;
             enabled: !root.busy;
-            clicked => { root.unlock-touch-id(); }
+            clicked => { root.unlock-biometric(); }
         }
-        if root.touch-id-available: Text {
+        if root.biometric-available: Text {
             text: "or enter your master password";
             color: Theme.text-muted;
             font-size: Theme.font-hint;
@@ -138,8 +138,8 @@ export component LockWindow inherits Window {
                     if root.busy {
                         return;
                     }
-                    if text == "" && root.touch-id-available {
-                        root.unlock-touch-id();
+                    if text == "" && root.biometric-available {
+                        root.unlock-biometric();
                     } else {
                         root.unlock(text);
                     }
@@ -156,8 +156,8 @@ export component LockWindow inherits Window {
             accessible-value: self.text;
         }
         Btn {
-            text: root.busy && !root.touch-id-available ? "Unlocking…" : "Unlock";
-            kind: root.touch-id-available ? BtnKind.normal : BtnKind.primary;
+            text: root.busy && !root.biometric-available ? "Unlocking…" : "Unlock";
+            kind: root.biometric-available ? BtnKind.normal : BtnKind.primary;
             enabled: !root.busy;
             clicked => { root.unlock(root.password); }
         }

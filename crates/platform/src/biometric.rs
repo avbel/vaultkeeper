@@ -9,6 +9,8 @@
 // (macOS the Secure Enclave ECDH, Windows the Passport KSP), so the other half is dead code there.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+#[cfg(windows)]
+mod consent;
 mod envelope;
 #[cfg(windows)]
 mod passport;
@@ -134,15 +136,21 @@ pub fn unenroll(path: &Path) -> Result<()> {
     }
 }
 
-/// Plain Touch ID check (no key), used to approve SSH sign requests. Blocks until answered.
-pub fn authenticate(reason: &str) -> Result<()> {
+/// Plain Touch ID / Windows Hello check (no key), used to approve SSH sign requests and browser
+/// fills. Blocks until answered. `parent_window` as for [`enroll`]; Hello cannot ask without one.
+pub fn authenticate(reason: &str, parent_window: Option<u64>) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let _ = parent_window;
         secure_enclave::authenticate(reason)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = reason;
+        consent::authenticate(reason, parent_window)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (reason, parent_window);
         Err(Error::Unsupported)
     }
 }
@@ -236,7 +244,7 @@ mod tests {
                 "{reason:?}"
             );
             assert!(
-                matches!(authenticate(reason), Err(Error::Io(_))),
+                matches!(authenticate(reason, None), Err(Error::Io(_))),
                 "{reason:?}"
             );
         }

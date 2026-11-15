@@ -451,6 +451,7 @@ impl<S: VaultService> App<S> {
         theme.set_mode(theme_mode(settings.theme));
         theme.set_scale(settings.text_scale.factor());
         theme.set_site_icons(settings.show_site_icons);
+        theme.set_biometric_label(crate::os::BIOMETRIC_LABEL.into());
     }
 
     fn apply_theme_everywhere(&self) {

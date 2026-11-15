@@ -15,7 +15,7 @@ export component SshPrompt inherits Window {
     in property <string> key-name;
     in property <string> fingerprint;
     in property <string> purpose;
-    in property <bool> touch-id-required;
+    in property <bool> biometric-required;
     in property <bool> busy;
     // The key's item asks for the master password: approving needs a verified one.
     in property <bool> reprompt;
@@ -123,7 +123,7 @@ export component SshPrompt inherits Window {
                         clicked => { root.deny(); }
                     }
                     Btn {
-                        text: root.touch-id-required ? "Approve with Touch ID" : "Approve";
+                        text: root.biometric-required ? "Approve with " + Theme.biometric-label : "Approve";
                         hint: "Return";
                         label: "Approve";
                         kind: BtnKind.primary;

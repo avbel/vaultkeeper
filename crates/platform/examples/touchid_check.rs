@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if mode == "--auth" {
-        let outcome = biometric::authenticate("approve a test SSH signature");
+        let outcome = biometric::authenticate("approve a test SSH signature", None);
         println!("authenticate: {outcome:?}");
         return Ok(());
     }

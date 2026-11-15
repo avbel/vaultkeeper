@@ -24,7 +24,8 @@ use std::{path::Path, sync::Arc};
 use vk_ipc::{RemoteVault, UiNotice};
 
 pub use biometrics::{
-    DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED, TouchId,
+    DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED,
+    LABEL as BIOMETRIC_LABEL, TouchId,
 };
 pub use clipboard::{ClipboardKeeper, DaemonClipboard, Keeper, NoClipboard};
 pub use misc::{
