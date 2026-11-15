@@ -238,6 +238,20 @@ fn edit_and_save_sends_the_edited_draft() {
     assert_eq!(manager.get_detail_header().name, "GitHub (personal)");
 }
 
+#[test]
+fn a_reprompt_item_is_saved_without_cli_access() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    click(&manager, "Edit");
+    manager.set_edit_allow_cli_access(true);
+    manager.set_edit_reprompt(true);
+    click(&manager, "Save");
+    let saved = h.vault.last_saved().expect("save called");
+    assert!(saved.reprompt);
+    assert!(!saved.allows_cli_access());
+}
+
 fn edit_name(manager: &ManagerWindow) -> String {
     manager
         .get_edit_fields()

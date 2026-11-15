@@ -741,8 +741,17 @@ export component EditForm inherits Rectangle {
                 }
             }
             Check { text: "Favorite"; checked <=> root.favorite; }
-            Check { text: "Ask for master password"; checked <=> root.reprompt; }
-            if root.can-add-uri: Check { text: "Allow CLI access"; checked <=> root.allow-cli-access; }
+            // The CLI never serves re-prompt items, so the two options are exclusive.
+            Check {
+                text: "Ask for master password";
+                checked <=> root.reprompt;
+                toggled(on) => {
+                    if on {
+                        root.allow-cli-access = false;
+                    }
+                }
+            }
+            if root.can-add-uri && !root.reprompt: Check { text: "Allow CLI access"; checked <=> root.allow-cli-access; }
             if root.error != "": Text {
                 text: root.error;
                 color: Theme.danger;

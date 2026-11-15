@@ -327,7 +327,9 @@ impl<S: VaultService> App<S> {
                 );
             }
             draft.fields = fields;
-            draft.set_allow_cli_access(window.get_edit_allow_cli_access());
+            draft.set_allow_cli_access(
+                window.get_edit_allow_cli_access() && !window.get_edit_reprompt(),
+            );
             ItemDraft {
                 favorite: window.get_edit_favorite(),
                 reprompt: window.get_edit_reprompt(),
