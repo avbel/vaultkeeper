@@ -9,10 +9,25 @@ use slint::{
     ComponentHandle, SharedString,
     platform::{Key, WindowEvent},
 };
-use vaultkeeper::{hooks::SettingsStore, settings::Settings};
+use vaultkeeper::{
+    hooks::SettingsStore,
+    settings::{DEFAULT_HOTKEY, Settings},
+};
 
 const QUICK: &str = "Quick Panel hotkey";
 const GENERATOR: &str = "Generator hotkey";
+
+const DEFAULT_SYMBOLS: &str = if cfg!(windows) {
+    "⌃⇧Space"
+} else {
+    "⇧⌘Space"
+};
+/// The default Quick Panel chord as the Slint keys that record it (`Meta` is Ctrl, `Control` is Cmd).
+const DEFAULT_CHORD: [Key; 2] = if cfg!(windows) {
+    [Key::Meta, Key::Shift]
+} else {
+    [Key::Control, Key::Shift]
+};
 
 fn open(setup: Setup) -> (Harness, vaultkeeper::ui::SettingsWindow) {
     let h = harness(setup);
@@ -71,7 +86,7 @@ fn recording_the_quick_panel_hotkey_saves_it_at_once() {
     let (h, window) = open(Setup::default());
     assert_eq!(
         value_of(&window, QUICK),
-        "⇧⌘Space",
+        DEFAULT_SYMBOLS,
         "the default in symbols"
     );
     click(&window, QUICK);
@@ -104,7 +119,7 @@ fn delete_does_not_clear_the_quick_panel_hotkey() {
     let (h, window) = open(Setup::default());
     click(&window, QUICK);
     press(&window, &[], &special(Key::Delete));
-    assert_eq!(saved(&h).hotkey, "Cmd+Shift+Space");
+    assert_eq!(saved(&h).hotkey, DEFAULT_HOTKEY);
     assert!(
         window.get_error_text().contains('⌘'),
         "{}",
@@ -166,7 +181,7 @@ fn the_other_slots_shortcut_is_refused_both_ways() {
         ..Setup::default()
     });
     click(&window, GENERATOR);
-    press(&window, &[Key::Control, Key::Shift], " ");
+    press(&window, &DEFAULT_CHORD, " ");
     assert_eq!(saved(&h).generator_hotkey, "Cmd+Alt+G");
     assert!(window.get_error_text().contains("Quick Panel"));
     assert_eq!(value_of(&window, GENERATOR), "Press a shortcut…");
@@ -178,7 +193,7 @@ fn the_other_slots_shortcut_is_refused_both_ways() {
     );
     click(&window, QUICK);
     press(&window, &[Key::Alt, Key::Control], "g");
-    assert_eq!(saved(&h).hotkey, "Cmd+Shift+Space");
+    assert_eq!(saved(&h).hotkey, DEFAULT_HOTKEY);
     assert!(window.get_error_text().contains("Generator"));
 }
 
@@ -193,7 +208,7 @@ fn the_accessibility_set_value_saves_an_accelerator() {
     pump();
     assert_eq!(
         saved(&h).hotkey,
-        "Cmd+Shift+Space",
+        DEFAULT_HOTKEY,
         "the Quick Panel keeps a hotkey"
     );
     assert!(window.get_error_text().contains("needs a hotkey"));

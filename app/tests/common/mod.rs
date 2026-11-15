@@ -621,10 +621,15 @@ pub fn elapse(duration: Duration) {
     i_slint_backend_testing::mock_elapsed_time(duration);
 }
 
+/// Test scripts spell the system biometric as on macOS; the app says "Windows Hello" on Windows.
+fn localised(label: &str) -> String {
+    label.replace("Touch ID", vaultkeeper::os::BIOMETRIC_LABEL)
+}
+
 /// First element with this accessible label. Plain `Text` elements are labelled by their own text,
 /// so lookups that act on a control skip them.
 pub fn find(root: &impl ElementRoot, label: &str) -> ElementHandle {
-    ElementHandle::find_by_accessible_label(root, label)
+    ElementHandle::find_by_accessible_label(root, &localised(label))
         .next()
         .unwrap_or_else(|| panic!("no element labelled {label:?}"))
 }
@@ -634,19 +639,19 @@ fn find_role(
     label: &str,
     wanted: impl Fn(AccessibleRole) -> bool,
 ) -> ElementHandle {
-    ElementHandle::find_by_accessible_label(root, label)
+    ElementHandle::find_by_accessible_label(root, &localised(label))
         .find(|element| element.accessible_role().is_some_and(&wanted))
         .unwrap_or_else(|| panic!("no control labelled {label:?}"))
 }
 
 pub fn exists(root: &impl ElementRoot, label: &str) -> bool {
-    ElementHandle::find_by_accessible_label(root, label)
+    ElementHandle::find_by_accessible_label(root, &localised(label))
         .next()
         .is_some()
 }
 
 pub fn control_exists(root: &impl ElementRoot, label: &str) -> bool {
-    ElementHandle::find_by_accessible_label(root, label).any(|element| {
+    ElementHandle::find_by_accessible_label(root, &localised(label)).any(|element| {
         element
             .accessible_role()
             .is_some_and(|role| role != AccessibleRole::Text)

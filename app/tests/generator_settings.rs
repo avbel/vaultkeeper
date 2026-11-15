@@ -277,7 +277,14 @@ fn a_generator_hotkey_is_saved_and_clearing_it_removes_it() {
 fn the_quick_panel_shortcut_is_refused_as_the_generator_hotkey() {
     let h = harness(Setup::default());
     let window = settings_window(&h);
-    window.invoke_generator_hotkey_accepted("shift+cmd+space".into());
+    window.invoke_generator_hotkey_accepted(
+        if cfg!(windows) {
+            "shift+ctrl+space"
+        } else {
+            "shift+cmd+space"
+        }
+        .into(),
+    );
     pump();
     assert_eq!(saved_generator_hotkey(&h), "");
     assert!(window.get_error_text().contains("Quick Panel"));

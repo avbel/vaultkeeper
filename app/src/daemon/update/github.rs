@@ -178,16 +178,18 @@ mod tests {
     use super::*;
 
     fn latest_json() -> serde_json::Value {
+        let asset = crate::daemon::update::release::asset_name("9.0.0".parse().expect("version"));
+        let base = "https://github.com/avbel/vaultkeeper/releases/download/v9.0.0";
         serde_json::json!({
             "tag_name": "v9.0.0",
             "html_url": "https://github.com/avbel/vaultkeeper/releases/tag/v9.0.0",
             "assets": [{
-                "name": "Vaultkeeper-v9.0.0-arm64.app.zip",
-                "browser_download_url": "https://github.com/avbel/vaultkeeper/releases/download/v9.0.0/Vaultkeeper-v9.0.0-arm64.app.zip",
+                "name": asset,
+                "browser_download_url": format!("{base}/{asset}"),
                 "size": 5
             }, {
-                "name": "Vaultkeeper-v9.0.0-arm64.app.zip.minisig",
-                "browser_download_url": "https://github.com/avbel/vaultkeeper/releases/download/v9.0.0/Vaultkeeper-v9.0.0-arm64.app.zip.minisig",
+                "name": format!("{asset}.minisig"),
+                "browser_download_url": format!("{base}/{asset}.minisig"),
                 "size": 128
             }]
         })

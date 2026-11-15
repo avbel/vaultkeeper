@@ -203,7 +203,11 @@ fn security_key_prompts_follow_the_key_and_the_pin_reaches_it() {
     assert!(!control_exists(&login, "Verification code"));
     assert_eq!(
         value_of(&login, "Security key status"),
-        "Plug in your security key and touch it"
+        if cfg!(windows) {
+            "Follow the Windows prompt"
+        } else {
+            "Plug in your security key and touch it"
+        }
     );
     assert!(!enabled(&login, "Waiting for key…"));
 

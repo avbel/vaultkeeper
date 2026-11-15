@@ -336,6 +336,7 @@ mod tests {
         Path::new(EXE)
     }
 
+    #[cfg(not(windows))]
     fn root_with(browser: ManifestBrowser) -> tempfile::TempDir {
         let root = tempfile::tempdir().expect("directory");
         fs::create_dir_all(root.path().join(browser.parent_dir())).expect("browser dir");
@@ -415,6 +416,7 @@ mod tests {
         assert!(text.starts_with("{\n  \"name\": \"org.vaultkeeper.browser\",\n"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn writes_then_reports_unchanged() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -429,6 +431,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn restores_a_tampered_manifest() {
         let root = root_with(ManifestBrowser::Firefox);
@@ -445,6 +448,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn a_changed_exe_path_counts_as_a_difference() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -469,6 +473,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o644);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn remove_deletes_and_tolerates_absence() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -480,6 +485,7 @@ mod tests {
         remove(root.path(), ManifestBrowser::Edge).expect("remove for an absent browser");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn uninstalled_browser_gets_nothing_created() {
         let root = tempfile::tempdir().expect("directory");
@@ -491,6 +497,7 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).expect("read").count(), 0);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn only_the_hosts_directory_is_created() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -553,6 +560,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Restored);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn check_and_restore_covers_each_enabled_browser() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -597,6 +605,11 @@ mod tests {
     fn current_exe_is_absolute_and_canonical() {
         let path = current_exe_path().expect("exe");
         assert!(path.is_absolute());
+        // Production skips `canonicalize` on Windows: it would add a `\\?\` prefix a browser
+        // cannot spawn.
+        #[cfg(windows)]
+        assert!(!path.to_string_lossy().starts_with(r"\\?\"));
+        #[cfg(not(windows))]
         assert_eq!(fs::canonicalize(&path).expect("canonical"), path);
     }
 

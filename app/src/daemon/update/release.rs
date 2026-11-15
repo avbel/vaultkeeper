@@ -160,7 +160,15 @@ mod tests {
         .into_bytes()
     }
 
-    const ZIP_URL: &str = "https://github.com/avbel/vaultkeeper/releases/download/v0.2.0/Vaultkeeper-v0.2.0-arm64.app.zip";
+    const ASSET: &str = if cfg!(windows) {
+        "Vaultkeeper-v0.2.0-x64-setup.exe"
+    } else {
+        "Vaultkeeper-v0.2.0-arm64.app.zip"
+    };
+
+    fn asset_url() -> String {
+        format!("https://github.com/avbel/vaultkeeper/releases/download/v0.2.0/{ASSET}")
+    }
 
     #[test]
     fn the_running_version_parses() {
@@ -191,29 +199,29 @@ mod tests {
 
     #[test]
     fn picks_the_app_zip_of_the_latest_release() {
-        let release = parse_latest(&json("v0.2.0", "Vaultkeeper-v0.2.0-arm64.app.zip", ZIP_URL))
+        let zip_url = asset_url();
+        let release = parse_latest(&json("v0.2.0", ASSET, &zip_url))
             .expect("parse")
             .expect("a release");
         assert_eq!(release.version, "0.2.0".parse().expect("version"));
-        assert_eq!(release.asset.as_str(), ZIP_URL);
+        assert_eq!(release.asset.as_str(), zip_url);
         assert_eq!(release.asset_size, 4096);
         assert_eq!(
             release.signature.as_ref().map(Url::as_str),
-            cfg!(windows).then_some(format!("{ZIP_URL}.minisig").as_str())
+            cfg!(windows).then_some(format!("{zip_url}.minisig").as_str())
         );
         assert!(release.page.as_str().ends_with("/releases/tag/v0.2.0"));
     }
 
     #[test]
     fn rejects_releases_the_updater_cannot_use() {
+        let zip_url = asset_url();
         assert_eq!(
-            parse_latest(&json("v0.2.0", "Vaultkeeper-v0.2.0-arm64.dmg", ZIP_URL)),
-            Err(ReleaseError::MissingAsset(
-                "Vaultkeeper-v0.2.0-arm64.app.zip".to_owned()
-            ))
+            parse_latest(&json("v0.2.0", "Vaultkeeper-v0.2.0-arm64.dmg", &zip_url)),
+            Err(ReleaseError::MissingAsset(ASSET.to_owned()))
         );
         assert!(matches!(
-            parse_latest(&json("nightly", "x", ZIP_URL)),
+            parse_latest(&json("nightly", "x", &zip_url)),
             Err(ReleaseError::Version(_))
         ));
         for url in [
@@ -221,13 +229,12 @@ mod tests {
             "https://evil.example/Vaultkeeper.zip",
         ] {
             assert!(matches!(
-                parse_latest(&json("v0.2.0", "Vaultkeeper-v0.2.0-arm64.app.zip", url)),
+                parse_latest(&json("v0.2.0", ASSET, url)),
                 Err(ReleaseError::Address(_))
             ));
         }
         let mut pre: serde_json::Value =
-            serde_json::from_slice(&json("v0.2.0", "Vaultkeeper-v0.2.0-arm64.app.zip", ZIP_URL))
-                .expect("json");
+            serde_json::from_slice(&json("v0.2.0", ASSET, &zip_url)).expect("json");
         pre["prerelease"] = true.into();
         assert_eq!(parse_latest(pre.to_string().as_bytes()), Ok(None));
         assert!(matches!(parse_latest(b"{"), Err(ReleaseError::Json(_))));

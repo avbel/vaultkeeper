@@ -54,6 +54,8 @@ mod tests {
         );
     }
 
+    // Windows detects browsers from %APPDATA%/%LOCALAPPDATA%, not from the data dir.
+    #[cfg(not(windows))]
     #[test]
     fn only_browsers_with_an_application_support_directory_are_listed() {
         let dir = tempfile::tempdir().expect("directory");

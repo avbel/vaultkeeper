@@ -321,7 +321,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let version: Version = "99.0.0".parse().expect("version");
         // A different asset name under a valid signature for the same version.
-        let comment = format!("vaultkeeper {version} Vaultkeeper-v{version}-x64-setup.exe");
+        let other = if cfg!(windows) {
+            format!("Vaultkeeper-v{version}-arm64.app.zip")
+        } else {
+            format!("Vaultkeeper-v{version}-x64-setup.exe")
+        };
+        let comment = format!("vaultkeeper {version} {other}");
         let (asset, signature) = signed_asset(dir.path(), &SECRET, b"payload", &comment);
         assert!(matches!(
             verify_with(&asset, &signature, &release(version), &test_key()),
