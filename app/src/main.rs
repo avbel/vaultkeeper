@@ -229,6 +229,8 @@ fn send_demo_ssh_request(
             pid: Some(48_213),
             key_name: "github-signing".to_owned(),
             fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".to_owned(),
+            cipher_id: "demo-ssh-key".to_owned(),
+            reprompt: false,
             purpose: Some("git commit signing".to_owned()),
             return_to: None,
             reply,

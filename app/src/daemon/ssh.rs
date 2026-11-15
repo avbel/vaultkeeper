@@ -55,6 +55,7 @@ pub fn purpose(namespace: Option<&str>, is_forwarding: bool) -> Option<String> {
 pub struct KeyLabel {
     pub name: String,
     pub fingerprint: String,
+    pub reprompt: bool,
 }
 
 pub struct SshControl {
@@ -202,6 +203,7 @@ fn load_keys(vault: &Vault) -> vk_vault::Result<(Vec<AgentKey>, HashMap<String, 
                 KeyLabel {
                     name: item.name.to_string(),
                     fingerprint: item.subtitle.to_string(),
+                    reprompt: item.reprompt,
                 },
             )
         })
@@ -253,6 +255,7 @@ mod tests {
                 KeyLabel {
                     name: "deploy".to_owned(),
                     fingerprint: "SHA256:abc".to_owned(),
+                    reprompt: false,
                 },
             )]),
         );

@@ -9,15 +9,19 @@
 //! buttons and timer answer only that id: an event from an old prompt can never decide a newer
 //! request.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use slint::Timer;
+use slint::{ComponentHandle, SharedString, Timer};
 use tokio::sync::oneshot;
 use vk_ipc::SshDecision;
-use vk_vault::{VaultService, model::SessionState};
+use vk_vault::{
+    VaultService,
+    model::{ItemId, SessionState},
+};
+use zeroize::Zeroizing;
 
 use super::{App, handler, hide, retire, show};
-use crate::{hooks::TypingTarget, settings::SshApproval, ui::SshPrompt};
+use crate::{hooks::TypingTarget, settings::SshApproval, ui::SshPrompt, viewmodel};
 
 pub const SSH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -28,6 +32,10 @@ pub struct SshApprovalRequest {
     pub pid: Option<u32>,
     pub key_name: String,
     pub fingerprint: String,
+    /// The vault item behind the key, to look up and record its master password confirmation.
+    pub cipher_id: String,
+    /// The item asks for the master password: approving needs a verified one.
+    pub reprompt: bool,
     /// e.g. "git commit signing" or "agent forwarding".
     pub purpose: Option<String>,
     /// The app in front when the request arrived; it gets the front back after the answer.
@@ -134,7 +142,11 @@ impl<S: VaultService> App<S> {
         let seconds = i32::try_from(SSH_TIMEOUT.as_secs()).unwrap_or(30);
         window.set_timeout(seconds);
         window.set_seconds_left(seconds);
-        window.on_approve(handler!(self, |app, remember| app.finish_ssh(id, true, remember)));
+        window.set_reprompt(self.ssh_password_required(&request));
+        window.on_approve(handler!(self, |app, remember| app.approve_ssh(id, remember)));
+        window.on_submit_password(handler!(self, |app, password, remember| {
+            app.verify_ssh_password(id, Zeroizing::new(password.to_string()), remember);
+        }));
         window.on_deny(handler!(self, |app| app.finish_ssh(id, false, false)));
         let timeout = Timer::default();
         timeout.start(
@@ -152,6 +164,96 @@ impl<S: VaultService> App<S> {
         }
         show(&window, "SSH prompt");
         *self.ssh_prompt.borrow_mut() = Some(window);
+    }
+
+    fn ssh_password_required(&self, request: &SshApprovalRequest) -> bool {
+        request.reprompt
+            && !self
+                .reprompt_verified
+                .borrow()
+                .contains(&ItemId(Arc::from(request.cipher_id.as_str())))
+    }
+
+    /// The Approve button and Return come here: a protected key is approved only through
+    /// `verify_ssh_password`, whatever the window sends.
+    fn approve_ssh(&self, id: u64, remember: bool) {
+        let protected = self.ssh.borrow().current.as_ref().is_some_and(|current| {
+            current.id == id && self.ssh_password_required(&current.request)
+        });
+        if protected {
+            return;
+        }
+        self.finish_ssh(id, true, remember);
+    }
+
+    fn verify_ssh_password(&self, id: u64, password: Zeroizing<String>, remember: bool) {
+        if password.is_empty() {
+            return;
+        }
+        let Some(window) = self
+            .ssh_prompt
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong)
+        else {
+            return;
+        };
+        if window.get_busy()
+            || self
+                .ssh
+                .borrow()
+                .current
+                .as_ref()
+                .is_none_or(|current| current.id != id)
+        {
+            return;
+        }
+        window.set_password(SharedString::new());
+        window.set_password_error(SharedString::new());
+        window.set_busy(true);
+        let vault = Arc::clone(&self.vault);
+        self.exec.spawn(
+            async move { vault.verify_master_password(password).await },
+            handler!(self, |app, result| app
+                .ssh_password_checked(id, remember, result)),
+        );
+    }
+
+    /// A result for a prompt that is already gone (answered, timed out, locked) is dropped.
+    fn ssh_password_checked(&self, id: u64, remember: bool, result: vk_vault::Result<bool>) {
+        let cipher_id = {
+            let queue = self.ssh.borrow();
+            match queue.current.as_ref() {
+                Some(current) if current.id == id => current.request.cipher_id.clone(),
+                _ => return,
+            }
+        };
+        let window = self
+            .ssh_prompt
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong);
+        if let Some(window) = &window {
+            window.set_busy(false);
+        }
+        match result {
+            Ok(true) => {
+                self.reprompt_verified
+                    .borrow_mut()
+                    .insert(ItemId(Arc::from(cipher_id.as_str())));
+                self.finish_ssh(id, true, remember);
+            }
+            Ok(false) => {
+                if let Some(window) = &window {
+                    window.set_password_error("Wrong master password · try again".into());
+                }
+            }
+            Err(error) => {
+                if let Some(window) = &window {
+                    window.set_password_error(viewmodel::error_text(&error).into());
+                }
+            }
+        }
     }
 
     /// Answers request `id` if it is still the one on screen; anything else is a late event from

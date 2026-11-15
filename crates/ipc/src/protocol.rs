@@ -227,6 +227,10 @@ pub struct SshPrompt {
     pub pid: Option<u32>,
     pub key_name: String,
     pub fingerprint: String,
+    /// The vault item behind the key; empty for list requests.
+    pub cipher_id: String,
+    /// The item is marked "Ask for master password": the prompt must verify it before approving.
+    pub reprompt: bool,
     /// e.g. "git commit signing" or "agent forwarding".
     pub purpose: Option<String>,
     /// The app in front when the request arrived (usually the terminal running ssh); it gets

@@ -42,6 +42,8 @@ fn prompt() -> SshPrompt {
         pid: Some(4242),
         key_name: "deploy".to_owned(),
         fingerprint: "SHA256:abc".to_owned(),
+        cipher_id: "c1".to_owned(),
+        reprompt: true,
         purpose: Some("git commit signing".to_owned()),
         return_to: Some(TypingTarget {
             pid: 377,

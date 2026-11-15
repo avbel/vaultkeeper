@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, Check, Icon, SectionLabel } from "kit.slint";
+import { Btn, BtnKind, Check, Field, Icon, SectionLabel } from "kit.slint";
 
 export component SshPrompt inherits Window {
     title: "SSH sign request";
@@ -7,7 +7,7 @@ export component SshPrompt inherits Window {
     no-frame: true;
     always-on-top: true;
     width: 420px;
-    height: 300px;
+    height: root.reprompt ? 372px : 300px;
     background: Theme.surface;
     default-font-size: Theme.font-body;
 
@@ -17,6 +17,10 @@ export component SshPrompt inherits Window {
     in property <string> purpose;
     in property <bool> touch-id-required;
     in property <bool> busy;
+    // The key's item asks for the master password: approving needs a verified one.
+    in property <bool> reprompt;
+    in-out property <string> password;
+    in property <string> password-error;
     in-out property <bool> remember;
     // "SSH requires approval: remember until lock"; with "always" nothing is remembered.
     in property <bool> allow-remember: true;
@@ -24,6 +28,7 @@ export component SshPrompt inherits Window {
     in property <int> timeout: 30;
 
     callback approve(bool);
+    callback submit-password(string, bool);
     callback deny();
 
     // Visual countdown only; the auto-deny itself is a Rust timer so it fires even if this
@@ -47,7 +52,11 @@ export component SshPrompt inherits Window {
                     return accept;
                 }
                 if event.text == Key.Return && !root.busy {
-                    root.approve(root.remember);
+                    if root.reprompt {
+                        root.submit-password(root.password, root.remember);
+                    } else {
+                        root.approve(root.remember);
+                    }
                     return accept;
                 }
                 return reject;
@@ -92,6 +101,16 @@ export component SshPrompt inherits Window {
                     wrap: char-wrap;
                 }
                 if root.allow-remember: Check { text: "Remember for this key until lock"; checked <=> root.remember; }
+                if root.reprompt: VerticalLayout {
+                    spacing: 6px;
+                    Field {
+                        init => { self.focus-input(); }
+                        placeholder: "Master password"; label: "Master password"; password: true;
+                        text <=> root.password;
+                        accepted(text) => { root.submit-password(text, root.remember); }
+                    }
+                    Text { text: root.password-error; color: Theme.warn-text; font-size: Theme.font-meta; }
+                }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
                     spacing: Theme.gap;
@@ -109,7 +128,13 @@ export component SshPrompt inherits Window {
                         label: "Approve";
                         kind: BtnKind.primary;
                         enabled: !root.busy;
-                        clicked => { root.approve(root.remember); }
+                        clicked => {
+                            if root.reprompt {
+                                root.submit-password(root.password, root.remember);
+                            } else {
+                                root.approve(root.remember);
+                            }
+                        }
                     }
                 }
                 Rectangle {

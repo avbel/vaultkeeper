@@ -24,6 +24,8 @@ fn request(fingerprint: &str) -> (SshApprovalRequest, oneshot::Receiver<SshDecis
             pid: Some(4242),
             key_name: "github-signing".to_owned(),
             fingerprint: fingerprint.to_owned(),
+            cipher_id: "c1".to_owned(),
+            reprompt: false,
             purpose: Some("git commit signing".to_owned()),
             return_to: None,
             reply,
@@ -486,4 +488,81 @@ fn a_lock_screen_closed_unanswered_forgets_the_manager_it_stood_for() {
     pump();
     assert!(matches!(h.vault.state(), SessionState::Unlocked { .. }));
     assert!(h.app.manager_window().is_none());
+}
+
+fn protected_request(cipher_id: &str) -> (SshApprovalRequest, oneshot::Receiver<SshDecision>) {
+    let (request, answer) = request("SHA256:locked");
+    (
+        SshApprovalRequest {
+            cipher_id: cipher_id.to_owned(),
+            reprompt: true,
+            ..request
+        },
+        answer,
+    )
+}
+
+#[test]
+fn a_protected_key_needs_the_master_password_to_be_approved() {
+    let h = harness(Setup::default());
+    let (req, mut rx) = protected_request("c-protected");
+    h.app.request_ssh_approval(req);
+    let prompt = h.app.ssh_prompt().expect("prompt");
+    assert!(prompt.get_reprompt());
+
+    click(&prompt, "Approve");
+    key(&prompt, &special(Key::Return), Mods::default());
+    assert!(rx.try_recv().is_err(), "no password, no approval");
+
+    type_into(&prompt, "Master password", "wrong");
+    click(&prompt, "Approve");
+    assert!(
+        rx.try_recv().is_err(),
+        "a wrong password keeps the prompt open"
+    );
+    assert!(!prompt.get_password_error().is_empty());
+    assert!(!prompt.get_busy());
+
+    type_into(&prompt, "Master password", MOCK_MASTER_PASSWORD);
+    key(&prompt, &special(Key::Return), Mods::default());
+    assert_eq!(rx.try_recv().ok(), Some(SshDecision::approve(false)));
+    assert!(h.app.ssh_prompt().is_none());
+}
+
+#[test]
+fn a_confirmed_password_covers_the_next_request_for_the_same_key() {
+    let h = harness(Setup::default());
+    let (req, _rx) = protected_request("c-protected");
+    h.app.request_ssh_approval(req);
+    let prompt = h.app.ssh_prompt().expect("prompt");
+    type_into(&prompt, "Master password", MOCK_MASTER_PASSWORD);
+    click(&prompt, "Approve");
+
+    let (req, rx) = protected_request("c-protected");
+    h.app.request_ssh_approval(req);
+    let prompt = h.app.ssh_prompt().expect("prompt");
+    assert!(!prompt.get_reprompt(), "already verified until the lock");
+    click(&prompt, "Approve");
+    assert_eq!(answer(rx), Some(true));
+
+    let (req, _rx) = protected_request("c-other");
+    h.app.request_ssh_approval(req);
+    assert!(h.app.ssh_prompt().expect("prompt").get_reprompt());
+}
+
+#[test]
+fn escape_and_deny_still_deny_a_protected_key() {
+    let h = harness(Setup::default());
+    let (req, rx) = protected_request("c-protected");
+    h.app.request_ssh_approval(req);
+    key(
+        &h.app.ssh_prompt().expect("prompt"),
+        &special(Key::Escape),
+        Mods::default(),
+    );
+    assert_eq!(answer(rx), Some(false));
+    let (req, rx) = protected_request("c-protected");
+    h.app.request_ssh_approval(req);
+    click(&h.app.ssh_prompt().expect("prompt"), "Deny");
+    assert_eq!(answer(rx), Some(false));
 }

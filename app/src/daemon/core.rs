@@ -697,7 +697,10 @@ impl Daemon {
             key_name: label
                 .as_ref()
                 .map_or_else(|| "SSH key".to_owned(), |label| label.name.clone()),
+            // A key without a label cannot be shown to be unprotected.
+            reprompt: label.as_ref().is_none_or(|label| label.reprompt),
             fingerprint: label.map(|label| label.fingerprint).unwrap_or_default(),
+            cipher_id: cipher_id.clone(),
             purpose: request.purpose,
             return_to,
         };

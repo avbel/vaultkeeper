@@ -200,6 +200,8 @@ mod tests {
                 pid: None,
                 key_name: "deploy".to_owned(),
                 fingerprint: "SHA256:abc".to_owned(),
+                cipher_id: "c1".to_owned(),
+                reprompt: false,
                 purpose: None,
                 return_to: None,
             },

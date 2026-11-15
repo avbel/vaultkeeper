@@ -26,6 +26,8 @@ pub fn bridge(event: UiEvent) -> Bridged {
                     pid: prompt.pid,
                     key_name: prompt.key_name,
                     fingerprint: prompt.fingerprint,
+                    cipher_id: prompt.cipher_id,
+                    reprompt: prompt.reprompt,
                     purpose: prompt.purpose,
                     return_to: prompt.return_to,
                     reply: approval.reply,
@@ -77,6 +79,8 @@ mod tests {
             pid: Some(7),
             key_name: "deploy".to_owned(),
             fingerprint: "SHA256:abc".to_owned(),
+            cipher_id: "c1".to_owned(),
+            reprompt: true,
             purpose: Some("git commit signing".to_owned()),
             return_to: Some(vk_ipc::TypingTarget {
                 pid: 377,
@@ -148,6 +152,11 @@ mod tests {
             ("git", Some(7), "deploy")
         );
         assert_eq!(request.fingerprint, "SHA256:abc");
+        assert_eq!(
+            (request.cipher_id.as_str(), request.reprompt),
+            ("c1", true),
+            "the protection flag reaches the prompt"
+        );
         assert_eq!(
             request.return_to.as_ref().map(|app| app.pid),
             Some(377),

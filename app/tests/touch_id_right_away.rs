@@ -295,6 +295,8 @@ fn an_ssh_request_while_locked_goes_straight_to_its_approval() {
         pid: Some(4242),
         key_name: "github-signing".to_owned(),
         fingerprint: "SHA256:abc".to_owned(),
+        cipher_id: "c1".to_owned(),
+        reprompt: false,
         purpose: None,
         return_to: None,
         reply,
