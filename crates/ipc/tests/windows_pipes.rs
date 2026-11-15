@@ -98,17 +98,29 @@ async fn the_dacl_denies_a_plain_extra_instance() {
 async fn five_clients_recycle_a_pool_of_four() {
     let endpoint = Endpoint::pipe(unique_name("recycle"));
     let listener = Listener::bind(&endpoint).expect("bind");
-    for _ in 0..5 {
+    for iteration in 0..5 {
         let ((mut server, _peer), mut client) = accept_and_connect(&listener, &endpoint).await;
-        client.write_all(&[0x01]).await.expect("write");
+        client
+            .write_all(&[0x01])
+            .await
+            .unwrap_or_else(|error| panic!("iteration {iteration}: client write: {error}"));
         let mut received = [0_u8; 1];
-        server.read_exact(&mut received).await.expect("read");
-        assert_eq!(received, [0x01]);
+        server
+            .read_exact(&mut received)
+            .await
+            .unwrap_or_else(|error| panic!("iteration {iteration}: server read: {error}"));
+        assert_eq!(received, [0x01], "iteration {iteration}");
         // The reply is still unread when the server drops; recycling must not discard it.
-        server.write_all(&[0x02]).await.expect("reply");
+        server
+            .write_all(&[0x02])
+            .await
+            .unwrap_or_else(|error| panic!("iteration {iteration}: server reply: {error}"));
         drop(server);
-        client.read_exact(&mut received).await.expect("read reply");
-        assert_eq!(received, [0x02]);
+        client
+            .read_exact(&mut received)
+            .await
+            .unwrap_or_else(|error| panic!("iteration {iteration}: client read reply: {error}"));
+        assert_eq!(received, [0x02], "iteration {iteration}");
     }
 }
 

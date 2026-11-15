@@ -10,7 +10,7 @@ use std::{
     io,
     os::windows::io::{AsRawHandle as _, IntoRawHandle as _, RawHandle},
     path::PathBuf,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::{Arc, Mutex, PoisonError},
     task::{Context, Poll},
     time::{Duration, Instant},
@@ -49,6 +49,9 @@ const RETRY_DELAY: Duration = Duration::from_millis(50);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a finished connection waits for its client to close before the instance is recycled.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Bounds each step of clearing an instance's stale I/O state; they normally finish in microseconds
+/// because every operation on a disconnected pipe fails at once.
+const RESET_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A named-pipe listener backed by a fixed pool of instances.
 pub struct Listener {
@@ -197,9 +200,9 @@ impl Pool {
 }
 
 /// A failed connect (a client that vanished early) must not shrink the fixed pool, so the instance
-/// is disconnected and armed again after a pause that keeps a persistent error from spinning.
+/// is reset and armed again after a pause that keeps a persistent error from spinning.
 async fn wait_for_client(
-    server: NamedPipeServer,
+    mut server: NamedPipeServer,
     ready: mpsc::UnboundedSender<NamedPipeServer>,
     name: String,
 ) {
@@ -211,14 +214,97 @@ async fn wait_for_client(
             }
             Err(error) => {
                 tracing::debug!(pipe = %name, %error, "a named pipe connect failed; re-arming the instance");
-                if server.disconnect().is_err() {
-                    tracing::warn!(pipe = %name, "cannot recycle a named pipe instance");
+                tokio::time::sleep(RETRY_DELAY).await;
+                if let Err(error) = reset_instance(&mut server).await {
+                    tracing::warn!(pipe = %name, %error, "cannot recycle a named pipe instance");
                     return;
                 }
-                tokio::time::sleep(RETRY_DELAY).await;
             }
         }
     }
+}
+
+/// Detaches the instance from its previous client and clears the I/O state that tokio's pipe keeps
+/// across `disconnect`, then issues the `ConnectNamedPipe` for the next client.
+///
+/// mio drives a `NamedPipeServer` with one overlapped read slot that it refills on its own: when
+/// the client closes, or `DisconnectNamedPipe` cancels an in-flight read, the slot ends up holding
+/// that error, `disconnect` leaves it there, and after the next connect mio skips scheduling a read
+/// because the slot is not empty. The first read of the next client would then receive the previous
+/// client's `ERROR_BROKEN_PIPE` (an early EOF) or `ERROR_PIPE_NOT_CONNECTED`. The write slot keeps
+/// a failed or cancelled write's error the same way. The slot only empties when a read is refused
+/// with `ERROR_PIPE_LISTENING`, so the stale error is consumed after `ConnectNamedPipe` was issued
+/// but, because mio hands out the slot before refilling it, before any data of the new client can
+/// land in it.
+///
+/// Rewrapping a `DuplicateHandle` of the instance in a fresh `NamedPipeServer` would avoid relying
+/// on mio's slots, but cannot work: the completion-port association lives on the kernel file
+/// object, which the duplicate shares, so registering it again fails with `ERROR_INVALID_PARAMETER`
+/// (a file object joins one port until it is destroyed). The slot behaviour relied on here has been
+/// unchanged since mio took the pipe code over from `mio-named-pipes`.
+async fn reset_instance(server: &mut NamedPipeServer) -> io::Result<()> {
+    server.disconnect()?;
+    flush_stale_write(server).await;
+    if !settle_reads(server).await {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "a disconnected pipe instance kept a read in flight",
+        ));
+    }
+    issue_connect(server).await?;
+    if !flush_stale_read(server).await {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "a re-armed pipe instance did not surface its stale read error",
+        ));
+    }
+    Ok(())
+}
+
+/// With the pipe disconnected an empty write reaches no client: it either returns the stale error
+/// or is refused by the pipe without touching the slot, so the slot is clean either way.
+async fn flush_stale_write(server: &NamedPipeServer) {
+    let flush = async {
+        loop {
+            if server.writable().await.is_err() {
+                return;
+            }
+            if !matches!(server.try_write(&[]), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+            {
+                return;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(RESET_TIMEOUT, flush).await;
+}
+
+/// Reads until the slot holds an error. Every read on a disconnected pipe is refused with
+/// `ERROR_PIPE_NOT_CONNECTED`, and `DisconnectNamedPipe` completes an in-flight read with the same
+/// error, so this ends with exactly one stale error in the slot; data still buffered from the old
+/// client is discarded on the way. Returns `false` if the pipe never settled.
+async fn settle_reads(server: &mut NamedPipeServer) -> bool {
+    let mut sink = [0_u8; 64];
+    let settled = async { while server.read(&mut sink).await.is_ok() {} };
+    tokio::time::timeout(RESET_TIMEOUT, settled).await.is_ok()
+}
+
+/// Polls `connect` once so `ConnectNamedPipe` is in flight, without waiting for a client. mio keeps
+/// the pending connect across the dropped future, and a later `connect` resumes waiting on it.
+async fn issue_connect(server: &NamedPipeServer) -> io::Result<()> {
+    let mut connect = pin!(server.connect());
+    match std::future::poll_fn(|context| Poll::Ready(connect.as_mut().poll(context))).await {
+        Poll::Ready(Err(error)) => Err(error),
+        Poll::Ready(Ok(())) | Poll::Pending => Ok(()),
+    }
+}
+
+/// Consumes the one stale error left by `settle_reads`, which lets mio schedule a fresh read for
+/// the next client. Returns `false` if nothing surfaced in time.
+async fn flush_stale_read(server: &mut NamedPipeServer) -> bool {
+    let mut sink = [0_u8; 64];
+    tokio::time::timeout(RESET_TIMEOUT, server.read(&mut sink))
+        .await
+        .is_ok()
 }
 
 /// Either end of a named pipe: an accepted server instance, or a client we connected.
@@ -298,8 +384,8 @@ impl Drop for Stream {
         handle.spawn(async move {
             let mut server = server;
             wait_for_client_close(&mut server).await;
-            if server.disconnect().is_err() {
-                tracing::warn!(pipe = %pool.name, "cannot recycle a named pipe instance");
+            if let Err(error) = reset_instance(&mut server).await {
+                tracing::warn!(pipe = %pool.name, %error, "cannot recycle a named pipe instance");
                 return;
             }
             pool.arm(server);

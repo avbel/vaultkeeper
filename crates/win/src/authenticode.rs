@@ -302,7 +302,9 @@ mod tests {
     #[test]
     fn edge_reports_a_microsoft_signer() {
         let Some(path) = EDGE_PATHS.iter().map(Path::new).find(|path| path.exists()) else {
-            // Edge is not installed everywhere; explorer.exe is catalog-signed so it cannot stand in.
+            // Edge is not installed everywhere, and no other system binary reliably carries an
+            // embedded signature: explorer.exe is catalog-signed on some builds and embedded-signed
+            // on the CI runners.
             return;
         };
         let found = signer_subject(path);
@@ -316,15 +318,5 @@ mod tests {
             "unexpected signer {subject:?} for msedge.exe"
         );
         assert!(is_validly_signed(path));
-    }
-
-    #[test]
-    fn catalog_signed_files_have_no_embedded_signer() {
-        let path = Path::new("C:\\Windows\\explorer.exe");
-        assert!(
-            signer_subject(path)
-                .expect("looking up explorer.exe")
-                .is_none()
-        );
     }
 }
