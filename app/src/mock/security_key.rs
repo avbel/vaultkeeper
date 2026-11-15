@@ -36,6 +36,7 @@ impl SecurityKeys for MockSecurityKey {
         &self,
         options: RequestOptions,
         origin: String,
+        _parent: Option<u64>,
         events: KeyEvents,
     ) -> HookResult<Box<dyn KeyCeremony>> {
         let cancelled = Arc::new(AtomicBool::new(false));

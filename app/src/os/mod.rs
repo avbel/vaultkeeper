@@ -6,12 +6,14 @@ pub mod autotype;
 mod biometrics;
 pub mod browser;
 mod clipboard;
+pub mod detached;
 pub mod fs;
 pub mod layout;
 pub mod log_file;
 mod misc;
 mod security_key;
 pub mod settings_file;
+pub mod ui_window;
 pub mod windows_shell;
 
 use std::{path::Path, sync::Arc};

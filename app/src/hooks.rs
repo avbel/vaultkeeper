@@ -47,11 +47,12 @@ pub trait Clipboard: Send + Sync {
 pub trait Biometrics: Send + Sync {
     fn is_available(&self) -> bool;
     fn is_enrolled(&self, account_id: &str) -> bool;
-    /// Wraps the unlocked vault's key for the active `account_id`; blocking.
-    fn enroll(&self, account_id: &str) -> HookResult<()>;
+    /// Wraps the unlocked vault's key for the active `account_id`; blocking. `parent_window` is the
+    /// window the system prompt belongs to (Windows only).
+    fn enroll(&self, account_id: &str, parent_window: Option<u64>) -> HookResult<()>;
     /// Shows the Touch ID prompt and unlocks the vault for `account_id`; blocking, so callers run
     /// it off the UI thread.
-    fn unlock(&self, account_id: &str) -> HookResult<()>;
+    fn unlock(&self, account_id: &str, parent_window: Option<u64>) -> HookResult<()>;
     fn unenroll(&self, account_id: &str) -> HookResult<()>;
 }
 
@@ -188,11 +189,13 @@ pub type KeyEvents = tokio::sync::mpsc::UnboundedSender<KeyEvent>;
 /// FIDO2 / U2F security keys answering a WebAuthn 2FA challenge (provider 7).
 pub trait SecurityKeys: Send + Sync {
     /// Asks the plugged-in keys to sign `options` for `origin` (the server's origin) and returns
-    /// at once; progress and the outcome arrive on `events`.
+    /// at once; progress and the outcome arrive on `events`. `parent` is the native handle of
+    /// the window Windows parents its own prompt to; other platforms ignore it.
     fn sign(
         &self,
         options: vk_webauthn::RequestOptions,
         origin: String,
+        parent: Option<u64>,
         events: KeyEvents,
     ) -> HookResult<Box<dyn KeyCeremony>>;
 }
@@ -347,7 +350,7 @@ impl Biometrics for LogBiometrics {
         self.keys().contains_key(account_id)
     }
 
-    fn enroll(&self, account_id: &str) -> HookResult<()> {
+    fn enroll(&self, account_id: &str, _parent_window: Option<u64>) -> HookResult<()> {
         tracing::info!(account_id, "Touch ID enroll (stub)");
         let key = match &self.vault {
             Some(vault) => vault.user_key().map_err(|error| vault_error(&error))?,
@@ -357,7 +360,7 @@ impl Biometrics for LogBiometrics {
         Ok(())
     }
 
-    fn unlock(&self, account_id: &str) -> HookResult<()> {
+    fn unlock(&self, account_id: &str, _parent_window: Option<u64>) -> HookResult<()> {
         tracing::info!(account_id, "Touch ID unlock (stub)");
         let key = self
             .keys()
@@ -548,10 +551,16 @@ mod tests {
     fn stub_biometrics_without_a_vault_enrols_but_cannot_unlock() {
         let bio = LogBiometrics::default();
         assert!(!bio.is_enrolled("a"));
-        assert!(matches!(bio.unlock("a"), Err(HookError::Unavailable(_))));
-        bio.enroll("a").expect("enroll");
+        assert!(matches!(
+            bio.unlock("a", None),
+            Err(HookError::Unavailable(_))
+        ));
+        bio.enroll("a", None).expect("enroll");
         assert!(bio.is_enrolled("a"));
-        assert!(matches!(bio.unlock("a"), Err(HookError::Unavailable(_))));
+        assert!(matches!(
+            bio.unlock("a", None),
+            Err(HookError::Unavailable(_))
+        ));
         bio.unenroll("a").expect("unenroll");
         assert!(!bio.is_enrolled("a"));
     }
@@ -570,7 +579,7 @@ mod tests {
             .expect("active account");
         assert!(
             matches!(
-                hooks.biometrics.enroll(&account.id),
+                hooks.biometrics.enroll(&account.id, None),
                 Err(HookError::Failed(_))
             ),
             "a locked vault has no key to enrol"
@@ -579,11 +588,11 @@ mod tests {
         vault
             .unlock_with_user_key(crate::mock::mock_user_key(&account.id))
             .expect("unlock");
-        hooks.biometrics.enroll(&account.id).expect("enroll");
+        hooks.biometrics.enroll(&account.id, None).expect("enroll");
         vault.lock();
         hooks
             .biometrics
-            .unlock(&account.id)
+            .unlock(&account.id, None)
             .expect("Touch ID unlock");
         assert!(matches!(
             vault.state(),

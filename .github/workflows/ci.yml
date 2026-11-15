@@ -40,6 +40,7 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
       AWS_LC_SYS_PREBUILT_NASM: "1"
@@ -64,6 +65,38 @@ jobs:
       - name: Tests
         shell: bash
         run: cargo test $WINDOWS_PACKAGES --no-fail-fast
+
+  # The named-pipe tests alone, so a hang or an access problem shows up in minutes, not after the
+  # full Windows job.
+  windows-pipes:
+    name: Windows pipes
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-ci
+
+      # vk-win has no windows_pipes target, so --test cannot span both packages.
+      - name: vk-win
+        run: cargo test --no-fail-fast -p vk-win
+
+      - name: IPC pipes
+        run: cargo test --no-fail-fast -p vk-ipc --test windows_pipes
+
+      - name: SSH agent
+        run: cargo test --no-fail-fast -p ssh_agent
+
+      - name: Single instance
+        run: cargo test --no-fail-fast -p vk-platform single_instance
 
   # Test builds for manual testing on a Windows PC without a Rust toolchain.
   windows-build:

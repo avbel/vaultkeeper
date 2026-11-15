@@ -235,11 +235,25 @@ impl<S: VaultService> App<S> {
         self.touch_id_in_flight.set(true);
         self.set_lock_busy(true);
         let biometrics = Arc::clone(&self.hooks.biometrics);
+        let parent = self.prompt_parent_window();
         self.exec.spawn_blocking(
-            move || biometrics.unlock(&account.id),
+            move || biometrics.unlock(&account.id, parent),
             handler!(self, |app, result| app.touch_id_unlocked(result)),
         );
         true
+    }
+
+    /// The window the Hello dialog belongs to: the Quick Panel while it is up, else the lock
+    /// window.
+    fn prompt_parent_window(&self) -> Option<u64> {
+        let quick = self.quick.borrow();
+        let lock = self.lock_window.borrow();
+        let window = match (quick.as_ref(), lock.as_ref()) {
+            (Some(quick), _) => quick.window.window(),
+            (None, Some(lock)) => lock.window(),
+            (None, None) => return None,
+        };
+        crate::os::ui_window::window_handle(window)
     }
 
     fn touch_id_unlocked(&self, result: crate::hooks::HookResult<()>) {

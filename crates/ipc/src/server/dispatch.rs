@@ -196,10 +196,14 @@ async fn touch_id_call<S: VaultService>(
     call: Call,
 ) -> Result<Reply, WireError> {
     with_touch_id(service, touch_id, move |service, backend| match call {
-        Call::EnrollTouchId { account_id } => enroll_touch_id(service, backend, &account_id),
-        Call::UnlockWithTouchId { account_id } => {
-            unlock_with_touch_id(service, backend, &account_id)
-        }
+        Call::EnrollTouchId {
+            account_id,
+            parent_window,
+        } => enroll_touch_id(service, backend, &account_id, parent_window),
+        Call::UnlockWithTouchId {
+            account_id,
+            parent_window,
+        } => unlock_with_touch_id(service, backend, &account_id, parent_window),
         _ => Err(WireError::internal("not a Touch ID call".to_owned())),
     })
     .await
@@ -251,6 +255,7 @@ fn enroll_touch_id<S: VaultService>(
     service: &S,
     backend: &dyn TouchIdBackend,
     account_id: &str,
+    parent_window: Option<u64>,
 ) -> Result<Reply, WireError> {
     if !is_active(service, account_id) {
         return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
@@ -258,18 +263,23 @@ fn enroll_touch_id<S: VaultService>(
     let user_key = service
         .user_key()
         .map_err(|error| WireError::from(&error))?;
-    Ok(Reply::TouchId(backend.enroll(account_id, &user_key)))
+    Ok(Reply::TouchId(backend.enroll(
+        account_id,
+        &user_key,
+        parent_window,
+    )))
 }
 
 fn unlock_with_touch_id<S: VaultService>(
     service: &S,
     backend: &dyn TouchIdBackend,
     account_id: &str,
+    parent_window: Option<u64>,
 ) -> Result<Reply, WireError> {
     if !is_active(service, account_id) {
         return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
     }
-    let user_key = match backend.unlock(account_id) {
+    let user_key = match backend.unlock(account_id, parent_window) {
         Ok(user_key) => user_key,
         Err(failure) => return Ok(Reply::TouchId(Err(failure))),
     };

@@ -363,3 +363,46 @@ pub fn framed_invalid_session_bind_extension() -> Vec<u8> {
     framed.extend(msg);
     framed
 }
+
+/// A pipe name unique to this test, so tests never collide with each other or with the runner's
+/// OpenSSH agent service, which owns the real agent pipe.
+#[cfg(windows)]
+pub fn unique_pipe_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        r"\\.\pipe\vk-ssh-it-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Opens the client end with exactly the rights the final pipe DACL grants. tokio's
+/// `ClientOptions` asks for GENERIC_WRITE, which includes FILE_CREATE_PIPE_INSTANCE and is refused.
+#[cfg(windows)]
+pub fn open_client(
+    name: &str,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use std::os::windows::ffi::OsStrExt;
+
+    // GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
+    const ACCESS: u32 = 0x8000_0000 | 0x2 | 0x10 | 0x100 | 0x0010_0000;
+    let wide: Vec<u16> = std::ffi::OsStr::new(name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
+    let handle = unsafe {
+        windows::Win32::Storage::FileSystem::CreateFileW(
+            windows::core::PCWSTR(wide.as_ptr()),
+            ACCESS,
+            windows::Win32::Storage::FileSystem::FILE_SHARE_MODE(0),
+            None,
+            windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+            windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED,
+            None,
+        )
+    }?;
+    // SAFETY: `handle` is a fresh overlapped pipe handle that nothing else owns.
+    unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(handle.0) }
+}

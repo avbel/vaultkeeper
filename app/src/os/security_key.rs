@@ -2,6 +2,8 @@
 //! runs in the `--ui` process: an assertion carries no secret, and the login window that shows
 //! the touch and PIN prompts lives here.
 //!
+//! On Windows the same trait is served by `webauthn.dll` (`windows.rs`).
+//!
 //! macOS asks for no permission: FIDO devices (HID usage page 0xF1D0) are not keyboards, so
 //! Input Monitoring does not apply to them.
 
@@ -35,24 +37,39 @@ use zeroize::Zeroizing;
 use crate::hooks::KeyEvent;
 use crate::hooks::{HookError, HookResult, KeyCeremony, KeyEvents, SecurityKeys};
 
+#[cfg(any(windows, test))]
+mod status;
+#[cfg(windows)]
+mod windows;
+
 /// Vaultwarden asks for 60 s; a missing or absurd timeout gets the WebAuthn default range.
-#[cfg(not(windows))]
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
-#[cfg(not(windows))]
 const MAX_TIMEOUT_MS: u64 = 600_000;
 
 pub struct UsbSecurityKeys;
+
+fn relying_party(options: &RequestOptions, origin: &str) -> HookResult<String> {
+    options
+        .rp_id
+        .clone()
+        .or_else(|| {
+            url::Url::parse(origin)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+        })
+        .ok_or_else(|| HookError::Failed("The server sent no relying party".to_owned()))
+}
 
 #[cfg(windows)]
 impl SecurityKeys for UsbSecurityKeys {
     fn sign(
         &self,
-        _options: RequestOptions,
-        _origin: String,
-        _events: KeyEvents,
+        options: RequestOptions,
+        origin: String,
+        parent: Option<u64>,
+        events: KeyEvents,
     ) -> HookResult<Box<dyn KeyCeremony>> {
-        // Windows: step 5c, the webauthn.dll backend draws its own PIN and touch UI.
-        Err(HookError::Unavailable("Security key access"))
+        windows::sign(&options, &origin, parent, events)
     }
 }
 
@@ -62,17 +79,10 @@ impl SecurityKeys for UsbSecurityKeys {
         &self,
         options: RequestOptions,
         origin: String,
+        _parent: Option<u64>,
         events: KeyEvents,
     ) -> HookResult<Box<dyn KeyCeremony>> {
-        let rp_id = options
-            .rp_id
-            .clone()
-            .or_else(|| {
-                url::Url::parse(&origin)
-                    .ok()
-                    .and_then(|url| url.host_str().map(str::to_owned))
-            })
-            .ok_or_else(|| HookError::Failed("The server sent no relying party".to_owned()))?;
+        let rp_id = relying_party(&options, &origin)?;
         let client_data = ClientDataJson::new(Ceremony::Get, &options.challenge.0, &origin);
         let only_allowed = match options.allow_credentials.as_slice() {
             [single] => Some(single.id.0.clone()),

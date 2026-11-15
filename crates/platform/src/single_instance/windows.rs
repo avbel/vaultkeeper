@@ -18,13 +18,12 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{
         ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_NO_DATA, ERROR_PIPE_BUSY,
-        ERROR_PIPE_CONNECTED, ERROR_PRIVILEGE_NOT_HELD, GENERIC_READ, GENERIC_WRITE, GetLastError,
-        INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        ERROR_PIPE_CONNECTED, ERROR_PRIVILEGE_NOT_HELD, GetLastError, INVALID_HANDLE_VALUE,
+        WAIT_OBJECT_0,
     },
     Security::SECURITY_ATTRIBUTES,
     Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
-        SYNCHRONIZE, WriteFile,
+        FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, ReadFile, SYNCHRONIZE, WriteFile,
     },
     System::{
         Pipes::{
@@ -300,24 +299,10 @@ fn connect_client(name: &str) -> io::Result<OwnedHandle> {
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     loop {
-        // SAFETY: `wide` is NUL-terminated and outlives the call. Named-pipe clients need an
-        // exclusive share mode, and this handle must not be inherited.
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
-            )
+        let error = match vk_win::open_pipe_client(name, false) {
+            Ok(handle) => return Ok(handle),
+            Err(error) => error,
         };
-        if handle != INVALID_HANDLE_VALUE {
-            // SAFETY: `CreateFileW` returned a handle this process owns.
-            return Ok(unsafe { OwnedHandle::from_raw_handle(handle) });
-        }
-        let error = io::Error::last_os_error();
         if !is_os_error(&error, ERROR_PIPE_BUSY) {
             return Err(error);
         }
@@ -370,28 +355,9 @@ fn verify_server(client: &OwnedHandle) -> io::Result<()> {
 /// Connects to the pipe and drops the handle, which unblocks the listener's `ConnectNamedPipe` so
 /// the serve thread can observe the stop flag and exit.
 fn wake(pipe_name: &str) {
-    let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
-    // SAFETY: `wide` is NUL-terminated and outlives the call.
-    let handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            ptr::null(),
-            OPEN_EXISTING,
-            0,
-            ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        tracing::warn!(
-            error = %io::Error::last_os_error(),
-            "could not wake the single-instance listener"
-        );
-        return;
+    if let Err(error) = vk_win::open_pipe_client(pipe_name, false) {
+        tracing::warn!(error = %error, "could not wake the single-instance listener");
     }
-    // SAFETY: `CreateFileW` returned a handle this process owns.
-    drop(unsafe { OwnedHandle::from_raw_handle(handle) });
 }
 
 fn is_os_error(error: &io::Error, code: u32) -> bool {

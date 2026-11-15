@@ -88,6 +88,10 @@ async fn login_rounds_carry_every_argument_and_step() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scripted session; splitting it loses the state it builds up"
+)]
 async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
     let touch_id = Arc::new(FakeTouchId::default());
     let options = ServeOptions::new()
@@ -120,11 +124,11 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
 
     // Touch ID runs in the daemon: it reads the key from its own vault and seals it.
     assert!(matches!(
-        vault.enroll_touch_id("user-1"),
+        vault.enroll_touch_id("user-1", None),
         Err(Error::Locked)
     ));
     assert_eq!(
-        vault.unlock_with_touch_id("user-1").expect("call"),
+        vault.unlock_with_touch_id("user-1", None).expect("call"),
         Err(TouchIdFailure::Unavailable),
         "nothing enrolled yet"
     );
@@ -133,11 +137,11 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
         .await
         .expect("unlock");
     assert_eq!(
-        vault.enroll_touch_id("user-2").expect("call"),
+        vault.enroll_touch_id("user-2", None).expect("call"),
         Err(TouchIdFailure::AccountChanged),
         "only the active account can be enrolled"
     );
-    assert_eq!(vault.enroll_touch_id("user-1").expect("call"), Ok(()));
+    assert_eq!(vault.enroll_touch_id("user-1", None).expect("call"), Ok(()));
     assert_eq!(
         touch_id.sealed(),
         Some(("user-1".to_owned(), USER_KEY.to_vec()))
@@ -145,12 +149,15 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
     vault.lock();
     touch_id.refuse(Some(TouchIdFailure::Cancelled));
     assert_eq!(
-        vault.unlock_with_touch_id("user-1").expect("call"),
+        vault.unlock_with_touch_id("user-1", None).expect("call"),
         Err(TouchIdFailure::Cancelled)
     );
     assert_eq!(vault.state(), locked());
     touch_id.refuse(None);
-    assert_eq!(vault.unlock_with_touch_id("user-1").expect("call"), Ok(()));
+    assert_eq!(
+        vault.unlock_with_touch_id("user-1", None).expect("call"),
+        Ok(())
+    );
     assert_eq!(
         vault.state(),
         unlocked(),
@@ -172,7 +179,7 @@ async fn unlock_lock_and_account_calls_update_the_cache_before_returning() {
         }
     );
     assert!(matches!(
-        vault.enroll_touch_id("user-1"),
+        vault.enroll_touch_id("user-1", None),
         Err(Error::Locked)
     ));
 
@@ -638,4 +645,25 @@ async fn a_daemon_without_site_icons_has_none() {
         vault.site_icon("github.com").await.expect("icon"),
         SiteIcon::Missing
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ui_window_handle_reaches_the_touch_id_backend() {
+    let touch_id = Arc::new(FakeTouchId::default());
+    let options = ServeOptions::new()
+        .expect("options")
+        .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>);
+    let daemon = Daemon::start_with(FakeVault::new(unlocked(), 0), options).await;
+    let (vault, _events) = daemon.connect().await;
+
+    assert_eq!(
+        vault.enroll_touch_id("user-1", Some(0x1234)).expect("call"),
+        Ok(())
+    );
+    vault.lock();
+    assert_eq!(
+        vault.unlock_with_touch_id("user-1", None).expect("call"),
+        Ok(())
+    );
+    assert_eq!(touch_id.parents(), vec![Some(0x1234), None]);
 }

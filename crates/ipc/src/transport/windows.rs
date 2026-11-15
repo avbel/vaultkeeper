@@ -2,12 +2,13 @@
 //!
 //! The final pipe DACL withholds `FILE_CREATE_PIPE_INSTANCE` from every principal, our own user
 //! included, so no same-user process can add an instance and steal the next client
-//! (`docs/solutions/windows-support.md` §5.3). The listener therefore builds the whole pool while
-//! creating the first instance and recycles an instance after its client disconnects.
+//! (`docs/solutions/windows-support.md` §5.3). The listener therefore creates the whole pool from
+//! a setup DACL that still allows it, applies the final DACL to every instance, and recycles an
+//! instance after its client disconnects.
 
 use std::{
     io,
-    os::windows::io::{AsRawHandle as _, RawHandle},
+    os::windows::io::{AsRawHandle as _, IntoRawHandle as _, RawHandle},
     path::PathBuf,
     pin::Pin,
     sync::{Arc, Mutex, PoisonError},
@@ -17,13 +18,12 @@ use std::{
 
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf as TokioReadHalf, WriteHalf as TokioWriteHalf},
-    net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
+    net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions},
     sync::Notify,
     time::Sleep,
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY},
-    Security::{DACL_SECURITY_INFORMATION, SetKernelObjectSecurity},
     System::Pipes::{
         GetNamedPipeClientProcessId, GetNamedPipeClientSessionId, GetNamedPipeServerProcessId,
         GetNamedPipeServerSessionId, WaitNamedPipeW,
@@ -55,31 +55,8 @@ impl Listener {
             ));
         };
         let sid = vk_win::current_user_sid()?;
-        let strict = vk_win::sddl::pipe(&sid)?;
-        let servers = match create_instances(name, &strict, false) {
-            Ok(servers) => {
-                tracing::debug!(pipe = name, "created the IPC pipe pool with its final DACL");
-                servers
-            }
-            Err(error) if is_access_denied(&error) => {
-                // The final DACL denies FILE_CREATE_PIPE_INSTANCE to us too, so the remaining
-                // instances can only be made from a DACL that grants it; lock each one down after.
-                let builder = vk_win::sddl::pipe_pool_builder(&sid)?;
-                let servers = create_instances(name, &builder, true).map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("cannot build the IPC pipe pool for {name}: {error}"),
-                    )
-                })?;
-                tighten(&servers, &strict)?;
-                tracing::debug!(
-                    pipe = name,
-                    "created the IPC pipe pool, then locked it down"
-                );
-                servers
-            }
-            Err(error) => return Err(error),
-        };
+        let servers = create_instances(name, &sid)?;
+        tracing::debug!(pipe = name, "created the IPC pipe pool with its final DACL");
         Ok(Self {
             pool: Arc::new(Pool::new(name, servers)),
         })
@@ -94,20 +71,24 @@ impl Listener {
     }
 }
 
-/// Creates the pool. The first instance sets `FILE_FLAG_FIRST_PIPE_INSTANCE`, which is what turns a
-/// squatted name into an error instead of silently attaching to another program's pipe.
-fn create_instances(name: &str, sddl: &str, write_dac: bool) -> io::Result<Vec<NamedPipeServer>> {
-    let descriptor = vk_win::SecurityDescriptor::from_sddl(sddl)?;
-    let mut attributes = descriptor.as_attributes(false);
+/// Creates the pool, then locks every instance down to the final DACL. The first instance sets
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE`, which is what turns a squatted name into an error instead of
+/// silently attaching to another program's pipe.
+///
+/// Every instance is created from the setup DACL with WRITE_DAC: the final one withholds
+/// FILE_CREATE_PIPE_INSTANCE from us too, so it can only be applied once the pool is complete.
+fn create_instances(name: &str, sid: &str) -> io::Result<Vec<NamedPipeServer>> {
+    let setup = vk_win::SecurityDescriptor::from_sddl(&vk_win::sddl::pipe_setup(sid)?)?;
+    let mut attributes = setup.as_attributes(false);
     let mut servers = Vec::with_capacity(POOL_SIZE);
     for index in 0..POOL_SIZE {
         let mut options = ServerOptions::new();
         options
             .first_pipe_instance(index == 0)
             .reject_remote_clients(true)
-            .write_dac(write_dac);
+            .write_dac(true);
         // SAFETY: `attributes` is a live, initialised SECURITY_ATTRIBUTES whose descriptor is
-        // `descriptor`; both outlive every call in the loop.
+        // `setup`; both outlive every call in the loop.
         let created = unsafe {
             options.create_with_security_attributes_raw(name, (&raw mut attributes).cast())
         };
@@ -119,31 +100,20 @@ fn create_instances(name: &str, sddl: &str, write_dac: bool) -> io::Result<Vec<N
                     format!("another program is serving the Vaultkeeper pipe {name}"),
                 ));
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("cannot build the IPC pipe pool for {name}: {error}"),
+                ));
+            }
         }
+    }
+    let fin = vk_win::SecurityDescriptor::from_sddl(&vk_win::sddl::pipe(sid)?)?;
+    for server in &servers {
+        // The descriptor may be shared between instances; applying it to each is harmless then.
+        fin.apply_dacl(server)?;
     }
     Ok(servers)
-}
-
-/// Replaces the DACL of every pooled instance with the strict one. Each instance keeps its own
-/// descriptor, so tightening one says nothing about the others.
-fn tighten(servers: &[NamedPipeServer], strict_sddl: &str) -> io::Result<()> {
-    let descriptor = vk_win::SecurityDescriptor::from_sddl(strict_sddl)?;
-    for server in servers {
-        // SAFETY: the instance handle is live, was opened with WRITE_DAC (see the `write_dac`
-        // argument above), and `descriptor` outlives the call.
-        let applied = unsafe {
-            SetKernelObjectSecurity(
-                server.as_raw_handle(),
-                DACL_SECURITY_INFORMATION,
-                descriptor.as_ptr(),
-            )
-        };
-        if applied == 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
 }
 
 fn is_access_denied(error: &io::Error) -> bool {
@@ -409,12 +379,18 @@ pub async fn connect(endpoint: &Endpoint) -> io::Result<Stream> {
 }
 
 /// Opens a client handle, waiting through the brief window where every pooled instance is taken.
+/// Not tokio's `ClientOptions`: its GENERIC_WRITE includes FILE_CREATE_PIPE_INSTANCE, which the
+/// final DACL withholds.
 fn open(name: &str) -> io::Result<NamedPipeClient> {
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     loop {
-        match ClientOptions::new().open(name) {
-            Ok(client) => return Ok(client),
+        match vk_win::open_pipe_client(name, true) {
+            Ok(handle) => {
+                // SAFETY: the handle is a fresh overlapped pipe client handle that we own; tokio
+                // takes over closing it.
+                return unsafe { NamedPipeClient::from_raw_handle(handle.into_raw_handle()) };
+            }
             Err(error) if is_pipe_busy(&error) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {

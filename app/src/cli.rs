@@ -114,6 +114,9 @@ pub struct Args {
     pub version: bool,
     /// The previous daemon after an update: wait for this pid to exit before starting.
     pub wait_for: Option<i32>,
+    /// Hidden marker on Windows: this daemon was already re-launched without a console, so it must
+    /// not do so again.
+    pub detached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -161,6 +164,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--demo-browser-save" => parsed.demo_browser_save = true,
             "--quick" => parsed.quick = true,
             "--quit" => parsed.quit = true,
+            "--detached" => parsed.detached = true,
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
             "--select" => parsed.select = Some(args.next().ok_or(CliError::Select)?),
             "--wait-for" => {
@@ -201,6 +205,12 @@ mod tests {
 
     fn args(list: &[&str]) -> Result<Args, CliError> {
         parse(list.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn the_detached_marker_is_accepted() {
+        assert!(args(&["--tray", "--detached"]).expect("args").detached);
+        assert!(!args(&["--tray"]).expect("args").detached);
     }
 
     #[test]

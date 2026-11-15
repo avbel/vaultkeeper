@@ -1,5 +1,6 @@
-//! The log file of the daemon and the UI process, `~/Library/Logs/vaultkeeper/<process>.log`. Under
-//! the LaunchAgent stderr goes nowhere, so without it an abort leaves no trace.
+//! The log file of the daemon and the UI process, `~/Library/Logs/vaultkeeper/<process>.log` (on
+//! Windows `%LOCALAPPDATA%\Vaultkeeper\logs`). Under the LaunchAgent, or detached from the
+//! console, stderr goes nowhere, so without it an abort leaves no trace.
 //!
 //! Size-bounded: past [`LOG_CAP`] the file is renamed to `<process>.log.1` (replacing the older
 //! one) and a new one starts, so each process keeps at most twice the cap on disk. The file gets
@@ -22,7 +23,7 @@ const FILE_MODE: u32 = 0o600;
 #[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
 
-/// `~/Library/Logs/vaultkeeper`. Builds with the `vw-it` feature log into
+/// `~/Library/Logs/vaultkeeper`, `%LOCALAPPDATA%\Vaultkeeper\logs` on Windows. Builds with the `vw-it` feature log into
 /// `$VAULTKEEPER_TEST_DATA_DIR/logs` instead, so test runs leave the real logs alone.
 #[must_use]
 pub fn log_dir() -> Option<PathBuf> {
@@ -30,8 +31,22 @@ pub fn log_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("VAULTKEEPER_TEST_DATA_DIR") {
         return Some(PathBuf::from(dir).join("logs"));
     }
-    let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
-    Some(PathBuf::from(home).join("Library/Logs/vaultkeeper"))
+    #[cfg(windows)]
+    {
+        windows_log_dir(std::env::var_os("LOCALAPPDATA"))
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
+        Some(PathBuf::from(home).join("Library/Logs/vaultkeeper"))
+    }
+}
+
+/// Local, not roaming: logs have no business following the user to other machines.
+#[cfg(any(windows, test))]
+fn windows_log_dir(local_app_data: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let base = local_app_data.filter(|base| !base.is_empty())?;
+    Some(PathBuf::from(base).join("Vaultkeeper").join("logs"))
 }
 
 /// A log file that rotates once it would grow past its cap.
@@ -81,7 +96,7 @@ fn create_log_dir(dir: &Path) -> io::Result<()> {
 
 #[cfg(not(unix))]
 fn create_log_dir(dir: &Path) -> io::Result<()> {
-    fs::DirBuilder::new().recursive(true).create(dir)
+    vk_platform::fs::ensure_private_dir(dir)
 }
 
 #[cfg(unix)]
@@ -125,6 +140,16 @@ mod tests {
 
     fn size(path: &Path) -> u64 {
         fs::metadata(path).expect("metadata").len()
+    }
+
+    #[test]
+    fn the_windows_log_dir_is_under_local_app_data() {
+        assert_eq!(
+            windows_log_dir(Some(r"C:\Users\me\AppData\Local".into())),
+            Some(PathBuf::from(r"C:\Users\me\AppData\Local").join("Vaultkeeper/logs"))
+        );
+        assert_eq!(windows_log_dir(None), None);
+        assert_eq!(windows_log_dir(Some(String::new().into())), None);
     }
 
     #[test]

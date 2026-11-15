@@ -370,17 +370,28 @@ impl VaultService for RemoteVault {
 impl RemoteVault {
     /// Has the daemon wrap the active account's user key for Touch ID. Blocking; the outer error
     /// is a vault or transport failure (e.g. `Locked`), the inner one a Touch ID failure.
-    pub fn enroll_touch_id(&self, account_id: &str) -> Result<Result<(), TouchIdFailure>> {
+    /// `parent_window` is this process's window for the system prompt (Windows), if it has one.
+    pub fn enroll_touch_id(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> Result<Result<(), TouchIdFailure>> {
         touch_id(&self.call_blocking(Call::EnrollTouchId {
             account_id: account_id.to_owned(),
+            parent_window,
         })?)
     }
 
     /// The daemon shows the Touch ID prompt and unlocks `account_id`; blocks until the user
     /// answers, so call it off the UI thread.
-    pub fn unlock_with_touch_id(&self, account_id: &str) -> Result<Result<(), TouchIdFailure>> {
+    pub fn unlock_with_touch_id(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> Result<Result<(), TouchIdFailure>> {
         touch_id(&self.call_blocking(Call::UnlockWithTouchId {
             account_id: account_id.to_owned(),
+            parent_window,
         })?)
     }
 }

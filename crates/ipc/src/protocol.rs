@@ -338,10 +338,16 @@ pub enum Call {
     /// in the Secure Enclave. Never prompts.
     EnrollTouchId {
         account_id: String,
+        /// The UI's window handle (Windows) so the Hello dialog is parented to it; the daemon
+        /// checks that it belongs to its UI child before using it. Other platforms leave it unset.
+        #[serde(default)]
+        parent_window: Option<u64>,
     },
     /// The daemon shows the Touch ID prompt, unwraps the key and unlocks `account_id`.
     UnlockWithTouchId {
         account_id: String,
+        #[serde(default)]
+        parent_window: Option<u64>,
     },
     VerifyMasterPassword(Zeroizing<String>),
     Lock,
@@ -531,7 +537,8 @@ mod tests {
         );
         assert_eq!(
             Call::UnlockWithTouchId {
-                account_id: "a".to_owned()
+                account_id: "a".to_owned(),
+                parent_window: None
             }
             .timeout(),
             LONG_TIMEOUT,
@@ -559,11 +566,18 @@ mod tests {
         let account_id = "a".to_owned();
         assert!(
             !Call::EnrollTouchId {
-                account_id: account_id.clone()
+                account_id: account_id.clone(),
+                parent_window: None
             }
             .changes_state()
         );
-        assert!(Call::UnlockWithTouchId { account_id }.changes_state());
+        assert!(
+            Call::UnlockWithTouchId {
+                account_id,
+                parent_window: None
+            }
+            .changes_state()
+        );
         assert!(
             !Call::CopyToClipboard {
                 text: Zeroizing::new("x".to_owned()),

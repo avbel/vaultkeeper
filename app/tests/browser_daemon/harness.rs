@@ -183,11 +183,20 @@ impl Default for ScriptedTouchId {
 }
 
 impl TouchIdBackend for ScriptedTouchId {
-    fn enroll(&self, _account_id: &str, _user_key: &[u8]) -> Result<(), TouchIdFailure> {
+    fn enroll(
+        &self,
+        _account_id: &str,
+        _user_key: &[u8],
+        _parent_window: Option<u64>,
+    ) -> Result<(), TouchIdFailure> {
         Err(TouchIdFailure::Unavailable)
     }
 
-    fn unlock(&self, _account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+    fn unlock(
+        &self,
+        _account_id: &str,
+        _parent_window: Option<u64>,
+    ) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
         Err(TouchIdFailure::Unavailable)
     }
 }

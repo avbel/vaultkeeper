@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let expected = (mode != "--reuse").then(|| {
         let key = Zeroizing::new(rand::random::<[u8; 64]>());
-        biometric::enroll(&path, key.as_slice()).map(|()| key)
+        biometric::enroll(&path, key.as_slice(), None).map(|()| key)
     });
     let expected = expected.transpose()?;
     if expected.is_some() {
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("touch the sensor when prompted...");
     match (
-        biometric::unlock(&path, "test vaultkeeper Touch ID unlock"),
+        biometric::unlock(&path, "test vaultkeeper Touch ID unlock", None),
         expected,
     ) {
         (Ok(key), Some(expected)) if key.as_slice() == expected.as_slice() => println!("MATCH"),

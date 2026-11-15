@@ -1,9 +1,10 @@
 //! Windows named pipe listener for the SSH agent server
 //!
-//! vk patch: the pipe is created with an explicit DACL that withholds
+//! vk patch: the pipe ends up with an explicit DACL that withholds
 //! `FILE_CREATE_PIPE_INSTANCE` from everyone, so no same-user process can add an instance and
-//! steal the next client. The listener therefore builds a fixed pool of instances up front and
-//! recycles each one after its client disconnects (same approach as `vk-ipc`'s transport).
+//! steal the next client. The listener therefore builds a fixed pool of instances up front (from
+//! a setup DACL that still allows it), applies the final DACL to each and recycles them after
+//! their client disconnects (same approach as `vk-ipc`'s transport).
 
 use std::{
     io,
@@ -75,19 +76,13 @@ impl WindowsListener {
     /// with the runner's own OpenSSH agent service, which owns `PIPE_NAME`.
     pub(crate) fn with_name(name: &str) -> Result<Self> {
         let sid = current_user_sid().map_err(|e| anyhow!("Unable to read the user SID: {e}"))?;
+        // The final DACL withholds FILE_CREATE_PIPE_INSTANCE from us too and strips the owner's
+        // implicit WRITE_DAC, so the pool is created from a setup DACL that grants both (0x14019f)
+        // and the final one is applied to every instance afterwards.
+        let setup = format!("D:P(A;;0x14019f;;;{sid})");
         let strict = format!("D:P(A;;0x12019b;;;{sid})(A;;RC;;;OW)");
-        let servers = match create_instances(name, &strict, false) {
-            Ok(servers) => servers,
-            Err(e) if is_access_denied(&e) => {
-                // The strict DACL denies FILE_CREATE_PIPE_INSTANCE to us too, so the remaining
-                // instances need a DACL that grants it; each one is locked down afterwards.
-                let builder = format!("D:P(A;;0x14019f;;;{sid})(A;;RC;;;OW)");
-                let servers = create_instances(name, &builder, true)?;
-                tighten(name, &servers, &strict)?;
-                servers
-            }
-            Err(e) => return Err(anyhow!("Unable to create named pipe {name}: {e}")),
-        };
+        let servers = create_instances(name, &setup)?;
+        tighten(name, &servers, &strict)?;
 
         info!(pipe_name = name, "Named pipe listener ready");
 
@@ -118,7 +113,7 @@ impl Listener for WindowsListener {
 
 /// Creates the pool. The first instance sets `FILE_FLAG_FIRST_PIPE_INSTANCE`, which turns a name
 /// owned by another program into an error instead of silently attaching to its pipe.
-fn create_instances(name: &str, sddl: &str, write_dac: bool) -> Result<Vec<NamedPipeServer>> {
+fn create_instances(name: &str, sddl: &str) -> Result<Vec<NamedPipeServer>> {
     let descriptor = SecurityDescriptor::from_sddl(sddl)?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())?,
@@ -131,7 +126,7 @@ fn create_instances(name: &str, sddl: &str, write_dac: bool) -> Result<Vec<Named
         options
             .first_pipe_instance(index == 0)
             .reject_remote_clients(true)
-            .write_dac(write_dac);
+            .write_dac(true);
         // SAFETY: `attributes` is a live, initialised SECURITY_ATTRIBUTES whose descriptor is
         // owned by `descriptor`; both outlive every call in the loop.
         let created = unsafe {
@@ -148,7 +143,7 @@ fn create_instances(name: &str, sddl: &str, write_dac: bool) -> Result<Vec<Named
     Ok(servers)
 }
 
-/// Replaces the DACL of every pooled instance; each instance keeps its own descriptor.
+/// Replaces the DACL of every pooled instance; harmless when the descriptor is shared.
 fn tighten(name: &str, servers: &[NamedPipeServer], strict_sddl: &str) -> Result<()> {
     let descriptor = SecurityDescriptor::from_sddl(strict_sddl)?;
     for server in servers {
@@ -168,13 +163,6 @@ fn tighten(name: &str, servers: &[NamedPipeServer], strict_sddl: &str) -> Result
 
 fn is_access_denied_io(error: &io::Error) -> bool {
     error.raw_os_error() == i32::try_from(ERROR_ACCESS_DENIED.0).ok()
-}
-
-fn is_access_denied(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .filter_map(|cause| cause.downcast_ref::<io::Error>())
-        .any(is_access_denied_io)
 }
 
 /// A LocalAlloc'd security descriptor, freed on drop.
@@ -410,7 +398,12 @@ fn get_peer_info(server: &NamedPipeServer) -> Option<PeerInfo> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use tokio::net::windows::named_pipe::ClientOptions;
+    use std::time::Duration;
+
+    use tokio::net::windows::named_pipe::NamedPipeClient;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_MODE, OPEN_EXISTING,
+    };
 
     use super::*;
 
@@ -419,6 +412,36 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
         format!(r"\\.\pipe\vk-ssh-test-{}-{}", std::process::id(), counter)
+    }
+
+    // GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE.
+    const CLIENT_ACCESS: u32 = 0x8000_0000 | 0x2 | 0x10 | 0x100 | 0x0010_0000;
+
+    // GENERIC_WRITE (tokio's ClientOptions) includes FILE_CREATE_PIPE_INSTANCE, which the final
+    // DACL withholds, so the client asks for exactly the rights the DACL grants.
+    fn open_client(name: &str) -> io::Result<NamedPipeClient> {
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                CLIENT_ACCESS,
+                FILE_SHARE_MODE(0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                None,
+            )
+        }?;
+        // SAFETY: `handle` is a fresh overlapped pipe handle that nothing else owns.
+        unsafe { NamedPipeClient::from_raw_handle(handle.0) }
+    }
+
+    async fn accept_within(listener: &mut WindowsListener) -> Connection<PooledPipe> {
+        tokio::time::timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("accept timed out after 10 s")
+            .expect("accept failed")
     }
 
     #[serial_test::serial]
@@ -444,9 +467,9 @@ mod tests {
         let name = pipe_name();
         let mut listener = WindowsListener::with_name(&name).unwrap();
         // Keep the client alive so the connection stays open for the duration of the check
-        let _client = ClientOptions::new().open(&name).unwrap();
+        let _client = open_client(&name).unwrap();
 
-        let connection = listener.accept().await.unwrap();
+        let connection = accept_within(&mut listener).await;
 
         assert!(connection.peer_info.is_some());
     }
@@ -457,8 +480,8 @@ mod tests {
         let name = pipe_name();
         let mut listener = WindowsListener::with_name(&name).unwrap();
         for _ in 0..=POOL_SIZE {
-            let client = ClientOptions::new().open(&name).unwrap();
-            let connection = listener.accept().await.unwrap();
+            let client = open_client(&name).unwrap();
+            let connection = accept_within(&mut listener).await;
             drop(connection);
             drop(client);
         }

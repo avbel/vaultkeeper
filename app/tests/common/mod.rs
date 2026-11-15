@@ -265,6 +265,7 @@ impl SecurityKeys for ScriptedKeys {
         &self,
         options: vk_webauthn::RequestOptions,
         origin: String,
+        _parent: Option<u64>,
         events: KeyEvents,
     ) -> HookResult<Box<dyn KeyCeremony>> {
         self.0
@@ -306,11 +307,11 @@ impl Biometrics for ScriptedTouchId {
         true
     }
 
-    fn enroll(&self, _account_id: &str) -> HookResult<()> {
+    fn enroll(&self, _account_id: &str, _parent_window: Option<u64>) -> HookResult<()> {
         Ok(())
     }
 
-    fn unlock(&self, account_id: &str) -> HookResult<()> {
+    fn unlock(&self, account_id: &str, _parent_window: Option<u64>) -> HookResult<()> {
         self.prompts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(probe) = DURING_PROMPT.with(|slot| slot.borrow_mut().take()) {

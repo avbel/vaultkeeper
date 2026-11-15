@@ -11,7 +11,7 @@ use vk_ipc::{RemoteVault, TouchIdBackend, TouchIdFailure};
 use vk_platform::{Error as PlatformError, biometric};
 use zeroize::Zeroizing;
 
-use super::layout::touch_id_file;
+use super::{layout::touch_id_file, ui_window};
 use crate::hooks::{Biometrics, HookError, HookResult};
 
 pub const INVALIDATED: &str =
@@ -55,21 +55,32 @@ fn failure(error: PlatformError) -> TouchIdFailure {
 }
 
 impl TouchIdBackend for TouchId {
-    fn enroll(&self, account_id: &str, user_key: &[u8]) -> Result<(), TouchIdFailure> {
+    fn enroll(
+        &self,
+        account_id: &str,
+        user_key: &[u8],
+        parent_window: Option<u64>,
+    ) -> Result<(), TouchIdFailure> {
         let path = self.file(account_id)?;
         if !path.parent().is_some_and(std::path::Path::is_dir) {
             return Err(TouchIdFailure::Failed(
                 "this account has no local data yet; log in first".to_owned(),
             ));
         }
-        biometric::enroll(&path, user_key).map_err(failure)
+        let parent = ui_window::trusted_parent_window(parent_window);
+        biometric::enroll(&path, user_key, parent).map_err(failure)
     }
 
     /// An invalidated enrolment can never work again, so its file goes right away; the lock
     /// screen then offers only the master password until the user enrols again.
-    fn unlock(&self, account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+    fn unlock(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
         let path = self.file(account_id)?;
-        biometric::unlock(&path, UNLOCK_REASON).map_err(|error| {
+        let parent = ui_window::trusted_parent_window(parent_window);
+        biometric::unlock(&path, UNLOCK_REASON, parent).map_err(|error| {
             if matches!(error, PlatformError::BiometricInvalidated)
                 && let Err(remove) = biometric::unenroll(&path)
             {
@@ -151,6 +162,24 @@ fn settle(outcome: vk_vault::Result<Result<(), TouchIdFailure>>) -> HookResult<(
     }
 }
 
+/// The Hello dialog only comes to the front if the process that opens it was granted the
+/// foreground; the daemon opens it, the UI holds the foreground.
+#[cfg(windows)]
+fn allow_daemon_foreground() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+
+    let Some(pid) = crate::ui_process::channel::daemon_pid() else {
+        return;
+    };
+    // SAFETY: `AllowSetForegroundWindow` takes a pid by value and has no memory effects.
+    if unsafe { AllowSetForegroundWindow(pid) } == 0 {
+        tracing::debug!("AllowSetForegroundWindow for the daemon failed");
+    }
+}
+
+#[cfg(not(windows))]
+const fn allow_daemon_foreground() {}
+
 impl Biometrics for DaemonTouchId {
     fn is_available(&self) -> bool {
         biometric::is_available()
@@ -160,12 +189,14 @@ impl Biometrics for DaemonTouchId {
         self.files.is_enrolled(account_id)
     }
 
-    fn enroll(&self, account_id: &str) -> HookResult<()> {
-        settle(self.daemon.enroll_touch_id(account_id))
+    fn enroll(&self, account_id: &str, parent_window: Option<u64>) -> HookResult<()> {
+        allow_daemon_foreground();
+        settle(self.daemon.enroll_touch_id(account_id, parent_window))
     }
 
-    fn unlock(&self, account_id: &str) -> HookResult<()> {
-        settle(self.daemon.unlock_with_touch_id(account_id))
+    fn unlock(&self, account_id: &str, parent_window: Option<u64>) -> HookResult<()> {
+        allow_daemon_foreground();
+        settle(self.daemon.unlock_with_touch_id(account_id, parent_window))
     }
 
     fn unenroll(&self, account_id: &str) -> HookResult<()> {
@@ -200,7 +231,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let touch_id = TouchId::new(dir.path().to_owned());
         assert!(matches!(
-            touch_id.enroll(USER, &[1; 64]),
+            touch_id.enroll(USER, &[1; 64], None),
             Err(TouchIdFailure::Failed(_))
         ));
     }
@@ -209,8 +240,8 @@ mod tests {
     fn bad_account_ids_are_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let touch_id = TouchId::new(dir.path().to_owned());
-        assert!(touch_id.enroll("../escape", &[1; 64]).is_err());
-        assert!(touch_id.unlock("a/b").is_err());
+        assert!(touch_id.enroll("../escape", &[1; 64], None).is_err());
+        assert!(touch_id.unlock("a/b", None).is_err());
     }
 
     #[cfg(target_os = "macos")]
@@ -221,7 +252,10 @@ mod tests {
         let file = touch_id_file(dir.path(), USER).expect("path");
         std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
         std::fs::write(&file, b"BWLT\x01 garbage").expect("write");
-        assert_eq!(touch_id.unlock(USER), Err(TouchIdFailure::Invalidated));
+        assert_eq!(
+            touch_id.unlock(USER, None),
+            Err(TouchIdFailure::Invalidated)
+        );
         assert!(!file.exists(), "the dead enrolment is gone");
     }
 

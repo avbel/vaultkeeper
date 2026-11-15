@@ -152,6 +152,11 @@ impl<S: VaultService> App<S> {
         // the panel that actually lost focus.
         let sender = window.as_weak();
         window.on_focus_lost(handler!(self, |app| {
+            // The Hello dialog takes the activation while it is up; closing the panel under it
+            // would drop the window it is parented to.
+            if cfg!(windows) && app.touch_id_in_flight.get() {
+                return;
+            }
             let current = app
                 .quick
                 .borrow()

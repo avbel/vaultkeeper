@@ -4,7 +4,7 @@
 //! one and deletes it once checked. So the key starts at once on a fresh challenge, and every
 //! retry first logs in again without an answer to get a new one.
 
-use slint::SharedString;
+use slint::{ComponentHandle, SharedString};
 use vk_vault::{TwoFactorProvider, VaultService, model::TwoFactorAnswer};
 use vk_webauthn::RequestOptions;
 use zeroize::Zeroizing;
@@ -13,6 +13,13 @@ use super::{App, handler};
 use crate::hooks::{HookError, KeyCeremony, KeyEvent};
 
 pub(super) const KEY_LABEL: &str = "Security key";
+
+/// Windows draws the PIN and touch prompts itself.
+const KEY_PROMPT: &str = if cfg!(windows) {
+    "Follow the Windows prompt"
+} else {
+    "Plug in your security key and touch it"
+};
 
 /// The security-key part of the login state.
 #[derive(Default)]
@@ -149,8 +156,13 @@ impl<S: VaultService> App<S> {
         };
         window.set_error_text(SharedString::new());
         window.set_key_waiting(true);
-        window.set_key_status("Plug in your security key and touch it".into());
-        match self.hooks.security_keys.sign(options, origin, events) {
+        window.set_key_status(KEY_PROMPT.into());
+        match self.hooks.security_keys.sign(
+            options,
+            origin,
+            crate::os::ui_window::window_handle(window.window()),
+            events,
+        ) {
             Ok(running) => {
                 if let Some(login) = self.login.borrow_mut().as_mut() {
                     login.key.running = Some(running);
@@ -231,7 +243,10 @@ impl<S: VaultService> App<S> {
 
 fn key_error_text(error: &HookError) -> String {
     match error {
-        HookError::Unavailable(_) => "Security keys cannot be used on this Mac".to_owned(),
+        HookError::Unavailable(_) => format!(
+            "Security keys cannot be used on this {}",
+            if cfg!(windows) { "PC" } else { "Mac" }
+        ),
         HookError::Cancelled => String::new(),
         HookError::Failed(text) => text.clone(),
     }

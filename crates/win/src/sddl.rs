@@ -48,13 +48,14 @@ pub fn pipe(sid: &str) -> io::Result<String> {
     Ok(format!("D:P(A;;0x12019b;;;{sid})(A;;RC;;;OW)"))
 }
 
-/// DACL for the first pipe instance while the rest of the pool is being created: [`pipe`] plus
-/// FILE_CREATE_PIPE_INSTANCE (0x4) and WRITE_DAC (0x40000), which the caller must then remove with
-/// `SetSecurityInfo` on every instance. The final DACL must grant neither: the first would let a
-/// same-user process add an instance and steal the next client.
-pub fn pipe_pool_builder(sid: &str) -> io::Result<String> {
+/// DACL every pool instance is created with: [`pipe`] plus FILE_CREATE_PIPE_INSTANCE (0x4) and
+/// WRITE_DAC (0x40000). Creating the next instance needs the former from the previous instance's
+/// DACL, and replacing the DACL afterwards needs the latter. There is deliberately no owner ACE: it
+/// would strip the owner's implicit WRITE_DAC. The caller applies [`pipe`] to every instance once
+/// the pool exists.
+pub fn pipe_setup(sid: &str) -> io::Result<String> {
     let sid = checked(sid)?;
-    Ok(format!("D:P(A;;0x14019f;;;{sid})(A;;RC;;;OW)"))
+    Ok(format!("D:P(A;;0x14019f;;;{sid})"))
 }
 
 /// DACL for a process: PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE (0x101000). Task Manager,
@@ -100,10 +101,10 @@ mod tests {
     }
 
     #[test]
-    fn pipe_pool_builder_adds_instance_creation_for_the_pool_build() {
+    fn pipe_setup_adds_instance_creation_and_write_dac_without_an_owner_ace() {
         assert_eq!(
-            pipe_pool_builder(USER).expect("sid"),
-            "D:P(A;;0x14019f;;;S-1-5-21-1004336348-1177238915-682003330-1001)(A;;RC;;;OW)"
+            pipe_setup(USER).expect("sid"),
+            "D:P(A;;0x14019f;;;S-1-5-21-1004336348-1177238915-682003330-1001)"
         );
     }
 
@@ -155,7 +156,7 @@ mod tests {
             let err = private_dir(sid).expect_err("private_dir");
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{sid}");
             assert!(pipe(sid).is_err(), "{sid}");
-            assert!(pipe_pool_builder(sid).is_err(), "{sid}");
+            assert!(pipe_setup(sid).is_err(), "{sid}");
             assert!(process(sid).is_err(), "{sid}");
             assert!(thread(sid).is_err(), "{sid}");
             assert!(mutex(sid).is_err(), "{sid}");

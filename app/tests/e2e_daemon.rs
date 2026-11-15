@@ -662,12 +662,21 @@ struct FakeTouchId {
 }
 
 impl TouchIdBackend for FakeTouchId {
-    fn enroll(&self, account_id: &str, user_key: &[u8]) -> Result<(), TouchIdFailure> {
+    fn enroll(
+        &self,
+        account_id: &str,
+        user_key: &[u8],
+        _parent_window: Option<u64>,
+    ) -> Result<(), TouchIdFailure> {
         *self.sealed.lock().unwrap() = Some((account_id.to_owned(), user_key.to_vec()));
         Ok(())
     }
 
-    fn unlock(&self, account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+    fn unlock(
+        &self,
+        account_id: &str,
+        _parent_window: Option<u64>,
+    ) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
         match self.sealed.lock().unwrap().as_ref() {
             Some((sealed_for, key)) if sealed_for == account_id => Ok(Zeroizing::new(key.clone())),
             _ => Err(TouchIdFailure::Unavailable),
@@ -732,9 +741,9 @@ async fn touch_id_unlock_and_ssh_presence_are_checked_by_the_daemon() {
         let account_id = account_id.clone();
         tokio::task::spawn_blocking(move || {
             if unlock {
-                client.unlock_with_touch_id(&account_id)
+                client.unlock_with_touch_id(&account_id, None)
             } else {
-                client.enroll_touch_id(&account_id)
+                client.enroll_touch_id(&account_id, None)
             }
         })
     };

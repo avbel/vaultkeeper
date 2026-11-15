@@ -73,6 +73,13 @@ where
         self.start(listeners)
     }
 
+    /// vk patch: starts the server on an explicit Windows pipe name.
+    #[cfg(windows)]
+    pub(crate) fn start_on_pipe(&mut self, name: &str) -> Result<()> {
+        let listeners = listener::create_listeners_on(name)?;
+        self.start(listeners)
+    }
+
     /// Starts the server, listening on the provided listeners.
     ///
     /// Each listener runs in its own task and sends accepted connections to a shared

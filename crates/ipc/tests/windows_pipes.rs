@@ -7,6 +7,7 @@ use std::{
     io,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use tokio::{
@@ -17,6 +18,30 @@ use vk_ipc::{
     PeerVerifier, SameExecutable,
     transport::{Endpoint, Listener, connect},
 };
+
+/// A hang in accept or connect must surface as a failure with a message, not as a stuck CI job.
+const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn accept_and_connect(
+    listener: &Listener,
+    endpoint: &Endpoint,
+) -> (
+    (vk_ipc::transport::Stream, vk_ipc::PeerCredentials),
+    vk_ipc::transport::Stream,
+) {
+    let (accepted, connected) = tokio::join!(
+        tokio::time::timeout(STEP_TIMEOUT, listener.accept()),
+        tokio::time::timeout(STEP_TIMEOUT, connect(endpoint)),
+    );
+    (
+        accepted
+            .expect("accept timed out after 10 s")
+            .expect("accept"),
+        connected
+            .expect("connect timed out after 10 s")
+            .expect("connect"),
+    )
+}
 
 /// A pipe name unique to this test run, so parallel tests and re-runs never share one.
 fn unique_name(tag: &str) -> String {
@@ -29,9 +54,7 @@ fn unique_name(tag: &str) -> String {
 async fn round_trip_through_bind_and_connect() {
     let endpoint = Endpoint::pipe(unique_name("roundtrip"));
     let listener = Listener::bind(&endpoint).expect("bind");
-    let (accepted, connected) = tokio::join!(listener.accept(), connect(&endpoint));
-    let (mut server, peer) = accepted.expect("accept");
-    let mut client = connected.expect("connect");
+    let ((mut server, peer), mut client) = accept_and_connect(&listener, &endpoint).await;
 
     assert_eq!(
         peer.pid,
@@ -76,9 +99,7 @@ async fn five_clients_recycle_a_pool_of_four() {
     let endpoint = Endpoint::pipe(unique_name("recycle"));
     let listener = Listener::bind(&endpoint).expect("bind");
     for _ in 0..5 {
-        let (accepted, connected) = tokio::join!(listener.accept(), connect(&endpoint));
-        let (mut server, _peer) = accepted.expect("accept");
-        let mut client = connected.expect("connect");
+        let ((mut server, _peer), mut client) = accept_and_connect(&listener, &endpoint).await;
         client.write_all(&[0x01]).await.expect("write");
         let mut received = [0_u8; 1];
         server.read_exact(&mut received).await.expect("read");
@@ -90,9 +111,7 @@ async fn five_clients_recycle_a_pool_of_four() {
 async fn our_own_client_passes_the_identity_check() {
     let endpoint = Endpoint::pipe(unique_name("identity"));
     let listener = Listener::bind(&endpoint).expect("bind");
-    let (accepted, connected) = tokio::join!(listener.accept(), connect(&endpoint));
-    let (_server, peer) = accepted.expect("accept");
-    let _client = connected.expect("connect");
+    let ((_server, peer), _client) = accept_and_connect(&listener, &endpoint).await;
     assert!(SameExecutable::current().expect("verifier").verify(&peer));
 }
 
@@ -100,9 +119,7 @@ async fn our_own_client_passes_the_identity_check() {
 async fn a_verifier_for_another_executable_rejects_our_peer() {
     let endpoint = Endpoint::pipe(unique_name("foreign"));
     let listener = Listener::bind(&endpoint).expect("bind");
-    let (accepted, connected) = tokio::join!(listener.accept(), connect(&endpoint));
-    let (_server, peer) = accepted.expect("accept");
-    let _client = connected.expect("connect");
+    let ((_server, peer), _client) = accept_and_connect(&listener, &endpoint).await;
     // A verifier pinned to another binary never admits our own peer.
     let foreign = SameExecutable::new(Path::new(r"C:\Windows\explorer.exe")).expect("verifier");
     assert!(!foreign.verify(&peer));

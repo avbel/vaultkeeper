@@ -1,21 +1,19 @@
 #![cfg(windows)]
 
 use serial_test::serial;
-use tokio::{io::AsyncWriteExt, net::windows::named_pipe::ClientOptions};
+use tokio::io::AsyncWriteExt;
 
 mod common;
 use common::{
     agent_with_keys, always_approving_agent, always_denying_agent,
     framed_invalid_session_bind_extension, framed_request_identities,
-    framed_session_bind_extension, framed_sign_request, init_tracing, parse_first_key_name,
-    parse_sign_response_algorithm, read_framed_response, test_ecdsa_p256_key,
+    framed_session_bind_extension, framed_sign_request, init_tracing, open_client,
+    parse_first_key_name, parse_sign_response_algorithm, read_framed_response, test_ecdsa_p256_key,
     test_ecdsa_p256_key_blob, test_ecdsa_p384_key, test_ecdsa_p384_key_blob, test_ecdsa_p521_key,
     test_ecdsa_p521_key_blob, test_ed25519_key, test_ed25519_key_blob, test_rsa_key,
-    test_rsa_key_blob, unsupported_dsa_key_blob, MockApprovalRequester,
+    test_rsa_key_blob, unique_pipe_name, unsupported_dsa_key_blob, MockApprovalRequester,
 };
 use ssh_agent::{BitwardenSSHAgent, InMemoryEncryptedKeyStore};
-
-const PIPE_NAME: &str = r"\\.\pipe\openssh-ssh-agent";
 
 fn setup() {
     init_tracing();
@@ -25,13 +23,14 @@ fn setup() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_start_creates_pipe() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
 
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
     // The pipe is created synchronously before start() returns,
     // so no sleep is needed — the OS accepts the connection immediately.
-    let result = ClientOptions::new().open(PIPE_NAME);
+    let result = open_client(&name);
     assert!(
         result.is_ok(),
         "client connection to named pipe should succeed"
@@ -43,10 +42,11 @@ async fn test_start_creates_pipe() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_client_can_connect() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let result = ClientOptions::new().open(PIPE_NAME);
+    let result = open_client(&name);
 
     assert!(
         result.is_ok(),
@@ -59,8 +59,9 @@ async fn test_client_can_connect() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_stop_clears_running_state() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
     agent.stop();
 
@@ -71,14 +72,18 @@ async fn test_stop_clears_running_state() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_can_restart() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
 
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
     agent.stop();
-    agent.start().unwrap();
+    // The cancelled accept task drops the old pool asynchronously, so reusing the name would race
+    // with the old first instance; a restart on a fresh name tests the same thing.
+    let restarted = unique_pipe_name();
+    agent.start_on(&restarted).unwrap();
 
     assert!(agent.is_running());
-    assert!(ClientOptions::new().open(PIPE_NAME).is_ok());
+    assert!(open_client(&restarted).is_ok());
     agent.stop();
 }
 
@@ -86,10 +91,11 @@ async fn test_server_can_restart() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_keys_returns_empty_when_no_keys_set() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_request_identities())
         .await
@@ -110,10 +116,11 @@ async fn test_list_keys_returns_empty_when_no_keys_set() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_keys_returns_keys_after_replace() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_ed25519_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_request_identities())
         .await
@@ -132,11 +139,12 @@ async fn test_list_keys_returns_keys_after_replace() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_keys_updates_after_replace() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
     // Initially no keys
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_request_identities())
         .await
@@ -148,7 +156,7 @@ async fn test_list_keys_updates_after_replace() {
     agent.replace(vec![test_ed25519_key()]).unwrap();
 
     // New connection sees the key
-    let mut client2 = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client2 = open_client(&name).unwrap();
     client2
         .write_all(&framed_request_identities())
         .await
@@ -164,11 +172,12 @@ async fn test_list_keys_updates_after_replace() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_keys_multiple_connections_see_same_keys() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_ed25519_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
     for _ in 0..3 {
-        let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+        let mut client = open_client(&name).unwrap();
         client
             .write_all(&framed_request_identities())
             .await
@@ -184,10 +193,11 @@ async fn test_list_keys_multiple_connections_see_same_keys() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_returns_sign_response() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_ed25519_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &test_ed25519_key_blob(),
@@ -207,11 +217,12 @@ async fn test_sign_request_returns_sign_response() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_denied_returns_failure() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_denying_agent();
     agent.replace(vec![test_ed25519_key()]).unwrap();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &test_ed25519_key_blob(),
@@ -231,10 +242,11 @@ async fn test_sign_request_denied_returns_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_unknown_key_returns_failure() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &test_ed25519_key_blob(),
@@ -254,10 +266,11 @@ async fn test_sign_request_unknown_key_returns_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_rsa_sha512_flag_produces_sha512_signature() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_rsa_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(&test_rsa_key_blob(), b"test data", 4))
         .await
@@ -278,10 +291,11 @@ async fn test_sign_request_rsa_sha512_flag_produces_sha512_signature() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_rsa_sha256_flag_produces_sha256_signature() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_rsa_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(&test_rsa_key_blob(), b"test data", 2))
         .await
@@ -302,10 +316,11 @@ async fn test_sign_request_rsa_sha256_flag_produces_sha256_signature() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_ecdsa_p256_produces_p256_signature() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_ecdsa_p256_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &test_ecdsa_p256_key_blob(),
@@ -330,10 +345,11 @@ async fn test_sign_request_ecdsa_p256_produces_p256_signature() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_ecdsa_p384_produces_p384_signature() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_ecdsa_p384_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &test_ecdsa_p384_key_blob(),
@@ -358,10 +374,11 @@ async fn test_sign_request_ecdsa_p384_produces_p384_signature() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_ecdsa_p521_produces_p521_signature() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = agent_with_keys(vec![test_ecdsa_p521_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &test_ecdsa_p521_key_blob(),
@@ -386,12 +403,13 @@ async fn test_sign_request_ecdsa_p521_produces_p521_signature() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sign_request_unsupported_key_type_returns_failure() {
     setup();
+    let name = unique_pipe_name();
     // Agent has valid keys loaded; the sign request references a DSA key, which is
     // unsupported and can never be stored, so the agent must return FAILURE.
     let mut agent = agent_with_keys(vec![test_ed25519_key()]);
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_sign_request(
             &unsupported_dsa_key_blob(),
@@ -411,10 +429,11 @@ async fn test_sign_request_unsupported_key_type_returns_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_bind_valid_returns_success() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_session_bind_extension(false))
         .await
@@ -433,10 +452,11 @@ async fn test_session_bind_valid_returns_success() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_bind_forwarding_returns_success() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_session_bind_extension(true))
         .await
@@ -455,10 +475,11 @@ async fn test_session_bind_forwarding_returns_success() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_bind_invalid_signature_returns_failure() {
     setup();
+    let name = unique_pipe_name();
     let mut agent = always_approving_agent();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
     client
         .write_all(&framed_invalid_session_bind_extension())
         .await
@@ -477,6 +498,7 @@ async fn test_session_bind_invalid_signature_returns_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_bind_is_forwarding_reaches_approval_layer() {
     setup();
+    let name = unique_pipe_name();
 
     let mut requester = MockApprovalRequester::new();
     requester
@@ -493,9 +515,9 @@ async fn test_session_bind_is_forwarding_reaches_approval_layer() {
 
     let mut agent = BitwardenSSHAgent::new(InMemoryEncryptedKeyStore::new(), requester);
     agent.replace(vec![test_ed25519_key()]).unwrap();
-    agent.start().unwrap();
+    agent.start_on(&name).unwrap();
 
-    let mut client = ClientOptions::new().open(PIPE_NAME).unwrap();
+    let mut client = open_client(&name).unwrap();
 
     client
         .write_all(&framed_session_bind_extension(true))

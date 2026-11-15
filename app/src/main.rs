@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
         init_logging(Some("browser-host"));
         return vaultkeeper::browser_host::run(caller);
     }
-    let args = cli::parse(raw_args)?;
+    let args = cli::parse(raw_args.iter().cloned())?;
     if args.help {
         writeln!(std::io::stdout(), "{}", cli::USAGE)?;
         return Ok(());
@@ -46,6 +46,20 @@ fn main() -> anyhow::Result<()> {
         return quit_daemon();
     }
     let mode = args.mode();
+    #[cfg(windows)]
+    if matches!(mode, Mode::Daemon(_)) {
+        match vaultkeeper::os::detached::relaunch_if_attached(&raw_args, args.detached) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            // Staying attached still works; the daemon just dies with its terminal.
+            Err(error) => {
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("vaultkeeper: cannot detach from the console: {error}");
+                }
+            }
+        }
+    }
     init_logging(match mode {
         Mode::Daemon(_) => Some("daemon"),
         Mode::Ui { .. } => Some("ui"),

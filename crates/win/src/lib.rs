@@ -18,5 +18,6 @@ pub use identity::ImageIdentity;
 pub use spawn::{Child, SpawnOptions, spawn_hardened};
 #[cfg(windows)]
 pub use windows::{
-    SecurityDescriptor, current_session_id, current_user_sid, image_path_of_pid, process_session_id,
+    PIPE_CLIENT_ACCESS, SecurityDescriptor, current_session_id, current_user_sid,
+    image_path_of_pid, open_pipe_client, process_session_id,
 };

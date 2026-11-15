@@ -184,8 +184,18 @@ impl Launcher {
         });
         drop(running);
         tracing::debug!(pid = child.id(), "UI process started");
+        #[cfg(windows)]
+        let ui_pid = child.id();
+        #[cfg(windows)]
+        if let Some(pid) = ui_pid {
+            crate::os::ui_window::set_ui_pid(pid);
+        }
         tokio::spawn(async move {
             child.reap(killed).await;
+            #[cfg(windows)]
+            if let Some(pid) = ui_pid {
+                crate::os::ui_window::clear_ui_pid(pid);
+            }
             on_exit(started.elapsed());
         });
     }

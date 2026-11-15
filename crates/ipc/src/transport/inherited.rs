@@ -11,15 +11,12 @@ use std::{
 
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
 use windows_sys::Win32::{
-    Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE},
+    Foundation::INVALID_HANDLE_VALUE,
     Security::{
         Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom},
         SECURITY_ATTRIBUTES,
     },
-    Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_OVERLAPPED, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
-        OPEN_EXISTING,
-    },
+    Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING},
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -40,7 +37,7 @@ const ATTEMPTS: usize = 4;
 
 /// What the UI is granted on its end. Writing needs `FILE_WRITE_DATA`, not the generic write
 /// right: that one includes `FILE_CREATE_PIPE_INSTANCE`, which the pipe DACL withholds.
-const CLIENT_ACCESS: u32 = GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES;
+const CLIENT_ACCESS: u32 = vk_win::PIPE_CLIENT_ACCESS;
 
 /// A pipe with its server end and an inheritable client end, until the launcher has spawned the UI
 /// process that takes the client end over.

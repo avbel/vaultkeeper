@@ -44,6 +44,12 @@ pub(crate) fn create_listeners() -> Result<Vec<impl Listener>> {
     Ok(vec![windows::WindowsListener::new()?])
 }
 
+/// vk patch: creates the Windows listener on an explicit pipe name.
+#[cfg(windows)]
+pub(crate) fn create_listeners_on(name: &str) -> Result<Vec<impl Listener>> {
+    Ok(vec![windows::WindowsListener::with_name(name)?])
+}
+
 /// Spawns an independent tokio task for each listener in `listeners`.
 ///
 /// Each task loops calling `listener.accept()` and forwards accepted connections to `tx`.

@@ -84,7 +84,7 @@ pub(super) fn is_available() -> bool {
 
 /// Creates or reuses the Passport key and writes a v2 envelope sealing `user_key` to it.
 /// Never asks for a gesture (only the first-time key creation can prompt).
-pub(super) fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
+pub(super) fn enroll(path: &Path, user_key: &[u8], parent_window: Option<u64>) -> Result<()> {
     let sid = current_user_sid()?;
     let name = key_name(&sid);
     let wide_name = wide(&name);
@@ -94,7 +94,7 @@ pub(super) fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
         Error::Unsupported
     })?;
 
-    let key = open_or_create(&provider, &wide_name).map_err(|status| {
+    let key = open_or_create(&provider, &wide_name, parent_window).map_err(|status| {
         Error::Io(std::io::Error::other(format!(
             "Windows Hello key creation failed: {}",
             hex(status)
@@ -132,7 +132,11 @@ pub(super) fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
 }
 
 /// Unwraps the user key from `path`, showing one Windows Hello gesture.
-pub(super) fn unlock(path: &Path, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
+pub(super) fn unlock(
+    path: &Path,
+    reason: &str,
+    parent_window: Option<u64>,
+) -> Result<Zeroizing<Vec<u8>>> {
     let bytes = std::fs::read(path)?;
     let envelope = V2Envelope::parse(&bytes)?;
     if envelope.primitive != Primitive::PassportRsaOaep {
@@ -156,7 +160,7 @@ pub(super) fn unlock(path: &Path, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
         return Err(Error::BiometricInvalidated);
     }
 
-    let kek = unwrap_kek(&key, envelope.wrapped_kek, reason)?;
+    let kek = unwrap_kek(&key, envelope.wrapped_kek, reason, parent_window)?;
     Ok(envelope.decrypt(&kek)?)
 }
 
@@ -196,7 +200,7 @@ fn open_key_failure(status: i32) -> Error {
     }
 }
 
-fn create_key(provider: &Handle, name: &[u16]) -> NcResult<Handle> {
+fn create_key(provider: &Handle, name: &[u16], parent_window: Option<u64>) -> NcResult<Handle> {
     let mut key: NCRYPT_KEY_HANDLE = 0;
     // SAFETY: the provider handle is open, the algorithm and `name` are NUL-terminated and the
     // out-param points at a live local.
@@ -221,7 +225,7 @@ fn create_key(provider: &Handle, name: &[u16]) -> NcResult<Handle> {
         &NCRYPT_ALLOW_DECRYPT_FLAG.to_ne_bytes(),
     )?;
     // The first-time key creation can prompt once for a Hello gesture, so parent it like a decrypt.
-    parent_to_foreground(&key);
+    parent_prompt(&key, parent_window);
     // SAFETY: the key handle is valid and not yet finalized.
     let status = unsafe { NCryptFinalizeKey(key.raw(), 0) };
     if status != 0 {
@@ -230,10 +234,10 @@ fn create_key(provider: &Handle, name: &[u16]) -> NcResult<Handle> {
     Ok(key)
 }
 
-fn open_or_create(provider: &Handle, name: &[u16]) -> NcResult<Handle> {
+fn open_or_create(provider: &Handle, name: &[u16], parent_window: Option<u64>) -> NcResult<Handle> {
     match open_key(provider, name) {
         Ok(key) => Ok(key),
-        Err(NTE_BAD_KEYSET | NTE_NO_KEY) => create_key(provider, name),
+        Err(NTE_BAD_KEYSET | NTE_NO_KEY) => create_key(provider, name, parent_window),
         Err(status) => Err(status),
     }
 }
@@ -326,8 +330,13 @@ fn wrap_kek(key: &Handle, kek: &[u8]) -> NcResult<Vec<u8>> {
 
 /// Sets the properties the spike proved out, then decrypts the wrapped KEK, retrying once on the
 /// "dialog was not foreground" status.
-fn unwrap_kek(key: &Handle, wrapped: &[u8], reason: &str) -> Result<Zeroizing<[u8; KEK_LEN]>> {
-    prepare_decrypt(key, reason);
+fn unwrap_kek(
+    key: &Handle,
+    wrapped: &[u8],
+    reason: &str,
+    parent_window: Option<u64>,
+) -> Result<Zeroizing<[u8; KEK_LEN]>> {
+    prepare_decrypt(key, reason, parent_window);
     match decrypt_once(key, wrapped) {
         Ok(kek) => Ok(kek),
         Err(NTE_FOREGROUND) => {
@@ -343,8 +352,8 @@ fn unwrap_failure(status: i32) -> Error {
     Error::BiometricFailed
 }
 
-fn prepare_decrypt(key: &Handle, reason: &str) {
-    parent_to_foreground(key);
+fn prepare_decrypt(key: &Handle, reason: &str, parent_window: Option<u64>) {
+    parent_prompt(key, parent_window);
     let context: Vec<u8> = wide(reason)
         .into_iter()
         .flat_map(u16::to_ne_bytes)
@@ -361,18 +370,26 @@ fn prepare_decrypt(key: &Handle, reason: &str) {
     }
 }
 
-fn parent_to_foreground(key: &Handle) {
-    // SAFETY: `GetForegroundWindow` takes no arguments. The daemon is windowless, so the prompt
-    // is parented to whatever the user last had in front (step 4d threads the real UI window in).
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.is_null() {
-        tracing::debug!("no foreground window to parent the Hello prompt to");
+/// Parents the prompt to the caller's window; the daemon has none of its own, so without one the
+/// prompt falls back to whatever the user last had in front.
+fn parent_prompt(key: &Handle, parent_window: Option<u64>) {
+    let hwnd = parent_window
+        .and_then(|hwnd| usize::try_from(hwnd).ok())
+        .or_else(foreground_window);
+    let Some(hwnd) = hwnd else {
+        tracing::debug!("no window to parent the Hello prompt to");
         return;
-    }
-    let bytes = (hwnd as usize).to_ne_bytes();
+    };
+    let bytes = hwnd.to_ne_bytes();
     if let Err(status) = set_property(key.raw(), NCRYPT_WINDOW_HANDLE_PROPERTY, &bytes) {
         tracing::warn!(status = %hex(status), "could not parent the Hello prompt");
     }
+}
+
+fn foreground_window() -> Option<usize> {
+    // SAFETY: `GetForegroundWindow` takes no arguments.
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.is_null()).then_some(hwnd as usize)
 }
 
 /// One `NCryptDecrypt` of the wrapped KEK. A successful decrypt must yield exactly 32 bytes.

@@ -7,7 +7,7 @@ use std::{
     mem::size_of,
     os::windows::{
         ffi::{OsStrExt as _, OsStringExt as _},
-        io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
+        io::{AsRawHandle, FromRawHandle as _, OwnedHandle},
     },
     path::{Path, PathBuf},
     ptr,
@@ -15,19 +15,20 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, LocalFree},
+    Foundation::{ERROR_INSUFFICIENT_BUFFER, GENERIC_READ, INVALID_HANDLE_VALUE, LocalFree},
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             SDDL_REVISION_1,
         },
-        GetTokenInformation, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
+        SECURITY_ATTRIBUTES, SetKernelObjectSecurity, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_ID_128, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-        GetFileInformationByHandleEx, OPEN_EXISTING,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_ID_128, FILE_ID_INFO,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, FileIdInfo,
+        GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE,
     },
     System::{
         RemoteDesktop::ProcessIdToSessionId,
@@ -279,6 +280,23 @@ impl SecurityDescriptor {
         }
     }
 
+    /// Replaces the DACL of the object behind `handle`, which must have been opened with
+    /// WRITE_DAC.
+    pub fn apply_dacl(&self, handle: &impl AsRawHandle) -> io::Result<()> {
+        // SAFETY: the caller's handle is live for the call and `self` owns a valid descriptor.
+        if unsafe {
+            SetKernelObjectSecurity(
+                handle.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                self.descriptor,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// The raw descriptor pointer, for callers that need it without the attributes wrapper.
     #[must_use]
     pub fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
@@ -324,6 +342,37 @@ unsafe fn from_wide(text: *const u16) -> String {
     // SAFETY: `text..text+len` is a valid, in-bounds slice of the allocation.
     let slice = unsafe { std::slice::from_raw_parts(text, len) };
     String::from_utf16_lossy(slice)
+}
+
+/// What a pipe client asks for. `GENERIC_WRITE` would include FILE_APPEND_DATA, which is
+/// FILE_CREATE_PIPE_INSTANCE on a pipe and is withheld by the final pipe DACL, so the open would
+/// be refused.
+pub const PIPE_CLIENT_ACCESS: u32 =
+    GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE;
+
+/// Opens the client end of a pipe with [`PIPE_CLIENT_ACCESS`]. `overlapped` must be set for a
+/// handle tokio will drive and clear for one used with synchronous reads and writes.
+pub fn open_pipe_client(name: &str, overlapped: bool) -> io::Result<OwnedHandle> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let flags = if overlapped { FILE_FLAG_OVERLAPPED } else { 0 };
+    // SAFETY: `wide` is NUL-terminated and outlives the call; a null security descriptor and
+    // template make the handle non-inheritable.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            PIPE_CLIENT_ACCESS,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `CreateFileW` returned a fresh handle that nothing else owns.
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
 #[cfg(test)]

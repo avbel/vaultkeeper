@@ -292,8 +292,13 @@ impl<S: VaultService> App<S> {
             return;
         };
         let biometrics = Arc::clone(&self.hooks.biometrics);
+        let parent = self
+            .settings_window
+            .borrow()
+            .as_ref()
+            .and_then(|window| crate::os::ui_window::window_handle(window.window()));
         self.exec.spawn_blocking(
-            move || biometrics.enroll(&account.id),
+            move || biometrics.enroll(&account.id, parent),
             handler!(self, |app, result| app.touch_id_changed(result)),
         );
     }

@@ -265,6 +265,11 @@ fn watch_power(daemon: &Arc<Daemon>) -> Option<vk_platform::power::PowerWatcher>
             for event in events {
                 tracing::debug!(?event, "power event");
                 daemon.power_event(event);
+                // Only Windows reports this to the daemon while it can still shut down cleanly.
+                #[cfg(windows)]
+                if event == vk_platform::power::PowerEvent::SessionEnding {
+                    quit_event_loop();
+                }
             }
         });
     if let Err(error) = spawned {
@@ -314,6 +319,10 @@ async fn quit_on_signal() {
         _ = term.recv() => tracing::info!("SIGTERM: quitting"),
         _ = interrupt.recv() => tracing::info!("SIGINT: quitting"),
     }
+    quit_event_loop();
+}
+
+fn quit_event_loop() {
     let quit = slint::invoke_from_event_loop(|| {
         if let Err(error) = slint::quit_event_loop() {
             tracing::error!(%error, "cannot quit the event loop");
@@ -324,8 +333,48 @@ async fn quit_on_signal() {
     }
 }
 
-// Windows: step 3b - SIGTERM has no equivalent; console and session-end quits arrive then.
-#[cfg(not(unix))]
+/// Closing the console, logging off and shutting down arrive as console control events.
+#[cfg(windows)]
+async fn quit_on_signal() {
+    use windows_sys::{
+        Win32::System::Console::{
+            CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT,
+            CTRL_SHUTDOWN_EVENT, SetConsoleCtrlHandler,
+        },
+        core::BOOL,
+    };
+
+    // How long the system waits for a handler before terminating the process anyway is 5 s for
+    // CTRL_CLOSE and shorter at shutdown; the handler must not return before the quit has run,
+    // because returning lets the system kill the process.
+    const GRACE: Duration = Duration::from_secs(4);
+
+    unsafe extern "system" fn handler(event: u32) -> BOOL {
+        match event {
+            CTRL_C_EVENT | CTRL_BREAK_EVENT => {
+                tracing::info!(event, "console interrupt: quitting");
+                quit_event_loop();
+                1
+            }
+            CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => {
+                tracing::info!(event, "console is going away: quitting");
+                quit_event_loop();
+                std::thread::sleep(GRACE);
+                1
+            }
+            _ => 0,
+        }
+    }
+
+    // SAFETY: `handler` is a `'static` function with the signature the API expects, and it only
+    // calls thread-safe code.
+    if unsafe { SetConsoleCtrlHandler(Some(handler), 1) } == 0 {
+        tracing::warn!(error = %std::io::Error::last_os_error(), "cannot listen for console events");
+    }
+    std::future::pending::<()>().await;
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn quit_on_signal() {
     std::future::pending::<()>().await;
 }

@@ -53,6 +53,14 @@ where
         self.server.start_at_socket_path(socket_path)
     }
 
+    /// vk patch: starts the ssh agent server on an explicit pipe name instead of
+    /// `\\.\pipe\openssh-ssh-agent`, which the OpenSSH service may own.
+    #[cfg(windows)]
+    pub fn start_on(&mut self, pipe_name: &str) -> Result<()> {
+        debug!("Starting the server on an explicit pipe name.");
+        self.server.start_on_pipe(pipe_name)
+    }
+
     /// Stops the server and clears the keystore.
     pub fn stop(&mut self) {
         debug!("Stopping server and clearing keys.");
