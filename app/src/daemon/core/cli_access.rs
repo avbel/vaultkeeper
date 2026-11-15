@@ -91,7 +91,8 @@ impl Daemon {
         }
         if self.settings().cli_access && !self.quitting.load(Ordering::SeqCst) {
             *last_prompt = Some(now);
-            self.send_command(UiCommand::ShowUnlock);
+            // The CLI wants only the unlock, so no window opens after it.
+            self.send_command(UiCommand::UnlockInTray);
         }
     }
 }

@@ -470,7 +470,7 @@ async fn cli_follows_settings_and_requests_unlock_in_the_app() {
     assert!(matches!(
         next(&mut events).await,
         UiEvent::Command {
-            command: UiCommand::ShowUnlock,
+            command: UiCommand::UnlockInTray,
             ..
         }
     ));
