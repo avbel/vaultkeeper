@@ -1,4 +1,4 @@
-//! Ed25519 detached signatures for release assets, in the minisign container format.
+//! Ed25519 detached signatures for release assets, in a minisign-style container (our own message format, not readable by stock minisign).
 //!
 //! Each asset ships next to a `.minisig` file: an untrusted comment, a base64 signature blob
 //! (algorithm, key id, signature), the trusted comment `vaultkeeper <version> <asset name>`, and

@@ -11,7 +11,7 @@ use super::release::{Release, ReleaseError, parse_latest};
 const LATEST: &str = "https://api.github.com/repos/avbel/vaultkeeper/releases/latest";
 /// Release zips are about 15 MB; anything far larger is not ours.
 const MAX_ZIP: u64 = 200 * 1024 * 1024;
-/// A minisign signature is a few hundred bytes; a cap guards the size check.
+/// A minisign-style signature is a few hundred bytes; a cap guards the size check.
 #[cfg(windows)]
 const MAX_SIGNATURE: usize = 4096;
 const TIMEOUT: Duration = Duration::from_secs(30);

@@ -44,8 +44,6 @@ jobs:
     env:
       # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
       AWS_LC_SYS_PREBUILT_NASM: "1"
-      # The crates already ported to Windows. Later steps extend this list; step 3o drops it.
-      WINDOWS_PACKAGES: -p vk-win -p vk-ipc -p vk-ssh -p vk-crypto -p vk-gen -p vk-api -p vk-vault -p vk-platform -p vk-webauthn -p secure_memory -p ssh_agent
     steps:
       - uses: actions/checkout@v5
 
@@ -57,14 +55,13 @@ jobs:
         with:
           shared-key: windows-ci
 
-      # Git Bash splits WINDOWS_PACKAGES into separate arguments; PowerShell would pass it as one.
       - name: Checks
         shell: bash
-        run: cargo clippy $WINDOWS_PACKAGES --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
         shell: bash
-        run: cargo test $WINDOWS_PACKAGES --no-fail-fast
+        run: cargo test --workspace --no-fail-fast
 
   # The named-pipe tests alone, so a hang or an access problem shows up in minutes, not after the
   # full Windows job.

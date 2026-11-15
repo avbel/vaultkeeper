@@ -401,8 +401,8 @@ jobs:
         shell: pwsh
         run: Copy-Item -Path out/signed-setup/*-x64-setup.exe -Destination out -Force
 
-      # The updater's format (app/src/daemon/update/signature.rs) is minisign's container with a
-      # different message: stock minisign cannot produce it. The Ed25519 signature is over
+      # The updater's format (app/src/daemon/update/signature.rs) is minisign-style (the same container,
+      # a different message): stock minisign can neither produce nor verify it. The Ed25519 signature is over
       # "Ed" || key id || SHA-512(asset), and the global one over "Ed" || key id || signature ||
       # trusted comment. UPDATE_SIGNING_KEY is an Ed25519 private key in PKCS#8 PEM.
       - name: Sign the update asset

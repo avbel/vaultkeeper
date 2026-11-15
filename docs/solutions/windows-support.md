@@ -5,6 +5,46 @@ direct sensor access). Date: 2026-11-13.
 Marks: **[v]** = checked in a primary source or in code during this research; **[i]** = inferred or from memory, check on a
 real machine. Design recommendations in §3–§5 and §8 come from a security design review (Fable) of this research.
 
+## Implementation
+
+Build plan: `.plan/windows-support.md`. How to test on hardware: `windows-testing-guide.md` and `windows-test-checklist.md` (same directory). This document is the research; where CI proved it wrong, the section says so ("CI result").
+
+Scope as built: Windows 11 24H2+, **x64 only**. ARM64 (§9) is out of scope.
+
+Decided:
+
+- Inno Setup per-user installer (`%LOCALAPPDATA%\Programs\Vaultkeeper`), no UAC.
+- Code signing is optional: signtool with a PFX, or SignPath. An unsigned build still releases, but the updater and winget need a signed one.
+- winget is submitted from CI, for signed releases only.
+- Default hotkey Ctrl+Shift+Space. Capture exclusion is on by default.
+- A `Global\` mutex allows one daemon per user.
+- Process hardening switches that can break IME, file dialogs or screen readers stay off unless `VAULTKEEPER_STRICT_MITIGATIONS=1`; the hardware run decides the default.
+
+Status:
+
+| Area | Status |
+|---|---|
+| Transport seam, named pipes (UI, CLI, browser host), peer checks, data directory ACL checks, token and sealed stores, single instance, SSH agent pipe, update signature check, installer build | Built, CI-tested on `windows-latest` |
+| Windows Hello unlock (Passport KSP), "SSH requires Windows Hello", auto-type, security keys (`webauthn.dll`), tray theme and DPI, hotkey, capture exclusion, browser registration and native host, strict mitigations, installer, self-update, winget | Built, needs hardware (checklist) |
+| ARM64, per-machine MSI, Store MSIX | Not built |
+
+CI results that differ from the research:
+
+- §5.3: the pipe DACL `0x12019b` (no create-instance) works for `ssh.exe`; an `ssh-add.exe -l` test in CI proves it. But the pool cannot be created under it: it denies us `FILE_CREATE_PIPE_INSTANCE` and the owner ACE strips `WRITE_DAC`. Create every instance from a setup DACL that grants create-instance and `WRITE_DAC`, then apply the final DACL.
+- §5.3: clients must open the pipe with an explicit access mask. `GENERIC_WRITE` includes `FILE_APPEND_DATA`, the bit the DACL withholds, so the open is refused.
+- §5.3: tokio and mio keep read/write slot state across `DisconnectNamedPipe`, so a recycled instance hands the next client the previous client's `ERROR_BROKEN_PIPE`. The slot must be reset (`vendor/PATCHES.md`). Recycling also waits for the client to close first, because disconnecting discards unread replies. Every idle instance needs its own accept task: Windows attaches a client to any listening instance.
+- §4.4: SDDL text shows well-known accounts as aliases (`LA` is the built-in Administrator), so string comparison took it for a foreign ACE. Compare binary SIDs (`EqualSid`, `IsWellKnownSid`).
+- §8.2: a file can be catalog-signed instead of carrying an embedded Authenticode signature. "No embedded signer" is a normal answer, not an error.
+- Windows checkouts convert LF to CRLF, which broke the `include_str!` passphrase wordlist. `.gitattributes` pins LF.
+
+Before the first Windows release:
+
+1. Create the update key with `openssl genpkey -algorithm ed25519` and embed its public key in `app/src/daemon/update/signature.rs`. Until then the placeholder key makes every verification fail, so no update installs.
+2. Choose signing: apply to SignPath, or buy an OV certificate. Add the secrets (`WINDOWS_SIGN_PFX`, `WINDOWS_SIGN_PFX_PASSWORD`, or `SIGNPATH_API_TOKEN`, `SIGNPATH_ORGANIZATION_ID`) and `UPDATE_SIGNING_KEY` (the private PEM) to the `release` environment.
+3. Create the `release` and `winget` environments. `winget` holds `WINGET_TOKEN`, a classic PAT with `public_repo` scope.
+4. Fork microsoft/winget-pkgs and submit the first version by hand (`packaging/winget/README.md`). CI only updates an existing package.
+5. Run the hardware checklist, starting with Hello and the strict-mitigations run.
+
 ## 0. Short answers
 
 | Question | Answer |
@@ -419,14 +459,21 @@ open-source program (theirs or the project's) [i]; it decides what SmartScreen r
 
 ### 8.3 Update trust
 
-- The primary anchor is an **Ed25519 (minisign-style) key embedded in the binary**, shared with the Linux plan. It survives a change
+- The primary anchor is an **Ed25519 key embedded in the binary**, shared with the Linux plan. It survives a change
   of signing certificate, which the README calls a reinstall-by-hand event on macOS. Rotate it by shipping a "next key" signed by
   the old one.
+- **As built:** each asset has a `.minisig` file in a minisign-style container, but our own format, **not minisign-compatible**. The
+  signature is Ed25519 over `"Ed" || key id || SHA-512(asset)` (algorithm "Ed", prehash), and a second one covers the trusted
+  comment `vaultkeeper <version> <asset>`, so a signature cannot be replayed for another version or file. CI produces it with
+  `openssl`, since stock minisign cannot. Create the key with `openssl genpkey -algorithm ed25519` and embed its public key in
+  `app/src/daemon/update/signature.rs`. The placeholder there fails closed: nothing verifies until the real key is in.
 - Also require a valid Authenticode chain, so Smart App Control accepts the installed binary, but do not pin the publisher.
 - Install: download, verify, rename the running exe aside (Windows allows that), move the new one in, restart the daemon, and
   delete the old file on the next start [i].
 
 ## 9. ARM64
+
+**Out of scope for the current build (x64 only).** Kept as research for a later release.
 
 - Toolchain: `aarch64-pc-windows-msvc` became Tier 1 in Rust 1.91 (2025-10-30) [v]. The repo pins 1.99.1.
 - CI: `windows-11-arm` hosted runners are GA for public repositories since 2025-08-07 [v].
