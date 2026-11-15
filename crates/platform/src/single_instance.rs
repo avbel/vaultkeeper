@@ -1,8 +1,9 @@
 //! Ensures one running instance; a second launch asks the first one to show its window.
 //!
-//! An exclusive `flock` on `instance.lock` decides who is first. The kernel drops it when a
-//! process dies, so a crash never blocks the next launch; the winner then replaces any stale
-//! `instance.sock` left behind. Later launches connect to that socket and send one command.
+//! An exclusive `flock` on `instance.lock` (Unix) or a SID-scoped named mutex (Windows) decides who
+//! is first. The kernel drops it when a process dies, so a crash never blocks the next launch; the
+//! winner then serves one command per later launch. Unix uses a socket in the data dir; Windows a
+//! machine-wide pipe named with the user's SID.
 
 use std::path::Path;
 
@@ -13,20 +14,24 @@ use crate::Result;
 pub struct InstanceGuard {
     #[cfg(unix)]
     _guard: unix::Guard,
+    #[cfg(windows)]
+    _guard: windows::Guard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     ShowManager,
     ShowQuickPanel,
+    /// Stop the running daemon; used by the installer, uninstaller and updater.
+    Quit,
 }
 
-#[cfg(unix)]
 impl Command {
     const fn code(self) -> u8 {
         match self {
             Self::ShowManager => 1,
             Self::ShowQuickPanel => 2,
+            Self::Quit => 3,
         }
     }
 
@@ -34,9 +39,34 @@ impl Command {
         match code {
             1 => Some(Self::ShowManager),
             2 => Some(Self::ShowQuickPanel),
+            3 => Some(Self::Quit),
             _ => None,
         }
     }
+}
+
+/// First byte of every command message, so stray connections are told apart from commands.
+const MESSAGE_TAG: u8 = 0xB1;
+
+/// The machine-wide single-instance pipe, SID-scoped so two users keep separate daemons.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows single instance uses it")
+)]
+fn instance_pipe_name(sid: &str) -> String {
+    format!(r"\\.\pipe\vaultkeeper.{sid}.instance")
+}
+
+/// The named mutex that decides which launch is first. `global` names the `Global\` namespace,
+/// shared across the user's console and RDP sessions; a normal process may lack the privilege it
+/// needs, so the Windows code falls back to the per-session `Local\`.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows single instance uses it")
+)]
+fn mutex_name(sid: &str, global: bool) -> String {
+    let scope = if global { "Global" } else { "Local" };
+    format!("{scope}\\Vaultkeeper-{sid}")
 }
 
 /// Waits until process `pid` has exited, at most `timeout`; returns whether it did. An updated
@@ -59,6 +89,13 @@ pub fn wait_for_exit(pid: i32, timeout: std::time::Duration) -> bool {
     }
 }
 
+/// [`wait_for_exit`] on Windows: `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`.
+#[cfg(windows)]
+#[must_use]
+pub fn wait_for_exit(pid: i32, timeout: std::time::Duration) -> bool {
+    windows::wait_for_exit(pid, timeout)
+}
+
 /// Returns the guard if we are the first instance; otherwise forwards `command` to the
 /// running instance and returns [`crate::Error::AlreadyRunning`]. `on_command` runs on a
 /// background thread for commands from later launches.
@@ -71,6 +108,7 @@ pub fn acquire(
 
 /// [`acquire`] with the lock and socket in `dir` instead of the data dir. `dir` must exist and
 /// should be private to the user; the socket path must stay under the 104-byte `sun_path` limit.
+/// Windows ignores `dir`: the mutex and pipe names are SID-scoped and machine-wide.
 pub fn acquire_in(
     dir: &Path,
     command: Command,
@@ -82,10 +120,11 @@ pub fn acquire_in(
             _guard: unix::acquire(dir, command, on_command)?,
         })
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (dir, command, on_command);
-        Err(crate::Error::Unsupported)
+        Ok(InstanceGuard {
+            _guard: windows::acquire(dir, command, on_command)?,
+        })
     }
 }
 
@@ -108,13 +147,12 @@ mod unix {
         GenericFilePath, Listener, ListenerOptions, Stream, ToFsName, prelude::*,
     };
 
-    use super::Command;
+    use super::{Command, MESSAGE_TAG};
     use crate::{Error, Result};
 
     const LOCK_FILE: &str = "instance.lock";
     const SOCKET_FILE: &str = "instance.sock";
     /// First byte of every message, so stray connections are told apart from commands.
-    const MESSAGE_TAG: u8 = 0xB1;
     const WAKE_CODE: u8 = 0;
     const READ_TIMEOUT: Duration = Duration::from_secs(1);
     /// The first instance may hold the lock but not have bound the socket yet.
@@ -252,6 +290,9 @@ mod unix {
     }
 }
 
+#[cfg(windows)]
+mod windows;
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::{sync::mpsc, time::Duration};
@@ -268,11 +309,11 @@ mod tests {
 
     #[test]
     fn command_codes_round_trip() {
-        for command in [Command::ShowManager, Command::ShowQuickPanel] {
+        for command in [Command::ShowManager, Command::ShowQuickPanel, Command::Quit] {
             assert_eq!(Command::from_code(command.code()), Some(command));
         }
         assert_eq!(Command::from_code(0), None);
-        assert_eq!(Command::from_code(3), None);
+        assert_eq!(Command::from_code(4), None);
     }
 
     #[test]
@@ -364,5 +405,28 @@ mod tests {
         assert!(
             matches!(result, Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound)
         );
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::{instance_pipe_name, mutex_name};
+
+    #[test]
+    fn the_instance_pipe_is_sid_scoped() {
+        assert_eq!(
+            instance_pipe_name("S-1-5-21-1-2-3-1001"),
+            r"\\.\pipe\vaultkeeper.S-1-5-21-1-2-3-1001.instance"
+        );
+        assert_ne!(
+            instance_pipe_name("S-1-5-18"),
+            instance_pipe_name("S-1-5-19")
+        );
+    }
+
+    #[test]
+    fn the_mutex_name_picks_its_namespace() {
+        assert_eq!(mutex_name("S-1-5-18", true), r"Global\Vaultkeeper-S-1-5-18");
+        assert_eq!(mutex_name("S-1-5-18", false), r"Local\Vaultkeeper-S-1-5-18");
     }
 }

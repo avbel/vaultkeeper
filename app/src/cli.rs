@@ -76,6 +76,7 @@ Desktop options
   --daemon     run in the menu bar only; windows open on demand
   --tray       same as --daemon (what start at login uses)
   --quick      open the Quick Panel
+  --quit       stop the running vaultkeeper
   --mock       run on the built-in mock vault (master password: mock)
   --offline    mock: start with the server unreachable
   --unlocked   mock: start with the first account unlocked
@@ -107,6 +108,8 @@ pub struct Args {
     pub size: Option<(u32, u32)>,
     pub select: Option<String>,
     pub quick: bool,
+    /// Ask a running daemon to quit (the installer, uninstaller and updater use it).
+    pub quit: bool,
     pub help: bool,
     pub version: bool,
     /// The previous daemon after an update: wait for this pid to exit before starting.
@@ -157,6 +160,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--demo-browser-pair" => parsed.demo_browser_pair = true,
             "--demo-browser-save" => parsed.demo_browser_save = true,
             "--quick" => parsed.quick = true,
+            "--quit" => parsed.quit = true,
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
             "--select" => parsed.select = Some(args.next().ok_or(CliError::Select)?),
             "--wait-for" => {

@@ -89,6 +89,11 @@ const fn default_match(setting: BrowserMatch) -> DefaultMatch {
 
 /// The folder holding every app's data, as the Settings window sees it: the parent of ours.
 fn app_support(data_dir: &std::path::Path) -> PathBuf {
+    // Windows manifests live under the data dir itself; there is no per-browser Application
+    // Support tree to write into.
+    if cfg!(windows) {
+        return data_dir.to_path_buf();
+    }
     if cfg!(feature = "vw-it") {
         return data_dir.join("app-support");
     }

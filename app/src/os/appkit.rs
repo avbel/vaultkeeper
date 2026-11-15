@@ -1,6 +1,7 @@
 //! AppKit glue for the UI process: the activation policy (a Dock icon only while the Manager is
 //! open), bringing the app forward, and the Quick Panel's place on the cursor's screen.
 
+#[cfg(target_os = "macos")]
 use crate::hooks::{DockIcon, WindowPlacement};
 
 /// The Quick Panel's top edge sits this far down the screen (ui-refinements.md).
@@ -107,46 +108,35 @@ pub fn watch_menu_bar(on_change: impl Fn() + 'static) -> Option<MenuBarWatch> {
 #[cfg(target_os = "macos")]
 const ICON_THEME_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
+#[cfg(target_os = "macos")]
 pub struct AppKitDock;
 
+#[cfg(target_os = "macos")]
 impl DockIcon for AppKitDock {
     fn set_visible(&self, visible: bool) {
-        #[cfg(target_os = "macos")]
-        {
-            macos::set_regular(visible);
-            macos::follow_theme_in_dock(visible);
-        }
-        #[cfg(not(target_os = "macos"))]
-        let _ = visible;
+        macos::set_regular(visible);
+        macos::follow_theme_in_dock(visible);
     }
 
     fn activate(&self) {
-        #[cfg(target_os = "macos")]
         macos::activate();
     }
 
     fn hide(&self) {
-        #[cfg(target_os = "macos")]
         macos::hide();
     }
 }
 
+#[cfg(target_os = "macos")]
 pub struct CursorScreen;
 
+#[cfg(target_os = "macos")]
 impl WindowPlacement for CursorScreen {
     fn quick_panel_origin(&self, width: f32, height: f32) -> Option<slint::LogicalPosition> {
-        #[cfg(target_os = "macos")]
-        {
-            let (screens, (x, y)) = macos::screens_and_mouse()?;
-            let primary_height = screens.first()?.height;
-            let screen = screen_at(&screens, x, y)?;
-            Some(quick_panel_origin_in(screen, primary_height, width, height))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (width, height);
-            None
-        }
+        let (screens, (x, y)) = macos::screens_and_mouse()?;
+        let primary_height = screens.first()?.height;
+        let screen = screen_at(&screens, x, y)?;
+        Some(quick_panel_origin_in(screen, primary_height, width, height))
     }
 }
 

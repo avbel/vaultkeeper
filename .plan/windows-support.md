@@ -434,7 +434,7 @@ done-when: `scripts/check-windows.sh -p vk-platform --examples`
 needs: 2i, 7a
 difficulty: medium
 kind: change
-gate: the user runs `hello_check` and `hello_check --strict` (face, fingerprint, PIN; after a PIN reset) and reports the output before 4c starts
+gate: lifted by the user (no Windows PC available): 4c–4f are built from the research and this spike's code; the user runs `hello_check` and `hello_check --strict` later and 4c is corrected from its output
 
 ## 4b Envelope v2 with primitive ids (portable)
 files: crates/platform/src/biometric/envelope.rs
@@ -448,6 +448,7 @@ kind: change
 files: crates/platform/src/biometric.rs, crates/platform/src/biometric/passport.rs
 do: Windows biometric backend implementing the same enrol/unlock surface as Secure Enclave: enrol without a prompt (export public key, OAEP-wrap a fresh 32-byte KEK, AES-256-GCM the user key, v2 envelope id 2); unlock with one NCryptDecrypt using the parameters proven by the 4a spike. Error mapping keeps the biometric.rs invariant (§3.2): `BiometricInvalidated` only for NTE_BAD_KEYSET/NTE_NO_KEY from NCryptOpenKey after NCryptOpenStorageProvider succeeded (a provider that fails to open, e.g. NGC service down or RDP, is `BiometricFailed`), a stored public key that differs from the KSP's, or a GCM failure after a successful unwrap; everything else, including cancel, lockout, TPM busy, 0x80098044 after its retry and unknown codes, is `BiometricFailed`. Availability probe: the KSP opens and the session is not remote (GetSystemMetrics(SM_REMOTESESSION)).
 done-when: `scripts/check-windows.sh -p vk-platform --all-targets`; `cargo test -p vk-platform biometric`
+unverified: no hardware run yet; mirror the NCrypt calls in crates/platform/examples/hello_check.rs exactly
 needs: 4a, 4b
 difficulty: hard
 kind: change
@@ -623,4 +624,12 @@ do: Integration tests that run the real vault (the existing mock-server helpers 
 done-when: `cargo test -p vk-vault --test sealed_lifecycle`; `cargo clippy -p vk-vault --all-targets -- -D warnings`
 needs: 1m
 difficulty: medium
+kind: change
+
+## 3m Log files on Windows
+files: app/src/os/log_file.rs
+do: `log_dir()` on Windows returns `%LOCALAPPDATA%\Vaultkeeper\logs` (from `vk_platform::paths` data dir's parent logic or `ProjectDirs::data_local_dir()`), created with the private-dir helper; the macOS `~/Library/Logs/vaultkeeper` path and the vw-it override stay unchanged. Unix-only mode code stays `cfg(unix)`.
+done-when: `scripts/check-windows.sh -p vaultkeeper --all-targets`; `cargo test -p vaultkeeper log_file`
+needs: 1o
+difficulty: easy
 kind: change

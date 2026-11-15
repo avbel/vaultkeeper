@@ -115,6 +115,7 @@ pub const fn second_launch(command: vk_platform::single_instance::Command) -> Ef
         vk_platform::single_instance::Command::ShowQuickPanel => {
             Effect::Show(UiCommand::ShowQuickPanel { target: None })
         }
+        vk_platform::single_instance::Command::Quit => Effect::Quit,
     }
 }
 
@@ -295,6 +296,7 @@ mod tests {
         );
         assert_eq!(forwarded(Launch::QuickPanel), Command::ShowQuickPanel);
         assert_eq!(forwarded(Launch::Tray), Command::ShowManager);
+        assert_eq!(second_launch(Command::Quit), Effect::Quit);
     }
 
     #[test]

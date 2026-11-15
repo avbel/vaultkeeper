@@ -14,7 +14,7 @@ table) into the pull request. Two groups change a default, so their result must 
 ## 0. Setup
 
 - [ ] `winver` reports 24H2, build 26100 or newer; `echo %PROCESSOR_ARCHITECTURE%` is `AMD64`.
-- [ ] Build from the branch under test: `out\Vaultkeeper-<tag>-x64-setup.exe` (signed for the update and SmartScreen
+- [ ] Use the CI artifact `vaultkeeper-windows-x64` of the commit under test (no Rust needed), or `out\Vaultkeeper-<tag>-x64-setup.exe` (signed for the update and SmartScreen
       sections; an unsigned build is fine elsewhere).
 - [ ] At least one login saved, CLI access enabled in Settings, and one login allowed for CLI access.
 - [ ] Chrome or Edge plus Firefox installed, one FIDO2 security key, and a second local Windows account is not
@@ -23,8 +23,8 @@ table) into the pull request. Two groups change a default, so their result must 
 
 ## 1. Windows Hello (risks 1, 2, 9)
 
-Build the spike with `cargo build -p vk-platform --example hello_check`; run it from a console so its window can be
-passed as `NCRYPT_WINDOW_HANDLE_PROPERTY`.
+Use `hello_check.exe` from the CI artifact `vaultkeeper-windows-x64` (see windows-testing-guide.md); run it from a
+console so its window can be passed as `NCRYPT_WINDOW_HANDLE_PROPERTY`.
 
 - [ ] `hello_check.exe`: print the key name that worked (`<SID>//Vaultkeeper//Vaultkeeper` or the variant it fell
       back to), whether RSA-OAEP-SHA256 or PKCS#1 v1.5 was accepted, and every HRESULT/NTSTATUS. Expect no error.

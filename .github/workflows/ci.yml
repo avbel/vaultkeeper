@@ -64,3 +64,51 @@ jobs:
       - name: Tests
         shell: bash
         run: cargo test $WINDOWS_PACKAGES --no-fail-fast
+
+  # Test builds for manual testing on a Windows PC without a Rust toolchain.
+  windows-build:
+    name: Windows Build
+    runs-on: windows-latest
+    env:
+      # aws-lc-sys ships prebuilt NASM objects; without this the build fetches NASM itself.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-test-build
+
+      - name: Build vaultkeeper
+        run: cargo build --release --locked -p vaultkeeper
+
+      - name: Build hello_check example
+        run: cargo build --release --locked -p vk-platform --example hello_check
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/vaultkeeper-windows-x64 | Out-Null
+          Copy-Item `
+            target/release/vaultkeeper.exe, `
+            target/release/examples/hello_check.exe, `
+            scripts/measure-windows.ps1, `
+            docs/solutions/windows-testing-guide.md, `
+            docs/solutions/windows-test-checklist.md `
+            out/vaultkeeper-windows-x64/
+          @"
+          commit: ${{ github.sha }}
+          branch: ${{ github.ref_name }}
+          date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
+          "@ | Set-Content out/vaultkeeper-windows-x64/BUILD.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vaultkeeper-windows-x64
+          path: out/vaultkeeper-windows-x64/
+          retention-days: 14
+          if-no-files-found: error

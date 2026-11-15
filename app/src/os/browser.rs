@@ -2,6 +2,9 @@
 
 use std::path::PathBuf;
 
+#[cfg(windows)]
+pub mod windows;
+
 use vk_ipc::UiNotice;
 
 use super::Notifier;

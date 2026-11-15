@@ -1,13 +1,17 @@
-//! Touch ID. The user key is wrapped to a Secure Enclave P-256 key whose use requires the
-//! currently enrolled biometrics (CryptoKit, `.biometryCurrentSet`). See the solution doc.
+//! Biometrics. The user key is wrapped to a hardware key whose use requires the currently
+//! enrolled biometrics: a Secure Enclave P-256 key on macOS (Touch ID), or a Passport KSP RSA key
+//! on Windows (Windows Hello). See the solution doc.
 //!
 //! The functions that show a prompt block until the user answers it, so call them from a
 //! background thread, never from the UI event loop.
 
-// The wrap/unwrap core builds and is tested on every target but is wired up on macOS only.
+// The wrap/unwrap core builds and is tested on every target; each OS wires up only its own half
+// (macOS the Secure Enclave ECDH, Windows the Passport KSP), so the other half is dead code there.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod envelope;
+#[cfg(windows)]
+mod passport;
 #[cfg(target_os = "macos")]
 mod secure_enclave;
 
@@ -44,20 +48,25 @@ fn status_result(status: i32, operation: Operation, detail: &str) -> Result<()> 
     }
 }
 
-/// True when this Mac has a Secure Enclave and at least one enrolled fingerprint.
+/// True when the machine has a usable biometric key: a Secure Enclave with an enrolled fingerprint
+/// on macOS, or the Passport KSP reachable in a local (non-RDP) session on Windows.
 #[must_use]
 pub fn is_available() -> bool {
     #[cfg(target_os = "macos")]
     {
         secure_enclave::is_available()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        passport::is_available()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         false
     }
 }
 
-/// Creates a new Secure Enclave key and writes the wrapped `user_key` to `path` (mode 0600).
+/// Creates a new hardware key and writes the wrapped `user_key` to `path` (mode 0600).
 /// Replaces an earlier enrollment atomically. Never prompts.
 pub fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -70,7 +79,11 @@ pub fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
         let sealed = envelope::seal(&key.public, &device_key, user_key)?;
         Ok(crate::fs::write_private_atomic(path, &sealed)?)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        passport::enroll(path, user_key)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (path, user_key);
         Err(Error::Unsupported)
@@ -82,10 +95,10 @@ pub fn is_enrolled(path: &Path) -> bool {
     path.exists()
 }
 
-/// Shows the Touch ID prompt with `reason` and returns the unwrapped user key.
+/// Shows the biometric prompt with `reason` and returns the unwrapped user key.
 ///
 /// [`Error::BiometricInvalidated`] means the enrollment can never work again (fingerprints
-/// changed, or the file is corrupt or from another Mac): unlock with the master password and
+/// changed, or the file is corrupt or from another machine): unlock with the master password and
 /// enroll again. [`Error::BiometricFailed`] covers cancel, no match and temporary unavailability.
 pub fn unlock(path: &Path, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
     #[cfg(target_os = "macos")]
@@ -94,7 +107,11 @@ pub fn unlock(path: &Path, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
         let bytes = std::fs::read(path)?;
         envelope::open(&bytes, &secure_enclave::SecureEnclave { reason: &reason })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        passport::unlock(path, reason)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (path, reason);
         Err(Error::Unsupported)

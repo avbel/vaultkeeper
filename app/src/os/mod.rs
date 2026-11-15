@@ -4,7 +4,7 @@
 pub mod appkit;
 pub mod autotype;
 mod biometrics;
-mod browser;
+pub mod browser;
 mod clipboard;
 pub mod fs;
 pub mod layout;
@@ -12,6 +12,7 @@ pub mod log_file;
 mod misc;
 mod security_key;
 pub mod settings_file;
+pub mod windows_shell;
 
 use std::{path::Path, sync::Arc};
 
@@ -53,7 +54,16 @@ impl Hooks {
                 data_dir.join(layout::SETTINGS_FILE),
                 Arc::new(move || settings_notify(UiNotice::SettingsChanged)),
             )),
-            dock: Arc::new(appkit::AppKitDock),
+            dock: {
+                #[cfg(target_os = "macos")]
+                {
+                    Arc::new(appkit::AppKitDock)
+                }
+                #[cfg(windows)]
+                {
+                    Arc::new(windows_shell::WindowsDock)
+                }
+            },
             browsers: Arc::new(browser::BrowserFiles {
                 app_support: data_dir.parent().unwrap_or(data_dir).to_owned(),
                 store: data_dir.join(layout::BROWSER_PAIRINGS_FILE),
@@ -63,7 +73,16 @@ impl Hooks {
                 endpoint: layout::ssh_endpoint(data_dir),
             }),
             ssh_keys: Arc::new(SshKeys),
-            placement: Arc::new(appkit::CursorScreen),
+            placement: {
+                #[cfg(target_os = "macos")]
+                {
+                    Arc::new(appkit::CursorScreen)
+                }
+                #[cfg(windows)]
+                {
+                    Arc::new(windows_shell::WindowsPlacement)
+                }
+            },
             clock: Arc::new(SystemClock),
             autotype: Arc::new(autotype::SystemAutoType),
             site_icons: Arc::new(DaemonSiteIcons(Arc::clone(daemon))),

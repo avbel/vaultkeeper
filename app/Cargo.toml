@@ -147,6 +147,7 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 slint-build = "1.18.1"
+embed-resource = "3"
 
 [lints]
 workspace = true

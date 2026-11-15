@@ -42,6 +42,9 @@ fn main() -> anyhow::Result<()> {
         )?;
         return Ok(());
     }
+    if args.quit {
+        return quit_daemon();
+    }
     let mode = args.mode();
     init_logging(match mode {
         Mode::Daemon(_) => Some("daemon"),
@@ -99,6 +102,18 @@ fn init_logging(file_name: Option<&str>) {
         tracing::error!(%info, "panic");
         default_hook(info);
     }));
+}
+
+/// `--quit`: forward `Command::Quit` to a running daemon and exit. Nothing is running when this
+/// process becomes the first instance, so it releases the lock and exits as well.
+fn quit_daemon() -> anyhow::Result<()> {
+    use vk_platform::single_instance::{Command, acquire};
+    match acquire(Command::Quit, |_| {}) {
+        Ok(guard) => drop(guard),
+        Err(vk_platform::Error::AlreadyRunning) => {}
+        Err(error) => return Err(error).context("stop the running Vaultkeeper"),
+    }
+    Ok(())
 }
 
 /// `--mock`: the UI alone, in one process with its own tray, on the built-in mock vault.

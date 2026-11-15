@@ -17,6 +17,9 @@ use super::ids;
 pub const HOST_NAME: &str = "org.vaultkeeper.browser";
 pub const MANIFEST_FILE: &str = "org.vaultkeeper.browser.json";
 const HOSTS_DIR: &str = "NativeMessagingHosts";
+/// Subdirectory of the data dir holding the per-user Windows manifests; the registry keys point at
+/// a file inside it (§7.8).
+pub const WINDOWS_MANIFESTS_DIR: &str = "native-messaging";
 #[cfg(unix)]
 const MANIFEST_MODE: u32 = 0o644;
 
@@ -70,12 +73,65 @@ impl ManifestBrowser {
     }
 
     #[must_use]
+    #[cfg(not(windows))]
     pub fn installed(self, app_support: &Path) -> bool {
         app_support.join(self.parent_dir()).is_dir()
     }
 
+    /// Browsers keep their profiles in the per-user app-data trees, not under our data dir.
+    #[must_use]
+    #[cfg(windows)]
+    pub fn installed(self, _data_dir: &Path) -> bool {
+        let var = if self.is_firefox() {
+            "APPDATA"
+        } else {
+            "LOCALAPPDATA"
+        };
+        std::env::var_os(var).is_some_and(|base| Path::new(&base).join(self.parent_dir()).is_dir())
+    }
+
     const fn is_firefox(self) -> bool {
         matches!(self, Self::Firefox)
+    }
+
+    /// The vendor segment of the Windows registry path. Backslash-separated and spelled without a
+    /// space, unlike [`Self::parent_dir`], which is slash-separated for the macOS file layout.
+    const fn registry_software_key(self) -> &'static str {
+        match self {
+            Self::Chrome => r"Google\Chrome",
+            Self::Chromium => "Chromium",
+            Self::Brave => r"BraveSoftware\Brave-Browser",
+            Self::Edge => r"Microsoft\Edge",
+            Self::Firefox => "Mozilla",
+        }
+    }
+
+    /// The full `HKCU` subkey whose default value points at this browser's manifest (§7.8).
+    #[must_use]
+    pub fn registry_key(self) -> String {
+        format!(
+            "Software\\{}\\NativeMessagingHosts\\{HOST_NAME}",
+            self.registry_software_key()
+        )
+    }
+
+    /// A stable suffix so the five manifests can share one directory.
+    const fn manifest_file_stem(self) -> &'static str {
+        match self {
+            Self::Chrome => "chrome",
+            Self::Chromium => "chromium",
+            Self::Brave => "brave",
+            Self::Edge => "edge",
+            Self::Firefox => "firefox",
+        }
+    }
+
+    /// Where the Windows manifest file lives under the data dir; the registry points at it.
+    #[must_use]
+    pub fn windows_manifest_path(self, data_dir: &Path) -> PathBuf {
+        data_dir
+            .join(WINDOWS_MANIFESTS_DIR)
+            .join(format!("{HOST_NAME}.{}.json", self.manifest_file_stem()))
     }
 }
 
@@ -138,9 +194,18 @@ pub fn render(browser: ManifestBrowser, exe_path: &Path, ids: &ExtensionIds<'_>)
 
 /// The manifest must name the binary that actually runs, so symlinks are resolved.
 pub fn current_exe_path() -> io::Result<PathBuf> {
-    fs::canonicalize(std::env::current_exe()?)
+    let exe = std::env::current_exe()?;
+    // `canonicalize` resolves the .app bundle symlinks on macOS but adds a `\\?\` verbatim prefix
+    // on Windows, which does not belong in a manifest `path` a browser will spawn.
+    #[cfg(not(windows))]
+    let exe = fs::canonicalize(exe)?;
+    Ok(exe)
 }
 
+#[cfg(windows)]
+pub use crate::os::browser::windows::{check_and_restore, install, remove};
+
+#[cfg(not(windows))]
 pub fn install(
     app_support: &Path,
     browser: ManifestBrowser,
@@ -167,6 +232,7 @@ pub fn install(
     Ok(outcome)
 }
 
+#[cfg(not(windows))]
 pub fn remove(app_support: &Path, browser: ManifestBrowser) -> io::Result<()> {
     match fs::remove_file(browser.manifest_path(app_support)) {
         Ok(()) => Ok(()),
@@ -177,6 +243,7 @@ pub fn remove(app_support: &Path, browser: ManifestBrowser) -> io::Result<()> {
 
 /// One browser failing must not stop the others from being checked, so errors are per browser.
 #[must_use]
+#[cfg(not(windows))]
 pub fn check_and_restore(
     app_support: &Path,
     enabled: &[ManifestBrowser],
@@ -197,14 +264,14 @@ pub fn restored_toast(browser: ManifestBrowser) -> String {
     )
 }
 
-enum Existing {
+pub(crate) enum Existing {
     Missing,
     Matches,
     Differs,
 }
 
 /// A symlink never counts as a match: the browser would read whatever it points at.
-fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
+pub(crate) fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
     let metadata = match fs::symlink_metadata(target) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Existing::Missing),
@@ -226,7 +293,7 @@ fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
     })
 }
 
-fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
     let temp = dir.join(format!(
         ".{MANIFEST_FILE}.{}.{:016x}.tmp",
         std::process::id(),
@@ -538,5 +605,39 @@ mod tests {
         let defaults = ExtensionIds::default();
         assert_eq!(defaults.chrome, ids::CHROME_EXTENSION_ID);
         assert_eq!(defaults.firefox, ids::FIREFOX_EXTENSION_ID);
+    }
+
+    #[test]
+    fn windows_registry_keys_and_manifest_paths_match_the_plan() {
+        assert_eq!(
+            ManifestBrowser::Chrome.registry_key(),
+            r"Software\Google\Chrome\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Chromium.registry_key(),
+            r"Software\Chromium\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Brave.registry_key(),
+            r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Edge.registry_key(),
+            r"Software\Microsoft\Edge\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Firefox.registry_key(),
+            r"Software\Mozilla\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+
+        let data = Path::new("/data");
+        assert_eq!(
+            ManifestBrowser::Chrome.windows_manifest_path(data),
+            PathBuf::from("/data/native-messaging/org.vaultkeeper.browser.chrome.json")
+        );
+        assert_eq!(
+            ManifestBrowser::Firefox.windows_manifest_path(data),
+            PathBuf::from("/data/native-messaging/org.vaultkeeper.browser.firefox.json")
+        );
     }
 }
