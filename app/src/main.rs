@@ -12,6 +12,7 @@ use vaultkeeper::{
 };
 
 fn main() -> anyhow::Result<()> {
+    vaultkeeper::os::console::attach_parent_console();
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let role = if raw_args.iter().any(|arg| arg == "--ui") {
         vk_platform::hardening::Role::Ui

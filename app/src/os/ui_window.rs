@@ -18,7 +18,16 @@ fn accept_window(
 }
 
 #[cfg(windows)]
-pub use windows::{clear_ui_pid, set_ui_pid, trusted_parent_window, window_handle};
+pub use windows::{
+    allow_foreground, bring_to_front, clear_ui_pid, set_ui_pid, trusted_parent_window,
+    window_handle,
+};
+
+#[cfg(not(windows))]
+pub const fn allow_foreground(_pid: u32) {}
+
+#[cfg(not(windows))]
+pub const fn bring_to_front(_window: &slint::Window) {}
 
 /// macOS has no parent window for the Touch ID sheet.
 #[cfg(not(windows))]
@@ -46,7 +55,9 @@ mod windows {
         WinitWindowAccessor,
         winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
+    };
 
     use super::accept_window;
 
@@ -71,6 +82,26 @@ mod windows {
                 _ => None,
             })
             .flatten()
+    }
+
+    /// Lets `pid` take the foreground; Windows grants that only to a process that holds it itself
+    /// or was allowed by one that does.
+    pub fn allow_foreground(pid: u32) {
+        // SAFETY: takes a pid by value and has no memory effects.
+        if unsafe { AllowSetForegroundWindow(pid) } == 0 {
+            tracing::debug!(pid, "AllowSetForegroundWindow failed");
+        }
+    }
+
+    /// A shown window does not take the foreground by itself when the user was in another app.
+    pub fn bring_to_front(window: &slint::Window) {
+        let Some(hwnd) = window_handle(window).and_then(|hwnd| usize::try_from(hwnd).ok()) else {
+            return;
+        };
+        // SAFETY: the handle belongs to this process's live window; a stale one only fails.
+        if unsafe { SetForegroundWindow(ptr::with_exposed_provenance_mut::<c_void>(hwnd)) } == 0 {
+            tracing::debug!("SetForegroundWindow refused");
+        }
     }
 
     /// `requested` if it is a live window of the UI process this daemon spawned.

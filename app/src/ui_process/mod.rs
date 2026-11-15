@@ -33,6 +33,7 @@ const ACTIVITY_EVERY: Duration = Duration::from_secs(30);
 pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow::Result<()> {
     channel::check(pipe)?;
     let data_dir = crate::os::layout::data_dir().context("locate the data directory")?;
+    crate::os::startup_check::enforce(&data_dir)?;
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)

@@ -242,7 +242,7 @@ impl Default for Settings {
             browser_fill_single: true,
             browser_passkeys: true,
             browser_default_match: BrowserMatch::Domain,
-            hotkey: "Cmd+Shift+Space".to_owned(),
+            hotkey: DEFAULT_HOTKEY.to_owned(),
             generator_hotkey: String::new(),
             touch_id_right_away: false,
             last_login: None,
@@ -333,6 +333,12 @@ impl Settings {
         }
     }
 }
+
+/// Windows reserves most Win+ chords and Ctrl+Alt is AltGr on many layouts, so Ctrl+Shift it is.
+#[cfg(windows)]
+pub const DEFAULT_HOTKEY: &str = "Ctrl+Shift+Space";
+#[cfg(not(windows))]
+pub const DEFAULT_HOTKEY: &str = "Cmd+Shift+Space";
 
 /// "Cmd+Shift+Space" as macOS shows it, "⌘⇧Space": modifiers as symbols in Apple's order
 /// (⌃⌥⇧⌘), then the key. `KeyK` / `Digit1` (global-hotkey's code names) become `K` / `1`.
@@ -676,7 +682,7 @@ mod tests {
         assert_eq!(settings.ssh_approval, SshApproval::RememberUntilLock);
         assert_eq!(settings.text_scale, TextScale::Large);
         assert_eq!(
-            settings.hotkey, "Cmd+Shift+Space",
+            settings.hotkey, DEFAULT_HOTKEY,
             "missing fields take the default"
         );
         assert!(
@@ -732,7 +738,7 @@ mod tests {
         .sanitized();
         assert_eq!(odd.lock_timeout, LockTimeout::Minutes(1));
         assert_eq!(odd.clipboard_clear, ClipboardClear::Seconds(1));
-        assert_eq!(odd.hotkey, "Cmd+Shift+Space");
+        assert_eq!(odd.hotkey, DEFAULT_HOTKEY);
         assert_eq!(
             odd.manager_geometry.map(|g| (g.x, g.width, g.height)),
             Some((0, 760, 480))

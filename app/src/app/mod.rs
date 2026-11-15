@@ -610,7 +610,9 @@ fn retire<T: 'static>(handle: T) {
 fn show<C: ComponentHandle>(component: &C, what: &str) {
     if let Err(error) = component.show() {
         tracing::error!(%error, what, "cannot show window");
+        return;
     }
+    crate::os::ui_window::bring_to_front(component.window());
 }
 
 fn hide<C: ComponentHandle>(component: &C) {

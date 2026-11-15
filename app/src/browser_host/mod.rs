@@ -8,11 +8,11 @@ use std::io;
 use std::os::fd::AsFd as _;
 #[cfg(windows)]
 use std::os::windows::io::AsHandle as _;
+use std::time::Duration;
 #[cfg(unix)]
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
 };
 
 use anyhow::Context;
@@ -25,6 +25,7 @@ use vk_ipc::{
         protocol::{Caller, HostHello, PROTOCOL_VERSION},
     },
     frame::read_frame_with_limit,
+    transport::Endpoint,
 };
 use zeroize::Zeroizing;
 
@@ -49,11 +50,7 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         HostCaller::Firefox { extension_id } => Caller::Firefox { extension_id },
     };
     let endpoint = layout::browser_endpoint(&layout::data_dir()?);
-    let connected = match layout::socket_path(&endpoint) {
-        Ok(socket) => connect(&socket).await,
-        Err(error) => Err(error),
-    };
-    let mut stream = match connected {
+    let mut stream = match connect_endpoint(&endpoint).await {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, "browser daemon unavailable");
@@ -125,18 +122,40 @@ async fn unavailable(reason: &str) -> io::Result<()> {
     native::write_message(&mut tokio::io::stdout(), &body).await
 }
 
-// Windows: step 5f - the browser host speaks to a named pipe; until then it reports the
-// daemon as unavailable.
-#[cfg(not(unix))]
-type Socket = tokio::io::DuplexStream;
+#[cfg(unix)]
+async fn connect_endpoint(endpoint: &Endpoint) -> io::Result<UnixStream> {
+    connect(&layout::socket_path(endpoint)?).await
+}
 
-#[cfg(not(unix))]
-#[allow(clippy::unused_async, reason = "same signature as the Unix connect")]
-async fn connect(_path: &std::path::Path) -> io::Result<Socket> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the browser socket is not available on this platform yet",
-    ))
+#[cfg(windows)]
+type Socket = vk_ipc::transport::Stream;
+
+// Both a missing pipe (no daemon yet) and a busy one (daemon between two clients) are worth
+// another try.
+#[cfg(windows)]
+fn daemon_not_ready(error: &io::Error) -> bool {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+}
+
+// Cancel-safe: cancelling a connection attempt drops its socket.
+#[cfg(windows)]
+async fn connect_endpoint(endpoint: &Endpoint) -> io::Result<Socket> {
+    match vk_ipc::transport::connect(endpoint).await {
+        Ok(stream) => return Ok(stream),
+        Err(error) if daemon_not_ready(&error) => {}
+        Err(error) => return Err(error),
+    }
+    crate::os::detached::start_daemon()?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        match vk_ipc::transport::connect(endpoint).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) if daemon_not_ready(&error) && tokio::time::Instant::now() < deadline => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 // Cancel-safe: cancelling a connection attempt drops its socket.

@@ -80,6 +80,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
         refresh_login_agent();
     }
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
+    crate::os::startup_check::enforce(&data_dir)?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
     let instance = match single_instance::acquire_in(&data_dir, routing::forwarded(launch), {
         move |command| {

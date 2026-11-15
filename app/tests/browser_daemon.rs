@@ -5,7 +5,9 @@
 //! `vw-it` lets the listener start without a hardened runtime and moves the browsers' manifest
 //! directory under the test data dir, so nothing here touches `~/Library`.
 
-#![cfg(feature = "vw-it")]
+// Unix only: the harness plays the browser host over a Unix socket file and checks file modes;
+// the Windows pipe is covered by vk-ipc's transport tests.
+#![cfg(all(feature = "vw-it", unix))]
 #![allow(
     clippy::unwrap_used,
     clippy::too_many_lines,

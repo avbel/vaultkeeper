@@ -1,7 +1,14 @@
+#[cfg(any(windows, test))]
+mod chain;
+#[cfg(windows)]
+mod windows;
+
 #[cfg(unix)]
 use vk_ipc::browser::protocol::KnownBrowser;
+#[cfg(unix)]
 use vk_ipc::browser::protocol::ParentInfo;
 
+#[cfg(unix)]
 use crate::cli::HostCaller;
 
 #[cfg(unix)]
@@ -42,12 +49,5 @@ fn identify_browser(_pid: i32, _caller: &HostCaller) -> Option<KnownBrowser> {
     None
 }
 
-// Windows: step 5e - the parent process is identified through its executable's signer.
-#[cfg(not(unix))]
-pub fn identify(_caller: &HostCaller) -> ParentInfo {
-    ParentInfo {
-        pid: 0,
-        executable: String::new(),
-        browser: None,
-    }
-}
+#[cfg(windows)]
+pub use windows::identify;

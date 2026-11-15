@@ -489,6 +489,11 @@ impl Daemon {
             (seq, no_activate)
         };
         self.ensure_ui(no_activate);
+        if !no_activate && let Some(pid) = self.launcher.child_pid() {
+            // The daemon holds the foreground right (hotkey or tray click); the UI may only take
+            // the foreground for its window if the daemon grants it first.
+            crate::os::ui_window::allow_foreground(pid);
+        }
         if self.launcher.can_start() {
             drop(self.runtime.spawn(watch_answer(Arc::clone(self), seq)));
         }

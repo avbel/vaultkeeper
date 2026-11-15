@@ -1,4 +1,4 @@
-//! The global shortcuts: the Quick Panel (default ⌘⇧Space) and, if set, the Generator. The
+//! The global shortcuts: the Quick Panel (default ⌘⇧Space, Ctrl+Shift+Space on Windows) and, if set, the Generator. The
 //! manager must live on the main thread; presses arrive through its event handler on that thread,
 //! no polling.
 
