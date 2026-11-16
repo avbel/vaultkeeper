@@ -15,7 +15,63 @@ use vk_ipc::{
 };
 use zeroize::Zeroizing;
 
-use super::{auth::authenticate, pairing::PairingStore};
+use super::{
+    auth::{authenticate, connection_browser},
+    pairing::PairingStore,
+};
+
+fn hello(caller: Caller, parent: Option<KnownBrowser>) -> HostHello {
+    HostHello {
+        protocol: 1,
+        caller,
+        parent: ParentInfo {
+            pid: 1,
+            executable: "test".into(),
+            browser: parent,
+        },
+    }
+}
+
+#[test]
+fn a_verified_parent_names_the_browser_only_for_its_kind_of_caller() {
+    let chromium = || Caller::Chromium {
+        origin: "chrome-extension://x/".into(),
+    };
+    let firefox = || Caller::Firefox {
+        extension_id: "x@y".into(),
+    };
+    assert_eq!(
+        connection_browser(&hello(chromium(), Some(KnownBrowser::Edge))),
+        Some(KnownBrowser::Edge)
+    );
+    assert_eq!(
+        connection_browser(&hello(chromium(), Some(KnownBrowser::Chrome))),
+        Some(KnownBrowser::Chrome)
+    );
+    assert_eq!(
+        connection_browser(&hello(firefox(), Some(KnownBrowser::Firefox))),
+        Some(KnownBrowser::Firefox)
+    );
+    assert_eq!(
+        connection_browser(&hello(firefox(), Some(KnownBrowser::Edge))),
+        None
+    );
+    assert_eq!(
+        connection_browser(&hello(chromium(), Some(KnownBrowser::Firefox))),
+        None
+    );
+}
+
+#[test]
+fn an_unverified_parent_is_taken_from_the_caller() {
+    let chromium = Caller::Chromium {
+        origin: "chrome-extension://x/".into(),
+    };
+    assert_eq!(
+        connection_browser(&hello(chromium, None)),
+        Some(KnownBrowser::Chrome)
+    );
+}
 
 #[tokio::test]
 async fn disconnect_withdraws_pairing_prompt() {

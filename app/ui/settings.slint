@@ -86,8 +86,10 @@ export component SettingsWindow inherits Window {
     // The muted line under the master switch: "Off", "On" or why it cannot start.
     in property <string> browser-state;
     in property <bool> chrome-installed;
+    in property <bool> edge-installed;
     in property <bool> firefox-installed;
     in-out property <bool> browser-chrome;
+    in-out property <bool> browser-edge;
     in-out property <bool> browser-firefox;
     in-out property <bool> browser-biometric;
     in-out property <bool> browser-save-prompts;
@@ -122,6 +124,7 @@ export component SettingsWindow inherits Window {
     callback site-icons-toggled(bool);
     callback browser-integration-toggled(bool);
     callback browser-chrome-toggled(bool);
+    callback browser-edge-toggled(bool);
     callback browser-firefox-toggled(bool);
     callback browser-biometric-toggled(bool);
     callback browser-save-prompts-toggled(bool);
@@ -422,6 +425,12 @@ export component SettingsWindow inherits Window {
                     enabled: root.browser-integration;
                     checked <=> root.browser-chrome;
                     toggled(v) => { root.browser-chrome-toggled(v); }
+                }
+                if root.edge-installed: Toggle {
+                    text: "Install for Microsoft Edge";
+                    enabled: root.browser-integration;
+                    checked <=> root.browser-edge;
+                    toggled(v) => { root.browser-edge-toggled(v); }
                 }
                 if root.firefox-installed: Toggle {
                     text: "Install for Firefox";

@@ -46,7 +46,9 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
   - Firefox idle-port survival with a normally installed add-on, Firefox key persistence across a restart,
     and whether Firefox's `runtime.id` equals the id the host receives are unverified (section 14).
   - Duplicate save candidates sent while locked each take one of the three queue slots.
-  - Brave, Edge and Chromium are out of version 1 (signatures not checked).
+  - Edge is supported (added 2026-11-16: own Settings switch, `KnownBrowser::Edge`, macOS requirement
+    `com.microsoft.edgemac`/`UBF8T346G9` and Windows signer "Microsoft Corporation"); its macOS signature and a real
+    Edge run are unverified. Brave and Chromium stay out of version 1 (signatures not checked).
 - Passkeys (added 2026-11-12, after this plan): a MAIN-world page script (`browsers/src/passkey/page.ts`,
   `document_start`) wraps `navigator.credentials.create/get` and relays through `passkey-relay.js` to the
   background, which takes the origin from the sender and sends `passkey_create` / `passkey_get` /
@@ -984,7 +986,8 @@ branded Chrome refuses `--load-extension`; `experiments/browser-spike/chrome-spi
 | Signature, Chrome | Identifier `com.google.Chrome`, team `EQHXZ8M8AV`, hardened runtime plus library validation. Chrome's own designated requirement also accepts `com.google.Chrome.beta`, `.dev` and `.canary`. |
 | Signature, Firefox | Identifier `org.mozilla.firefox`, team `43AQ936H96`, hardened runtime. |
 | Requirement strings against live processes | `codesign --verify -R='identifier "<id>" and anchor apple generic and certificate leaf[subject.OU] = "<team>"' <pid>` (a plain pid; `+pid` does not work): satisfied by the running Chrome and Firefox main processes; fails for a wrong team id, for the other browser's requirement, and for a Chrome helper. This is the same check the host will do with `SecCodeCopyGuestWithAttributes`. |
-| Brave, Edge, Chromium | Not installed here, signatures **not verified**. Excluded from version 1 (section 7.3). |
+| Edge | Supported from 2026-11-16; Edge not installed here, so `com.microsoft.edgemac` / `UBF8T346G9` is **not verified**. |
+| Brave, Chromium | Not installed here, signatures **not verified**. Excluded from version 1 (section 7.3). |
 | Native port keeps the background alive, Chrome | Measured: a host started after a reload stayed connected with no traffic for 510+ s (past the old 5-minute limit), so an open port keeps the worker alive. If the host dies the port closes and the worker stops, so `onDisconnect` must be handled (it is, section 10.3). Note: reloading the extension closes the port, and the host sees stdin close (it exited at +45 s, as expected). |
 | Native port keeps the background alive, Firefox | Measured: an idle port (no messages, no heartbeat) stayed open for 705 s until the browser was killed, so the 30 s event-page timer did not drop it. **Caveat:** web-ext holds a remote-debugging connection, and an attached debugger can keep an event page alive. Repeat in Phase 7 with a normally installed add-on; if the port drops, add a host heartbeat (a `{"event":"ping"}` every 20 s while connected). MDN's pages contradict each other on this ("a background page does not unload until all … message ports are closed" versus "message ports cannot prevent an event page from shutting down"). |
 | Firefox MV3 background | `background.scripts` with `"type": "module"` works (loaded and ran). `background.service_worker` is **not supported** in Firefox, so two manifests are right. Browser-compat data: module background scripts need Firefox 112+, Chrome 92+. Use `strict_min_version` `128.0`. |

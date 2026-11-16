@@ -30,18 +30,34 @@ pub fn identify(caller: &HostCaller) -> ParentInfo {
 }
 
 #[cfg(target_os = "macos")]
+const CHROMIUM_REQUIREMENTS: [(KnownBrowser, &str); 2] = [
+    (
+        KnownBrowser::Chrome,
+        "identifier \"com.google.Chrome\" and anchor apple generic and certificate leaf[subject.OU] = \"EQHXZ8M8AV\"",
+    ),
+    // From Microsoft's published team id; not yet checked against an installed Edge.
+    (
+        KnownBrowser::Edge,
+        "identifier \"com.microsoft.edgemac\" and anchor apple generic and certificate leaf[subject.OU] = \"UBF8T346G9\"",
+    ),
+];
+
+#[cfg(target_os = "macos")]
+const FIREFOX_REQUIREMENT: (KnownBrowser, &str) = (
+    KnownBrowser::Firefox,
+    "identifier \"org.mozilla.firefox\" and anchor apple generic and certificate leaf[subject.OU] = \"43AQ936H96\"",
+);
+
+#[cfg(target_os = "macos")]
 fn identify_browser(pid: i32, caller: &HostCaller) -> Option<KnownBrowser> {
-    let (browser, requirement) = match caller {
-        HostCaller::Chromium { .. } => (
-            KnownBrowser::Chrome,
-            "identifier \"com.google.Chrome\" and anchor apple generic and certificate leaf[subject.OU] = \"EQHXZ8M8AV\"",
-        ),
-        HostCaller::Firefox { .. } => (
-            KnownBrowser::Firefox,
-            "identifier \"org.mozilla.firefox\" and anchor apple generic and certificate leaf[subject.OU] = \"43AQ936H96\"",
-        ),
+    let candidates: &[(KnownBrowser, &str)] = match caller {
+        HostCaller::Chromium { .. } => &CHROMIUM_REQUIREMENTS,
+        HostCaller::Firefox { .. } => std::slice::from_ref(&FIREFOX_REQUIREMENT),
     };
-    vk_ipc::check_pid(pid, requirement).ok().map(|()| browser)
+    candidates
+        .iter()
+        .find(|(_, requirement)| vk_ipc::check_pid(pid, requirement).is_ok())
+        .map(|&(browser, _)| browser)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

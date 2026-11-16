@@ -41,7 +41,7 @@ spike's window was dropped). See the "Step 0 result" section of
 - Auto-type of username and password into the previous app (key presses, no clipboard)
 - SSH agent for the vault's SSH keys, with approval prompts and optional Touch ID
 - Read-only [CLI access](#cli-access) for individual logins you choose to share
-- Chrome and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
+- Chrome, Edge and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
 - Touch ID unlock (key wrapped to the Secure Enclave)
 - Multiple accounts
 - Offline mode from an encrypted local cache
@@ -65,7 +65,7 @@ spike's window was dropped). See the "Step 0 result" section of
    "Apple could not verify…". Open it once, then choose **Open Anyway** in System Settings → Privacy & Security, or run
    `xattr -dr com.apple.quarantine /Applications/Vaultkeeper.app`. From version 0.1.7 on, only the first install
    needs this: later versions install from the tray or automatically (see "Updates" in [docs/USAGE.md](docs/USAGE.md)).
-3. For the browser extension, install Vaultkeeper from the Chrome Web Store or
+3. For the browser extension, install Vaultkeeper from the Chrome Web Store (Chrome and Edge) or
    [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/) and turn on browser integration in the
    app's settings.
 

@@ -187,6 +187,7 @@ pub struct Settings {
     pub browser_integration: bool,
     /// Per-browser install switches; they only matter while `browser_integration` is on.
     pub browser_chrome: bool,
+    pub browser_edge: bool,
     pub browser_firefox: bool,
     pub browser_touch_id: bool,
     pub browser_save_prompts: bool,
@@ -231,6 +232,7 @@ impl Default for Settings {
             ssh_touch_id: false,
             browser_integration: false,
             browser_chrome: true,
+            browser_edge: true,
             browser_firefox: true,
             browser_touch_id: false,
             browser_save_prompts: true,
@@ -600,6 +602,7 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
         assert!(!old.browser_integration);
         assert!(old.browser_chrome);
+        assert!(old.browser_edge);
         assert!(old.browser_firefox);
         assert!(!old.browser_touch_id);
         assert!(old.browser_save_prompts);
@@ -610,6 +613,7 @@ mod tests {
         let settings = Settings {
             browser_integration: true,
             browser_chrome: false,
+            browser_edge: false,
             browser_firefox: false,
             browser_default_match: BrowserMatch::Host,
             ..old
@@ -763,6 +767,7 @@ mod tests {
             ssh_touch_id: true,
             browser_integration: true,
             browser_chrome: false,
+            browser_edge: true,
             browser_firefox: false,
             browser_touch_id: true,
             browser_save_prompts: false,

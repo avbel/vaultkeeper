@@ -1,6 +1,6 @@
 # Privacy policy
 
-Applies to the Vaultkeeper desktop app and the Vaultkeeper browser extension for Chrome and Firefox. Last updated
+Applies to the Vaultkeeper desktop app and the Vaultkeeper browser extension for Chrome, Edge and Firefox. Last updated
 2026-11-13.
 
 ## Summary

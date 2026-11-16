@@ -195,7 +195,7 @@ The agent listens on the named pipe `\\.\pipe\openssh-ssh-agent`, which is where
 
 ## Browsers
 
-Chrome and Firefox can fill logins from Vaultkeeper and offer to save new or changed passwords. The
+Chrome, Edge and Firefox can fill logins from Vaultkeeper and offer to save new or changed passwords. The
 browser extension is a thin client: it holds no password, key or copy of the vault. Matching, every
 decision and every prompt are in Vaultkeeper's own windows.
 
@@ -203,7 +203,8 @@ decision and every prompt are in Vaultkeeper's own windows.
    you use. This writes the native messaging connection file for each installed browser
    (`~/Library/Application Support/<browser>/NativeMessagingHosts/org.vaultkeeper.browser.json`).
    Integration starts only with the signed app build; otherwise the state line says why.
-2. Install the extension (see `browsers/README.md`) and open its popup. The first connection opens a
+2. Install the extension (see `browsers/README.md`; Edge installs it from the Chrome Web Store after you
+   allow extensions from other stores) and open its popup. The first connection opens a
    *Connect <browser>?* window with a code. Check that it matches the code in the extension popup,
    then click *Connect*. *Deny* is the default; Return does not approve.
 3. **Fill:** click the Vaultkeeper icon in a login field, press ⌘⇧L, or use the popup's *Fill this

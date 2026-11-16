@@ -893,6 +893,7 @@ impl Daemon {
 const fn browser_settings_changed(previous: &Settings, current: &Settings) -> bool {
     previous.browser_integration != current.browser_integration
         || previous.browser_chrome != current.browser_chrome
+        || previous.browser_edge != current.browser_edge
         || previous.browser_firefox != current.browser_firefox
 }
 

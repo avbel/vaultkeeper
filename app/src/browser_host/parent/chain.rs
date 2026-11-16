@@ -39,10 +39,11 @@ fn older_parent(
     find(child.parent_pid).filter(|parent| parent.created <= child.created)
 }
 
-const CHROMIUM_SIGNERS: [&str; 3] = [
-    "Google LLC",
-    "Microsoft Corporation",
-    "Brave Software, Inc.",
+const CHROMIUM_SIGNERS: [(&str, KnownBrowser); 3] = [
+    ("Google LLC", KnownBrowser::Chrome),
+    ("Microsoft Corporation", KnownBrowser::Edge),
+    // No Brave manifest is installed, so this only matters if one is added by hand.
+    ("Brave Software, Inc.", KnownBrowser::Chrome),
 ];
 const FIREFOX_SIGNER: &str = "Mozilla Corporation";
 
@@ -51,8 +52,9 @@ const FIREFOX_SIGNER: &str = "Mozilla Corporation";
 pub fn browser_for_signer(signer: &str, caller: &HostCaller) -> Option<KnownBrowser> {
     match caller {
         HostCaller::Chromium { .. } => CHROMIUM_SIGNERS
-            .contains(&signer)
-            .then_some(KnownBrowser::Chrome),
+            .iter()
+            .find(|(name, _)| *name == signer)
+            .map(|&(_, browser)| browser),
         HostCaller::Firefox { .. } => (signer == FIREFOX_SIGNER).then_some(KnownBrowser::Firefox),
     }
 }
@@ -132,15 +134,12 @@ mod tests {
         let firefox = HostCaller::Firefox {
             extension_id: "x@y".into(),
         };
-        for signer in [
-            "Google LLC",
-            "Microsoft Corporation",
-            "Brave Software, Inc.",
+        for (signer, browser) in [
+            ("Google LLC", KnownBrowser::Chrome),
+            ("Microsoft Corporation", KnownBrowser::Edge),
+            ("Brave Software, Inc.", KnownBrowser::Chrome),
         ] {
-            assert_eq!(
-                browser_for_signer(signer, &chromium),
-                Some(KnownBrowser::Chrome)
-            );
+            assert_eq!(browser_for_signer(signer, &chromium), Some(browser));
             assert_eq!(browser_for_signer(signer, &firefox), None);
         }
         assert_eq!(

@@ -109,6 +109,7 @@ fn enabled_browsers(settings: &Settings) -> Vec<ManifestBrowser> {
     }
     [
         (settings.browser_chrome, ManifestBrowser::Chrome),
+        (settings.browser_edge, ManifestBrowser::Edge),
         (settings.browser_firefox, ManifestBrowser::Firefox),
     ]
     .into_iter()
@@ -546,6 +547,7 @@ impl BrowserHost for DaemonBrowser {
         let settings = self.0.settings();
         let toggled = match browser {
             KnownBrowser::Chrome => settings.browser_chrome,
+            KnownBrowser::Edge => settings.browser_edge,
             KnownBrowser::Firefox => settings.browser_firefox,
         };
         settings.browser_integration && toggled && !self.0.quitting.load(Ordering::SeqCst)

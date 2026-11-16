@@ -494,7 +494,11 @@ impl Default for LogBrowserPairings {
 
 impl BrowserPairings for LogBrowserPairings {
     fn installed(&self) -> Vec<ManifestBrowser> {
-        vec![ManifestBrowser::Chrome, ManifestBrowser::Firefox]
+        vec![
+            ManifestBrowser::Chrome,
+            ManifestBrowser::Edge,
+            ManifestBrowser::Firefox,
+        ]
     }
 
     fn paired(&self) -> Vec<PairingEntry> {
