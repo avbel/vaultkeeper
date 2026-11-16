@@ -3,7 +3,7 @@
 //!
 //! The NCrypt call sequence mirrors `crates/platform/examples/hello_check.rs` (the step 4a spike)
 //! exactly: open the provider, open or create `<SID>//Vaultkeeper//Vaultkeeper`, export the public
-//! key, wrap a fresh 32-byte key-encryption key with RSA-OAEP-SHA256, and seal the user key with
+//! key, wrap a fresh 32-byte key-encryption key with RSA PKCS#1 v1.5, and seal the user key with
 //! AES-256-GCM into a version 2 envelope (see `super::envelope`). Unlock unwraps the KEK with one
 //! `NCryptDecrypt` that Windows Hello gates behind a gesture, then opens the envelope.
 //!
@@ -25,14 +25,13 @@ use windows_sys::{
     Win32::{
         Foundation::{NTE_BAD_KEYSET, NTE_BAD_LEN, NTE_NO_KEY},
         Security::Cryptography::{
-            BCRYPT_OAEP_PADDING_INFO, BCRYPT_RSA_ALGORITHM, BCRYPT_RSAPUBLIC_BLOB,
-            BCRYPT_SHA256_ALGORITHM, MS_NGC_KEY_STORAGE_PROVIDER, NCRYPT_ALLOW_DECRYPT_FLAG,
-            NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY, NCRYPT_LENGTH_PROPERTY,
-            NCRYPT_PAD_OAEP_FLAG, NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY,
-            NCRYPT_PROV_HANDLE, NCRYPT_USE_CONTEXT_PROPERTY, NCRYPT_WINDOW_HANDLE_PROPERTY,
-            NCryptCreatePersistedKey, NCryptDecrypt, NCryptEncrypt, NCryptExportKey,
-            NCryptFinalizeKey, NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider,
-            NCryptSetProperty,
+            BCRYPT_RSA_ALGORITHM, BCRYPT_RSAPUBLIC_BLOB, MS_NGC_KEY_STORAGE_PROVIDER,
+            NCRYPT_ALLOW_DECRYPT_FLAG, NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY,
+            NCRYPT_LENGTH_PROPERTY, NCRYPT_PAD_PKCS1_FLAG,
+            NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY, NCRYPT_PROV_HANDLE,
+            NCRYPT_USE_CONTEXT_PROPERTY, NCRYPT_WINDOW_HANDLE_PROPERTY, NCryptCreatePersistedKey,
+            NCryptDecrypt, NCryptEncrypt, NCryptExportKey, NCryptFinalizeKey, NCryptFreeObject,
+            NCryptOpenKey, NCryptOpenStorageProvider, NCryptSetProperty,
         },
         UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION},
     },
@@ -155,7 +154,7 @@ pub(super) fn enroll(path: &Path, user_key: &[u8], parent_window: Option<u64>) -
     })?;
 
     let header = V2Header {
-        primitive: Primitive::PassportRsaOaep,
+        primitive: Primitive::PassportRsaPkcs1,
         key_name: &name,
         public_key: &public,
         user_sid: &sid,
@@ -173,7 +172,7 @@ pub(super) fn unlock(
 ) -> Result<Zeroizing<Vec<u8>>> {
     let bytes = std::fs::read(path)?;
     let envelope = V2Envelope::parse(&bytes)?;
-    if envelope.primitive != Primitive::PassportRsaOaep {
+    if envelope.primitive != Primitive::PassportRsaPkcs1 {
         return Err(Error::BiometricInvalidated);
     }
     // An envelope copied from another account can never be opened by this user, so it is a
@@ -322,44 +321,44 @@ fn export_public(key: &Handle) -> NcResult<Vec<u8>> {
     Ok(blob)
 }
 
-/// RSA-OAEP-SHA256 wraps the KEK with the key's public half, so it needs no gesture.
+/// RSA PKCS#1 v1.5 wraps the KEK with the key's public half, so it needs no gesture.
+///
+/// PKCS#1 v1.5 rather than OAEP because the Passport KSP rejects OAEP with NTE_INVALID_PARAMETER
+/// (measured on hardware). A Bleichenbacher padding oracle is not practical here: every decrypt
+/// needs a Hello gesture, and the unwrapped KEK is authenticated by the envelope's AES-GCM tag, so
+/// a wrong KEK fails to open the envelope.
 #[expect(clippy::cast_possible_truncation)]
 fn wrap_kek(key: &Handle, kek: &[u8]) -> NcResult<Vec<u8>> {
-    let info = BCRYPT_OAEP_PADDING_INFO {
-        pszAlgId: BCRYPT_SHA256_ALGORITHM,
-        pbLabel: null_mut(),
-        cbLabel: 0,
-    };
     let mut len = 0_u32;
-    // SAFETY: a null output buffer with size 0 asks for the required length only; `info` outlives
-    // the call.
+    // SAFETY: a null output buffer with size 0 asks for the required length only; PKCS#1 padding
+    // takes no padding info, so null is valid.
     let status = unsafe {
         NCryptEncrypt(
             key.raw(),
             kek.as_ptr(),
             kek.len() as u32,
-            (&raw const info).cast(),
+            null(),
             null_mut(),
             0,
             &raw mut len,
-            NCRYPT_PAD_OAEP_FLAG,
+            NCRYPT_PAD_PKCS1_FLAG,
         )
     };
     if status != 0 {
         return Err(status);
     }
     let mut out = vec![0_u8; usize::try_from(len).expect("u32 fits in usize on 64-bit")];
-    // SAFETY: `out` is `len` bytes long; `info` outlives the call.
+    // SAFETY: `out` is `len` bytes long; PKCS#1 padding takes no padding info.
     let status = unsafe {
         NCryptEncrypt(
             key.raw(),
             kek.as_ptr(),
             kek.len() as u32,
-            (&raw const info).cast(),
+            null(),
             out.as_mut_ptr(),
             len,
             &raw mut len,
-            NCRYPT_PAD_OAEP_FLAG,
+            NCRYPT_PAD_PKCS1_FLAG,
         )
     };
     if status != 0 {
@@ -424,29 +423,24 @@ fn parent_prompt(key: &Handle, parent_window: Option<u64>) {
     }
 }
 
-/// One `NCryptDecrypt` of the wrapped KEK. A successful decrypt must yield exactly 32 bytes.
+/// One `NCryptDecrypt` of the wrapped KEK (PKCS#1 v1.5, see `wrap_kek`). A successful decrypt must yield exactly 32 bytes.
 #[expect(clippy::cast_possible_truncation)]
 fn decrypt_once(key: &Handle, wrapped: &[u8]) -> NcResult<Zeroizing<[u8; KEK_LEN]>> {
-    let info = BCRYPT_OAEP_PADDING_INFO {
-        pszAlgId: BCRYPT_SHA256_ALGORITHM,
-        pbLabel: null_mut(),
-        cbLabel: 0,
-    };
     // RSA providers can demand a modulus-sized buffer even when the plaintext is shorter.
     let mut out = Zeroizing::new(vec![0_u8; wrapped.len().max(KEK_LEN)]);
     let mut written = 0_u32;
-    // SAFETY: `wrapped` is a live slice, `out` is as long as the length passed and `info`
-    // outlives the call.
+    // SAFETY: `wrapped` is a live slice and `out` is as long as the length passed; PKCS#1 padding
+    // takes no padding info.
     let status = unsafe {
         NCryptDecrypt(
             key.raw(),
             wrapped.as_ptr(),
             wrapped.len() as u32,
-            (&raw const info).cast(),
+            null(),
             out.as_mut_ptr(),
             out.len() as u32,
             &raw mut written,
-            NCRYPT_PAD_OAEP_FLAG,
+            NCRYPT_PAD_PKCS1_FLAG,
         )
     };
     if status != 0 {

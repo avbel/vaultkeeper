@@ -39,7 +39,7 @@
 //! | ciphertext + tag     | rest (>=16)   |
 //!
 //! The user key is encrypted under a random 32-byte key-encryption key; the backend wraps that
-//! KEK for its hardware (RSA-OAEP in the Passport KSP). Version 1 keeps using the Secure Enclave
+//! KEK for its hardware (RSA PKCS#1 v1.5 in the Passport KSP). Version 1 keeps using the Secure Enclave
 //! ECDH wrapping key and is the only version macOS writes.
 
 use aes_gcm::{
@@ -322,22 +322,23 @@ pub(super) mod v2 {
     pub(crate) enum Primitive {
         /// Secure Enclave P-256 ECDH (macOS today, still written as v1).
         SecureEnclaveEcdh,
-        /// Passport KSP RSA-OAEP-wrapped KEK (Windows).
-        PassportRsaOaep,
+        /// Passport KSP RSA PKCS#1 v1.5-wrapped KEK (Windows). Id 2 was RSA-OAEP, which the KSP
+        /// rejects; it never wrote a file and is retired, so it parses as unsupported.
+        PassportRsaPkcs1,
     }
 
     impl Primitive {
         const fn id(self) -> u8 {
             match self {
                 Self::SecureEnclaveEcdh => 1,
-                Self::PassportRsaOaep => 2,
+                Self::PassportRsaPkcs1 => 5,
             }
         }
 
         fn from_id(id: u8) -> Result<Self, EnvelopeError> {
             match id {
                 1 => Ok(Self::SecureEnclaveEcdh),
-                2 => Ok(Self::PassportRsaOaep),
+                5 => Ok(Self::PassportRsaPkcs1),
                 // Reserved for a KeyCredential signature PRF and RequestDeriveSharedSecretAsync.
                 3 | 4 => Err(EnvelopeError::ReservedPrimitive(id)),
                 other => Err(EnvelopeError::UnsupportedPrimitive(other)),
@@ -769,7 +770,7 @@ mod tests {
 
     fn v2_header() -> v2::V2Header<'static> {
         v2::V2Header {
-            primitive: v2::Primitive::PassportRsaOaep,
+            primitive: v2::Primitive::PassportRsaPkcs1,
             key_name: V2_KEY_NAME,
             public_key: V2_PUBLIC_KEY,
             user_sid: V2_USER_SID,
@@ -799,10 +800,10 @@ mod tests {
         let bytes = sealed_v2();
         assert_eq!(&bytes[..4], b"BWLT");
         assert_eq!(bytes[4], 2);
-        assert_eq!(bytes[5], 2);
+        assert_eq!(bytes[5], 5);
 
         let envelope = v2::V2Envelope::parse(&bytes).expect("parse v2");
-        assert_eq!(envelope.primitive, v2::Primitive::PassportRsaOaep);
+        assert_eq!(envelope.primitive, v2::Primitive::PassportRsaPkcs1);
         assert_eq!(envelope.key_name, V2_KEY_NAME);
         assert_eq!(envelope.public_key, V2_PUBLIC_KEY);
         assert_eq!(envelope.user_sid, V2_USER_SID);
@@ -846,7 +847,7 @@ mod tests {
     #[test]
     fn v2_reserved_and_unknown_primitives_need_re_enrolment() {
         let sealed = sealed_v2();
-        for id in [1, 2] {
+        for id in [1, 5] {
             let mut bytes = sealed.clone();
             bytes[5] = id;
             assert!(v2::V2Envelope::parse(&bytes).is_ok(), "id {id}");
@@ -859,7 +860,7 @@ mod tests {
                 EnvelopeError::ReservedPrimitive(id)
             );
         }
-        for id in [0, 5, 255] {
+        for id in [0, 2, 6, 255] {
             let mut bytes = sealed.clone();
             bytes[5] = id;
             assert_eq!(

@@ -29,7 +29,7 @@ console so its window can be passed as `NCRYPT_WINDOW_HANDLE_PROPERTY`.
 - [ ] On the Snapdragon laptop: run the native ARM64 `hello_check.exe`; face and fingerprint drivers differ from x64 PCs, so
       report the statuses of every enrolled method (face, fingerprint, PIN) separately.
 - [ ] `hello_check.exe`: print the key name that worked (`<SID>//Vaultkeeper//Vaultkeeper` or the variant it fell
-      back to), whether RSA-OAEP-SHA256 or PKCS#1 v1.5 was accepted, and every HRESULT/NTSTATUS. Expect no error.
+      back to), whether RSA-OAEP-SHA256 or PKCS#1 v1.5 was accepted (the app uses PKCS#1 v1.5; OAEP is expected to fail), and every HRESULT/NTSTATUS. Expect no error.
 - [ ] `hello_check.exe --strict`: same output with `harden_process(Role::Daemon)` applied first. The credential
       broker must still appear; Task Manager must still be able to show the process.
 - [ ] App enrolment: "Set up Windows Hello" prompts once, then matrix enrolment works with face, fingerprint and PIN.

@@ -105,8 +105,10 @@ Code that is macOS-only today, found with `grep -rln 'target_os = "macos"'`: 26 
   KeePassWinHello's is `<SID>//KeePassWinHello//KeePassWinHello` [v: from its issue thread], ours would be
   `<SID>//Vaultkeeper//Vaultkeeper` [i: exact format]. Creating it (`NCryptCreatePersistedKey` + `NCryptFinalizeKey`) prompts once per
   machine [i].
-- **Enrol, no prompt.** `NCryptExportKey(BCRYPT_RSAPUBLIC_BLOB)`, then RSA-OAEP-SHA256 (`NCRYPT_PAD_OAEP_FLAG`) of a fresh random 32-byte
-  key-encryption key, then AES-256-GCM of the user key under that key. If the KSP refuses OAEP, fall back to PKCS#1 v1.5 padding [i].
+- **Enrol, no prompt.** `NCryptExportKey(BCRYPT_RSAPUBLIC_BLOB)`, then RSA PKCS#1 v1.5 (`NCRYPT_PAD_PKCS1_FLAG`) of a fresh random 32-byte
+  key-encryption key, then AES-256-GCM of the user key under that key. The Passport KSP rejects OAEP with `NTE_INVALID_PARAMETER`
+  [v: measured on a Windows 11 x64 laptop; KeePassWinHello and Keyguard also use PKCS#1 v1.5]. A padding oracle is not practical:
+  every decrypt needs a Hello gesture, and the unwrapped KEK is checked by the envelope's AES-GCM tag.
   Re-enrolling after a user-key rotation, or for a second account, needs no prompt, as on macOS. With the signature trick
   Bitwarden has to keep the derived key in DPAPI memory to avoid a second prompt [v].
 - **Unlock, one prompt.** `NCryptDecrypt` on the wrapped key, with `NCRYPT_WINDOW_HANDLE_PROPERTY` (parent window, §3.3),
@@ -117,8 +119,8 @@ Code that is macOS-only today, found with `grep -rln 'target_os = "macos"'`: 26 
   macOS invariant "locking zeroizes the user key"; every unlock is one decrypt, with no Bitwarden-style key held while locked.
 - **Envelope.** Mirror `biometric/envelope.rs`, version 2:
   `magic ‖ version ‖ primitive_id ‖ key name ‖ public key blob ‖ user SID ‖ wrapped KEK ‖ nonce ‖ ciphertext+tag`, length-prefixed, the
-  whole header as AES-GCM associated data. Primitive ids: 1 = Secure Enclave P-256 ECDH (macOS), 2 = Passport RSA-OAEP KEK, 3 = reserved
-  for the KeyCredential signature PRF, 4 = reserved for `RequestDeriveSharedSecretAsync`. Store the public key so unlock can tell a
+  whole header as AES-GCM associated data. Primitive ids: 1 = Secure Enclave P-256 ECDH (macOS), 2 = retired (RSA-OAEP, never written), 3 = reserved
+  for the KeyCredential signature PRF, 4 = reserved for `RequestDeriveSharedSecretAsync`, 5 = Passport RSA PKCS#1 v1.5 KEK. Store the public key so unlock can tell a
   recreated key (a PIN reset deletes the container) and report `BiometricInvalidated`, not a decrypt error. Switching primitive
   later is a new id; the old one is rejected as "enrol again".
 - **Errors** keep the invariant from `biometric.rs`: only definitive outcomes are `BiometricInvalidated`, because the app deletes
@@ -498,7 +500,7 @@ open-source program (theirs or the project's) [i]; it decides what SmartScreen r
 
 Risks to check on real machines (a Hello spike first, like step 0b of the architecture plan):
 
-1. Passport KSP: the key name format, OAEP support, the one-time prompt at creation, a window owned by another process as
+1. Passport KSP: the key name format, the one-time prompt at creation, a window owned by another process as
    `NCRYPT_WINDOW_HANDLE_PROPERTY`, the gesture-required property, face unlock without `0x80098044` after the foreground hand-off.
 2. Hello after a PIN reset, after removing Hello, over RDP, and in a VM without a TPM.
 3. `MicrosoftSignedOnly` in the daemon against antivirus hooks; `ProhibitDynamicCode` and `ExtensionPointDisable` in the UI with

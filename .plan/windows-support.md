@@ -438,7 +438,7 @@ gate: lifted by the user (no Windows PC available): 4c–4f are built from the r
 
 ## 4b Envelope v2 with primitive ids (portable)
 files: crates/platform/src/biometric/envelope.rs
-do: Version 2 envelope: `magic ‖ version ‖ primitive_id ‖ key name ‖ public key blob ‖ user SID ‖ wrapped KEK ‖ nonce ‖ ciphertext+tag`, length-prefixed, the whole header as AES-GCM associated data (§3.2). Primitive ids: 1 = Secure Enclave P-256 ECDH, 2 = Passport RSA-OAEP KEK, 3 and 4 reserved and rejected. Version 1 files (macOS today) still open unchanged; new macOS enrolments keep writing v1 so macOS behaviour does not change. Unknown or reserved ids → "enrol again".
+do: Version 2 envelope: `magic ‖ version ‖ primitive_id ‖ key name ‖ public key blob ‖ user SID ‖ wrapped KEK ‖ nonce ‖ ciphertext+tag`, length-prefixed, the whole header as AES-GCM associated data (§3.2). Primitive ids: 1 = Secure Enclave P-256 ECDH, 2 = retired (RSA-OAEP, the KSP rejects it; never written), 3 and 4 reserved and rejected, 5 = Passport RSA PKCS#1 v1.5 KEK. Version 1 files (macOS today) still open unchanged; new macOS enrolments keep writing v1 so macOS behaviour does not change. Unknown or reserved ids → "enrol again".
 done-when: `cargo test -p vk-platform envelope`; `cargo clippy -p vk-platform --all-targets -- -D warnings`; tests cover v1 compatibility, v2 round trip, header tampering, reserved ids
 needs: 0b
 difficulty: medium
@@ -446,7 +446,7 @@ kind: change
 
 ## 4c Passport KSP backend
 files: crates/platform/src/biometric.rs, crates/platform/src/biometric/passport.rs
-do: Windows biometric backend implementing the same enrol/unlock surface as Secure Enclave: enrol without a prompt (export public key, OAEP-wrap a fresh 32-byte KEK, AES-256-GCM the user key, v2 envelope id 2); unlock with one NCryptDecrypt using the parameters proven by the 4a spike. Error mapping keeps the biometric.rs invariant (§3.2): `BiometricInvalidated` only for NTE_BAD_KEYSET/NTE_NO_KEY from NCryptOpenKey after NCryptOpenStorageProvider succeeded (a provider that fails to open, e.g. NGC service down or RDP, is `BiometricFailed`), a stored public key that differs from the KSP's, or a GCM failure after a successful unwrap; everything else, including cancel, lockout, TPM busy, 0x80098044 after its retry and unknown codes, is `BiometricFailed`. Availability probe: the KSP opens and the session is not remote (GetSystemMetrics(SM_REMOTESESSION)).
+do: Windows biometric backend implementing the same enrol/unlock surface as Secure Enclave: enrol without a prompt (export public key, PKCS#1 v1.5-wrap a fresh 32-byte KEK, AES-256-GCM the user key, v2 envelope id 5); unlock with one NCryptDecrypt using the parameters proven by the 4a spike. Error mapping keeps the biometric.rs invariant (§3.2): `BiometricInvalidated` only for NTE_BAD_KEYSET/NTE_NO_KEY from NCryptOpenKey after NCryptOpenStorageProvider succeeded (a provider that fails to open, e.g. NGC service down or RDP, is `BiometricFailed`), a stored public key that differs from the KSP's, or a GCM failure after a successful unwrap; everything else, including cancel, lockout, TPM busy, 0x80098044 after its retry and unknown codes, is `BiometricFailed`. Availability probe: the KSP opens and the session is not remote (GetSystemMetrics(SM_REMOTESESSION)).
 done-when: `scripts/check-windows.sh -p vk-platform --all-targets`; `cargo test -p vk-platform biometric`
 unverified: no hardware run yet; mirror the NCrypt calls in crates/platform/examples/hello_check.rs exactly
 needs: 4a, 4b
