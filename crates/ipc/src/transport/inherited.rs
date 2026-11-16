@@ -6,7 +6,9 @@ use std::{
     io,
     mem::size_of,
     os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle},
+    pin::pin,
     ptr,
+    task::{Context, Poll, Waker},
 };
 
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
@@ -75,14 +77,19 @@ impl UiPipe {
     /// Closes the daemon's copy of the client end; call it once the child has been created, since
     /// the child holds its own by then.
     pub fn close_client(&mut self) {
-        drop(self.client.take());
+        drop(self.take_client());
+    }
+
+    /// The daemon's copy of the client end, for a caller that drives it itself.
+    pub fn take_client(&mut self) -> Option<OwnedHandle> {
+        self.client.take()
     }
 
     /// The server end, to serve as the UI connection.
     #[must_use]
     pub fn into_stream(self) -> Stream {
-        // The client was open before the first read: a pipe instance whose client is already
-        // connected is in the connected state without `ConnectNamedPipe`.
+        // `try_create` already ran the connect that makes mio schedule its first read, which it
+        // skipped at registration because no client was there yet.
         Stream::server(self.server)
     }
 }
@@ -116,10 +123,28 @@ fn try_create(name: &str, sddl: &str) -> io::Result<Option<UiPipe>> {
     if client_pid != std::process::id() {
         return Ok(None);
     }
+    complete_connect(&server)?;
     Ok(Some(UiPipe {
         server,
         client: Some(client),
     }))
+}
+
+/// The server was registered with mio before its client existed, so mio's first read failed with
+/// `ERROR_PIPE_LISTENING` and nothing schedules another: only `connect` re-arms it. For a client
+/// that is already connected `ConnectNamedPipe` reports `ERROR_PIPE_CONNECTED`, which completes
+/// at once, so a single poll is enough and anything else is a broken pipe.
+fn complete_connect(server: &NamedPipeServer) -> io::Result<()> {
+    let mut connect = pin!(server.connect());
+    match connect
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(result) => result,
+        Poll::Pending => Err(io::Error::other(
+            "the UI pipe did not report its client as connected",
+        )),
+    }
 }
 
 fn open_inheritable_client(name: &str) -> io::Result<OwnedHandle> {

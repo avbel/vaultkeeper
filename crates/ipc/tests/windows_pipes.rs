@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use std::os::windows::io::IntoRawHandle as _;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::windows::named_pipe::ServerOptions,
@@ -163,4 +164,32 @@ async fn the_ui_pipe_serves_its_server_end_to_the_adopted_client() {
     // the daemon-side pid check already ran inside `create`.
     pipe.close_client();
     drop(pipe.into_stream());
+}
+
+#[tokio::test]
+async fn the_ui_pipe_carries_bytes_both_ways_once_adopted() {
+    let mut pipe = vk_ipc::transport::UiPipe::create().expect("create");
+    let handle = pipe.take_client().expect("client handle");
+    // SAFETY: the handle is the overlapped client end `create` opened; ownership moves to tokio.
+    let mut client = unsafe {
+        tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(handle.into_raw_handle())
+    }
+    .expect("register the client");
+    let mut server = pipe.into_stream();
+
+    client.write_all(b"ping").await.expect("client write");
+    let mut received = [0_u8; 4];
+    tokio::time::timeout(STEP_TIMEOUT, server.read_exact(&mut received))
+        .await
+        .expect("the server end never saw the client's bytes")
+        .expect("server read");
+    assert_eq!(&received, b"ping");
+
+    server.write_all(b"pong").await.expect("server write");
+    let mut received = [0_u8; 4];
+    tokio::time::timeout(STEP_TIMEOUT, client.read_exact(&mut received))
+        .await
+        .expect("the client never saw the server's bytes")
+        .expect("client read");
+    assert_eq!(&received, b"pong");
 }
