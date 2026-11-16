@@ -26,8 +26,11 @@ pub use windows::{
 #[cfg(not(windows))]
 pub const fn allow_foreground(_pid: u32) {}
 
+/// macOS activates shown windows itself.
 #[cfg(not(windows))]
-pub const fn bring_to_front(_window: &slint::Window) {}
+pub const fn bring_to_front(_window: &slint::Window) -> bool {
+    true
+}
 
 #[cfg(not(windows))]
 pub const fn exclude_from_capture(_window: &slint::Window) {}
@@ -116,14 +119,18 @@ mod windows {
     }
 
     /// A shown window does not take the foreground by itself when the user was in another app.
-    pub fn bring_to_front(window: &slint::Window) {
+    /// `false` when it has no native window yet or Windows refused, so the caller can retry.
+    pub fn bring_to_front(window: &slint::Window) -> bool {
         let Some(hwnd) = window_handle(window).and_then(|hwnd| usize::try_from(hwnd).ok()) else {
-            return;
+            tracing::debug!("no native window to bring to the front yet");
+            return false;
         };
         // SAFETY: the handle belongs to this process's live window; a stale one only fails.
         if unsafe { SetForegroundWindow(ptr::with_exposed_provenance_mut::<c_void>(hwnd)) } == 0 {
             tracing::debug!("SetForegroundWindow refused");
+            return false;
         }
+        true
     }
 
     /// Whether windows shown from now on are excluded from capture; mirrors the setting.

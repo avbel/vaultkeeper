@@ -39,6 +39,24 @@ fn opening_generates_and_option_changes_regenerate() {
     assert_eq!(state.get_result().chars().count(), 32);
 }
 
+#[test]
+fn every_opening_shows_a_new_value() {
+    let (h, window) = open_generator();
+    let first = window.global::<GeneratorState>().get_result().to_string();
+    window.invoke_close_generator();
+    pump();
+    h.app.open_generator_window();
+    let reopened = h.app.generator_window().expect("generator");
+    let second = reopened.global::<GeneratorState>().get_result().to_string();
+    assert_ne!(second, first);
+    h.app.open_generator_window();
+    let third = reopened.global::<GeneratorState>().get_result().to_string();
+    assert_ne!(
+        third, second,
+        "showing the open window again regenerates too"
+    );
+}
+
 fn find_slider(
     window: &vaultkeeper::ui::GeneratorWindow,
 ) -> i_slint_backend_testing::ElementHandle {

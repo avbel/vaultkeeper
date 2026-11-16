@@ -5,7 +5,7 @@
 use std::{
     cell::{Cell, RefCell},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use slint::{ModelRc, SharedString, VecModel, language::ColorScheme};
@@ -40,12 +40,37 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.on_quit(on(TrayAction::Quit));
     let switch = Arc::clone(daemon);
     tray.on_switch_account(move |index| run(&switch, TrayAction::SwitchAccount(index)));
+    let clicks = DoubleClick::default();
+    let open = Arc::clone(daemon);
+    tray.on_icon_clicked(move || {
+        if clicks.click(Instant::now(), taskbar::double_click_time()) {
+            run(&open, TrayAction::OpenVault);
+        }
+    });
     refresh(&tray, daemon);
     tray.show()?;
     follow_menu_bar(&tray, daemon);
     follow_taskbar(&tray);
     watch(&tray, daemon)?;
     Ok(tray)
+}
+
+/// Pairs single clicks into double-clicks. A completed pair is consumed, so a third quick click
+/// starts a new pair instead of opening the vault twice.
+#[derive(Default)]
+struct DoubleClick {
+    pending: Cell<Option<Instant>>,
+}
+
+impl DoubleClick {
+    fn click(&self, now: Instant, window: Duration) -> bool {
+        let paired = self
+            .pending
+            .get()
+            .is_some_and(|first| now.saturating_duration_since(first) <= window);
+        self.pending.set(if paired { None } else { Some(now) });
+        paired
+    }
 }
 
 fn run(daemon: &Arc<Daemon>, action: TrayAction) {
@@ -230,4 +255,37 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WINDOW: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn two_quick_clicks_make_a_double_click() {
+        let clicks = DoubleClick::default();
+        let start = Instant::now();
+        assert!(!clicks.click(start, WINDOW));
+        assert!(clicks.click(start + Duration::from_millis(200), WINDOW));
+    }
+
+    #[test]
+    fn slow_clicks_stay_single() {
+        let clicks = DoubleClick::default();
+        let start = Instant::now();
+        assert!(!clicks.click(start, WINDOW));
+        assert!(!clicks.click(start + Duration::from_millis(600), WINDOW));
+        assert!(clicks.click(start + Duration::from_millis(700), WINDOW));
+    }
+
+    #[test]
+    fn a_third_quick_click_starts_a_new_pair() {
+        let clicks = DoubleClick::default();
+        let start = Instant::now();
+        assert!(!clicks.click(start, WINDOW));
+        assert!(clicks.click(start + Duration::from_millis(100), WINDOW));
+        assert!(!clicks.click(start + Duration::from_millis(200), WINDOW));
+    }
 }

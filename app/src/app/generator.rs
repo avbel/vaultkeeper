@@ -236,6 +236,7 @@ impl<S: VaultService> App<S> {
             .map(ComponentHandle::clone_strong);
         if let Some(window) = existing {
             show(&window, "generator");
+            self.regenerate();
             return;
         }
         let window = match GeneratorWindow::new() {
@@ -257,11 +258,21 @@ impl<S: VaultService> App<S> {
             }
         ));
         show(&window, "generator");
+        self.centre(&window);
         #[cfg(target_os = "macos")]
         hide_generator_window_buttons(&window);
         *self.generator_window.borrow_mut() = Some(window);
-        if self.generator.borrow().current().is_empty() {
-            self.regenerate();
+        self.regenerate();
+    }
+
+    /// The window's size is only laid out once it is shown, so it is moved right after.
+    fn centre(&self, window: &GeneratorWindow) {
+        let size = window
+            .window()
+            .size()
+            .to_logical(window.window().scale_factor());
+        if let Some(origin) = self.hooks.placement.centred_origin(size.width, size.height) {
+            window.window().set_position(origin);
         }
     }
     fn close_generator_window(&self) {

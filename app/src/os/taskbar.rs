@@ -61,7 +61,16 @@ const fn is_dark_colorref(color: u32) -> bool {
 }
 
 #[cfg(windows)]
-pub use windows::{ThemeWatch, icon_pixel_size, taskbar_dark, watch_taskbar_theme};
+pub use windows::{
+    ThemeWatch, double_click_time, icon_pixel_size, taskbar_dark, watch_taskbar_theme,
+};
+
+/// The longest gap between two clicks that still counts as a double-click; Windows' default.
+#[cfg(not(windows))]
+#[must_use]
+pub const fn double_click_time() -> std::time::Duration {
+    std::time::Duration::from_millis(500)
+}
 
 /// Stands in for the registry watcher, which only exists on Windows.
 #[cfg(not(windows))]
@@ -114,6 +123,7 @@ mod windows {
             },
             UI::{
                 HiDpi::{GetDpiForMonitor, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI},
+                Input::KeyboardAndMouse::GetDoubleClickTime,
                 WindowsAndMessaging::{SM_CXSMICON, SPI_GETHIGHCONTRAST, SystemParametersInfoW},
             },
         },
@@ -183,6 +193,13 @@ mod windows {
         }
         // SAFETY: takes an index constant and has no memory effects.
         Some(is_dark_colorref(unsafe { GetSysColor(COLOR_WINDOW) }))
+    }
+
+    /// The user's setting from the Mouse control panel.
+    #[must_use]
+    pub fn double_click_time() -> std::time::Duration {
+        // SAFETY: no arguments; reads a per-user system setting.
+        std::time::Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }))
     }
 
     /// Slint does not tell which DPI the notification area uses, so this is the primary monitor's,

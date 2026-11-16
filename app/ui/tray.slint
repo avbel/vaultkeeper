@@ -38,15 +38,20 @@ export component TrayIcon inherits SystemTrayIcon {
     callback switch-account(int);
     callback update();
     callback quit();
+    // Slint's Windows tray fires `clicked` on every left-button release and has no double-click
+    // event, so the daemon pairs the clicks itself. AppKit never fires it while the menu is set.
+    callback icon-clicked();
+    clicked => { root.icon-clicked(); }
 
     Menu {
-        MenuItem {
-            title: "Quick search";
-            activated => { root.quick-search(); }
-        }
+        // First, as the action a double-click on the icon runs.
         MenuItem {
             title: "Open vault";
             activated => { root.open-vault(); }
+        }
+        MenuItem {
+            title: "Quick search";
+            activated => { root.quick-search(); }
         }
         MenuItem {
             title: "Generator";

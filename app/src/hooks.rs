@@ -135,6 +135,12 @@ pub trait SshKeyTool: Send + Sync {
 /// with its top at 22% of the screen height. `None` leaves placement to the OS.
 pub trait WindowPlacement: Send + Sync {
     fn quick_panel_origin(&self, width: f32, height: f32) -> Option<slint::LogicalPosition>;
+    /// A window centred on the cursor's screen. AppKit already centres new windows; Windows
+    /// cascades them from the top-left, so only it needs this.
+    fn centred_origin(&self, width: f32, height: f32) -> Option<slint::LogicalPosition> {
+        let _ = (width, height);
+        None
+    }
 }
 
 pub trait Clock: Send + Sync {

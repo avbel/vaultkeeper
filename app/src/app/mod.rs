@@ -615,13 +615,44 @@ fn retire<T: 'static>(handle: T) {
     slint::Timer::single_shot(Duration::ZERO, move || drop(handle));
 }
 
-fn show<C: ComponentHandle>(component: &C, what: &str) {
+/// A window shown for the first time may get its native window only on a later event-loop turn;
+/// until then neither the foreground nor the capture exclusion can be applied, so the first
+/// Quick Panel took no keystrokes on Windows.
+const FRONT_RETRY: Duration = Duration::from_millis(30);
+const FRONT_ATTEMPTS: u32 = 10;
+
+fn show<C: ComponentHandle + 'static>(component: &C, what: &str) {
     if let Err(error) = component.show() {
         tracing::error!(%error, what, "cannot show window");
         return;
     }
     crate::os::ui_window::exclude_from_capture(component.window());
-    crate::os::ui_window::bring_to_front(component.window());
+    if !crate::os::ui_window::bring_to_front(component.window()) {
+        retry_bring_to_front(component.as_weak(), what.to_owned(), FRONT_ATTEMPTS);
+    }
+}
+
+fn retry_bring_to_front<C: ComponentHandle + 'static>(
+    weak: slint::Weak<C>,
+    what: String,
+    attempts: u32,
+) {
+    slint::Timer::single_shot(FRONT_RETRY, move || {
+        let Some(component) = weak.upgrade() else {
+            return;
+        };
+        if !component.window().is_visible() {
+            return;
+        }
+        crate::os::ui_window::exclude_from_capture(component.window());
+        if crate::os::ui_window::bring_to_front(component.window()) {
+            tracing::info!(what, attempts, "window brought to the front on a retry");
+        } else if attempts > 1 {
+            retry_bring_to_front(weak, what, attempts - 1);
+        } else {
+            tracing::warn!(what, "cannot bring the window to the front");
+        }
+    });
 }
 
 fn hide<C: ComponentHandle>(component: &C) {
