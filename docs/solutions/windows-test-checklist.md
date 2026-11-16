@@ -23,7 +23,8 @@ table) into the pull request. Two groups change a default, so their result must 
 
 ## 1. Windows Hello (risks 1, 2, 9)
 
-Use `hello_check.exe` from the CI artifact of your architecture (`vaultkeeper-windows-arm64` on Snapdragon, see windows-testing-guide.md); run it from a
+Build `hello_check.exe` natively for your architecture (`cargo build --release -p vk-platform --example hello_check`; the CI
+artifact does not include it); run it from a
 console so its window can be passed as `NCRYPT_WINDOW_HANDLE_PROPERTY`.
 
 - [ ] On the Snapdragon laptop: run the native ARM64 `hello_check.exe`; face and fingerprint drivers differ from x64 PCs, so

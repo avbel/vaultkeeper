@@ -18,8 +18,9 @@ Nothing needs to be installed: GitHub's Windows runner builds everything.
 5. If Windows blocks a file as "downloaded from the internet": right-click it → Properties → tick **Unblock**, or run
    `Get-ChildItem | Unblock-File`. SmartScreen may warn because test builds are unsigned: "More info" → "Run anyway".
 
-The zip contains `vaultkeeper.exe`, `hello_check.exe`, `measure-windows.ps1`, this guide and the checklist. Download
-a fresh zip whenever I say a new stage is ready.
+The zip contains only `vaultkeeper.exe`, the installer and `BUILD.txt`. The test tools are not shipped in it: build
+`hello_check.exe` with `cargo build --release -p vk-platform --example hello_check` and take `measure-windows.ps1` from
+`scripts/` in a checkout. Download a fresh zip whenever I say a new stage is ready.
 
 ## 2. What to send back
 

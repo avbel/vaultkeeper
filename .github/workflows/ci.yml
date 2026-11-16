@@ -154,9 +154,6 @@ jobs:
       - name: Build vaultkeeper
         run: cargo build --release --locked -p vaultkeeper
 
-      - name: Build hello_check example
-        run: cargo build --release --locked -p vk-platform --example hello_check
-
       # Compiles the installer script on every push; no secrets are involved, so choco is fine here
       # (the release workflow keeps package managers out of its signing job).
       - name: Build installer
@@ -179,11 +176,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path out/vaultkeeper-windows-${{ matrix.arch }} | Out-Null
           Copy-Item `
             target/release/vaultkeeper.exe, `
-            target/release/examples/hello_check.exe, `
-            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe, `
-            scripts/measure-windows.ps1, `
-            docs/solutions/windows-testing-guide.md, `
-            docs/solutions/windows-test-checklist.md `
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe `
             out/vaultkeeper-windows-${{ matrix.arch }}/
           @"
           commit: ${{ github.sha }}
