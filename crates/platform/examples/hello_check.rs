@@ -33,6 +33,11 @@ mod imp {
     use std::ptr::{null, null_mut};
     use std::time::Instant;
 
+    use windows::{
+        Security::Credentials::UI::{UserConsentVerifier, UserConsentVerifierAvailability},
+        Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+    };
+    use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Security::Cryptography::{
         BCRYPT_OAEP_PADDING_INFO, BCRYPT_RSA_ALGORITHM, BCRYPT_RSAKEY_BLOB, BCRYPT_RSAPUBLIC_BLOB,
         BCRYPT_SHA256_ALGORITHM, MS_NGC_KEY_STORAGE_PROVIDER, NCRYPT_ALLOW_DECRYPT_FLAG,
@@ -43,7 +48,11 @@ mod imp {
         NCryptDecrypt, NCryptDeleteKey, NCryptEncrypt, NCryptExportKey, NCryptFinalizeKey,
         NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider, NCryptSetProperty,
     };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
     use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     use zeroize::Zeroizing;
 
@@ -85,6 +94,71 @@ mod imp {
 
     fn hex(status: i32) -> String {
         format!("{:#010x}", status as u32)
+    }
+
+    const NOT_SET_UP_HINT: &str = "hint: Windows Hello isn't set up for this user (Settings > Accounts > Sign-in options > PIN). In a VM, Hello may need a virtual TPM.";
+
+    fn availability_name(availability: UserConsentVerifierAvailability) -> String {
+        match availability {
+            UserConsentVerifierAvailability::Available => "Available".to_owned(),
+            UserConsentVerifierAvailability::DeviceNotPresent => "DeviceNotPresent".to_owned(),
+            UserConsentVerifierAvailability::NotConfiguredForUser => {
+                "NotConfiguredForUser".to_owned()
+            }
+            UserConsentVerifierAvailability::DisabledByPolicy => "DisabledByPolicy".to_owned(),
+            UserConsentVerifierAvailability::DeviceBusy => "DeviceBusy".to_owned(),
+            other => format!("unknown ({})", other.0),
+        }
+    }
+
+    fn print_availability() {
+        // A fresh thread: WinRT needs the multithreaded apartment.
+        let name = std::thread::spawn(|| {
+            // SAFETY: balanced by the `RoUninitialize` below; the thread is private to this call.
+            if let Err(error) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+                return format!("RoInitialize failed: {error}");
+            }
+            let result = UserConsentVerifier::CheckAvailabilityAsync()
+                .and_then(|operation| operation.join());
+            // SAFETY: pairs with the successful `RoInitialize`, after every WinRT object is dropped.
+            unsafe { RoUninitialize() };
+            match result {
+                Ok(availability) => availability_name(availability),
+                Err(error) => format!("check failed: {error}"),
+            }
+        })
+        .join()
+        .unwrap_or_else(|_| "check panicked".to_owned());
+        println!("UserConsentVerifier availability: {name}");
+    }
+
+    fn print_elevation() {
+        let mut token = null_mut();
+        // SAFETY: the pseudo handle needs no cleanup and the out-param points at a live local.
+        let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) };
+        if opened == 0 {
+            println!("elevated: unknown (OpenProcessToken failed)");
+            return;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut len = 0_u32;
+        // SAFETY: the token is open, the buffer is a live `TOKEN_ELEVATION` of the size passed.
+        let queried = unsafe {
+            GetTokenInformation(
+                token,
+                TokenElevation,
+                (&raw mut elevation).cast::<c_void>(),
+                size_of::<TOKEN_ELEVATION>() as u32,
+                &raw mut len,
+            )
+        };
+        // SAFETY: the token handle was opened above and is closed exactly once.
+        unsafe { CloseHandle(token) };
+        if queried == 0 {
+            println!("elevated: unknown (GetTokenInformation failed)");
+        } else {
+            println!("elevated: {}", elevation.TokenIsElevated != 0);
+        }
     }
 
     fn wide(text: &str) -> Vec<u16> {
@@ -463,6 +537,8 @@ mod imp {
                 return ExitCode::FAILURE;
             }
         };
+        print_availability();
+        print_elevation();
         println!("key name: {name}");
         let wide_name = wide(&name);
 
@@ -495,6 +571,9 @@ mod imp {
                 ExitCode::SUCCESS
             }
             Err(status) => {
+                if status == NTE_BAD_KEYSET {
+                    println!("{NOT_SET_UP_HINT}");
+                }
                 println!("RESULT: failed, last status {}", hex(status));
                 ExitCode::FAILURE
             }

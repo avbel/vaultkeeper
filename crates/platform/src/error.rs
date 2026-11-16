@@ -11,6 +11,10 @@ pub enum Error {
     /// Enrolled fingerprints changed; the user must unlock with the master password and re-enroll.
     #[error("biometric key is no longer valid")]
     BiometricInvalidated,
+    /// The user has no usable biometric or Windows Hello PIN yet; enrolling cannot work until they
+    /// set one up in the system settings.
+    #[error("biometric authentication is not set up for this user")]
+    BiometricNotSetUp,
     #[error("keychain error: {0}")]
     Keychain(String),
     #[error("clipboard error: {0}")]

@@ -316,6 +316,9 @@ pub enum TouchIdFailure {
     /// The UI asked for an account that is no longer the active one.
     #[error("the active account changed")]
     AccountChanged,
+    /// The system biometric has no gesture set up for this user (Windows Hello without a PIN).
+    #[error("biometric authentication is not set up")]
+    NotSetUp,
     #[error("{0}")]
     Failed(String),
 }

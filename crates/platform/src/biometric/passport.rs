@@ -20,6 +20,7 @@ use std::{
 
 use rand::{TryRng, rngs::SysRng};
 use vk_win::current_user_sid;
+use windows::Security::Credentials::UI::UserConsentVerifierAvailability;
 use windows_sys::{
     Win32::{
         Foundation::{NTE_BAD_KEYSET, NTE_BAD_LEN, NTE_NO_KEY},
@@ -39,6 +40,7 @@ use windows_sys::{
 };
 use zeroize::Zeroizing;
 
+use super::consent;
 use super::envelope::v2::{self, Primitive, V2Envelope, V2Header};
 use crate::{Error, Result};
 
@@ -72,14 +74,44 @@ impl Drop for Handle {
     }
 }
 
-/// True when the Passport KSP is reachable and the session is a local console, not RDP.
+/// True when the Passport KSP is reachable, the session is a local console (not RDP) and the user
+/// has Windows Hello set up. Not cached: the answer changes the moment the user adds a PIN, and the
+/// check is a single quick WinRT call.
 pub(super) fn is_available() -> bool {
     // SAFETY: `GetSystemMetrics` takes no pointers; a non-zero answer for `SM_REMOTESESSION`
     // means the session is remote and Windows Hello gestures are unavailable.
     if unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0 {
         return false;
     }
-    open_provider().is_ok()
+    if open_provider().is_err() {
+        return false;
+    }
+    consent::availability().is_some_and(hello_usable)
+}
+
+fn hello_usable(availability: UserConsentVerifierAvailability) -> bool {
+    availability == UserConsentVerifierAvailability::Available
+}
+
+/// Hello that is certainly not set up for the user; transient states (policy, busy device) are
+/// left to the key creation to report.
+fn not_set_up(availability: UserConsentVerifierAvailability) -> bool {
+    matches!(
+        availability,
+        UserConsentVerifierAvailability::NotConfiguredForUser
+            | UserConsentVerifierAvailability::DeviceNotPresent
+    )
+}
+
+/// `NTE_BAD_KEYSET` on key creation means the user has no Hello container yet.
+fn creation_failure(status: i32) -> Error {
+    if status == NTE_BAD_KEYSET {
+        return Error::BiometricNotSetUp;
+    }
+    Error::Io(std::io::Error::other(format!(
+        "Windows Hello key creation failed: {}",
+        hex(status)
+    )))
 }
 
 /// Creates or reuses the Passport key and writes a v2 envelope sealing `user_key` to it.
@@ -89,16 +121,18 @@ pub(super) fn enroll(path: &Path, user_key: &[u8], parent_window: Option<u64>) -
     let name = key_name(&sid);
     let wide_name = wide(&name);
 
+    if consent::availability().is_some_and(not_set_up) {
+        return Err(Error::BiometricNotSetUp);
+    }
+
     let provider = open_provider().map_err(|status| {
         tracing::warn!(status = %hex(status), "Passport KSP unavailable during enrolment");
         Error::Unsupported
     })?;
 
     let key = open_or_create(&provider, &wide_name, parent_window).map_err(|status| {
-        Error::Io(std::io::Error::other(format!(
-            "Windows Hello key creation failed: {}",
-            hex(status)
-        )))
+        tracing::warn!(status = %hex(status), "Windows Hello key creation failed");
+        creation_failure(status)
     })?;
 
     let public = export_public(&key).map_err(|status| {
@@ -475,6 +509,44 @@ mod tests {
     fn hex_shows_hrresults_unsigned() {
         assert_eq!(hex(NTE_BAD_KEYSET), "0x80090016");
         assert_eq!(hex(0), "0x00000000");
+    }
+
+    #[test]
+    fn only_a_configured_hello_is_available() {
+        assert!(hello_usable(UserConsentVerifierAvailability::Available));
+        for other in [
+            UserConsentVerifierAvailability::DeviceNotPresent,
+            UserConsentVerifierAvailability::NotConfiguredForUser,
+            UserConsentVerifierAvailability::DisabledByPolicy,
+            UserConsentVerifierAvailability::DeviceBusy,
+        ] {
+            assert!(!hello_usable(other));
+        }
+    }
+
+    #[test]
+    fn missing_or_unconfigured_hello_is_reported_as_not_set_up() {
+        assert!(not_set_up(
+            UserConsentVerifierAvailability::NotConfiguredForUser
+        ));
+        assert!(not_set_up(
+            UserConsentVerifierAvailability::DeviceNotPresent
+        ));
+        assert!(!not_set_up(UserConsentVerifierAvailability::Available));
+        assert!(!not_set_up(
+            UserConsentVerifierAvailability::DisabledByPolicy
+        ));
+        assert!(!not_set_up(UserConsentVerifierAvailability::DeviceBusy));
+    }
+
+    #[test]
+    fn a_bad_keyset_on_creation_means_hello_is_not_set_up() {
+        assert!(matches!(
+            creation_failure(NTE_BAD_KEYSET),
+            Error::BiometricNotSetUp
+        ));
+        assert!(matches!(creation_failure(NTE_FOREGROUND), Error::Io(_)));
+        assert!(matches!(creation_failure(-1), Error::Io(_)));
     }
 
     #[test]

@@ -4,7 +4,9 @@
 use std::{ffi::c_void, ptr, thread};
 
 use windows::{
-    Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier},
+    Security::Credentials::UI::{
+        UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+    },
     Win32::{
         Foundation::HWND,
         System::WinRT::{
@@ -76,4 +78,33 @@ fn request(hwnd: usize, reason: &str) -> windows::core::Result<UserConsentVerifi
     let operation: IAsyncOperation<UserConsentVerificationResult> =
         unsafe { interop.RequestVerificationForWindowAsync(window, &HSTRING::from(reason)) }?;
     operation.join()
+}
+
+/// Whether Windows Hello is set up for this user. `None` when the WinRT call itself fails.
+/// Runs on a fresh thread for the same apartment reason as [`authenticate`].
+pub(super) fn availability() -> Option<UserConsentVerifierAvailability> {
+    let worker = thread::Builder::new()
+        .name("hello-availability".to_owned())
+        .spawn(check_availability)
+        .inspect_err(
+            |error| tracing::warn!(%error, "cannot start the Windows Hello availability check"),
+        )
+        .ok()?;
+    worker.join().ok().flatten()
+}
+
+fn check_availability() -> Option<UserConsentVerifierAvailability> {
+    // SAFETY: balanced by the `RoUninitialize` below on every path that gets this far; the thread
+    // is private to this call.
+    if let Err(error) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+        tracing::warn!(%error, "RoInitialize failed");
+        return None;
+    }
+    let result =
+        UserConsentVerifier::CheckAvailabilityAsync().and_then(|operation| operation.join());
+    // SAFETY: pairs with the successful `RoInitialize` above, after every WinRT object is dropped.
+    unsafe { RoUninitialize() };
+    result
+        .inspect_err(|error| tracing::warn!(%error, "Windows Hello availability check failed"))
+        .ok()
 }

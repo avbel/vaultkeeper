@@ -27,6 +27,12 @@ pub const INVALIDATED: &str = if cfg!(windows) {
     "fingerprints changed since enrolment · unlock with your master password and enrol again"
 };
 
+pub const NOT_SET_UP: &str = if cfg!(windows) {
+    "Windows Hello isn't set up. Open Settings > Accounts > Sign-in options, set up a PIN (Windows Hello), then try again."
+} else {
+    "Touch ID isn't set up. Add a fingerprint in System Settings, then try again."
+};
+
 /// What the daemon shows in the system prompt; the UI cannot choose the text.
 const UNLOCK_REASON: &str = "unlock your vault";
 
@@ -60,6 +66,7 @@ fn failure(error: PlatformError) -> TouchIdFailure {
         PlatformError::Unsupported => TouchIdFailure::Unavailable,
         PlatformError::BiometricFailed => TouchIdFailure::Cancelled,
         PlatformError::BiometricInvalidated => TouchIdFailure::Invalidated,
+        PlatformError::BiometricNotSetUp => TouchIdFailure::NotSetUp,
         other => TouchIdFailure::Failed(other.to_string()),
     }
 }
@@ -161,6 +168,7 @@ fn hook_error(failure: TouchIdFailure) -> HookError {
         TouchIdFailure::Unavailable => HookError::Unavailable(LABEL),
         TouchIdFailure::Cancelled => HookError::Cancelled,
         TouchIdFailure::Invalidated => HookError::Failed(INVALIDATED.to_owned()),
+        TouchIdFailure::NotSetUp => HookError::Failed(NOT_SET_UP.to_owned()),
         other => HookError::Failed(other.to_string()),
     }
 }
@@ -283,6 +291,19 @@ mod tests {
             failure(PlatformError::BiometricInvalidated),
             TouchIdFailure::Invalidated
         );
+        assert_eq!(
+            failure(PlatformError::BiometricNotSetUp),
+            TouchIdFailure::NotSetUp
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_not_set_up_text_tells_the_user_what_to_do() {
+        assert_eq!(
+            NOT_SET_UP,
+            "Windows Hello isn't set up. Open Settings > Accounts > Sign-in options, set up a PIN (Windows Hello), then try again."
+        );
     }
 
     #[test]
@@ -297,6 +318,9 @@ mod tests {
         ));
         assert!(
             matches!(hook_error(TouchIdFailure::Invalidated), HookError::Failed(text) if text == INVALIDATED)
+        );
+        assert!(
+            matches!(hook_error(TouchIdFailure::NotSetUp), HookError::Failed(text) if text == NOT_SET_UP)
         );
         assert!(
             matches!(
