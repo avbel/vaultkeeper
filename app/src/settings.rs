@@ -19,9 +19,10 @@ pub enum ThemeChoice {
 /// and `Black` are the monochrome glyphs; `Blue` is the brand colour, independent of the bar.
 /// The wire names stay the old `system`/`light`/`dark` so a file written by this build still
 /// loads in a released one; the new names are accepted as aliases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayIconChoice {
+    #[default]
     #[serde(rename = "system", alias = "auto")]
     Auto,
     #[serde(rename = "light", alias = "white")]
@@ -29,17 +30,6 @@ pub enum TrayIconChoice {
     #[serde(rename = "dark", alias = "black")]
     Black,
     Blue,
-}
-
-impl Default for TrayIconChoice {
-    #[cfg(windows)]
-    fn default() -> Self {
-        Self::Blue
-    }
-    #[cfg(not(windows))]
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl TrayIconChoice {
@@ -184,6 +174,9 @@ pub struct Settings {
     pub start_at_login: bool,
     pub ask_unlock_on_start: bool,
     pub require_master_password_on_start: bool,
+    /// Off for a new install; a file written before this default changed and lacking the field
+    /// keeps the agent on, as it was then.
+    #[serde(default = "legacy_ssh_agent")]
     pub ssh_agent: bool,
     pub cli_access: bool,
     /// Check GitHub daily and install a verified update once the vault is locked; off makes no
@@ -296,6 +289,10 @@ impl Default for GeneratorPrefs {
 }
 
 /// A damaged `generator` entry falls back to the defaults instead of failing the whole file.
+const fn legacy_ssh_agent() -> bool {
+    true
+}
+
 fn lenient_generator<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<GeneratorPrefs, D::Error> {
@@ -555,6 +552,17 @@ mod tests {
         assert!(!settings.require_master_password_on_start);
         assert!(!settings.ssh_agent);
         assert!(settings.auto_update);
+    }
+
+    #[test]
+    fn the_ssh_agent_is_off_for_new_installs_and_on_for_files_that_predate_the_default() {
+        assert!(!Settings::default().ssh_agent);
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
+        assert!(old.ssh_agent);
+        let off: Settings = serde_json::from_str(r#"{"ssh_agent":false}"#).expect("explicit off");
+        assert!(!off.ssh_agent);
+        let json = serde_json::to_string(&Settings::default()).expect("serialize");
+        assert!(json.contains(r#""ssh_agent":false"#), "{json}");
     }
 
     #[test]
@@ -860,6 +868,13 @@ mod tests {
             let settings: Settings = serde_json::from_str(json).expect(json);
             assert_eq!(settings.tray_icon, expected, "{json}");
         }
+    }
+
+    #[test]
+    fn the_tray_icon_is_auto_unless_a_file_says_otherwise() {
+        assert_eq!(Settings::default().tray_icon, TrayIconChoice::Auto);
+        let blue: Settings = serde_json::from_str(r#"{"tray_icon":"blue"}"#).expect("blue");
+        assert_eq!(blue.tray_icon, TrayIconChoice::Blue);
     }
 
     #[test]

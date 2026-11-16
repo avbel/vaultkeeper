@@ -196,6 +196,7 @@ impl<S: VaultService> App<S> {
         window.on_tray_icon_selected(handler!(self, |app, index| {
             if let Some(choice) = TrayIconChoice::from_index(index) {
                 app.update_settings(|settings| settings.tray_icon = choice);
+                app.refresh_tray_icon();
             }
         }));
         window.on_scale_selected(handler!(self, |app, index| {

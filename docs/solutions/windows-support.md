@@ -56,7 +56,7 @@ Before the first Windows release:
 | ARM64 easy to add? | Yes. `aarch64-pc-windows-msvc` has been Tier 1 since Rust 1.91 [v], GitHub's `windows-11-arm` runners are GA for public repos [v], and the only crate in the tree that compiles C is `aws-lc-sys`, which needs clang-cl on ARM64 [v]. An x64 build also runs on ARM64 under emulation [i]. The cost is a second CI job, a second installer and a Hello test on real Snapdragon hardware: about 2–4 days (§9). |
 | Is 24H2 a good floor? | Yes. Only the detached console policy needs it, and that policy lets one binary serve both the GUI and the CLI (§7.11) [v]. The recommended Hello design uses Windows 10-era APIs. Home/Pro 24H2 servicing ended 2026-10-14; Enterprise/Education 24H2 runs to 2027-10-13 [v]. |
 | Can it ship self-signed like the macOS build? | No. Smart App Control blocks unsigned and self-signed apps when its cloud check is unsure, and users can now turn it on without reinstalling [v]. SignPath Foundation signs open-source projects for free [v] (§8). |
-| Tray icon | Default Blue, with Auto, White and Black as options (§7.1). |
+| Tray icon | Default Auto (follows the taskbar theme), with White, Black and Blue as options (§7.1). |
 
 ## 1. What changes compared with the README roadmap
 

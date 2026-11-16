@@ -81,8 +81,8 @@ impl SshAgent {
     ///
     /// On Unix, `socket_path` is a socket file: a missing parent directory is created with mode
     /// 0700, a stale socket is replaced, a live socket yields [`AgentError::AlreadyRunning`] and
-    /// any other file type [`AgentError::NotASocket`]. On Windows the OpenSSH clients connect to a
-    /// fixed pipe name, so `socket_path` is only recorded for display.
+    /// any other file type [`AgentError::NotASocket`]. On Windows `socket_path` is the pipe name;
+    /// OpenSSH clients connect to `\\.\pipe\openssh-ssh-agent`.
     pub fn start(socket_path: PathBuf, approvals: mpsc::Sender<ApprovalRequest>) -> Result<Self> {
         Self::start_with_approval_timeout(socket_path, approvals, APPROVAL_TIMEOUT)
     }
@@ -103,7 +103,7 @@ impl SshAgent {
         #[cfg(unix)]
         agent.start_at(socket_path.clone())?;
         #[cfg(windows)]
-        agent.start()?;
+        agent.start_on(&socket_path.to_string_lossy())?;
         Ok(Self { socket_path, agent })
     }
 

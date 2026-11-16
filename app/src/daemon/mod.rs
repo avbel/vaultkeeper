@@ -14,7 +14,7 @@ pub mod secrets;
 mod site_icons;
 pub mod ssh;
 pub mod target;
-mod tray;
+pub(crate) mod tray;
 pub mod tray_sync;
 pub mod update;
 

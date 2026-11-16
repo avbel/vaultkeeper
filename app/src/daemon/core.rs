@@ -22,6 +22,7 @@ use tokio::{
     sync::{Notify, mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
+use vk_ipc::transport::Endpoint;
 use vk_ipc::{
     ClipboardHost, DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind,
     SshDecision, SshPrompt, TouchIdBackend, TypingTarget, UiCommand, UiNotice,
@@ -241,10 +242,8 @@ impl Daemon {
             None
         };
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
-        let ssh_socket = layout::socket_path(&layout::ssh_endpoint(&data_dir))
-            .context("the SSH agent endpoint is not a socket file")?;
         let daemon = Arc::new(Self {
-            ssh: SshControl::new(ssh_socket, approvals),
+            ssh: SshControl::new(layout::ssh_endpoint(&data_dir), approvals),
             unlocked_once: AtomicBool::new(false),
             was_unlocked: AtomicBool::new(false),
             settings: watch::Sender::new(Arc::new(settings)),
@@ -395,8 +394,8 @@ impl Daemon {
     }
 
     #[must_use]
-    pub fn ssh_socket(&self) -> &Path {
-        self.ssh.socket()
+    pub const fn ssh_socket(&self) -> &Endpoint {
+        self.ssh.endpoint()
     }
 
     /// The app in front now, for auto-type from the Quick Panel; `None` when it is vaultkeeper

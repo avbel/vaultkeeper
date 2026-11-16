@@ -43,7 +43,7 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     refresh(&tray, daemon);
     tray.show()?;
     follow_menu_bar(&tray, daemon);
-    follow_taskbar(&tray, daemon);
+    follow_taskbar(&tray);
     watch(&tray, daemon)?;
     Ok(tray)
 }
@@ -109,7 +109,13 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
 /// so "White" is the scheme of a dark bar. `Blue` ignores the bar entirely. Windows has no
 /// template images, so there the glyph is rasterised for the taskbar's theme and pixel size.
 fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
-    let choice = daemon.settings().tray_icon;
+    apply_choice(tray, daemon.settings().tray_icon);
+}
+
+/// Also used by the `--mock` tray in the UI process, which has no `Daemon` to read the setting
+/// from.
+pub(crate) fn apply_choice(tray: &TrayIcon, choice: TrayIconChoice) {
+    CHOICE.set(choice);
     let dark = match choice {
         TrayIconChoice::Blue => None,
         TrayIconChoice::White => Some(true),
@@ -148,12 +154,10 @@ fn render_icon(tray: &TrayIcon, glyph: Glyph) {
 
 /// The taskbar theme changes on a registry watcher thread; the refresh itself runs on the event
 /// loop.
-fn follow_taskbar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
+pub(crate) fn follow_taskbar(tray: &TrayIcon) {
     let weak = tray.as_weak();
-    let daemon = Arc::clone(daemon);
     let watch = taskbar::watch_taskbar_theme(move || {
-        let daemon = Arc::clone(&daemon);
-        if let Err(error) = weak.upgrade_in_event_loop(move |tray| refresh_scheme(&tray, &daemon)) {
+        if let Err(error) = weak.upgrade_in_event_loop(|tray| apply_choice(&tray, CHOICE.get())) {
             tracing::debug!(%error, "tray gone before a taskbar theme change");
         }
     });
@@ -189,6 +193,8 @@ fn follow_menu_bar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
 }
 
 thread_local! {
+    /// The last applied setting, for the taskbar watcher, which has no settings to read.
+    static CHOICE: Cell<TrayIconChoice> = const { Cell::new(TrayIconChoice::Auto) };
     static RENDERED: Cell<Option<(Glyph, u32)>> = const { Cell::new(None) };
     static TASKBAR_WATCH: RefCell<Option<taskbar::ThemeWatch>> = const { RefCell::new(None) };
     static SCHEME_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
