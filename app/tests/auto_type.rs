@@ -292,12 +292,12 @@ fn a_panel_opened_inside_the_app_does_not_reuse_an_old_target() {
 }
 
 #[test]
-fn the_selected_rows_shortcut_hint_and_the_footer_legend_show() {
+fn only_the_footer_legend_shows_the_shortcut() {
     let h = harness(Setup::default());
     let panel = hotkey(&h);
     type_into(&panel, "Quick search", "tailscale");
     assert!(
-        exists(
+        !exists(
             &panel,
             if cfg!(windows) {
                 "Ctrl+Shift+Enter"
@@ -305,7 +305,7 @@ fn the_selected_rows_shortcut_hint_and_the_footer_legend_show() {
                 "⌘⇧↩"
             }
         ),
-        "the selected row's hint"
+        "a hint on the selected row overlaps its copy buttons"
     );
     assert!(exists(&panel, "auto-type"), "the footer legend");
 }
