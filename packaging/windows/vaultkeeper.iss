@@ -56,11 +56,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "--tray"
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 
 [Run]
-; No skipifsilent: a silent self-update must bring the tray back.
-Filename: "{app}\{#AppExe}"; Parameters: "--tray"; Description: "Start {#AppName}"; Flags: nowait postinstall runasoriginaluser
+Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; A silent self-update must bring the tray back without popping a window.
+Filename: "{app}\{#AppExe}"; Parameters: "--tray"; Flags: nowait postinstall runasoriginaluser; Check: WizardSilent
 
 [Code]
 function SendMessageTimeoutW(hWnd: LongWord; Msg: LongWord; wParam: LongInt; lParam: String;

@@ -142,6 +142,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     if let Some(effect) = routing::startup(
         launch,
         &vk_vault::VaultService::state(daemon.vault().as_ref()),
+        !vk_vault::VaultService::accounts(daemon.vault().as_ref()).is_empty(),
         daemon.settings().ask_unlock_on_start,
     ) {
         daemon.apply(effect);

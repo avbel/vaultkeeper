@@ -267,7 +267,7 @@ and remove the extension in the browser.
 
 Settings → Security → *Start at login*. This installs `~/Library/LaunchAgents/vaultkeeper.plist`, which
 starts `vaultkeeper --tray`, so only the menu bar icon shows. *Ask to unlock on start* opens the unlock
-window at launch.
+window at launch. With no account added yet, the sign-in window opens instead.
 - Enable it from the copy in `/Applications`, because the agent stores the path of the executable
   that enabled it.
 - To remove it: turn the setting off, or `rm ~/Library/LaunchAgents/vaultkeeper.plist`.
