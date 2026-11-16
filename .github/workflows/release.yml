@@ -286,10 +286,12 @@ jobs:
       - name: Locate signtool
         shell: pwsh
         run: |
-          $signtool = foreach ($a in 'x64', 'arm64') {
+          # A foreach statement cannot be piped, so its results are collected first.
+          $found = foreach ($a in 'x64', 'arm64') {
             Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\$a\signtool.exe" -ErrorAction SilentlyContinue |
               Sort-Object FullName -Descending | Select-Object -First 1
-          } | Select-Object -First 1
+          }
+          $signtool = $found | Select-Object -First 1
           if (-not $signtool) { throw 'signtool.exe not found on the runner image' }
           "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
 

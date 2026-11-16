@@ -54,7 +54,7 @@ serde.workspace = true
 serde_json.workspace = true
 # Software renderer only: the window process measured +28 MB resident after a window is dropped
 # with it, against +45 MB with femtovg (docs/solutions/vaultkeeper-architecture.md, step 0).
-slint = { workspace = true, default-features = false, features = [
+slint = { workspace = true, features = [
     "std",
     "accessibility",
     "backend-winit",
