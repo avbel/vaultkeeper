@@ -411,6 +411,23 @@ pub fn hotkey_display(accelerator: &str) -> String {
     }
 }
 
+/// Exactly Ctrl and Alt held, no Shift and no Win/Cmd: AltGr on layouts that have it.
+#[must_use]
+pub fn ctrl_alt_only(accelerator: &str) -> bool {
+    let parts: Vec<String> = accelerator
+        .split('+')
+        .map(|part| part.trim().to_lowercase())
+        .filter(|part| !part.is_empty())
+        .collect();
+    let Some((_, modifiers)) = parts.split_last() else {
+        return false;
+    };
+    let has = |names: &[&str]| modifiers.iter().any(|part| names.contains(&part.as_str()));
+    has(&["ctrl", "control", "cmdorctrl", "commandorcontrol"])
+        && has(&["alt", "option"])
+        && !has(&["shift", "cmd", "command", "super", "meta", "win"])
+}
+
 /// "Ctrl+Shift+Space": modifiers by name in Windows order (Ctrl, Alt, Shift, Win) joined with `+`.
 #[must_use]
 pub fn hotkey_names(accelerator: &str) -> String {
@@ -539,6 +556,19 @@ impl ThemeChoice {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_bare_ctrl_alt_pair_counts_as_altgr() {
+        use super::ctrl_alt_only;
+        assert!(ctrl_alt_only("Ctrl+Alt+G"));
+        assert!(ctrl_alt_only("alt+control+F5"));
+        assert!(!ctrl_alt_only("Ctrl+Alt+Shift+G"));
+        assert!(!ctrl_alt_only("Ctrl+Alt+Cmd+G"));
+        assert!(!ctrl_alt_only("Ctrl+G"));
+        assert!(!ctrl_alt_only("Alt+G"));
+        assert!(!ctrl_alt_only("G"));
+        assert!(!ctrl_alt_only(""));
+    }
+
     use super::*;
 
     #[test]

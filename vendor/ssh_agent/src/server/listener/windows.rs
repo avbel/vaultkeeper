@@ -30,7 +30,9 @@ use tracing::{info, warn};
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, LocalFree, ERROR_ACCESS_DENIED, HANDLE, HLOCAL},
+        Foundation::{
+            CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE, HLOCAL,
+        },
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -73,9 +75,13 @@ const RESET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 const SDDL_REVISION_1: u32 = 1;
 
-/// Shown when another program already owns the pipe name; the OpenSSH service is the usual one.
-const NAME_TAKEN_MESSAGE: &str = "The Windows OpenSSH Authentication Agent service is running; \
-stop and disable it, or turn off Vaultkeeper's SSH agent";
+/// Another program already owns the pipe name; the Windows OpenSSH agent service is the usual one.
+/// Callers recover it with `downcast_ref` to tell it from other bind failures.
+#[derive(Debug, thiserror::Error)]
+#[error("another program already owns the named pipe {name}")]
+pub struct PipeNameTaken {
+    pub name: String,
+}
 
 /// Windows named pipe listener for the SSH agent server
 pub(crate) struct WindowsListener {
@@ -137,10 +143,7 @@ fn create_instances_when_free(name: &str, sddl: &str) -> Result<Vec<NamedPipeSer
         match create_instances(name, sddl) {
             Err(error)
                 if std::time::Instant::now() < deadline
-                    && error
-                        .root_cause()
-                        .downcast_ref::<io::Error>()
-                        .is_some_and(is_access_denied_io) =>
+                    && error.downcast_ref::<PipeNameTaken>().is_some() =>
             {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
@@ -195,8 +198,11 @@ fn create_instances(name: &str, sddl: &str) -> Result<Vec<NamedPipeServer>> {
         };
         match created {
             Ok(server) => servers.push(server),
-            Err(e) if index == 0 && is_access_denied_io(&e) => {
-                return Err(anyhow::Error::new(e).context(NAME_TAKEN_MESSAGE));
+            Err(e) if index == 0 && is_name_taken_io(&e) => {
+                return Err(PipeNameTaken {
+                    name: name.to_owned(),
+                }
+                .into());
             }
             Err(e) => return Err(anyhow!("Unable to create named pipe {name}: {e}")),
         }
@@ -222,8 +228,16 @@ fn tighten(name: &str, servers: &[NamedPipeServer], strict_sddl: &str) -> Result
     Ok(())
 }
 
-fn is_access_denied_io(error: &io::Error) -> bool {
-    error.raw_os_error() == i32::try_from(ERROR_ACCESS_DENIED.0).ok()
+fn is_name_taken_io(error: &io::Error) -> bool {
+    error.raw_os_error().is_some_and(is_name_taken_code)
+}
+
+/// `CreateNamedPipeW` with `FILE_FLAG_FIRST_PIPE_INSTANCE` on a name that already exists fails
+/// with access denied; pipe busy is the other code Windows uses for a name that has no room.
+fn is_name_taken_code(code: i32) -> bool {
+    [ERROR_ACCESS_DENIED.0, ERROR_PIPE_BUSY.0]
+        .into_iter()
+        .any(|taken| i32::try_from(taken) == Ok(code))
 }
 
 /// A LocalAlloc'd security descriptor, freed on drop.
@@ -660,13 +674,35 @@ mod tests {
 
     #[serial_test::serial]
     #[tokio::test]
-    async fn test_second_listener_is_refused_with_the_service_hint() {
+    async fn test_second_listener_is_refused_as_taken() {
         let name = pipe_name();
         let _first = WindowsListener::with_name(&name).unwrap();
 
         let error = WindowsListener::with_name(&name).err().unwrap();
 
-        assert!(error.to_string().contains("OpenSSH Authentication Agent"));
+        assert!(error.downcast_ref::<PipeNameTaken>().is_some());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_name_owned_by_another_pipe_is_reported_as_taken() {
+        let name = pipe_name();
+        let mut other_owner = ServerOptions::new();
+        other_owner.first_pipe_instance(true);
+        let _other_owner = other_owner.create(&name).unwrap();
+
+        let error = WindowsListener::with_name(&name).err().unwrap();
+
+        let taken = error.downcast_ref::<PipeNameTaken>().unwrap();
+        assert_eq!(taken.name, name);
+    }
+
+    #[test]
+    fn test_only_name_collisions_count_as_taken() {
+        assert!(is_name_taken_code(5));
+        assert!(is_name_taken_code(231));
+        assert!(!is_name_taken_code(2));
+        assert!(!is_name_taken_code(0));
     }
 
     #[serial_test::serial]

@@ -7,6 +7,8 @@
 mod approver;
 mod error;
 mod keys;
+#[cfg(windows)]
+mod service;
 #[cfg(unix)]
 mod socket;
 
@@ -103,7 +105,9 @@ impl SshAgent {
         #[cfg(unix)]
         agent.start_at(socket_path.clone())?;
         #[cfg(windows)]
-        agent.start_on(&socket_path.to_string_lossy())?;
+        agent
+            .start_on(&socket_path.to_string_lossy())
+            .map_err(pipe_start_error)?;
         Ok(Self { socket_path, agent })
     }
 
@@ -147,6 +151,21 @@ impl Drop for SshAgent {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Turns the listener's "name already owned" failure into [`AgentError::PipeTaken`], telling
+/// Windows' own agent service apart from any other owner.
+#[cfg(windows)]
+fn pipe_start_error(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<ssh_agent::PipeNameTaken>().is_none() {
+        return error;
+    }
+    let service_running = service::openssh_service_running();
+    warn!(
+        service_running,
+        "the SSH agent pipe is owned by another program"
+    );
+    AgentError::PipeTaken { service_running }.into()
 }
 
 fn parse_key(key: AgentKey) -> Option<SSHKeyData> {

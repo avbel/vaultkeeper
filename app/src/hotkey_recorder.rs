@@ -23,6 +23,14 @@ pub const MODIFIER_HINT: &str = if cfg!(windows) {
     "⌘, ⌥ or ⌃"
 };
 
+pub const UNAVAILABLE_NOTICE: &str = if cfg!(windows) {
+    "This shortcut is used by another app or reserved by Windows. Pick another one."
+} else {
+    "This shortcut is used by another app or reserved by macOS. Pick another one."
+};
+
+pub const ALTGR_WARNING: &str = "Ctrl+Alt works like AltGr on some keyboard layouts and can block typing characters such as @. Consider adding Shift.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Reject {
     #[error("Add {} to the shortcut", MODIFIER_HINT)]

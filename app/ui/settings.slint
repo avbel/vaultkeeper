@@ -72,6 +72,13 @@ export component SettingsWindow inherits Window {
     in property <string> generator-hotkey;
     in property <string> hotkey-shown;
     in property <string> generator-hotkey-shown;
+    // Under a recorder: the OS refused the shortcut (error) or a Windows-only hint (not an error).
+    in property <string> hotkey-note;
+    in property <bool> hotkey-note-is-error;
+    in property <string> generator-hotkey-note;
+    in property <bool> generator-hotkey-note-is-error;
+    // Why the daemon could not start the SSH agent; empty when it could.
+    in property <string> ssh-notice;
     // Which recorder waits for a key: 0 none, 1 Quick Panel, 2 Generator. Read by the winit key
     // filter, which records by physical key.
     out property <int> recording-slot: quick-recorder.recording ? 1 : generator-recorder.recording ? 2 : 0;
@@ -280,6 +287,15 @@ export component SettingsWindow inherits Window {
                 Divider { }
                 SectionLabel { text: "SSH AGENT"; }
                 Toggle { text: "SSH agent"; checked <=> root.ssh-agent; toggled(v) => { root.ssh-agent-toggled(v); } }
+                if root.ssh-notice != "": Text {
+                    text: root.ssh-notice;
+                    color: Theme.danger-small;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "SSH agent error";
+                    accessible-value: self.text;
+                }
                 SettingRow {
                     text: root.ssh-hint != "" ? "Pipe" : "Socket";
                     Text {
@@ -481,6 +497,15 @@ export component SettingsWindow inherits Window {
                         entered(accelerator) => { root.hotkey-accepted(accelerator); }
                     }
                 }
+                if root.hotkey-note != "": Text {
+                    text: root.hotkey-note;
+                    color: root.hotkey-note-is-error ? Theme.danger-small : Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Quick Panel hotkey note";
+                    accessible-value: self.text;
+                }
                 SettingRow {
                     text: "Generator hotkey";
                     generator-recorder := ShortcutRecorder {
@@ -494,6 +519,15 @@ export component SettingsWindow inherits Window {
                         entered(accelerator) => { root.generator-hotkey-accepted(accelerator); }
                         cleared => { root.generator-hotkey-accepted(""); }
                     }
+                }
+                if root.generator-hotkey-note != "": Text {
+                    text: root.generator-hotkey-note;
+                    color: root.generator-hotkey-note-is-error ? Theme.danger-small : Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Generator hotkey note";
+                    accessible-value: self.text;
                 }
                 if root.error-text != "": Text {
                     text: root.error-text;

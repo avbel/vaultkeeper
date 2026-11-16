@@ -93,14 +93,40 @@ impl Drop for HotkeyPause {
     }
 }
 
+/// Why a shortcut was not registered, for the failures the user can fix by picking another one.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot register {accelerator}: {reason}")]
+pub struct Unavailable {
+    pub accelerator: String,
+    pub reason: String,
+}
+
+/// Which shortcuts the OS refused (taken by another app or reserved); a shortcut that does not
+/// parse is a different problem and is not counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HotkeyIssues {
+    pub quick_panel: bool,
+    pub generator: bool,
+}
+
+impl HotkeyIssues {
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.quick_panel || self.generator
+    }
+}
+
 /// What registers the global shortcuts (the Carbon one in production).
 pub trait HotkeyBinder {
     /// An empty `accelerator` removes the slot's binding.
     fn bind(&self, slot: HotkeySlot, accelerator: &str) -> anyhow::Result<()>;
 }
 
-/// While paused every slot is unbound; otherwise each gets its saved shortcut.
-pub fn apply(binder: &impl HotkeyBinder, settings: &Settings, paused: bool) {
+/// While paused every slot is unbound; otherwise each gets its saved shortcut. The result says
+/// which slots the OS refused, so the caller can tell the user.
+#[must_use]
+pub fn apply(binder: &impl HotkeyBinder, settings: &Settings, paused: bool) -> HotkeyIssues {
+    let mut issues = HotkeyIssues::default();
     for (slot, accelerator) in [
         (HotkeySlot::QuickPanel, &settings.hotkey),
         (HotkeySlot::Generator, &settings.generator_hotkey),
@@ -108,8 +134,15 @@ pub fn apply(binder: &impl HotkeyBinder, settings: &Settings, paused: bool) {
         let accelerator = if paused { "" } else { accelerator.as_str() };
         if let Err(error) = binder.bind(slot, accelerator) {
             tracing::warn!(%error, ?slot, "global hotkey not registered");
+            if error.downcast_ref::<Unavailable>().is_some() {
+                match slot {
+                    HotkeySlot::QuickPanel => issues.quick_panel = true,
+                    HotkeySlot::Generator => issues.generator = true,
+                }
+            }
         }
     }
+    issues
 }
 
 #[cfg(test)]
@@ -153,15 +186,63 @@ mod tests {
 
     /// What the daemon shell does on every pause change.
     fn follow(pause: &HotkeyPause, binder: &FakeBinder, settings: &Settings) {
-        apply(binder, settings, pause.is_paused());
+        let _ = apply(binder, settings, pause.is_paused());
+    }
+
+    /// Refuses the given slots the way the OS does.
+    struct RefusingBinder(Vec<HotkeySlot>);
+
+    impl HotkeyBinder for RefusingBinder {
+        fn bind(&self, slot: HotkeySlot, accelerator: &str) -> anyhow::Result<()> {
+            if accelerator.is_empty() || !self.0.contains(&slot) {
+                return Ok(());
+            }
+            Err(Unavailable {
+                accelerator: accelerator.to_owned(),
+                reason: "already registered".to_owned(),
+            }
+            .into())
+        }
+    }
+
+    #[test]
+    fn a_refused_shortcut_is_reported_for_its_slot() {
+        let binder = RefusingBinder(vec![HotkeySlot::Generator]);
+        let issues = apply(&binder, &settings(), false);
+        assert_eq!(
+            issues,
+            HotkeyIssues {
+                quick_panel: false,
+                generator: true
+            }
+        );
+        assert!(issues.any());
+    }
+
+    #[test]
+    fn a_pause_reports_nothing_and_a_clean_bind_reports_nothing() {
+        let binder = RefusingBinder(vec![HotkeySlot::QuickPanel, HotkeySlot::Generator]);
+        assert_eq!(apply(&binder, &settings(), true), HotkeyIssues::default());
+        assert!(!apply(&FakeBinder::default(), &settings(), false).any());
+    }
+
+    #[test]
+    fn a_shortcut_that_does_not_parse_is_not_a_refusal() {
+        struct Unparsable;
+        impl HotkeyBinder for Unparsable {
+            fn bind(&self, _: HotkeySlot, accelerator: &str) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!("not a shortcut: {accelerator}"))
+            }
+        }
+        assert!(!apply(&Unparsable, &settings(), false).any());
     }
 
     #[test]
     fn a_pause_unbinds_every_slot_and_its_end_binds_the_saved_shortcuts() {
         let binder = FakeBinder::default();
-        apply(&binder, &settings(), true);
+        let _ = apply(&binder, &settings(), true);
         assert_eq!(binder.take(), bound("", ""));
-        apply(&binder, &settings(), false);
+        let _ = apply(&binder, &settings(), false);
         assert_eq!(binder.take(), bound("Cmd+Shift+K", "Cmd+Alt+G"));
     }
 

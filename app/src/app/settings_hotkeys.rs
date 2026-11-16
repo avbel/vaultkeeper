@@ -16,8 +16,11 @@ use vk_vault::VaultService;
 use super::{App, handler};
 use crate::{
     hooks::{HookError, HookResult},
-    hotkey_recorder::{Mods, accelerator, is_modifier_text, key_from_text, physical_accelerator},
-    settings::{Settings, hotkey_display, hotkey_symbols},
+    hotkey_recorder::{
+        ALTGR_WARNING, Mods, UNAVAILABLE_NOTICE, accelerator, is_modifier_text, key_from_text,
+        physical_accelerator,
+    },
+    settings::{Settings, ctrl_alt_only, hotkey_display, hotkey_symbols},
     ui::SettingsWindow,
 };
 
@@ -38,11 +41,35 @@ impl Slot {
     }
 }
 
-pub(super) fn show_hotkeys(window: &SettingsWindow, settings: &Settings) {
+/// Shortcuts the OS refused to register, as the daemon reported.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Issues {
+    pub quick_panel: bool,
+    pub generator: bool,
+}
+
+/// What to show under a shortcut: the refusal wins over the AltGr hint, which is Windows only.
+pub(super) fn hotkey_note(accelerator: &str, refused: bool) -> (&'static str, bool) {
+    if refused {
+        (UNAVAILABLE_NOTICE, true)
+    } else if cfg!(windows) && ctrl_alt_only(accelerator) {
+        (ALTGR_WARNING, false)
+    } else {
+        ("", false)
+    }
+}
+
+pub(super) fn show_hotkeys(window: &SettingsWindow, settings: &Settings, issues: Issues) {
     window.set_hotkey(settings.hotkey.as_str().into());
     window.set_hotkey_shown(hotkey_display(&settings.hotkey).into());
     window.set_generator_hotkey(settings.generator_hotkey.as_str().into());
     window.set_generator_hotkey_shown(hotkey_display(&settings.generator_hotkey).into());
+    let (text, refused) = hotkey_note(&settings.hotkey, issues.quick_panel);
+    window.set_hotkey_note(text.into());
+    window.set_hotkey_note_is_error(refused);
+    let (text, refused) = hotkey_note(&settings.generator_hotkey, issues.generator);
+    window.set_generator_hotkey_note(text.into());
+    window.set_generator_hotkey_note_is_error(refused);
 }
 
 /// Slint reports ⌘ as `control` and ⌃ as `meta` on macOS; on Windows `control` is Ctrl and
@@ -99,6 +126,21 @@ impl<S: VaultService> App<S> {
             app.hooks.hotkey.pause(recording);
         }));
         self.filter_recorder_keys(window);
+    }
+
+    pub(super) fn hotkey_issues_changed(&self, quick_panel: bool, generator: bool) {
+        self.hotkey_issues.set(Issues {
+            quick_panel,
+            generator,
+        });
+        let window = self
+            .settings_window
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong);
+        if let Some(window) = window {
+            show_hotkeys(&window, &self.settings.borrow(), self.hotkey_issues.get());
+        }
     }
 
     /// A window closed mid-recording may never report the stop.
@@ -180,6 +222,12 @@ impl<S: VaultService> App<S> {
         let accelerator = accelerator.trim();
         let saved = match self.check_hotkey(slot, accelerator) {
             Ok(()) => {
+                let mut issues = self.hotkey_issues.get();
+                match slot {
+                    Slot::QuickPanel => issues.quick_panel = false,
+                    Slot::Generator => issues.generator = false,
+                }
+                self.hotkey_issues.set(issues);
                 self.update_settings(|settings| {
                     let field = match slot {
                         Slot::QuickPanel => &mut settings.hotkey,
@@ -200,7 +248,7 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .map(ComponentHandle::clone_strong);
         if let Some(window) = window {
-            show_hotkeys(&window, &self.settings.borrow());
+            show_hotkeys(&window, &self.settings.borrow(), self.hotkey_issues.get());
         }
         saved
     }
@@ -239,6 +287,24 @@ fn same_shortcut(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_shortcut_shows_the_platform_notice_as_an_error() {
+        let (text, is_error) = hotkey_note("Ctrl+Shift+Space", true);
+        assert_eq!(text, UNAVAILABLE_NOTICE);
+        assert!(is_error);
+        assert_eq!(hotkey_note("Ctrl+Shift+Space", false), ("", false));
+    }
+
+    #[test]
+    fn the_altgr_hint_is_a_non_error_note_on_windows_only() {
+        let expected = if cfg!(windows) {
+            (ALTGR_WARNING, false)
+        } else {
+            ("", false)
+        };
+        assert_eq!(hotkey_note("Ctrl+Alt+G", false), expected);
+    }
 
     #[test]
     fn shortcuts_match_whatever_the_spelling() {

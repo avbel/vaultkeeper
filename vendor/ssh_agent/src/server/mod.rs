@@ -18,6 +18,8 @@ pub(crate) use auth_policy::AuthPolicy;
 pub use auth_policy::{AuthRequest, ConnectionContext, SessionBindContext, SignRequest};
 use connection::{Connection, ConnectionHandler};
 pub(crate) use listener::Listener;
+#[cfg(windows)]
+pub use listener::PipeNameTaken;
 pub use protocol::{SIGNamespace, SignFlags};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;

@@ -102,7 +102,10 @@ Then follow the checklist sections in this order (most valuable first):
   may block it completely; tell me, and I will look at signing earlier.
 - **"another program is serving Vaultkeeper's pipe" or "already running"**: run `.\vaultkeeper.exe --quit`, or end
   `vaultkeeper.exe` in Task Manager, then start again.
-- **"The Windows OpenSSH Authentication Agent service is running"**: Services → OpenSSH Authentication Agent → Stop,
+- **"Windows' OpenSSH Authentication Agent is already running"**: Services → OpenSSH Authentication Agent → Stop,
   and set Startup type to Disabled (or turn off Vaultkeeper's SSH agent in Settings).
+  Vaultkeeper now shows "Windows' OpenSSH Authentication Agent is already running..." in Settings and turns the
+  toggle off; in an administrator PowerShell run `Stop-Service ssh-agent; Set-Service ssh-agent -StartupType Disabled`,
+  then turn the SSH agent on again.
 - **A test leaves the app in a strange state**: quit it, delete `%LOCALAPPDATA%\vaultkeeper` (you will log in again),
   and start over.

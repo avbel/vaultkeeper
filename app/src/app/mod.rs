@@ -164,6 +164,10 @@ pub struct App<S: VaultService> {
     autotyping: Cell<bool>,
     /// A message for the next window that shows (auto-type outcomes, the Accessibility hint).
     pending_notice: RefCell<Option<String>>,
+    /// Why the daemon could not start the SSH agent; shown under the toggle until it is used again.
+    ssh_notice: RefCell<String>,
+    /// Shortcuts the OS refused (Quick Panel, Generator), as the daemon last reported.
+    hotkey_issues: Cell<settings_hotkeys::Issues>,
 }
 
 impl<S: VaultService> App<S> {
@@ -212,6 +216,8 @@ impl<S: VaultService> App<S> {
             typing_target: RefCell::new(None),
             autotyping: Cell::new(false),
             pending_notice: RefCell::new(None),
+            ssh_notice: RefCell::new(String::new()),
+            hotkey_issues: Cell::new(settings_hotkeys::Issues::default()),
         })
     }
 

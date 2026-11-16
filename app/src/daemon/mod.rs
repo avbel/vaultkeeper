@@ -227,7 +227,11 @@ impl Shell {
         let hotkey = match hotkey::Hotkey::new(daemon) {
             Ok(hotkey) => {
                 let hotkey = std::rc::Rc::new(hotkey);
-                hotkey_pause::apply(&*hotkey, &daemon.settings(), daemon.hotkeys_paused());
+                daemon.report_hotkeys(hotkey_pause::apply(
+                    &*hotkey,
+                    &daemon.settings(),
+                    daemon.hotkeys_paused(),
+                ));
                 follow_hotkey_setting(daemon, &hotkey)?;
                 Some(hotkey)
             }
@@ -251,6 +255,7 @@ fn follow_hotkey_setting(
     let mut settings = daemon.subscribe_settings();
     let mut paused = daemon.subscribe_hotkey_pause();
     let weak = std::rc::Rc::downgrade(hotkey);
+    let daemon = Arc::clone(daemon);
     slint::spawn_local(async move {
         loop {
             tokio::select! {
@@ -262,7 +267,7 @@ fn follow_hotkey_setting(
             };
             let fresh = settings.borrow_and_update().clone();
             let pause = *paused.borrow_and_update();
-            hotkey_pause::apply(&*hotkey, &fresh, pause);
+            daemon.report_hotkeys(hotkey_pause::apply(&*hotkey, &fresh, pause));
         }
     })?;
     Ok(())

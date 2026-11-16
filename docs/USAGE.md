@@ -184,7 +184,8 @@ The agent listens on the named pipe `\\.\pipe\openssh-ssh-agent`, which is where
 
 - The built-in *OpenSSH Authentication Agent* service uses the same pipe name. Stop and disable it
   (`Stop-Service ssh-agent; Set-Service ssh-agent -StartupType Disabled`), or Vaultkeeper's agent
-  cannot start.
+  cannot start. If it is still running, Settings shows that message and turns the
+  toggle back off; run those two commands in an administrator PowerShell, then turn the agent on again.
 - Git for Windows bundles its own `ssh`, which does not use the pipe. Point Git at the Windows one:
   `git config --global core.sshCommand C:/Windows/System32/OpenSSH/ssh.exe`.
 - WSL cannot open a Windows pipe directly; it needs a relay such as `npiperelay` that exposes the

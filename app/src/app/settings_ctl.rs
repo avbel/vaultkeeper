@@ -117,6 +117,7 @@ impl<S: VaultService> App<S> {
             vk_vault::model::SessionState::Unlocked { .. }
         ));
         window.set_ssh_agent(settings.ssh_agent);
+        window.set_ssh_notice(self.ssh_notice.borrow().as_str().into());
         window.set_cli_access(settings.cli_access);
         window.set_cli_path_setup(cli_path_setup().into());
         let socket = self.hooks.ssh_agent.socket_path();
@@ -129,7 +130,7 @@ impl<S: VaultService> App<S> {
         window.set_ssh_biometric(settings.ssh_touch_id);
         window.set_biometric_right_away(settings.touch_id_right_away);
         window.set_show_site_icons(settings.show_site_icons);
-        super::settings_hotkeys::show_hotkeys(window, &settings);
+        super::settings_hotkeys::show_hotkeys(window, &settings, self.hotkey_issues.get());
         self.fill_browser_settings(window, &settings);
     }
 
@@ -153,6 +154,10 @@ impl<S: VaultService> App<S> {
 
     fn bind_ssh_settings(&self, window: &SettingsWindow) {
         window.on_ssh_agent_toggled(handler!(self, |app, enabled| {
+            app.ssh_notice.take();
+            if let Some(window) = app.settings_window() {
+                window.set_ssh_notice(SharedString::new());
+            }
             app.update_settings(|settings| settings.ssh_agent = enabled);
             app.report(app.hooks.ssh_agent.set_enabled(enabled));
             app.refresh_status();

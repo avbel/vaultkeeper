@@ -6,6 +6,9 @@ pub(crate) mod unix;
 #[cfg(windows)]
 pub(crate) mod windows;
 
+#[cfg(windows)]
+pub use windows::PipeNameTaken;
+
 use anyhow::Result;
 use tokio::{
     io::{AsyncRead, AsyncWrite},

@@ -14,7 +14,7 @@ use std::{
 
 use tokio::sync::mpsc;
 use vk_ipc::transport::Endpoint;
-use vk_ssh::{AgentKey, ApprovalRequest, SshAgent};
+use vk_ssh::{AgentError, AgentKey, ApprovalRequest, SshAgent};
 use vk_vault::{
     Vault, VaultService,
     model::{Filter, ItemKind, SessionState},
@@ -57,6 +57,15 @@ pub struct KeyLabel {
     pub name: String,
     pub fingerprint: String,
     pub reprompt: bool,
+}
+
+/// What the user sees when the agent cannot start: a typed failure carries its own advice.
+#[must_use]
+pub fn start_failure_message(error: &anyhow::Error) -> String {
+    error.downcast_ref::<AgentError>().map_or_else(
+        || format!("The SSH agent could not start: {error:#}"),
+        ToString::to_string,
+    )
 }
 
 pub struct SshControl {
@@ -246,6 +255,25 @@ mod tests {
 
     use super::*;
     use crate::os::layout;
+
+    #[test]
+    fn a_pipe_collision_shows_its_own_advice() {
+        let error = anyhow::Error::new(AgentError::PipeTaken {
+            service_running: true,
+        });
+
+        assert!(start_failure_message(&error).contains("Stop-Service ssh-agent"));
+    }
+
+    #[test]
+    fn other_start_failures_keep_their_cause() {
+        let error = anyhow::anyhow!("socket directory is read-only");
+
+        assert_eq!(
+            start_failure_message(&error),
+            "The SSH agent could not start: socket directory is read-only"
+        );
+    }
 
     fn locked() -> SessionState {
         SessionState::Locked {

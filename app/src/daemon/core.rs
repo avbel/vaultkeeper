@@ -33,12 +33,12 @@ use vk_vault::{SecretStore, Timings, Vault, VaultConfig, VaultService, model::Se
 
 use super::{
     device,
-    hotkey_pause::{HotkeyPause, PAUSE_LIMIT},
+    hotkey_pause::{HotkeyIssues, HotkeyPause, PAUSE_LIMIT},
     launcher::{Hang, Launcher, judge, restart_after_exit},
     lock::{self, Activity, LockCheck, LockWatch},
     routing::Effect,
     site_icons::{IconHost, SiteIcons},
-    ssh::{SshControl, purpose},
+    ssh::{SshControl, purpose, start_failure_message},
     target::{FrontmostApp, SystemFrontmost, outside},
     tray_sync::{self, TraySync},
     update,
@@ -110,6 +110,19 @@ impl DaemonConfig {
     }
 }
 
+const fn hotkey_issues_command(issues: HotkeyIssues) -> UiCommand {
+    UiCommand::HotkeyIssues {
+        quick_panel: issues.quick_panel,
+        generator: issues.generator,
+    }
+}
+
+#[derive(Default)]
+struct SetupIssues {
+    ssh_agent: Option<String>,
+    hotkeys: HotkeyIssues,
+}
+
 pub struct Daemon {
     vault: Arc<Vault>,
     runtime: Handle,
@@ -120,6 +133,8 @@ pub struct Daemon {
     hang: HangWatch,
     settings: watch::Sender<Arc<Settings>>,
     hotkey_pause: HotkeyPause,
+    /// What could not be set up, kept for a UI that starts later: nothing is spawned for it.
+    setup_issues: Mutex<SetupIssues>,
     activity: Activity,
     lock_wake: Notify,
     was_unlocked: AtomicBool,
@@ -264,6 +279,7 @@ impl Daemon {
             unlocked_as: Mutex::new(None),
             presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
+            setup_issues: Mutex::new(SetupIssues::default()),
             tray_sync: watch::Sender::new(TraySync::default()),
             browser: browser_glue::BrowserState::new(),
             cli_access: cli_access::CliAccessState::default(),
@@ -274,7 +290,7 @@ impl Daemon {
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
         {
-            tracing::error!(%error, "SSH agent not started");
+            daemon.ssh_start_failed(&error);
         }
         daemon.spawn_tasks(notices_rx, approvals_rx);
         daemon.reconcile_browser();
@@ -470,6 +486,9 @@ impl Daemon {
     }
 
     fn send_command(self: &Arc<Self>, command: UiCommand) {
+        if command == UiCommand::ShowSettings {
+            self.replay_setup_issues();
+        }
         self.send(|seq| DaemonEvent::Command { seq, command });
     }
 
@@ -561,6 +580,7 @@ impl Daemon {
         let current = self.settings();
         if previous.ssh_agent != current.ssh_agent {
             let _runtime = self.runtime.enter();
+            guard(&self.setup_issues).ssh_agent = None;
             match self.ssh.set_enabled(current.ssh_agent) {
                 // `ssh_key_changes` fires only on the next vault change, so load the keys now.
                 Ok(true) => {
@@ -571,7 +591,7 @@ impl Daemon {
                     );
                 }
                 Ok(false) => {}
-                Err(error) => tracing::error!(%error, "cannot start the SSH agent"),
+                Err(error) => self.ssh_start_failed(&error),
             }
         }
         if current.ssh_approval == SshApproval::Always {
@@ -585,6 +605,44 @@ impl Daemon {
         }
         if browser_settings_changed(&previous, &current) {
             self.reconcile_browser();
+        }
+    }
+
+    fn ssh_start_failed(self: &Arc<Self>, error: &anyhow::Error) {
+        let message = start_failure_message(error);
+        tracing::warn!(%message, error = ?error, "SSH agent not started");
+        guard(&self.setup_issues).ssh_agent = Some(message.clone());
+        if self.ui_connected() {
+            self.send_command(UiCommand::SshAgentFailed { message });
+        }
+    }
+
+    /// Called with what the last (re)binding of the global shortcuts left refused. A connected UI
+    /// hears about it at once; otherwise Settings gets it when it opens.
+    pub fn report_hotkeys(self: &Arc<Self>, issues: HotkeyIssues) {
+        let changed = std::mem::replace(&mut guard(&self.setup_issues).hotkeys, issues) != issues;
+        if (changed || issues.any()) && self.ui_connected() {
+            self.send_command(hotkey_issues_command(issues));
+        }
+    }
+
+    /// Settings is about to open in a UI that may have started after the failure.
+    fn replay_setup_issues(self: &Arc<Self>) {
+        let (ssh_agent, hotkeys) = {
+            let issues = guard(&self.setup_issues);
+            (issues.ssh_agent.clone(), issues.hotkeys)
+        };
+        if let Some(message) = ssh_agent {
+            self.send(|seq| DaemonEvent::Command {
+                seq,
+                command: UiCommand::SshAgentFailed { message },
+            });
+        }
+        if hotkeys.any() {
+            self.send(|seq| DaemonEvent::Command {
+                seq,
+                command: hotkey_issues_command(hotkeys),
+            });
         }
     }
 

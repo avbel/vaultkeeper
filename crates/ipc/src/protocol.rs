@@ -15,7 +15,7 @@ use crate::dto::{
     SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -185,6 +185,17 @@ pub enum UiCommand {
     Toast {
         text: String,
         error: bool,
+    },
+    /// The daemon could not start the SSH agent the saved setting asks for; `message` says why
+    /// and what to do. The UI turns the setting off so Settings does not show a dead agent as on.
+    SshAgentFailed {
+        message: String,
+    },
+    /// Which global shortcuts the OS refused to register (taken by another app or reserved).
+    /// Always the full picture, so it also clears a notice that no longer applies.
+    HotkeyIssues {
+        quick_panel: bool,
+        generator: bool,
     },
 }
 

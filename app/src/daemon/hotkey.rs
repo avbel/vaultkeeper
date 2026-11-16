@@ -13,6 +13,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey:
 
 use super::{
     Daemon,
+    hotkey_pause::Unavailable,
     routing::{self, HotkeySlot},
 };
 
@@ -91,7 +92,7 @@ impl Hotkey {
                 {
                     self.remember(slot, text, old);
                 }
-                Err(anyhow::anyhow!("cannot register {accelerator}: {error}"))
+                Err(classify(accelerator, error))
             }
         }
     }
@@ -115,6 +116,22 @@ impl Hotkey {
     }
 }
 
+/// The OS saying no (another app holds the shortcut, or Windows reserves it) becomes
+/// [`Unavailable`]; anything else stays a plain error.
+fn classify(accelerator: &str, error: global_hotkey::Error) -> anyhow::Error {
+    use global_hotkey::Error;
+    match error {
+        Error::AlreadyRegistered(_) | Error::OsError(_) | Error::FailedToRegister(_) => {
+            Unavailable {
+                accelerator: accelerator.to_owned(),
+                reason: error.to_string(),
+            }
+            .into()
+        }
+        other => anyhow::anyhow!("cannot register {accelerator}: {other}"),
+    }
+}
+
 impl super::hotkey_pause::HotkeyBinder for Hotkey {
     fn bind(&self, slot: HotkeySlot, accelerator: &str) -> anyhow::Result<()> {
         self.bind_slot(slot, accelerator)
@@ -127,5 +144,41 @@ impl Drop for Hotkey {
         for (_, (_, hotkey)) in self.bound.borrow_mut().drain() {
             let _ = self.manager.unregister(hotkey);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use global_hotkey::Error;
+
+    use super::*;
+
+    fn is_unavailable(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<Unavailable>().is_some()
+    }
+
+    #[test]
+    fn a_taken_or_refused_shortcut_is_unavailable() {
+        let hotkey = HotKey::from_str("Ctrl+Shift+Space").expect("parses");
+        assert!(is_unavailable(&classify(
+            "Ctrl+Shift+Space",
+            Error::AlreadyRegistered(hotkey)
+        )));
+        assert!(is_unavailable(&classify(
+            "Win+L",
+            Error::OsError(std::io::Error::from_raw_os_error(1409))
+        )));
+        assert!(is_unavailable(&classify(
+            "Cmd+Q",
+            Error::FailedToRegister("denied".to_owned())
+        )));
+    }
+
+    #[test]
+    fn a_parse_failure_is_not_unavailable() {
+        assert!(!is_unavailable(&classify(
+            "Hyper+X",
+            Error::HotKeyParseError("bad".to_owned())
+        )));
     }
 }
