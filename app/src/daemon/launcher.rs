@@ -2,9 +2,11 @@
 //! runs: none is started while one is connected or still starting, and commands wait in the IPC
 //! event queue until it connects.
 
+#[cfg(windows)]
+mod windows;
+
 use std::{
     path::PathBuf,
-    process::Stdio,
     sync::{Mutex, PoisonError},
     time::{Duration, Instant},
 };
@@ -52,6 +54,19 @@ pub fn ui_args(first_unlock: bool, no_activate: bool) -> Vec<&'static str> {
     args
 }
 
+/// [`ui_args`] plus the inherited pipe handle's value, for the Windows UI process.
+#[cfg(any(windows, test))]
+#[must_use]
+fn ui_args_with_pipe(first_unlock: bool, no_activate: bool, handle: usize) -> Vec<String> {
+    let mut args: Vec<String> = ui_args(first_unlock, no_activate)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    args.push("--ui-pipe".to_owned());
+    args.push(handle.to_string());
+    args
+}
+
 /// What the daemon does about a command the UI has not acknowledged yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hang {
@@ -84,6 +99,9 @@ struct Running {
 pub struct Launcher {
     exe: Option<PathBuf>,
     running: Mutex<Option<Running>>,
+    /// Where the UI's pipe goes once the process is spawned (Windows).
+    #[cfg(windows)]
+    ui_sink: Option<vk_ipc::UiSink>,
 }
 
 impl Launcher {
@@ -93,6 +111,18 @@ impl Launcher {
         Self {
             exe,
             running: Mutex::new(None),
+            #[cfg(windows)]
+            ui_sink: None,
+        }
+    }
+
+    /// Where the pipe to each new UI process is delivered; without it none can start.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn with_ui_sink(self, sink: vk_ipc::UiSink) -> Self {
+        Self {
+            ui_sink: Some(sink),
+            ..self
         }
     }
 
@@ -121,6 +151,15 @@ impl Launcher {
         kill.is_some_and(|kill| kill.send(()).is_ok())
     }
 
+    /// Waits up to `limit` for the killed child to be reaped.
+    #[cfg(windows)]
+    pub async fn stopped(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while self.is_running() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     /// Spawns the UI unless one is connected or running. Must run inside the Tokio runtime
     /// (the child is reaped by a task); `on_exit` gets how long it ran.
     pub fn ensure(
@@ -137,11 +176,7 @@ impl Launcher {
         if decide(ui_connected, running.is_some()) == Spawn::NotNeeded {
             return;
         }
-        let child = tokio::process::Command::new(exe)
-            .args(ui_args(first_unlock, no_activate))
-            .stdin(Stdio::null())
-            .kill_on_drop(false)
-            .spawn();
+        let child = self.spawn(exe, first_unlock, no_activate);
         let child = match child {
             Ok(child) => child,
             Err(error) => {
@@ -158,10 +193,50 @@ impl Launcher {
         });
         drop(running);
         tracing::debug!(pid = child.id(), "UI process started");
+        #[cfg(windows)]
+        let ui_pid = child.id();
+        #[cfg(windows)]
+        if let Some(pid) = ui_pid {
+            crate::os::ui_window::set_ui_pid(pid);
+        }
         tokio::spawn(async move {
-            reap(child, killed).await;
+            child.reap(killed).await;
+            #[cfg(windows)]
+            if let Some(pid) = ui_pid {
+                crate::os::ui_window::clear_ui_pid(pid);
+            }
             on_exit(started.elapsed());
         });
+    }
+
+    #[cfg(not(windows))]
+    #[allow(clippy::unused_self, reason = "Windows needs the channel sink")]
+    fn spawn(
+        &self,
+        exe: &std::path::Path,
+        first_unlock: bool,
+        no_activate: bool,
+    ) -> std::io::Result<UiChild> {
+        tokio::process::Command::new(exe)
+            .args(ui_args(first_unlock, no_activate))
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .map(UiChild)
+    }
+
+    #[cfg(windows)]
+    fn spawn(
+        &self,
+        exe: &std::path::Path,
+        first_unlock: bool,
+        no_activate: bool,
+    ) -> std::io::Result<UiChild> {
+        let sink = self
+            .ui_sink
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("no UI channel is wired to the launcher"))?;
+        windows::spawn(exe, first_unlock, no_activate, sink).map(UiChild)
     }
 
     /// Called by the reaper before it decides about a restart.
@@ -184,21 +259,74 @@ impl Launcher {
     }
 }
 
-/// Waits for the child, killing it first when asked to.
-async fn reap(mut child: tokio::process::Child, killed: oneshot::Receiver<()>) {
-    let status = tokio::select! {
-        status = child.wait() => status,
-        Ok(()) = killed => {
-            tracing::warn!(pid = child.id(), "the UI process stopped answering; killing it");
-            if let Err(error) = child.start_kill() {
-                tracing::warn!(%error, "cannot kill the UI process");
+/// The UI process: a plain tokio child on macOS, a hardened one with a creation handle on Windows.
+#[cfg(not(windows))]
+struct UiChild(tokio::process::Child);
+#[cfg(windows)]
+struct UiChild(vk_win::Child);
+
+impl UiChild {
+    #[cfg(not(windows))]
+    fn id(&self) -> Option<u32> {
+        self.0.id()
+    }
+
+    #[cfg(windows)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "same signature as the tokio child"
+    )]
+    fn id(&self) -> Option<u32> {
+        Some(self.0.pid())
+    }
+
+    /// Waits for the child, killing it first when asked to.
+    #[cfg(not(windows))]
+    async fn reap(mut self, killed: oneshot::Receiver<()>) {
+        let child = &mut self.0;
+        let status = tokio::select! {
+            status = child.wait() => status,
+            Ok(()) = killed => {
+                tracing::warn!(pid = child.id(), "the UI process stopped answering; killing it");
+                if let Err(error) = child.start_kill() {
+                    tracing::warn!(%error, "cannot kill the UI process");
+                }
+                child.wait().await
             }
-            child.wait().await
+        };
+        match status {
+            Ok(status) => tracing::debug!(%status, "UI process exited"),
+            Err(error) => tracing::warn!(%error, "lost track of the UI process"),
         }
-    };
-    match status {
-        Ok(status) => tracing::debug!(%status, "UI process exited"),
-        Err(error) => tracing::warn!(%error, "lost track of the UI process"),
+    }
+
+    #[cfg(windows)]
+    async fn reap(self, killed: oneshot::Receiver<()>) {
+        let child = self.0;
+        let mut exit = std::pin::pin!(child.wait());
+        let status = tokio::select! {
+            status = &mut exit => status,
+            Ok(()) = killed => {
+                tracing::warn!(
+                    pid = child.pid(),
+                    exit_code = ?child.exit_code(),
+                    "the UI process stopped answering; killing it"
+                );
+                if let Err(error) = child.kill() {
+                    tracing::warn!(%error, "cannot kill the UI process");
+                }
+                exit.await
+            }
+        };
+        match status {
+            Ok(status) if status.success() => tracing::debug!(%status, "UI process exited"),
+            Ok(status) => tracing::warn!(
+                pid = child.pid(),
+                code = status.code().map(|code| format!("{code:#x}")),
+                "UI process exited with an error"
+            ),
+            Err(error) => tracing::warn!(%error, "lost track of the UI process"),
+        }
     }
 }
 
@@ -230,12 +358,28 @@ mod tests {
     }
 
     #[test]
+    fn the_pipe_handle_follows_the_ui_flags() {
+        assert_eq!(
+            ui_args_with_pipe(true, true, 0x1a4),
+            [
+                "--ui",
+                "--first-unlock",
+                "--no-activate",
+                "--ui-pipe",
+                "420"
+            ]
+        );
+    }
+
+    #[test]
     fn the_first_unlock_flag_is_passed_only_when_set() {
         assert_eq!(ui_args(false, false), ["--ui"]);
         assert_eq!(ui_args(true, false), ["--ui", "--first-unlock"]);
         assert_eq!(ui_args(false, true), ["--ui", "--no-activate"]);
     }
 
+    // These spawn Unix tools; the Windows launcher needs a real pipe and is covered in CI.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_started_child_is_tracked_until_it_exits() {
         let launcher = std::sync::Arc::new(Launcher::new(Some(PathBuf::from("/usr/bin/true"))));
@@ -269,6 +413,7 @@ mod tests {
         assert_eq!(judge(2, 3, true), Hang::Wait);
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_hung_child_is_killed_and_reaped() {
         use std::os::unix::fs::PermissionsExt;

@@ -30,7 +30,29 @@ pub struct ParentInfo {
 #[serde(rename_all = "snake_case")]
 pub enum KnownBrowser {
     Chrome,
+    Edge,
     Firefox,
+}
+
+impl KnownBrowser {
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Chrome => "Google Chrome",
+            Self::Edge => "Microsoft Edge",
+            Self::Firefox => "Firefox",
+        }
+    }
+
+    /// Edge installs the extension from the Chrome Web Store, so it calls the host as Chromium.
+    #[must_use]
+    pub const fn serves(self, caller: &Caller) -> bool {
+        matches!(
+            (self, caller),
+            (Self::Chrome | Self::Edge, Caller::Chromium { .. })
+                | (Self::Firefox, Caller::Firefox { .. })
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

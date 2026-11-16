@@ -1,0 +1,12 @@
+PackageIdentifier: avbel.Vaultkeeper
+PackageVersion: 0.1.10
+PackageLocale: en-US
+Publisher: avbel
+PackageName: Vaultkeeper
+PackageUrl: https://github.com/avbel/vaultkeeper
+License: GPL-3.0-only
+LicenseUrl: https://github.com/avbel/vaultkeeper/blob/main/LICENSE
+ShortDescription: A quick, native desktop client for Bitwarden and Vaultwarden vaults.
+Moniker: vaultkeeper
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Btn, BtnKind, Divider, EmptyState, Field, Icon, KeyCap, Toast } from "kit.slint";
 import { ItemRow, RowData } from "row.slint";
 
@@ -43,7 +44,7 @@ export component QuickPanel inherits Window {
     in-out property <string> password;
     in property <string> unlock-error;
     in property <bool> unlock-busy;
-    in property <bool> touch-id-available;
+    in property <bool> biometric-available;
     in property <string> toast-text;
     in property <bool> toast-error;
     in property <bool> toast-shown;
@@ -56,7 +57,7 @@ export component QuickPanel inherits Window {
     callback copy-row(int, int) -> bool;
     callback auto-type-row(int);
     callback unlock(string);
-    callback unlock-touch-id();
+    callback unlock-biometric();
     callback focus-lost();
     callback toast-dismissed();
 
@@ -168,13 +169,13 @@ export component QuickPanel inherits Window {
                             }
                         }
                     }
-                    if root.locked && root.touch-id-available: Btn {
+                    if root.locked && root.biometric-available: Btn {
                         y: (parent.height - self.height) / 2;
-                        text: "Touch ID";
+                        text: Theme.biometric-label;
                         has-icon: true;
                         icon: @image-url("icons/fingerprint.svg");
                         enabled: !root.unlock-busy;
-                        clicked => { root.unlock-touch-id(); }
+                        clicked => { root.unlock-biometric(); }
                     }
                 }
                 Divider { }
@@ -215,11 +216,11 @@ export component QuickPanel inherits Window {
                         alignment: center;
                         spacing: Theme.s3;
                         Hint { enter: true; text: "password"; }
-                        Hint { key: "⌘"; enter: true; text: "TOTP"; }
-                        Hint { key: "⇧"; enter: true; text: "username"; }
-                        Hint { key: "⌘⇧"; enter: true; text: "auto-type"; }
-                        Hint { key: "⌘O"; text: "open"; }
-                        Hint { key: "⌘L"; text: "lock"; }
+                        Hint { key: Keys.cmd-cap; enter: true; text: "TOTP"; }
+                        Hint { key: Keys.shift-cap; enter: true; text: "username"; }
+                        Hint { key: Keys.cmd-shift-cap; enter: true; text: "auto-type"; }
+                        Hint { key: Keys.cmd + "O"; text: "open"; }
+                        Hint { key: Keys.cmd + "L"; text: "lock"; }
                     }
                 }
             }

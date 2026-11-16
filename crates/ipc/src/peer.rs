@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(all(test, unix))]
 use tokio::net::UnixStream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +23,11 @@ pub struct PeerCredentials {
     /// Never used to decide: the path can change under a live process.
     pub executable: PathBuf,
     /// The kernel's `audit_token_t` of the peer process (macOS).
-    audit_token: Option<[u32; 8]>,
+    pub(crate) audit_token: Option<[u32; 8]>,
+    /// The console/RDP session the peer runs in (Windows); a peer from another session of the
+    /// same user is refused.
+    #[cfg(windows)]
+    pub session_id: u32,
 }
 
 /// Decides whether a connecting process may talk to the daemon. The server already rejects
@@ -43,19 +48,22 @@ where
 /// Accepts peers running the same code as a given binary: by default our own, so only another
 /// `vaultkeeper` process (or, in tests, the test binary itself) gets in.
 ///
-/// macOS compares code signatures (cdhash) through the audit token; other unix targets compare
-/// the executable path.
+/// macOS compares code signatures (cdhash) through the audit token, Windows compares the
+/// executable's file identity, and other unix targets compare the executable path.
 #[derive(Debug, Clone)]
 pub struct SameExecutable {
     #[cfg(target_os = "macos")]
     requirement: String,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    identity: vk_win::ImageIdentity,
+    #[cfg(all(unix, not(target_os = "macos")))]
     executable: PathBuf,
 }
 
 impl SameExecutable {
     /// The running process's own code. On macOS this is the signature the kernel loaded, so a
-    /// binary rebuilt on disk after the daemon started is a different peer.
+    /// binary rebuilt on disk after the daemon started is a different peer; on Windows the cached
+    /// identity of the running image, so renaming it aside does not change who we are.
     pub fn current() -> io::Result<Self> {
         #[cfg(target_os = "macos")]
         {
@@ -63,7 +71,13 @@ impl SameExecutable {
                 requirement: code_identity::own_requirement()?,
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                identity: vk_win::ImageIdentity::of_current_exe()?,
+            })
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             Self::new(&std::env::current_exe()?)
         }
@@ -76,7 +90,13 @@ impl SameExecutable {
                 requirement: code_identity::requirement_of(executable)?,
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                identity: vk_win::ImageIdentity::of_path(executable)?,
+            })
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             Ok(Self {
                 executable: executable.canonicalize()?,
@@ -100,7 +120,33 @@ impl PeerVerifier for SameExecutable {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    fn verify(&self, peer: &PeerCredentials) -> bool {
+        let Ok(pid) = u32::try_from(peer.pid) else {
+            return false;
+        };
+        let Ok(own_session) = vk_win::current_session_id() else {
+            tracing::warn!("cannot read our own session");
+            return false;
+        };
+        if peer.session_id != own_session {
+            tracing::warn!(
+                session = peer.session_id,
+                pid = peer.pid,
+                "IPC peer runs in another session"
+            );
+            return false;
+        }
+        match vk_win::ImageIdentity::of_pid(pid) {
+            Ok(identity) => identity == self.identity,
+            Err(error) => {
+                tracing::warn!(%error, pid = peer.pid, "cannot identify the IPC peer");
+                false
+            }
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn verify(&self, peer: &PeerCredentials) -> bool {
         peer.executable == self.executable
     }
@@ -126,6 +172,7 @@ pub fn has_hardened_runtime() -> bool {
 }
 
 /// The caller's current parent PID.
+#[cfg(unix)]
 #[must_use]
 pub fn parent_pid() -> i32 {
     // SAFETY: getppid has no preconditions.
@@ -133,67 +180,19 @@ pub fn parent_pid() -> i32 {
 }
 
 /// Returns the executable path for diagnostics, not identity verification.
+#[cfg(unix)]
 pub fn process_executable(pid: i32) -> io::Result<PathBuf> {
     executable_of(pid)
 }
 
+#[cfg(unix)]
 pub fn own_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() }
 }
 
-pub fn credentials(stream: &UnixStream) -> io::Result<PeerCredentials> {
-    let (uid, pid, audit_token) = identify(stream)?;
-    let executable = executable_of(pid)
-        .and_then(|path| path.canonicalize())
-        .unwrap_or_default();
-    Ok(PeerCredentials {
-        uid,
-        pid,
-        executable,
-        audit_token,
-    })
-}
-
 #[cfg(target_os = "macos")]
-fn identify(stream: &UnixStream) -> io::Result<(u32, i32, Option<[u32; 8]>)> {
-    use std::os::fd::AsRawFd;
-
-    let fd = stream.as_raw_fd();
-    let mut uid: libc::uid_t = 0;
-    let mut gid: libc::gid_t = 0;
-    // SAFETY: `fd` is an open socket borrowed from `stream` for the whole call, and both out
-    // pointers point at live, writable locals of the right type.
-    if unsafe { libc::getpeereid(fd, &raw mut uid, &raw mut gid) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut token = [0_u32; 8];
-    let mut len = libc::socklen_t::try_from(size_of_val(&token))
-        .map_err(|_| io::Error::other("audit_token_t size does not fit socklen_t"))?;
-    // SAFETY: `fd` is open (see above); `token` is a writable `audit_token_t`-sized buffer (eight
-    // u32) and `len` a live in/out local, as getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN) requires.
-    let status = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_LOCAL,
-            libc::LOCAL_PEERTOKEN,
-            token.as_mut_ptr().cast(),
-            &raw mut len,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if usize::try_from(len).ok() != Some(size_of_val(&token)) {
-        return Err(io::Error::other("short audit token"));
-    }
-    // audit_token_t layout (bsm/libbsm.h, audit_token_to_pid): val[5] is the pid.
-    let pid = i32::try_from(token[5]).map_err(|_| io::Error::other("pid out of range"))?;
-    Ok((uid, pid, Some(token)))
-}
-
-#[cfg(target_os = "macos")]
-fn executable_of(pid: i32) -> io::Result<PathBuf> {
+pub(crate) fn executable_of(pid: i32) -> io::Result<PathBuf> {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
     let capacity = usize::try_from(libc::PROC_PIDPATHINFO_MAXSIZE).unwrap_or(4096);
@@ -209,17 +208,8 @@ fn executable_of(pid: i32) -> io::Result<PathBuf> {
     Ok(PathBuf::from(OsString::from_vec(buffer)))
 }
 
-#[cfg(not(target_os = "macos"))]
-fn identify(stream: &UnixStream) -> io::Result<(u32, i32, Option<[u32; 8]>)> {
-    let credentials = stream.peer_cred()?;
-    let pid = credentials
-        .pid()
-        .ok_or_else(|| io::Error::other("the OS does not report the peer pid"))?;
-    Ok((credentials.uid(), pid, None))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn executable_of(pid: i32) -> io::Result<PathBuf> {
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn executable_of(pid: i32) -> io::Result<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/exe"))
 }
 
@@ -365,10 +355,11 @@ mod code_identity {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn reports_our_own_uid_pid_and_executable_for_a_socket_pair() {
         let (ours, _theirs) = UnixStream::pair().expect("socket pair");
-        let peer = credentials(&ours).expect("credentials");
+        let peer = crate::transport::unix::credentials(&ours).expect("credentials");
         assert_eq!(peer.uid, own_uid());
         assert_eq!(
             peer.pid,
@@ -386,10 +377,11 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn same_executable_rejects_other_binaries() {
         let (ours, _theirs) = UnixStream::pair().expect("socket pair");
-        let peer = credentials(&ours).expect("credentials");
+        let peer = crate::transport::unix::credentials(&ours).expect("credentials");
         let verifier = SameExecutable::new(Path::new("/bin/sh")).expect("exists");
         assert!(!verifier.verify(&peer));
     }
@@ -409,7 +401,7 @@ mod tests {
             .spawn()
             .expect("nc");
         let (stream, _) = listener.accept().await.expect("accept");
-        let peer = credentials(&stream).expect("credentials");
+        let peer = crate::transport::unix::credentials(&stream).expect("credentials");
         assert_eq!(peer.uid, own_uid());
         assert_eq!(peer.pid, i32::try_from(nc.id()).expect("pid fits"));
         assert_eq!(peer.executable, PathBuf::from("/usr/bin/nc"));
@@ -447,6 +439,32 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn our_own_process_passes_the_windows_identity_check() {
+        let peer = PeerCredentials {
+            uid: 0,
+            pid: i32::try_from(std::process::id()).expect("pid fits"),
+            executable: PathBuf::new(),
+            audit_token: None,
+            session_id: vk_win::current_session_id().expect("current session"),
+        };
+        assert!(SameExecutable::current().expect("verifier").verify(&peer));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_peer_from_another_session_is_rejected() {
+        let peer = PeerCredentials {
+            uid: 0,
+            pid: i32::try_from(std::process::id()).expect("pid fits"),
+            executable: PathBuf::new(),
+            audit_token: None,
+            session_id: u32::MAX,
+        };
+        assert!(!SameExecutable::current().expect("verifier").verify(&peer));
+    }
+
     #[test]
     fn closures_are_verifiers() {
         let deny_all = |_: &PeerCredentials| false;
@@ -455,6 +473,8 @@ mod tests {
             pid: 1,
             executable: PathBuf::from("/"),
             audit_token: None,
+            #[cfg(windows)]
+            session_id: 0,
         };
         assert!(!deny_all.verify(&peer));
     }

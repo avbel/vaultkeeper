@@ -1,6 +1,8 @@
 //! Connection lifecycle, events, peer checks and failure handling between `serve` and
 //! `RemoteVault`.
 
+#![cfg(unix)]
+
 mod common;
 
 use std::{
@@ -901,4 +903,23 @@ async fn the_handle_reports_whether_a_ui_is_connected() {
     }
     let notify_after_close = RemoteVault::connect(daemon.socket()).await;
     assert!(notify_after_close.is_ok(), "the next UI may connect");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_handed_in_by_its_owner_skips_the_peer_check() {
+    let fake = FakeVault::new(locked(), 0);
+    let (_events, source) = mpsc::channel(16);
+    let refuse_everyone = ServeOptions::with_verifier(|_: &PeerCredentials| false);
+    let (server, sink) = vk_ipc::serve_inherited(fake, source, refuse_everyone);
+    let (daemon_end, ui_end) = tokio::net::UnixStream::pair().expect("pair");
+    sink.offer(daemon_end.into()).expect("offer");
+
+    let (vault, _events) = RemoteVault::from_stream(ui_end.into())
+        .await
+        .expect("handshake");
+    assert!(matches!(
+        vault.state(),
+        vk_vault::model::SessionState::LoggedOut | vk_vault::model::SessionState::Locked { .. }
+    ));
+    assert!(server.is_ui_connected());
 }

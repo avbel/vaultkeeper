@@ -30,8 +30,16 @@ impl<S: VaultService> App<S> {
         if let Err(error) = tray.show() {
             tracing::error!(%error, "cannot show the tray icon");
         }
+        crate::daemon::tray::apply_choice(&tray, self.settings.borrow().tray_icon);
+        crate::daemon::tray::follow_taskbar(&tray);
         *self.tray.borrow_mut() = Some(tray);
         self.update_tray(&self.vault.state());
+    }
+
+    pub(super) fn refresh_tray_icon(&self) {
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            crate::daemon::tray::apply_choice(tray, self.settings.borrow().tray_icon);
+        }
     }
 
     pub fn tray_lock_toggle(&self) {

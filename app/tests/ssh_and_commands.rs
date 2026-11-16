@@ -148,7 +148,7 @@ fn touch_id_setting_gates_the_approval() {
     let (req, rx) = request("SHA256:ggg");
     h.app.request_ssh_approval(req);
     let prompt = h.app.ssh_prompt().expect("prompt");
-    assert!(prompt.get_touch_id_required());
+    assert!(prompt.get_biometric_required());
     click(&prompt, "Approve");
     assert_eq!(
         answer(rx),

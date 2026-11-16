@@ -8,10 +8,11 @@ use crate::Result;
 
 const APP_DIR: &str = "vaultkeeper";
 
-/// Creates the directory (mode 0700) if missing, and tightens its mode if it exists.
+/// Creates the directory (mode 0700) if missing, and tightens its mode if it exists. On Windows an
+/// existing directory is only verified later by the startup check.
 pub fn data_dir() -> Result<PathBuf> {
     let dir = project_data_dir()?;
-    crate::fs::ensure_private_dir(&dir)?;
+    crate::fs::create_private_dir_if_missing(&dir)?;
     Ok(dir)
 }
 
@@ -19,14 +20,26 @@ pub fn data_dir() -> Result<PathBuf> {
 // organization as well.
 fn project_data_dir() -> Result<PathBuf> {
     ProjectDirs::from_path(PathBuf::from(APP_DIR))
-        .map(|dirs| dirs.data_dir().to_path_buf())
+        .map(|dirs| local_data_dir(&dirs).to_path_buf())
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found").into()
         })
 }
 
+// Roaming data would sync the sealed key blobs to other machines, where DPAPI cannot open them.
+#[cfg(windows)]
+fn local_data_dir(dirs: &ProjectDirs) -> &std::path::Path {
+    dirs.data_local_dir()
+}
+
+#[cfg(not(windows))]
+fn local_data_dir(dirs: &ProjectDirs) -> &std::path::Path {
+    dirs.data_dir()
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(target_os = "macos")]

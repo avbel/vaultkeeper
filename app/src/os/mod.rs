@@ -4,25 +4,34 @@
 pub mod appkit;
 pub mod autotype;
 mod biometrics;
-mod browser;
+pub mod browser;
 mod clipboard;
+pub mod console;
+pub mod detached;
+pub mod early_log;
 pub mod fs;
 pub mod layout;
 pub mod log_file;
 mod misc;
 mod security_key;
 pub mod settings_file;
+pub mod startup_check;
+pub mod taskbar;
+pub mod ui_window;
+pub mod windows_shell;
 
 use std::{path::Path, sync::Arc};
 
 use vk_ipc::{RemoteVault, UiNotice};
 
 pub use biometrics::{
-    DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED, TouchId,
+    DaemonBiometrics, DaemonTouchId, EnrolmentFiles, INVALIDATED as TOUCH_ID_INVALIDATED,
+    LABEL as BIOMETRIC_LABEL, TouchId,
 };
 pub use clipboard::{ClipboardKeeper, DaemonClipboard, Keeper, NoClipboard};
 pub use misc::{
-    AgentSocket, BrowserOpener, FilePanels, Generator, HotkeyBinding, LaunchAgent, SshKeys, web_url,
+    AgentSocket, BrowserOpener, FilePanels, Generator, HotkeyBinding, LaunchAgent, SshKeys,
+    open_in_browser, web_url,
 };
 pub use settings_file::SettingsFile;
 
@@ -52,17 +61,35 @@ impl Hooks {
                 data_dir.join(layout::SETTINGS_FILE),
                 Arc::new(move || settings_notify(UiNotice::SettingsChanged)),
             )),
-            dock: Arc::new(appkit::AppKitDock),
+            dock: {
+                #[cfg(target_os = "macos")]
+                {
+                    Arc::new(appkit::AppKitDock)
+                }
+                #[cfg(windows)]
+                {
+                    Arc::new(windows_shell::WindowsDock)
+                }
+            },
             browsers: Arc::new(browser::BrowserFiles {
                 app_support: data_dir.parent().unwrap_or(data_dir).to_owned(),
                 store: data_dir.join(layout::BROWSER_PAIRINGS_FILE),
                 notify: Arc::clone(notify),
             }),
             ssh_agent: Arc::new(AgentSocket {
-                path: data_dir.join(layout::SSH_SOCKET),
+                endpoint: layout::ssh_endpoint(data_dir),
             }),
             ssh_keys: Arc::new(SshKeys),
-            placement: Arc::new(appkit::CursorScreen),
+            placement: {
+                #[cfg(target_os = "macos")]
+                {
+                    Arc::new(appkit::CursorScreen)
+                }
+                #[cfg(windows)]
+                {
+                    Arc::new(windows_shell::WindowsPlacement)
+                }
+            },
             clock: Arc::new(SystemClock),
             autotype: Arc::new(autotype::SystemAutoType),
             site_icons: Arc::new(DaemonSiteIcons(Arc::clone(daemon))),

@@ -1,0 +1,31 @@
+# Flags for the Windows target only; macOS builds are untouched.
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    # VCRUNTIME140.dll is not a KnownDLL, so a copy dropped next to the exe
+    # would be loaded in preference to the System32 one. A static CRT removes
+    # that search path entirely.
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "control-flow-guard",
+    # 24H2 itself requires SSE4.2 and POPCNT, so this baseline costs nothing.
+    "-C",
+    "target-cpu=x86-64-v2",
+    # The loader looks up the DLLs our static imports depend on in System32 only,
+    # so a DLL planted next to the per-user exe is never picked up.
+    "-C",
+    "link-arg=/DEPENDENTLOADFLAG:0x800",
+    "-C",
+    "link-arg=/CETCOMPAT",
+]
+
+# No target-cpu baseline and no /CETCOMPAT here: CET shadow stacks are x86-only.
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "control-flow-guard",
+    "-C",
+    "link-arg=/DEPENDENTLOADFLAG:0x800",
+]

@@ -1,9 +1,10 @@
 //! Persistent public-key pairings and proof verification.
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::{
     fs,
     io::{self, Read},
-    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
 };
 
@@ -96,11 +97,12 @@ impl PairingStore {
     ) -> anyhow::Result<Self> {
         let mut lock_name = path.as_os_str().to_owned();
         lock_name.push(".lock");
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .mode(0o600)
+        let mut lock_options = fs::OpenOptions::new();
+        lock_options.create(true).write(true).truncate(false);
+        // Windows: step 2f - the data directory ACL keeps the lock file private.
+        #[cfg(unix)]
+        lock_options.mode(0o600);
+        let lock = lock_options
             .open(PathBuf::from(lock_name))
             .context("open browser pairing lock")?;
         lock.lock().context("lock browser pairings")?;

@@ -23,6 +23,13 @@ zeroize.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
+[target.'cfg(windows)'.dependencies]
+vk-win.workspace = true
+# WinRT only, for the Hello presence check (biometric/consent.rs); Win32 goes through windows-sys.
+windows = { version = "0.62.2", default-features = false, features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT"] }
+windows-future = "0.3.2"
+windows-sys.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # The updater's signature checks (code_signature.rs); the version security-framework uses.
 core-foundation = "0.10.1"

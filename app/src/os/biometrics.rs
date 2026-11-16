@@ -11,11 +11,27 @@ use vk_ipc::{RemoteVault, TouchIdBackend, TouchIdFailure};
 use vk_platform::{Error as PlatformError, biometric};
 use zeroize::Zeroizing;
 
-use super::layout::touch_id_file;
+use super::{layout::touch_id_file, ui_window};
 use crate::hooks::{Biometrics, HookError, HookResult};
 
-pub const INVALIDATED: &str =
-    "fingerprints changed since enrolment · unlock with your master password and enrol again";
+/// What the user sees for the system biometric: "Touch ID" on macOS, "Windows Hello" on Windows.
+pub const LABEL: &str = if cfg!(windows) {
+    "Windows Hello"
+} else {
+    "Touch ID"
+};
+
+pub const INVALIDATED: &str = if cfg!(windows) {
+    "Windows Hello was reset since enrolment · unlock with your master password and enrol again"
+} else {
+    "fingerprints changed since enrolment · unlock with your master password and enrol again"
+};
+
+pub const NOT_SET_UP: &str = if cfg!(windows) {
+    "Windows Hello isn't set up. Open Settings > Accounts > Sign-in options, set up a PIN (Windows Hello), then try again."
+} else {
+    "Touch ID isn't set up. Add a fingerprint in System Settings, then try again."
+};
 
 /// What the daemon shows in the system prompt; the UI cannot choose the text.
 const UNLOCK_REASON: &str = "unlock your vault";
@@ -50,26 +66,38 @@ fn failure(error: PlatformError) -> TouchIdFailure {
         PlatformError::Unsupported => TouchIdFailure::Unavailable,
         PlatformError::BiometricFailed => TouchIdFailure::Cancelled,
         PlatformError::BiometricInvalidated => TouchIdFailure::Invalidated,
+        PlatformError::BiometricNotSetUp => TouchIdFailure::NotSetUp,
         other => TouchIdFailure::Failed(other.to_string()),
     }
 }
 
 impl TouchIdBackend for TouchId {
-    fn enroll(&self, account_id: &str, user_key: &[u8]) -> Result<(), TouchIdFailure> {
+    fn enroll(
+        &self,
+        account_id: &str,
+        user_key: &[u8],
+        parent_window: Option<u64>,
+    ) -> Result<(), TouchIdFailure> {
         let path = self.file(account_id)?;
         if !path.parent().is_some_and(std::path::Path::is_dir) {
             return Err(TouchIdFailure::Failed(
                 "this account has no local data yet; log in first".to_owned(),
             ));
         }
-        biometric::enroll(&path, user_key).map_err(failure)
+        let parent = ui_window::trusted_parent_window(parent_window);
+        biometric::enroll(&path, user_key, parent).map_err(failure)
     }
 
     /// An invalidated enrolment can never work again, so its file goes right away; the lock
     /// screen then offers only the master password until the user enrols again.
-    fn unlock(&self, account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+    fn unlock(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
         let path = self.file(account_id)?;
-        biometric::unlock(&path, UNLOCK_REASON).map_err(|error| {
+        let parent = ui_window::trusted_parent_window(parent_window);
+        biometric::unlock(&path, UNLOCK_REASON, parent).map_err(|error| {
             if matches!(error, PlatformError::BiometricInvalidated)
                 && let Err(remove) = biometric::unenroll(&path)
             {
@@ -82,7 +110,7 @@ impl TouchIdBackend for TouchId {
 
 impl DaemonBiometrics for TouchId {
     fn authenticate(&self, reason: &str) -> Result<(), TouchIdFailure> {
-        biometric::authenticate(reason).map_err(failure)
+        biometric::authenticate(reason, ui_window::prompt_window()).map_err(failure)
     }
 
     fn is_available(&self) -> bool {
@@ -137,9 +165,10 @@ impl DaemonTouchId {
 
 fn hook_error(failure: TouchIdFailure) -> HookError {
     match failure {
-        TouchIdFailure::Unavailable => HookError::Unavailable("Touch ID"),
+        TouchIdFailure::Unavailable => HookError::Unavailable(LABEL),
         TouchIdFailure::Cancelled => HookError::Cancelled,
         TouchIdFailure::Invalidated => HookError::Failed(INVALIDATED.to_owned()),
+        TouchIdFailure::NotSetUp => HookError::Failed(NOT_SET_UP.to_owned()),
         other => HookError::Failed(other.to_string()),
     }
 }
@@ -151,6 +180,24 @@ fn settle(outcome: vk_vault::Result<Result<(), TouchIdFailure>>) -> HookResult<(
     }
 }
 
+/// The Hello dialog only comes to the front if the process that opens it was granted the
+/// foreground; the daemon opens it, the UI holds the foreground.
+#[cfg(windows)]
+fn allow_daemon_foreground() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+
+    let Some(pid) = crate::ui_process::channel::daemon_pid() else {
+        return;
+    };
+    // SAFETY: `AllowSetForegroundWindow` takes a pid by value and has no memory effects.
+    if unsafe { AllowSetForegroundWindow(pid) } == 0 {
+        tracing::debug!("AllowSetForegroundWindow for the daemon failed");
+    }
+}
+
+#[cfg(not(windows))]
+const fn allow_daemon_foreground() {}
+
 impl Biometrics for DaemonTouchId {
     fn is_available(&self) -> bool {
         biometric::is_available()
@@ -160,12 +207,14 @@ impl Biometrics for DaemonTouchId {
         self.files.is_enrolled(account_id)
     }
 
-    fn enroll(&self, account_id: &str) -> HookResult<()> {
-        settle(self.daemon.enroll_touch_id(account_id))
+    fn enroll(&self, account_id: &str, parent_window: Option<u64>) -> HookResult<()> {
+        allow_daemon_foreground();
+        settle(self.daemon.enroll_touch_id(account_id, parent_window))
     }
 
-    fn unlock(&self, account_id: &str) -> HookResult<()> {
-        settle(self.daemon.unlock_with_touch_id(account_id))
+    fn unlock(&self, account_id: &str, parent_window: Option<u64>) -> HookResult<()> {
+        allow_daemon_foreground();
+        settle(self.daemon.unlock_with_touch_id(account_id, parent_window))
     }
 
     fn unenroll(&self, account_id: &str) -> HookResult<()> {
@@ -200,7 +249,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let touch_id = TouchId::new(dir.path().to_owned());
         assert!(matches!(
-            touch_id.enroll(USER, &[1; 64]),
+            touch_id.enroll(USER, &[1; 64], None),
             Err(TouchIdFailure::Failed(_))
         ));
     }
@@ -209,8 +258,8 @@ mod tests {
     fn bad_account_ids_are_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let touch_id = TouchId::new(dir.path().to_owned());
-        assert!(touch_id.enroll("../escape", &[1; 64]).is_err());
-        assert!(touch_id.unlock("a/b").is_err());
+        assert!(touch_id.enroll("../escape", &[1; 64], None).is_err());
+        assert!(touch_id.unlock("a/b", None).is_err());
     }
 
     #[cfg(target_os = "macos")]
@@ -221,7 +270,10 @@ mod tests {
         let file = touch_id_file(dir.path(), USER).expect("path");
         std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
         std::fs::write(&file, b"BWLT\x01 garbage").expect("write");
-        assert_eq!(touch_id.unlock(USER), Err(TouchIdFailure::Invalidated));
+        assert_eq!(
+            touch_id.unlock(USER, None),
+            Err(TouchIdFailure::Invalidated)
+        );
         assert!(!file.exists(), "the dead enrolment is gone");
     }
 
@@ -239,6 +291,19 @@ mod tests {
             failure(PlatformError::BiometricInvalidated),
             TouchIdFailure::Invalidated
         );
+        assert_eq!(
+            failure(PlatformError::BiometricNotSetUp),
+            TouchIdFailure::NotSetUp
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_not_set_up_text_tells_the_user_what_to_do() {
+        assert_eq!(
+            NOT_SET_UP,
+            "Windows Hello isn't set up. Open Settings > Accounts > Sign-in options, set up a PIN (Windows Hello), then try again."
+        );
     }
 
     #[test]
@@ -253,6 +318,9 @@ mod tests {
         ));
         assert!(
             matches!(hook_error(TouchIdFailure::Invalidated), HookError::Failed(text) if text == INVALIDATED)
+        );
+        assert!(
+            matches!(hook_error(TouchIdFailure::NotSetUp), HookError::Failed(text) if text == NOT_SET_UP)
         );
         assert!(
             matches!(

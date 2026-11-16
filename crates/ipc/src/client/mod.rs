@@ -17,7 +17,6 @@ mod service;
 
 use std::{
     collections::HashMap,
-    path::Path,
     sync::{
         Arc, Mutex, PoisonError, RwLock, RwLockReadGuard,
         atomic::{AtomicU64, Ordering},
@@ -36,6 +35,7 @@ use crate::{
     dto::WireError,
     frame::encode,
     protocol::{Call, Reply, Snapshot, UiMessage, UiNotice},
+    transport::{self, Endpoint},
 };
 
 /// `VaultService` backed by the daemon. Dropping it closes the connection and joins the I/O
@@ -50,24 +50,22 @@ impl RemoteVault {
     /// Connects, says `Hello` and waits for the daemon's welcome (at most 5 s). Fails with
     /// [`IpcError::Busy`] when another UI process is connected and with
     /// [`IpcError::VersionMismatch`] when the daemon runs a different build.
-    pub async fn connect(path: impl AsRef<Path>) -> Result<(Self, EventStream), IpcError> {
-        // A unix-socket connect completes or fails at once; it does not wait on the peer.
-        let stream = std::os::unix::net::UnixStream::connect(path)?;
-        stream.set_nonblocking(true)?;
+    pub async fn connect(endpoint: impl Into<Endpoint>) -> Result<(Self, EventStream), IpcError> {
         let (ready_tx, ready_rx) = oneshot::channel();
         // Unbounded: the reader must never wait on the UI (that would stall every response), and
         // events arrive at human pace.
         let (events_tx, events_rx) = mpsc::unbounded_channel();
-        let io = io::IoThread::spawn(stream, events_tx, ready_tx)?;
-        let (shared, changes) = ready_rx.await.map_err(|_| IpcError::Disconnected)??;
-        Ok((
-            Self {
-                shared,
-                changes,
-                _io: io,
-            },
-            EventStream::new(events_rx),
-        ))
+        let io = io::IoThread::connect(endpoint.into(), events_tx, ready_tx)?;
+        finish(io, ready_rx, events_rx).await
+    }
+
+    /// Wraps a connection this process already owns, such as the inherited Windows UI pipe, and
+    /// runs the same handshake over it.
+    pub async fn from_stream(stream: transport::Stream) -> Result<(Self, EventStream), IpcError> {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let io = io::IoThread::from_stream(stream, events_tx, ready_tx)?;
+        finish(io, ready_rx, events_rx).await
     }
 
     fn cache(&self) -> RwLockReadGuard<'_, Cache> {
@@ -109,6 +107,24 @@ impl RemoteVault {
         };
         settle(outcome)
     }
+}
+
+type Connection = Result<(Arc<Shared>, watch::Receiver<u64>), IpcError>;
+
+async fn finish(
+    io: io::IoThread,
+    ready: oneshot::Receiver<Connection>,
+    events: mpsc::UnboundedReceiver<UiEvent>,
+) -> Result<(RemoteVault, EventStream), IpcError> {
+    let (shared, changes) = ready.await.map_err(|_| IpcError::Disconnected)??;
+    Ok((
+        RemoteVault {
+            shared,
+            changes,
+            _io: io,
+        },
+        EventStream::new(events),
+    ))
 }
 
 type Outcome = Result<Result<Reply, WireError>, IpcError>;

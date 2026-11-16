@@ -707,9 +707,18 @@ pub struct FakeTouchId {
     sealed: Mutex<Option<(String, Vec<u8>)>>,
     refusal: Mutex<Option<TouchIdFailure>>,
     unlocks: Mutex<Vec<String>>,
+    parents: Mutex<Vec<Option<u64>>>,
 }
 
 impl FakeTouchId {
+    /// The `parent_window` of every enrol and unlock request, in order.
+    pub fn parents(&self) -> Vec<Option<u64>> {
+        self.parents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn sealed(&self) -> Option<(String, Vec<u8>)> {
         self.sealed
             .lock()
@@ -730,13 +739,30 @@ impl FakeTouchId {
 }
 
 impl TouchIdBackend for FakeTouchId {
-    fn enroll(&self, account_id: &str, user_key: &[u8]) -> std::result::Result<(), TouchIdFailure> {
+    fn enroll(
+        &self,
+        account_id: &str,
+        user_key: &[u8],
+        parent_window: Option<u64>,
+    ) -> std::result::Result<(), TouchIdFailure> {
+        self.parents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(parent_window);
         *self.sealed.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((account_id.to_owned(), user_key.to_vec()));
         Ok(())
     }
 
-    fn unlock(&self, account_id: &str) -> std::result::Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+    fn unlock(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> std::result::Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+        self.parents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(parent_window);
         self.unlocks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

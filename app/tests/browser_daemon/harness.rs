@@ -23,7 +23,7 @@ use vaultkeeper::{
     daemon::{Daemon, DaemonConfig, Peers, browser::ids, target::FrontmostApp},
     os::{
         ClipboardKeeper, DaemonBiometrics,
-        layout::{BROWSER_PAIRINGS_FILE, BROWSER_SOCKET, SETTINGS_FILE},
+        layout::{BROWSER_PAIRINGS_FILE, SETTINGS_FILE, browser_endpoint, ui_endpoint},
         settings_file::SettingsFile,
     },
     settings::Settings,
@@ -106,7 +106,7 @@ impl DataDir {
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.0.join(BROWSER_SOCKET)
+        browser_endpoint(&self.0).as_path().unwrap().to_path_buf()
     }
 
     pub fn pairings(&self) -> PathBuf {
@@ -183,11 +183,20 @@ impl Default for ScriptedTouchId {
 }
 
 impl TouchIdBackend for ScriptedTouchId {
-    fn enroll(&self, _account_id: &str, _user_key: &[u8]) -> Result<(), TouchIdFailure> {
+    fn enroll(
+        &self,
+        _account_id: &str,
+        _user_key: &[u8],
+        _parent_window: Option<u64>,
+    ) -> Result<(), TouchIdFailure> {
         Err(TouchIdFailure::Unavailable)
     }
 
-    fn unlock(&self, _account_id: &str) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
+    fn unlock(
+        &self,
+        _account_id: &str,
+        _parent_window: Option<u64>,
+    ) -> Result<Zeroizing<Vec<u8>>, TouchIdFailure> {
         Err(TouchIdFailure::Unavailable)
     }
 }
@@ -538,10 +547,7 @@ impl Rig {
         config.touch_id = Arc::clone(&touch_id) as Arc<dyn DaemonBiometrics>;
         config.timings = timings;
         let daemon = Daemon::start(config).await.unwrap();
-        let (remote, events) =
-            RemoteVault::connect(dir.path().join(vaultkeeper::os::layout::UI_SOCKET))
-                .await
-                .unwrap();
+        let (remote, events) = RemoteVault::connect(ui_endpoint(dir.path())).await.unwrap();
         let fake = Fake::start(items).await;
         daemon
             .vault()

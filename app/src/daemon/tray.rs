@@ -2,7 +2,11 @@
 //! are routed like every other trigger, and it follows the vault and settings through watches on
 //! the Slint event loop.
 
-use std::{cell::RefCell, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use slint::{ModelRc, SharedString, VecModel, language::ColorScheme};
 use vk_vault::{VaultService, model::SessionState};
@@ -12,7 +16,8 @@ use super::{
     routing::{self, Effect, TrayAction},
 };
 use crate::{
-    settings::ThemeChoice,
+    os::taskbar::{self, Glyph},
+    settings::TrayIconChoice,
     ui::TrayIcon,
     viewmodel::{host, local_time, tray_sync_label},
 };
@@ -35,11 +40,37 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.on_quit(on(TrayAction::Quit));
     let switch = Arc::clone(daemon);
     tray.on_switch_account(move |index| run(&switch, TrayAction::SwitchAccount(index)));
+    let clicks = DoubleClick::default();
+    let open = Arc::clone(daemon);
+    tray.on_icon_clicked(move || {
+        if clicks.click(Instant::now(), taskbar::double_click_time()) {
+            run(&open, TrayAction::OpenVault);
+        }
+    });
     refresh(&tray, daemon);
     tray.show()?;
     follow_menu_bar(&tray, daemon);
+    follow_taskbar(&tray);
     watch(&tray, daemon)?;
     Ok(tray)
+}
+
+/// Pairs single clicks into double-clicks. A completed pair is consumed, so a third quick click
+/// starts a new pair instead of opening the vault twice.
+#[derive(Default)]
+struct DoubleClick {
+    pending: Cell<Option<Instant>>,
+}
+
+impl DoubleClick {
+    fn click(&self, now: Instant, window: Duration) -> bool {
+        let paired = self
+            .pending
+            .get()
+            .is_some_and(|first| now.saturating_duration_since(first) <= window);
+        self.pending.set(if paired { None } else { Some(now) });
+        paired
+    }
 }
 
 fn run(daemon: &Arc<Daemon>, action: TrayAction) {
@@ -100,20 +131,62 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
 /// The bar's appearance follows the wallpaper; `follow_menu_bar` calls this when it changes.
 /// Before the status item has a window the system appearance is the best guess. The Settings
 /// choice overrides both; the icon is the opposite shade of the bar it must read on,
-/// so "White" is the scheme of a dark bar.
+/// so "White" is the scheme of a dark bar. `Blue` ignores the bar entirely. Windows has no
+/// template images, so there the glyph is rasterised for the taskbar's theme and pixel size.
 fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
-    let dark = match daemon.settings().tray_icon {
-        ThemeChoice::Light => Some(true),
-        ThemeChoice::Dark => Some(false),
-        ThemeChoice::System => {
+    apply_choice(tray, daemon.settings().tray_icon);
+}
+
+/// Also used by the `--mock` tray in the UI process, which has no `Daemon` to read the setting
+/// from.
+pub(crate) fn apply_choice(tray: &TrayIcon, choice: TrayIconChoice) {
+    CHOICE.set(choice);
+    let dark = match choice {
+        TrayIconChoice::Blue => None,
+        TrayIconChoice::White => Some(true),
+        TrayIconChoice::Black => Some(false),
+        TrayIconChoice::Auto if cfg!(windows) => taskbar::taskbar_dark(),
+        TrayIconChoice::Auto => {
             crate::os::appkit::menu_bar_dark().or_else(crate::os::appkit::system_dark)
         }
     };
+    tray.set_blue_icon(choice == TrayIconChoice::Blue);
     tray.set_menu_bar_scheme(match dark {
         Some(true) => ColorScheme::Dark,
         Some(false) => ColorScheme::Light,
         None => ColorScheme::Unknown,
     });
+    render_icon(tray, Glyph::choose(choice, dark));
+}
+
+/// Skips the work while neither the glyph nor the pixel size changed, because `refresh` runs on
+/// every vault and sync event.
+fn render_icon(tray: &TrayIcon, glyph: Glyph) {
+    let Some(px) = taskbar::icon_pixel_size() else {
+        return;
+    };
+    if RENDERED.get() == Some((glyph, px)) {
+        return;
+    }
+    let Some(image) = taskbar::rasterise(glyph, px) else {
+        tracing::warn!(?glyph, px, "cannot rasterise the tray icon");
+        return;
+    };
+    tray.set_rendered_icon(image);
+    tray.set_use_rendered_icon(true);
+    RENDERED.set(Some((glyph, px)));
+}
+
+/// The taskbar theme changes on a registry watcher thread; the refresh itself runs on the event
+/// loop.
+pub(crate) fn follow_taskbar(tray: &TrayIcon) {
+    let weak = tray.as_weak();
+    let watch = taskbar::watch_taskbar_theme(move || {
+        if let Err(error) = weak.upgrade_in_event_loop(|tray| apply_choice(&tray, CHOICE.get())) {
+            tracing::debug!(%error, "tray gone before a taskbar theme change");
+        }
+    });
+    TASKBAR_WATCH.with_borrow_mut(|slot| *slot = watch);
 }
 
 /// Slint creates the status item on its first event-loop turn, so the window to observe does not
@@ -145,6 +218,10 @@ fn follow_menu_bar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
 }
 
 thread_local! {
+    /// The last applied setting, for the taskbar watcher, which has no settings to read.
+    static CHOICE: Cell<TrayIconChoice> = const { Cell::new(TrayIconChoice::Auto) };
+    static RENDERED: Cell<Option<(Glyph, u32)>> = const { Cell::new(None) };
+    static TASKBAR_WATCH: RefCell<Option<taskbar::ThemeWatch>> = const { RefCell::new(None) };
     static SCHEME_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
     static MENU_BAR_WATCH: RefCell<Option<crate::os::appkit::MenuBarWatch>> =
         const { RefCell::new(None) };
@@ -178,4 +255,37 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WINDOW: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn two_quick_clicks_make_a_double_click() {
+        let clicks = DoubleClick::default();
+        let start = Instant::now();
+        assert!(!clicks.click(start, WINDOW));
+        assert!(clicks.click(start + Duration::from_millis(200), WINDOW));
+    }
+
+    #[test]
+    fn slow_clicks_stay_single() {
+        let clicks = DoubleClick::default();
+        let start = Instant::now();
+        assert!(!clicks.click(start, WINDOW));
+        assert!(!clicks.click(start + Duration::from_millis(600), WINDOW));
+        assert!(clicks.click(start + Duration::from_millis(700), WINDOW));
+    }
+
+    #[test]
+    fn a_third_quick_click_starts_a_new_pair() {
+        let clicks = DoubleClick::default();
+        let start = Instant::now();
+        assert!(!clicks.click(start, WINDOW));
+        assert!(clicks.click(start + Duration::from_millis(100), WINDOW));
+        assert!(!clicks.click(start + Duration::from_millis(200), WINDOW));
+    }
 }

@@ -1,6 +1,8 @@
 //! End-to-end: a real `SshAgent` on a temp socket, driven by the system `ssh-add` and
 //! `ssh-keygen`. Fingerprints are the output of `ssh-keygen -lf` for the committed fixtures.
 
+#![cfg(unix)]
+
 use std::{
     fs,
     os::unix::{

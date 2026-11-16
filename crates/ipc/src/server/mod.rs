@@ -10,28 +10,36 @@ mod connection;
 mod dispatch;
 
 use std::{
-    fs::{self, DirBuilder, Permissions},
-    io,
-    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::{
+    fs::{DirBuilder, Permissions},
+    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+};
+
 use tokio::{
-    net::UnixListener,
     sync::{Mutex, Semaphore, mpsc, oneshot, watch},
     task::{JoinError, JoinHandle, JoinSet},
 };
 use vk_vault::VaultService;
 
+#[cfg(unix)]
+use crate::peer::own_uid;
 use crate::{
-    ClipboardHost, IpcError, PeerVerifier, SameExecutable, SiteIconHost, TouchIdBackend,
-    peer::own_uid,
+    ClipboardHost, IpcError, PeerCredentials, PeerVerifier, SameExecutable, SiteIconHost,
+    TouchIdBackend,
     protocol::{BrowserPrompt, BrowserReply, SshDecision, SshPrompt, UiCommand, UiNotice},
+    transport::{Endpoint, Listener, Stream},
 };
 
+#[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
 const SOCKET_MODE: u32 = 0o600;
 const DEFAULT_MAX_CALLS: usize = 8;
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,6 +47,8 @@ const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 /// Pause after a failed `accept` (e.g. out of file descriptors) so the loop does not spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+/// Connections waiting for the accept loop; one UI runs at a time, so a second means a bug.
+const INHERITED_QUEUE: usize = 2;
 
 /// What the daemon pushes to the UI process. Events wait in the channel while no UI is
 /// connected and are delivered, at most once, to the next one. `seq` is the daemon's number for
@@ -146,16 +156,21 @@ impl ServeOptions {
 /// the socket file is removed.
 #[must_use = "dropping the handle stops the IPC server"]
 pub struct ServerHandle {
-    path: PathBuf,
+    /// `None` when connections are handed in with [`UiSink::offer`] instead of accepted.
+    endpoint: Option<Endpoint>,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
     slot: Arc<Semaphore>,
 }
 
 impl ServerHandle {
+    /// The socket path on Unix.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        self.endpoint
+            .as_ref()
+            .and_then(Endpoint::as_path)
+            .expect("only a server bound to a socket path has one")
     }
 
     /// A UI process finished the handshake and is still connected.
@@ -178,10 +193,11 @@ impl Drop for ServerHandle {
         if let Some(task) = self.task.take() {
             task.abort();
         }
-        if let Err(error) = fs::remove_file(&self.path)
+        if let Some(path) = self.endpoint.as_ref().and_then(Endpoint::as_path)
+            && let Err(error) = fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            tracing::warn!(%error, path = %self.path.display(), "cannot remove the IPC socket");
+            tracing::warn!(%error, path = %path.display(), "cannot remove the IPC socket");
         }
     }
 }
@@ -216,17 +232,89 @@ pub async fn serve_with<S: VaultService>(
     events: mpsc::Receiver<DaemonEvent>,
     options: ServeOptions,
 ) -> Result<ServerHandle, IpcError> {
-    let path = path.into();
-    prepare_directory(&path)?;
-    remove_stale_socket(&path)?;
-    let listener = bind(&path)?;
+    let endpoint = Endpoint::path(path.into());
+    #[cfg(unix)]
+    {
+        let path = endpoint
+            .as_path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "a path is required"))?;
+        prepare_directory(path)?;
+        remove_stale_socket(path)?;
+    }
+    let listener = bind_endpoint(&endpoint)?;
+    Ok(start(
+        Incoming::Listener(listener),
+        Some(endpoint),
+        service,
+        events,
+        options,
+    ))
+}
+
+/// Hands in connections instead of accepting them: the Windows daemon creates the UI's pipe
+/// itself and gives its server end to [`UiSink::offer`], so there is no name to listen on and no
+/// peer to check (`docs/solutions/windows-support.md` §5.2).
+pub fn serve_inherited<S: VaultService>(
+    service: Arc<S>,
+    events: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> (ServerHandle, UiSink) {
+    let (sink, streams) = mpsc::channel(INHERITED_QUEUE);
+    let handle = start(Incoming::Injected(streams), None, service, events, options);
+    (handle, UiSink(sink))
+}
+
+/// Where the code that spawns the UI process delivers its end of the channel.
+#[derive(Clone)]
+pub struct UiSink(mpsc::Sender<Stream>);
+
+impl UiSink {
+    /// Serves `stream` as a UI connection. Its owner vouches for the peer, so the verifier is
+    /// not asked.
+    pub fn offer(&self, stream: Stream) -> Result<(), IpcError> {
+        self.0.try_send(stream).map_err(|_| IpcError::Disconnected)
+    }
+}
+
+/// Where the accept loop gets its connections from.
+enum Incoming {
+    Listener(Listener),
+    Injected(mpsc::Receiver<Stream>),
+}
+
+impl Incoming {
+    /// A connection and, when it came from a listener, the credentials of its peer.
+    async fn next(&mut self) -> io::Result<(Stream, Option<PeerCredentials>)> {
+        match self {
+            Self::Listener(listener) => {
+                let (stream, peer) = listener.accept().await?;
+                Ok((stream, Some(peer)))
+            }
+            Self::Injected(streams) => match streams.recv().await {
+                Some(stream) => Ok((stream, None)),
+                None => std::future::pending().await,
+            },
+        }
+    }
+}
+
+fn start<S: VaultService>(
+    incoming: Incoming,
+    endpoint: Option<Endpoint>,
+    service: Arc<S>,
+    events: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> ServerHandle {
     let (stop, stop_rx) = watch::channel(false);
     let slot = Arc::new(Semaphore::new(1));
     let shared = Arc::new(Shared {
         service,
         events: Arc::new(Mutex::new(events)),
         verifier: options.verifier,
+        #[cfg(unix)]
         uid: own_uid(),
+        #[cfg(not(unix))]
+        uid: 0,
         max_concurrent_calls: options.max_concurrent_calls.max(1),
         handshake_timeout: options.handshake_timeout,
         notices: options.notices,
@@ -237,15 +325,16 @@ pub async fn serve_with<S: VaultService>(
         },
         slot: Arc::clone(&slot),
     });
-    let task = tokio::spawn(accept_loop(listener, shared, stop_rx));
-    Ok(ServerHandle {
-        path,
+    let task = tokio::spawn(accept_loop(incoming, shared, stop_rx));
+    ServerHandle {
+        endpoint,
         stop,
         task: Some(task),
         slot,
-    })
+    }
 }
 
+#[cfg(unix)]
 pub(crate) fn prepare_directory(path: &Path) -> io::Result<()> {
     let dir = path
         .parent()
@@ -268,6 +357,7 @@ pub(crate) fn prepare_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub(crate) fn remove_stale_socket(path: &Path) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -290,11 +380,30 @@ pub(crate) fn remove_stale_socket(path: &Path) -> io::Result<()> {
     }
 }
 
-/// The 0700 directory keeps others out between `bind` and the `chmod`, so the process umask is
-/// left alone.
-pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
-    let listener = UnixListener::bind(path)?;
-    if let Err(error) = fs::set_permissions(path, Permissions::from_mode(SOCKET_MODE)) {
+/// Prepares whatever the transport needs before a bind: on Unix the private directory and the
+/// removal of a socket left behind by a dead daemon.
+#[cfg_attr(
+    not(unix),
+    allow(clippy::unnecessary_wraps, reason = "Unix can fail here")
+)]
+pub(crate) fn prepare_endpoint(endpoint: &Endpoint) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some(path) = endpoint.as_path() {
+        prepare_directory(path)?;
+        remove_stale_socket(path)?;
+    }
+    #[cfg(not(unix))]
+    let _ = endpoint;
+    Ok(())
+}
+
+/// Binds the UI's transport endpoint; on Unix that is a socket with mode 0600.
+pub(crate) fn bind_endpoint(endpoint: &Endpoint) -> io::Result<Listener> {
+    let listener = Listener::bind(endpoint)?;
+    #[cfg(unix)]
+    if let Some(path) = endpoint.as_path()
+        && let Err(error) = fs::set_permissions(path, Permissions::from_mode(SOCKET_MODE))
+    {
         drop(listener);
         let _ = fs::remove_file(path);
         return Err(error);
@@ -303,7 +412,7 @@ pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
 }
 
 async fn accept_loop<S: VaultService>(
-    listener: UnixListener,
+    mut incoming: Incoming,
     shared: Arc<Shared<S>>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -314,10 +423,11 @@ async fn accept_loop<S: VaultService>(
             biased;
             () = stopped(&mut stop) => break,
             Some(joined) = connections.join_next() => log_join("IPC connection", joined),
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+            accepted = incoming.next() => match accepted {
+                Ok((stream, peer)) => {
                     connections.spawn(connection::handle(
                         stream,
+                        peer,
                         Arc::clone(&shared),
                         connection_stop.clone(),
                     ));
@@ -329,7 +439,7 @@ async fn accept_loop<S: VaultService>(
             },
         }
     }
-    drop(listener);
+    drop(incoming);
     let drain = async {
         while let Some(joined) = connections.join_next().await {
             log_join("IPC connection", joined);

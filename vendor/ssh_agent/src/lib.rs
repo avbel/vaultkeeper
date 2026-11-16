@@ -34,6 +34,8 @@ pub use agent::BitwardenSSHAgent;
 pub use approval::{ApprovalError, ApprovalRequester, SignApprovalRequest};
 pub use authorization::BitwardenAuthPolicy;
 pub use crypto::PublicKey;
+#[cfg(windows)]
+pub use server::PipeNameTaken;
 pub use server::{
     AuthRequest, ConnectionContext, SIGNamespace, SessionBindContext, SignFlags, SignRequest,
 };

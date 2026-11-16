@@ -1,12 +1,15 @@
 //! The small hooks: autostart, generator, SSH key tool, URL opener, file panels, the hotkey and SSH
 //! agent controls (both owned by the daemon; the UI only validates and saves the setting).
 
-use std::{path::PathBuf, process::Command, str::FromStr};
+use std::{path::PathBuf, str::FromStr};
+
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 use vk_gen::generator::{
     PassphraseOptions, PasswordOptions, generate_passphrase, generate_password,
 };
-use vk_ipc::UiNotice;
+use vk_ipc::{UiNotice, transport::Endpoint};
 use zeroize::Zeroizing;
 
 use super::Notifier;
@@ -69,19 +72,58 @@ pub fn web_url(text: &str) -> HookResult<url::Url> {
 
 impl UrlOpener for BrowserOpener {
     fn open(&self, url: &str) -> HookResult<()> {
-        let url = web_url(url)?;
-        let mut child = Command::new("/usr/bin/open")
-            .arg(url.as_str())
-            .spawn()
-            .map_err(|error| HookError::Failed(format!("Cannot open the link: {error}")))?;
-        // Reaped off the UI thread; `open` returns as soon as it handed the URL over.
-        std::thread::spawn(move || {
-            if let Err(error) = child.wait() {
-                tracing::debug!(%error, "open(1) wait failed");
-            }
-        });
-        Ok(())
+        open_in_browser(&web_url(url)?)
     }
+}
+
+/// The default browser. [`web_url`] already limited the scheme to http/https.
+#[cfg(target_os = "macos")]
+pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
+    let mut child = Command::new("/usr/bin/open")
+        .arg(url.as_str())
+        .spawn()
+        .map_err(|error| HookError::Failed(format!("Cannot open the link: {error}")))?;
+    // Reaped off the UI thread; `open` returns as soon as it handed the URL over.
+    std::thread::spawn(move || {
+        if let Err(error) = child.wait() {
+            tracing::debug!(%error, "open(1) wait failed");
+        }
+    });
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = std::ffi::OsStr::new(url.as_str())
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is NUL-terminated and lives for the call; a null owner window is fine for
+    // "open", and ShellExecuteW reports failure by returning a value at most 32.
+    let result = unsafe {
+        windows_sys::Win32::UI::Shell::ShellExecuteW(
+            std::ptr::null_mut(),
+            windows_sys::w!("open"),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        )
+    };
+    if result as usize <= 32 {
+        return Err(HookError::Failed(format!(
+            "Cannot open the link: ShellExecuteW failed with {}",
+            result as usize
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
+    let _ = url;
+    Err(HookError::Unavailable("Opening links"))
 }
 
 /// Native panels (rfd); they run modally on the main thread, where the UI calls them.
@@ -102,7 +144,7 @@ impl FilePanels {
 
 impl FileDialogs for FilePanels {
     fn save_file(&self, suggested_name: &str) -> Option<PathBuf> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.modal(|| {
                 rfd::FileDialog::new()
@@ -110,7 +152,7 @@ impl FileDialogs for FilePanels {
                     .save_file()
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = suggested_name;
             None
@@ -118,11 +160,11 @@ impl FileDialogs for FilePanels {
     }
 
     fn open_file(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.modal(|| rfd::FileDialog::new().pick_file())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             None
         }
@@ -148,7 +190,7 @@ impl GlobalHotkey for HotkeyBinding {
 
 /// The daemon starts and stops the agent when it re-reads the saved setting.
 pub struct AgentSocket {
-    pub path: PathBuf,
+    pub endpoint: Endpoint,
 }
 
 impl SshAgentControl for AgentSocket {
@@ -157,7 +199,7 @@ impl SshAgentControl for AgentSocket {
     }
 
     fn socket_path(&self) -> String {
-        self.path.display().to_string()
+        self.endpoint.to_string()
     }
 }
 

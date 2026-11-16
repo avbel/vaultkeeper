@@ -1,4 +1,4 @@
-use std::{os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use tokio::sync::watch;
 use vk_vault::{
@@ -38,8 +38,17 @@ fn unit(reply: &Reply) -> Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn path_bytes(path: &std::path::Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+
     path.as_os_str().as_bytes().to_vec()
+}
+
+/// Windows has no byte view of a path; the daemon rebuilds it from UTF-8 (steps 1g, 1o).
+#[cfg(not(unix))]
+fn path_bytes(path: &std::path::Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
 }
 
 fn convert_all<D, T: From<D>>(items: Vec<D>) -> Vec<T> {
@@ -361,17 +370,28 @@ impl VaultService for RemoteVault {
 impl RemoteVault {
     /// Has the daemon wrap the active account's user key for Touch ID. Blocking; the outer error
     /// is a vault or transport failure (e.g. `Locked`), the inner one a Touch ID failure.
-    pub fn enroll_touch_id(&self, account_id: &str) -> Result<Result<(), TouchIdFailure>> {
+    /// `parent_window` is this process's window for the system prompt (Windows), if it has one.
+    pub fn enroll_touch_id(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> Result<Result<(), TouchIdFailure>> {
         touch_id(&self.call_blocking(Call::EnrollTouchId {
             account_id: account_id.to_owned(),
+            parent_window,
         })?)
     }
 
     /// The daemon shows the Touch ID prompt and unlocks `account_id`; blocks until the user
     /// answers, so call it off the UI thread.
-    pub fn unlock_with_touch_id(&self, account_id: &str) -> Result<Result<(), TouchIdFailure>> {
+    pub fn unlock_with_touch_id(
+        &self,
+        account_id: &str,
+        parent_window: Option<u64>,
+    ) -> Result<Result<(), TouchIdFailure>> {
         touch_id(&self.call_blocking(Call::UnlockWithTouchId {
             account_id: account_id.to_owned(),
+            parent_window,
         })?)
     }
 }

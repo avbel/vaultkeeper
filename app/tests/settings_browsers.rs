@@ -20,6 +20,7 @@ fn the_browsers_section_writes_every_setting() {
     set_size(&window, 520.0, 2400.0);
     assert_eq!(window.get_browser_state(), "Off");
     assert!(window.get_chrome_installed());
+    assert!(window.get_edge_installed());
     assert!(window.get_firefox_installed());
     assert!(
         exists(&window, "Require Touch ID to fill"),
@@ -35,6 +36,7 @@ fn the_browsers_section_writes_every_setting() {
 
     click(&window, "Install for Firefox");
     click(&window, "Install for Google Chrome");
+    click(&window, "Install for Microsoft Edge");
     click(&window, "Require Touch ID to fill");
     click(&window, "Offer to save logins");
     click(&window, "Copy TOTP code after filling");
@@ -44,6 +46,7 @@ fn the_browsers_section_writes_every_setting() {
     let settings = saved(&h);
     assert!(!settings.browser_firefox);
     assert!(!settings.browser_chrome);
+    assert!(!settings.browser_edge);
     assert!(settings.browser_touch_id);
     assert!(!settings.browser_save_prompts);
     assert!(!settings.browser_copy_totp);

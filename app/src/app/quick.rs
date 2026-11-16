@@ -75,7 +75,7 @@ impl<S: VaultService> App<S> {
         window.set_rows(ModelRc::from(Rc::clone(&rows)));
         self.bind_quick(&window);
         window.set_locked(locked);
-        window.set_touch_id_available(self.touch_id_enrolled());
+        window.set_biometric_available(self.touch_id_enrolled());
         if let Some(origin) = self
             .hooks
             .placement
@@ -152,6 +152,11 @@ impl<S: VaultService> App<S> {
         // the panel that actually lost focus.
         let sender = window.as_weak();
         window.on_focus_lost(handler!(self, |app| {
+            // The Hello dialog takes the activation while it is up; closing the panel under it
+            // would drop the window it is parented to.
+            if cfg!(windows) && app.touch_id_in_flight.get() {
+                return;
+            }
             let current = app
                 .quick
                 .borrow()
@@ -172,7 +177,7 @@ impl<S: VaultService> App<S> {
         }));
         window.on_unlock(handler!(self, |app, password| app
             .unlock(zeroize::Zeroizing::new(password.to_string()))));
-        window.on_unlock_touch_id(handler!(self, |app| {
+        window.on_unlock_biometric(handler!(self, |app| {
             app.unlock_touch_id();
         }));
     }

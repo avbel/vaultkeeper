@@ -41,7 +41,7 @@ spike's window was dropped). See the "Step 0 result" section of
 - Auto-type of username and password into the previous app (key presses, no clipboard)
 - SSH agent for the vault's SSH keys, with approval prompts and optional Touch ID
 - Read-only [CLI access](#cli-access) for individual logins you choose to share
-- Chrome and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
+- Chrome, Edge and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
 - Touch ID unlock (key wrapped to the Secure Enclave)
 - Multiple accounts
 - Offline mode from an encrypted local cache
@@ -65,7 +65,7 @@ spike's window was dropped). See the "Step 0 result" section of
    "Apple could not verify…". Open it once, then choose **Open Anyway** in System Settings → Privacy & Security, or run
    `xattr -dr com.apple.quarantine /Applications/Vaultkeeper.app`. From version 0.1.7 on, only the first install
    needs this: later versions install from the tray or automatically (see "Updates" in [docs/USAGE.md](docs/USAGE.md)).
-3. For the browser extension, install Vaultkeeper from the Chrome Web Store or
+3. For the browser extension, install Vaultkeeper from the Chrome Web Store (Chrome and Edge) or
    [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/) and turn on browser integration in the
    app's settings.
 
@@ -199,19 +199,29 @@ Phases:
 
 1. **Platform traits.** Put each platform service (secret storage, biometrics, autostart, clipboard, hotkeys, auto-type,
    IPC peer check, power and network events) behind a trait, with the macOS implementation first and no behavior change.
-2. **Linux.**
-   - Refresh tokens in Secret Service (libsecret).
-   - Autostart through a freedesktop `.desktop` file.
-   - IPC peer check with `SO_PEERCRED` plus an executable check.
-   - Clipboard and global hotkeys for X11 and Wayland (Wayland support varies by compositor).
-   - Biometrics through polkit/fprintd, or none.
+2. **Linux**, Wayland only: GNOME, KDE Plasma, Sway and Hyprland. Research, support matrix and open decisions:
+   [docs/solutions/linux-support.md](docs/solutions/linux-support.md).
+   - No keyring daemon: the refresh token is sealed under a key derived from the vault's user key, in an owner-only file.
+   - Tray through StatusNotifierItem, with a symbolic icon the panel recolours and a blue fallback. GNOME needs the
+     AppIndicator extension; without a tray host, `--tray` opens the window instead.
+   - Global hotkeys through the GlobalShortcuts portal, or `vaultkeeper --quick` bound in the compositor (Sway).
+   - Clipboard and auto-clear through Wayland data-control. Auto-type through the RemoteDesktop portal (GNOME, KDE) or
+     the virtual-keyboard protocol (Sway, Hyprland).
+   - Quick unlock through polkit, so PAM picks the method: fingerprint, Howdy, a security key or the login password.
+     Shown only when Vaultkeeper's polkit action is installed (the packages ship it). The user key stays in non-dumpable
+     `memfd_secret` memory after a master-password unlock, so every restart needs the master password.
+   - Lock on screen lock and sleep through the ScreenSaver interfaces and logind.
+   - Autostart through XDG autostart or the Background portal; Sway and Hyprland start it from their config.
+   - IPC peer check with `SO_PEERCRED`/`SO_PEERPIDFD` and the peer executable's device and inode, plus startup checks of
+     file ownership, modes and symlinks.
    - The Unix-socket SSH agent already works.
 3. **Windows.**
    - Credential Manager or DPAPI for tokens, Windows Hello for biometrics.
    - IPC over named pipes with a client process check.
    - The Windows OpenSSH agent named pipe.
    - Autostart through the registry Run key, auto-type through `SendInput`.
-4. **CI and packaging.** A CI matrix for macOS, Linux and Windows, then packages: dmg, AppImage or Flatpak, MSI.
+4. **CI and packaging.** A CI matrix for macOS, Linux and Windows, then packages: dmg, AppImage, .deb/.rpm, MSI.
+   Flatpak does not fit: the SSH agent socket, the browser host and auto-type all conflict with its sandbox.
 
 ## License
 

@@ -5,17 +5,58 @@ direct sensor access). Date: 2026-11-13.
 Marks: **[v]** = checked in a primary source or in code during this research; **[i]** = inferred or from memory, check on a
 real machine. Design recommendations in §3–§5 and §8 come from a security design review (Fable) of this research.
 
+## Implementation
+
+Build plan: `.plan/windows-support.md`. How to test on hardware: `windows-testing-guide.md` and `windows-test-checklist.md` (same directory). This document is the research; where CI proved it wrong, the section says so ("CI result").
+
+Scope as built: Windows 11 24H2+ on **x64 and ARM64** (§9). The maintainer's only test laptop is Snapdragon, so every test artifact exists per architecture, `hello_check.exe` included.
+
+Decided:
+
+- Inno Setup per-user installer (`%LOCALAPPDATA%\Programs\Vaultkeeper`), no UAC.
+- Code signing is optional: signtool with a PFX, or SignPath. An unsigned build still releases, but the updater and winget need a signed one.
+- winget is submitted from CI, for signed releases only.
+- Default hotkey Ctrl+Shift+Space. Capture exclusion is on by default.
+- A `Global\` mutex allows one daemon per user.
+- Process hardening switches that can break IME, file dialogs or screen readers stay off unless `VAULTKEEPER_STRICT_MITIGATIONS=1`; the hardware run decides the default.
+
+Status:
+
+| Area | Status |
+|---|---|
+| Transport seam, named pipes (UI, CLI, browser host), peer checks, data directory ACL checks, token and sealed stores, single instance, SSH agent pipe, update signature check, installer build | Built, CI-tested on `windows-latest` |
+| Windows Hello unlock (Passport KSP), "SSH requires Windows Hello", auto-type, security keys (`webauthn.dll`), tray theme and DPI, hotkey, capture exclusion, browser registration and native host, strict mitigations, installer, self-update, winget | Built, needs hardware (checklist) |
+| ARM64 build, CI (`windows-11-arm`: tests, pipes, test artifact), installer, updater asset, winget | Built, needs a Snapdragon run (checklist) |
+| Per-machine MSI, Store MSIX | Not built |
+
+CI results that differ from the research:
+
+- §5.3: the pipe DACL `0x12019b` (no create-instance) works for `ssh.exe`; an `ssh-add.exe -l` test in CI proves it. But the pool cannot be created under it: it denies us `FILE_CREATE_PIPE_INSTANCE` and the owner ACE strips `WRITE_DAC`. Create every instance from a setup DACL that grants create-instance and `WRITE_DAC`, then apply the final DACL.
+- §5.3: clients must open the pipe with an explicit access mask. `GENERIC_WRITE` includes `FILE_APPEND_DATA`, the bit the DACL withholds, so the open is refused.
+- §5.3: tokio and mio keep read/write slot state across `DisconnectNamedPipe`, so a recycled instance hands the next client the previous client's `ERROR_BROKEN_PIPE`. The slot must be reset (`vendor/PATCHES.md`). Recycling also waits for the client to close first, because disconnecting discards unread replies. Every idle instance needs its own accept task: Windows attaches a client to any listening instance.
+- §4.4: SDDL text shows well-known accounts as aliases (`LA` is the built-in Administrator), so string comparison took it for a foreign ACE. Compare binary SIDs (`EqualSid`, `IsWellKnownSid`).
+- §8.2: a file can be catalog-signed instead of carrying an embedded Authenticode signature. "No embedded signer" is a normal answer, not an error.
+- Windows checkouts convert LF to CRLF, which broke the `include_str!` passphrase wordlist. `.gitattributes` pins LF.
+
+Before the first Windows release:
+
+1. Create the update key with `openssl genpkey -algorithm ed25519` and embed its public key in `app/src/daemon/update/signature.rs`. Until then the placeholder key makes every verification fail, so no update installs.
+2. Choose signing: apply to SignPath, or buy an OV certificate. Add the secrets (`WINDOWS_SIGN_PFX`, `WINDOWS_SIGN_PFX_PASSWORD`, or `SIGNPATH_API_TOKEN`, `SIGNPATH_ORGANIZATION_ID`) and `UPDATE_SIGNING_KEY` (the private PEM) to the `release` environment.
+3. Create the `release` and `winget` environments. `winget` holds `WINGET_TOKEN`, a classic PAT with `public_repo` scope.
+4. Fork microsoft/winget-pkgs and submit the first version by hand (`packaging/winget/README.md`). CI only updates an existing package.
+5. Run the hardware checklist, starting with Hello and the strict-mitigations run.
+
 ## 0. Short answers
 
 | Question | Answer |
 |---|---|
 | How hard? | Medium. Crypto, API, vault, generator and most of the UI are portable, and several Windows pieces already exist in crates we use: Slint's tray, `global-hotkey`, `arboard`, `auto-launch` and the vendored SSH agent's named-pipe listener. Most of the new work is security plumbing: named-pipe IPC, file ACLs, process hardening, Windows Hello, `webauthn.dll` for security keys, and code signing. Estimate: MVP 6–9 weeks, parity with macOS 15–20 weeks (one developer, §11). |
 | Windows Hello instead of Touch ID? | Wrap the user key to a Hello-gated RSA key in the Microsoft Passport key storage provider (NCrypt). Enrolment encrypts to its public key without a prompt; each unlock is one Hello-gated decrypt. That is the same shape as the Secure Enclave design, and unlike Bitwarden's and KeePassXC's "hash a Hello signature" trick it does not rely on signatures being deterministic, which Microsoft never promised. Keep the persistent mode, so a restart needs no master password. Needs a spike on real hardware first (§3). |
-| How to organise encryption and file permissions? | Everything goes in `%LOCALAPPDATA%\Vaultkeeper`, not Roaming. One protected ACL on the directory: user, SYSTEM and Administrators, plus a "no read up" integrity label. The refresh token is sealed under a key derived from the user key (the Linux design) and then DPAPI-wrapped. The 2FA-remember token is DPAPI only. The Hello file is bound to the TPM key. No Credential Manager. Startup checks repair or refuse (§4). |
+| How to organise encryption and file permissions? | Everything goes in `%LOCALAPPDATA%\vaultkeeper\data` (logs in `...\vaultkeeper\logs`), not Roaming. One protected ACL on the directory: user, SYSTEM and Administrators, plus a "no read up" integrity label. The refresh token is sealed under a key derived from the user key (the Linux design) and then DPAPI-wrapped. The 2FA-remember token is DPAPI only. The Hello file is bound to the TPM key. No Credential Manager. Startup checks repair or refuse (§4). |
 | ARM64 easy to add? | Yes. `aarch64-pc-windows-msvc` has been Tier 1 since Rust 1.91 [v], GitHub's `windows-11-arm` runners are GA for public repos [v], and the only crate in the tree that compiles C is `aws-lc-sys`, which needs clang-cl on ARM64 [v]. An x64 build also runs on ARM64 under emulation [i]. The cost is a second CI job, a second installer and a Hello test on real Snapdragon hardware: about 2–4 days (§9). |
 | Is 24H2 a good floor? | Yes. Only the detached console policy needs it, and that policy lets one binary serve both the GUI and the CLI (§7.11) [v]. The recommended Hello design uses Windows 10-era APIs. Home/Pro 24H2 servicing ended 2026-10-14; Enterprise/Education 24H2 runs to 2027-10-13 [v]. |
 | Can it ship self-signed like the macOS build? | No. Smart App Control blocks unsigned and self-signed apps when its cloud check is unsure, and users can now turn it on without reinstalling [v]. SignPath Foundation signs open-source projects for free [v] (§8). |
-| Tray icon | Default Blue, with Auto, White and Black as options (§7.1). |
+| Tray icon | Default Auto (follows the taskbar theme), with White, Black and Blue as options (§7.1). |
 
 ## 1. What changes compared with the README roadmap
 
@@ -64,8 +105,10 @@ Code that is macOS-only today, found with `grep -rln 'target_os = "macos"'`: 26 
   KeePassWinHello's is `<SID>//KeePassWinHello//KeePassWinHello` [v: from its issue thread], ours would be
   `<SID>//Vaultkeeper//Vaultkeeper` [i: exact format]. Creating it (`NCryptCreatePersistedKey` + `NCryptFinalizeKey`) prompts once per
   machine [i].
-- **Enrol, no prompt.** `NCryptExportKey(BCRYPT_RSAPUBLIC_BLOB)`, then RSA-OAEP-SHA256 (`NCRYPT_PAD_OAEP_FLAG`) of a fresh random 32-byte
-  key-encryption key, then AES-256-GCM of the user key under that key. If the KSP refuses OAEP, fall back to PKCS#1 v1.5 padding [i].
+- **Enrol, no prompt.** `NCryptExportKey(BCRYPT_RSAPUBLIC_BLOB)`, then RSA PKCS#1 v1.5 (`NCRYPT_PAD_PKCS1_FLAG`) of a fresh random 32-byte
+  key-encryption key, then AES-256-GCM of the user key under that key. The Passport KSP rejects OAEP with `NTE_INVALID_PARAMETER`
+  [v: measured on a Windows 11 x64 laptop; KeePassWinHello and Keyguard also use PKCS#1 v1.5]. A padding oracle is not practical:
+  every decrypt needs a Hello gesture, and the unwrapped KEK is checked by the envelope's AES-GCM tag.
   Re-enrolling after a user-key rotation, or for a second account, needs no prompt, as on macOS. With the signature trick
   Bitwarden has to keep the derived key in DPAPI memory to avoid a second prompt [v].
 - **Unlock, one prompt.** `NCryptDecrypt` on the wrapped key, with `NCRYPT_WINDOW_HANDLE_PROPERTY` (parent window, §3.3),
@@ -76,8 +119,8 @@ Code that is macOS-only today, found with `grep -rln 'target_os = "macos"'`: 26 
   macOS invariant "locking zeroizes the user key"; every unlock is one decrypt, with no Bitwarden-style key held while locked.
 - **Envelope.** Mirror `biometric/envelope.rs`, version 2:
   `magic ‖ version ‖ primitive_id ‖ key name ‖ public key blob ‖ user SID ‖ wrapped KEK ‖ nonce ‖ ciphertext+tag`, length-prefixed, the
-  whole header as AES-GCM associated data. Primitive ids: 1 = Secure Enclave P-256 ECDH (macOS), 2 = Passport RSA-OAEP KEK, 3 = reserved
-  for the KeyCredential signature PRF, 4 = reserved for `RequestDeriveSharedSecretAsync`. Store the public key so unlock can tell a
+  whole header as AES-GCM associated data. Primitive ids: 1 = Secure Enclave P-256 ECDH (macOS), 2 = retired (RSA-OAEP, never written), 3 = reserved
+  for the KeyCredential signature PRF, 4 = reserved for `RequestDeriveSharedSecretAsync`, 5 = Passport RSA PKCS#1 v1.5 KEK. Store the public key so unlock can tell a
   recreated key (a PIN reset deletes the container) and report `BiometricInvalidated`, not a decrypt error. Switching primitive
   later is a new id; the old one is rejected as "enrol again".
 - **Errors** keep the invariant from `biometric.rs`: only definitive outcomes are `BiometricInvalidated`, because the app deletes
@@ -147,7 +190,7 @@ Same-user processes can still use the daemon's pipes while the vault is unlocked
 
 ### 4.2 Location
 
-`%LOCALAPPDATA%\Vaultkeeper`, through `ProjectDirs::data_local_dir()`. `paths.rs` uses `data_dir()` today, which on Windows is
+`%LOCALAPPDATA%\vaultkeeper\data`, through `ProjectDirs::data_local_dir()` (logs sit beside it in `%LOCALAPPDATA%\vaultkeeper\logs`). `paths.rs` uses `data_dir()` today, which on Windows is
 **Roaming** AppData [v: `directories-6.0.0/src/win.rs`]; roaming profiles would copy tokens and the Hello file to machines where they are
 useless or harmful.
 
@@ -211,7 +254,7 @@ and inject before hardening runs, or simply run their own copy. It is the Window
   - `/DEPENDENTLOADFLAG:0x800` (`LOAD_LIBRARY_SEARCH_SYSTEM32`) for static imports: free, and it closes DLL planting next to a
     per-user exe. Add `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` first thing for runtime loads.
   - `+crt-static`, because `vcruntime140.dll` is not a KnownDLL.
-  - `-C control-flow-guard`, and `/CETCOMPAT` on x64.
+  - `-C control-flow-guard`, and `/CETCOMPAT` plus `target-cpu=x86-64-v2` on x64 only.
 - **Crash dumps.** `panic = "abort"` already; Windows Error Reporting can still write dumps if LocalDumps is configured.
   `WerRegisterExcludedMemoryBlock` around secure-memory pages is an option [i].
 
@@ -419,14 +462,21 @@ open-source program (theirs or the project's) [i]; it decides what SmartScreen r
 
 ### 8.3 Update trust
 
-- The primary anchor is an **Ed25519 (minisign-style) key embedded in the binary**, shared with the Linux plan. It survives a change
+- The primary anchor is an **Ed25519 key embedded in the binary**, shared with the Linux plan. It survives a change
   of signing certificate, which the README calls a reinstall-by-hand event on macOS. Rotate it by shipping a "next key" signed by
   the old one.
+- **As built:** each asset has a `.minisig` file in a minisign-style container, but our own format, **not minisign-compatible**. The
+  signature is Ed25519 over `"Ed" || key id || SHA-512(asset)` (algorithm "Ed", prehash), and a second one covers the trusted
+  comment `vaultkeeper <version> <asset>`, so a signature cannot be replayed for another version or file. CI produces it with
+  `openssl`, since stock minisign cannot. Create the key with `openssl genpkey -algorithm ed25519` and embed its public key in
+  `app/src/daemon/update/signature.rs`. The placeholder there fails closed: nothing verifies until the real key is in.
 - Also require a valid Authenticode chain, so Smart App Control accepts the installed binary, but do not pin the publisher.
 - Install: download, verify, rename the running exe aside (Windows allows that), move the new one in, restart the daemon, and
   delete the old file on the next start [i].
 
 ## 9. ARM64
+
+**In scope (step 9a).** Built natively per architecture; the research below is what the implementation follows.
 
 - Toolchain: `aarch64-pc-windows-msvc` became Tier 1 in Rust 1.91 (2025-10-30) [v]. The repo pins 1.99.1.
 - CI: `windows-11-arm` hosted runners are GA for public repositories since 2025-08-07 [v].
@@ -434,17 +484,23 @@ open-source program (theirs or the project's) [i]; it decides what SmartScreen r
   `reqwest`, the websocket and the CLI's TLS, and by `rcgen`) as the only crate that builds C [v]. On ARM64 it needs clang-cl
   ("C++ Clang Compiler for Windows" in the VS Build Tools). On x64 it needs NASM or its `prebuilt-nasm` objects [v: aws-lc-rs
   docs]. Everything else is Rust or `windows`/`windows-sys`/`winapi` bindings [v].
-- An x64 build runs on ARM64 Windows 11 under emulation, so x64 can ship first [i].
+- An x64 build runs on ARM64 Windows 11 under emulation, but we ship a native build and the x64 installer refuses to install on ARM64 (`ArchitecturesAllowed=x64os`, not `x64compatible`), so nobody lands on the emulated one by accident [i].
 - Hello, `webauthn.dll` and named pipes have no architecture-specific code paths [i]. Still test Hello on a Snapdragon machine
   (face and fingerprint drivers differ). `/CETCOMPAT` is x64-only.
-- Release work: a second job, a second installer (or one installer carrying both), signing both, and a per-arch asset name the
-  updater picks.
+- As built: `[target.aarch64-pc-windows-msvc]` flags without x86-64-v2 and /CETCOMPAT; `VK_WIN_TARGET` in
+  `scripts/check-windows.sh`; ci.yml runs `windows`, `windows-pipes` and `windows-build` as a matrix over `windows-latest`
+  (x64) and `windows-11-arm` (arm64) with per-arch cache keys; release.yml builds and packages per arch (two installers,
+  `Vaultkeeper-v<ver>-x64-setup.exe` / `-arm64-setup.exe`, one AppId, both signed, both in SHA256SUMS and the winget
+  `installers-regex`); the updater picks the asset by `cfg(target_arch)`.
+- CI details: the `ensure-clang-cl` composite action uses Visual Studio's clang-cl and falls back to `choco install llvm`
+  (build jobs only, never the signing job). `AWS_LC_SYS_PREBUILT_NASM` is x64-only. The ARM64 package job installs Inno Setup
+  6.7.4 from the official release pinned by SHA-256 if the image lacks it, before any secret is read.
 
 ## 10. Open risks and decisions
 
 Risks to check on real machines (a Hello spike first, like step 0b of the architecture plan):
 
-1. Passport KSP: the key name format, OAEP support, the one-time prompt at creation, a window owned by another process as
+1. Passport KSP: the key name format, the one-time prompt at creation, a window owned by another process as
    `NCRYPT_WINDOW_HANDLE_PROPERTY`, the gesture-required property, face unlock without `0x80098044` after the foreground hand-off.
 2. Hello after a PIN reset, after removing Hello, over RDP, and in a VM without a TPM.
 3. `MicrosoftSignedOnly` in the daemon against antivirus hooks; `ProhibitDynamicCode` and `ExtensionPointDisable` in the UI with

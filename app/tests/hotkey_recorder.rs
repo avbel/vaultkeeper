@@ -9,10 +9,48 @@ use slint::{
     ComponentHandle, SharedString,
     platform::{Key, WindowEvent},
 };
-use vaultkeeper::{hooks::SettingsStore, settings::Settings};
+use vaultkeeper::{
+    hooks::SettingsStore,
+    settings::{DEFAULT_HOTKEY, Settings},
+};
 
 const QUICK: &str = "Quick Panel hotkey";
 const GENERATOR: &str = "Generator hotkey";
+
+const DEFAULT_SYMBOLS: &str = if cfg!(windows) {
+    "Ctrl+Shift+Space"
+} else {
+    "⇧⌘Space"
+};
+/// The default Quick Panel chord as the Slint keys that record it. Slint swaps ⌘ and ⌃ only on
+/// macOS: there `Control` is ⌘ and `Meta` is ⌃; on Windows `Control` is Ctrl and `Meta` is Win.
+const DEFAULT_CHORD: [Key; 2] = [Key::Control, Key::Shift];
+/// Ctrl+Shift as keys, accelerator and display.
+const CTRL_SHIFT_KEYS: [Key; 2] = if cfg!(windows) {
+    [Key::Control, Key::Shift]
+} else {
+    [Key::Meta, Key::Shift]
+};
+const CTRL_SHIFT_F5: &str = if cfg!(windows) {
+    "Ctrl+Shift+F5"
+} else {
+    "⌃⇧F5"
+};
+/// What recording `Control+Alt` plus a letter saves: ⌘+Alt on macOS, Ctrl+Alt on Windows.
+const MOD_ALT: &str = if cfg!(windows) { "Ctrl+Alt" } else { "Cmd+Alt" };
+const NEEDS_MODIFIER: &str = if cfg!(windows) {
+    "Ctrl, Alt or Win"
+} else {
+    "⌘, ⌥ or ⌃"
+};
+
+fn mod_alt_shown(key: &str) -> String {
+    if cfg!(windows) {
+        format!("Ctrl+Alt+{key}")
+    } else {
+        format!("⌥⌘{key}")
+    }
+}
 
 fn open(setup: Setup) -> (Harness, vaultkeeper::ui::SettingsWindow) {
     let h = harness(setup);
@@ -71,14 +109,18 @@ fn recording_the_quick_panel_hotkey_saves_it_at_once() {
     let (h, window) = open(Setup::default());
     assert_eq!(
         value_of(&window, QUICK),
-        "⇧⌘Space",
+        DEFAULT_SYMBOLS,
         "the default in symbols"
     );
     click(&window, QUICK);
     assert_eq!(value_of(&window, QUICK), "Press a shortcut…");
     press(&window, &[Key::Control, Key::Alt], "k");
-    assert_eq!(saved(&h).hotkey, "Cmd+Alt+K");
-    assert_eq!(value_of(&window, QUICK), "⌥⌘K", "recording ended");
+    assert_eq!(saved(&h).hotkey, format!("{MOD_ALT}+K"));
+    assert_eq!(
+        value_of(&window, QUICK),
+        mod_alt_shown("K"),
+        "recording ended"
+    );
     assert_eq!(window.get_recording_slot(), 0);
     assert_eq!(window.get_error_text(), "");
 }
@@ -89,9 +131,9 @@ fn recording_the_generator_hotkey_saves_it_and_delete_clears_it() {
     assert_eq!(value_of(&window, GENERATOR), "None");
     click(&window, GENERATOR);
     assert_eq!(window.get_recording_slot(), 2);
-    press(&window, &[Key::Meta, Key::Shift], &special(Key::F5));
+    press(&window, &CTRL_SHIFT_KEYS, &special(Key::F5));
     assert_eq!(saved(&h).generator_hotkey, "Ctrl+Shift+F5");
-    assert_eq!(value_of(&window, GENERATOR), "⌃⇧F5");
+    assert_eq!(value_of(&window, GENERATOR), CTRL_SHIFT_F5);
     click(&window, GENERATOR);
     press(&window, &[], &special(Key::Backspace));
     assert_eq!(saved(&h).generator_hotkey, "");
@@ -104,9 +146,9 @@ fn delete_does_not_clear_the_quick_panel_hotkey() {
     let (h, window) = open(Setup::default());
     click(&window, QUICK);
     press(&window, &[], &special(Key::Delete));
-    assert_eq!(saved(&h).hotkey, "Cmd+Shift+Space");
+    assert_eq!(saved(&h).hotkey, DEFAULT_HOTKEY);
     assert!(
-        window.get_error_text().contains('⌘'),
+        window.get_error_text().contains(NEEDS_MODIFIER),
         "{}",
         window.get_error_text()
     );
@@ -133,7 +175,7 @@ fn shift_alone_or_no_modifier_is_refused_and_keeps_recording() {
     click(&window, GENERATOR);
     press(&window, &[Key::Shift], "G");
     assert_eq!(saved(&h).generator_hotkey, "");
-    assert!(window.get_error_text().contains("⌘, ⌥ or ⌃"));
+    assert!(window.get_error_text().contains(NEEDS_MODIFIER));
     press(&window, &[], "g");
     assert_eq!(saved(&h).generator_hotkey, "");
     assert_eq!(
@@ -142,7 +184,7 @@ fn shift_alone_or_no_modifier_is_refused_and_keeps_recording() {
         "still waiting for a shortcut"
     );
     press(&window, &[Key::Control, Key::Alt], "g");
-    assert_eq!(saved(&h).generator_hotkey, "Cmd+Alt+G");
+    assert_eq!(saved(&h).generator_hotkey, format!("{MOD_ALT}+G"));
     assert_eq!(window.get_error_text(), "", "the error goes once saved");
 }
 
@@ -160,40 +202,40 @@ fn a_modifier_press_alone_keeps_waiting_without_an_error() {
 fn the_other_slots_shortcut_is_refused_both_ways() {
     let (h, window) = open(Setup {
         settings: Settings {
-            generator_hotkey: "Cmd+Alt+G".to_owned(),
+            generator_hotkey: format!("{MOD_ALT}+G"),
             ..Settings::default()
         },
         ..Setup::default()
     });
     click(&window, GENERATOR);
-    press(&window, &[Key::Control, Key::Shift], " ");
-    assert_eq!(saved(&h).generator_hotkey, "Cmd+Alt+G");
+    press(&window, &DEFAULT_CHORD, " ");
+    assert_eq!(saved(&h).generator_hotkey, format!("{MOD_ALT}+G"));
     assert!(window.get_error_text().contains("Quick Panel"));
     assert_eq!(value_of(&window, GENERATOR), "Press a shortcut…");
     press(&window, &[], &special(Key::Escape));
     assert_eq!(
         value_of(&window, GENERATOR),
-        "⌥⌘G",
+        mod_alt_shown("G"),
         "the refused one is not shown"
     );
     click(&window, QUICK);
     press(&window, &[Key::Alt, Key::Control], "g");
-    assert_eq!(saved(&h).hotkey, "Cmd+Shift+Space");
+    assert_eq!(saved(&h).hotkey, DEFAULT_HOTKEY);
     assert!(window.get_error_text().contains("Generator"));
 }
 
 #[test]
 fn the_accessibility_set_value_saves_an_accelerator() {
     let (h, window) = open(Setup::default());
-    recorder(&window, GENERATOR).set_accessible_value("Cmd+Alt+G");
+    recorder(&window, GENERATOR).set_accessible_value(format!("{MOD_ALT}+G"));
     pump();
-    assert_eq!(saved(&h).generator_hotkey, "Cmd+Alt+G");
-    assert_eq!(value_of(&window, GENERATOR), "⌥⌘G");
+    assert_eq!(saved(&h).generator_hotkey, format!("{MOD_ALT}+G"));
+    assert_eq!(value_of(&window, GENERATOR), mod_alt_shown("G"));
     recorder(&window, QUICK).set_accessible_value("");
     pump();
     assert_eq!(
         saved(&h).hotkey,
-        "Cmd+Shift+Space",
+        DEFAULT_HOTKEY,
         "the Quick Panel keeps a hotkey"
     );
     assert!(window.get_error_text().contains("needs a hotkey"));

@@ -1,10 +1,15 @@
-//! Auto-type on macOS: Accessibility trust, the frontmost app, and posting the keystrokes.
+//! Auto-type on macOS and Windows: Accessibility trust, the frontmost app, and posting the keystrokes.
 //!
 //! Everything runs on the UI thread from a repeating `slint::Timer`: `NSWorkspace` learns about
 //! activation changes from main-run-loop notifications, so a blocking wait there would never see
 //! the target come forward, and a timer tick is also the pause between keystrokes.
 
 use std::time::Duration;
+
+#[cfg(any(windows, test))]
+mod keys;
+#[cfg(windows)]
+mod windows;
 
 use crate::{
     autotype::Stroke,
@@ -13,6 +18,7 @@ use crate::{
 
 /// Pause between keystrokes and between checks while waiting. Not measured: a common pace for
 /// synthesized typing that browsers' per-key form handlers keep up with.
+#[cfg(any(target_os = "macos", windows))]
 const TICK: Duration = Duration::from_millis(15);
 /// How long the target may take to come back to the front.
 const ACTIVATE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -88,7 +94,11 @@ pub fn frontmost_any() -> Option<TypingTarget> {
     {
         macos::frontmost_any()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::frontmost_any()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         None
     }
@@ -114,7 +124,11 @@ impl AutoType for SystemAutoType {
         {
             macos::frontmost()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            windows::frontmost()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             None
         }
@@ -125,7 +139,13 @@ impl AutoType for SystemAutoType {
         {
             macos::is_trusted(prompt)
         }
-        #[cfg(not(target_os = "macos"))]
+        // Windows has no permission to ask for.
+        #[cfg(windows)]
+        {
+            let _ = prompt;
+            true
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = prompt;
             false
@@ -135,7 +155,9 @@ impl AutoType for SystemAutoType {
     fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone) {
         #[cfg(target_os = "macos")]
         macos::start(target, strokes, done);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        windows::start(target, strokes, done);
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             drop((target, strokes));
             done(Err(HookError::Unavailable("Auto-type")));
@@ -145,12 +167,16 @@ impl AutoType for SystemAutoType {
     fn cancel(&self) {
         #[cfg(target_os = "macos")]
         macos::cancel();
+        #[cfg(windows)]
+        windows::cancel();
     }
 
     fn give_focus_back(&self, target: &TypingTarget) {
         #[cfg(target_os = "macos")]
         macos::give_focus_back(target);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        windows::give_focus_back(target);
+        #[cfg(not(any(target_os = "macos", windows)))]
         let _ = target;
     }
 }

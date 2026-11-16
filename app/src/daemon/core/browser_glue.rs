@@ -32,7 +32,7 @@ use crate::{
         pairing::PairingStore,
         save::{Outcome as SaveOutcome, SaveError, SaveManager, SaveSettings},
     },
-    os::layout::{BROWSER_PAIRINGS_FILE, BROWSER_SOCKET},
+    os::layout::{BROWSER_PAIRINGS_FILE, browser_endpoint},
     settings::{BrowserMatch, Settings, ThemeChoice},
 };
 
@@ -89,6 +89,11 @@ const fn default_match(setting: BrowserMatch) -> DefaultMatch {
 
 /// The folder holding every app's data, as the Settings window sees it: the parent of ours.
 fn app_support(data_dir: &std::path::Path) -> PathBuf {
+    // Windows manifests live under the data dir itself; there is no per-browser Application
+    // Support tree to write into.
+    if cfg!(windows) {
+        return data_dir.to_path_buf();
+    }
     if cfg!(feature = "vw-it") {
         return data_dir.join("app-support");
     }
@@ -104,6 +109,7 @@ fn enabled_browsers(settings: &Settings) -> Vec<ManifestBrowser> {
     }
     [
         (settings.browser_chrome, ManifestBrowser::Chrome),
+        (settings.browser_edge, ManifestBrowser::Edge),
         (settings.browser_firefox, ManifestBrowser::Firefox),
     ]
     .into_iter()
@@ -149,18 +155,17 @@ impl Daemon {
             if let Some(previous) = previous {
                 let _ = previous.await;
             }
-            let control = match BrowserControl::start(
-                daemon.data_dir.join(BROWSER_SOCKET),
-                daemon.data_dir.join(BROWSER_PAIRINGS_FILE),
-            )
-            .await
-            {
-                Ok(control) => control,
-                Err(error) => {
-                    tracing::warn!(%error, "browser integration not started");
-                    return;
-                }
-            };
+            let socket = browser_endpoint(&daemon.data_dir);
+            let control =
+                match BrowserControl::start(socket, daemon.data_dir.join(BROWSER_PAIRINGS_FILE))
+                    .await
+                {
+                    Ok(control) => control,
+                    Err(error) => {
+                        tracing::warn!(%error, "browser integration not started");
+                        return;
+                    }
+                };
             *guard(&daemon.browser.store) = Some(control.store());
             let fills = Arc::new(RealFills {
                 vault: Arc::clone(&daemon.vault),
@@ -542,6 +547,7 @@ impl BrowserHost for DaemonBrowser {
         let settings = self.0.settings();
         let toggled = match browser {
             KnownBrowser::Chrome => settings.browser_chrome,
+            KnownBrowser::Edge => settings.browser_edge,
             KnownBrowser::Firefox => settings.browser_firefox,
         };
         settings.browser_integration && toggled && !self.0.quitting.load(Ordering::SeqCst)

@@ -62,6 +62,14 @@ pub fn command_for(command: vk_ipc::UiCommand) -> UiCommand {
         vk_ipc::UiCommand::ReloadSettings => UiCommand::ReloadSettings,
         vk_ipc::UiCommand::SyncFinished { error } => UiCommand::SyncFinished(error),
         vk_ipc::UiCommand::Toast { text, error } => UiCommand::Toast { text, error },
+        vk_ipc::UiCommand::SshAgentFailed { message } => UiCommand::SshAgentFailed(message),
+        vk_ipc::UiCommand::HotkeyIssues {
+            quick_panel,
+            generator,
+        } => UiCommand::HotkeyIssues {
+            quick_panel,
+            generator,
+        },
     }
 }
 
@@ -124,6 +132,19 @@ mod tests {
                     error: true,
                 },
                 r#"Toast { text: "saved", error: true }"#,
+            ),
+            (
+                vk_ipc::UiCommand::SshAgentFailed {
+                    message: "pipe taken".to_owned(),
+                },
+                r#"SshAgentFailed("pipe taken")"#,
+            ),
+            (
+                vk_ipc::UiCommand::HotkeyIssues {
+                    quick_panel: true,
+                    generator: false,
+                },
+                "HotkeyIssues { quick_panel: true, generator: false }",
             ),
         ];
         for (daemon, app) in pairs {

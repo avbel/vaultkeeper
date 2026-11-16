@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Clock } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Btn, BtnKind, Check, CopyBtn, Divider, Field, Icon, IconBtn, InlineConfirm, KindChip, MultiField, SectionLabel, Select, Spinner, TotpRing } from "kit.slint";
 
 export struct DetailHeader {
@@ -128,7 +129,7 @@ component DetailFieldRow inherits Rectangle {
             y: (parent.height - self.height) / 2;
             icon: @image-url("icons/external.svg");
             label: "Open " + root.field.label;
-            hint: "⌘⇧Return";
+            hint: Keys.cmd-shift + "Return";
             clicked => { root.open(); }
         }
         if root.field.copy >= 0: CopyBtn {
@@ -451,7 +452,7 @@ export component DetailView inherits Rectangle {
                     icon: root.header.favorite ? @image-url("icons/star-fill.svg") : @image-url("icons/star.svg");
                     tint: root.header.favorite ? Theme.warn : Theme.text-muted;
                     label: root.header.favorite ? "Remove from favorites" : "Add to favorites";
-                    hint: "⌘⇧F";
+                    hint: Keys.cmd-shift + "F";
                     enabled: root.header.editable && root.online;
                     clicked => { root.toggle-favorite(); }
                 }
@@ -550,7 +551,7 @@ export component DetailView inherits Rectangle {
                 alignment: start;
                 if !root.header.deleted && root.header.editable: Btn {
                     text: "Edit";
-                    hint: "⌘E";
+                    hint: Keys.cmd + "E";
                     has-icon: true;
                     icon: @image-url("icons/edit.svg");
                     enabled: root.online;

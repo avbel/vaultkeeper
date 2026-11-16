@@ -12,10 +12,13 @@ publish.workspace = true
 vw-it = []
 
 [dependencies]
+# Sealed token store: AES-256-GCM over a key derived from the user key (linux-support.md §5.1).
+aes-gcm = { workspace = true, features = ["zeroize"] }
 # `uriChecksum` (base64 of SHA-256); both already in the build through vk-crypto.
 base64.workspace = true
 # Send dates: the server's RFC 3339 deletion and expiration times.
 chrono.workspace = true
+hkdf.workspace = true
 vk-api.workspace = true
 vk-crypto.workspace = true
 vk-gen.workspace = true
@@ -25,6 +28,7 @@ nucleo-matcher = "0.3.1"
 # TLS backend as vk-api, so no new crates enter the build.
 reqwest = { workspace = true, features = ["stream"] }
 psl.workspace = true
+rand.workspace = true
 regex.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true

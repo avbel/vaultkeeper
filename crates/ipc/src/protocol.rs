@@ -15,7 +15,7 @@ use crate::dto::{
     SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -186,6 +186,17 @@ pub enum UiCommand {
         text: String,
         error: bool,
     },
+    /// The daemon could not start the SSH agent the saved setting asks for; `message` says why
+    /// and what to do. The UI turns the setting off so Settings does not show a dead agent as on.
+    SshAgentFailed {
+        message: String,
+    },
+    /// Which global shortcuts the OS refused to register (taken by another app or reserved).
+    /// Always the full picture, so it also clears a notice that no longer applies.
+    HotkeyIssues {
+        quick_panel: bool,
+        generator: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -316,6 +327,9 @@ pub enum TouchIdFailure {
     /// The UI asked for an account that is no longer the active one.
     #[error("the active account changed")]
     AccountChanged,
+    /// The system biometric has no gesture set up for this user (Windows Hello without a PIN).
+    #[error("biometric authentication is not set up")]
+    NotSetUp,
     #[error("{0}")]
     Failed(String),
 }
@@ -338,10 +352,16 @@ pub enum Call {
     /// in the Secure Enclave. Never prompts.
     EnrollTouchId {
         account_id: String,
+        /// The UI's window handle (Windows) so the Hello dialog is parented to it; the daemon
+        /// checks that it belongs to its UI child before using it. Other platforms leave it unset.
+        #[serde(default)]
+        parent_window: Option<u64>,
     },
     /// The daemon shows the Touch ID prompt, unwraps the key and unlocks `account_id`.
     UnlockWithTouchId {
         account_id: String,
+        #[serde(default)]
+        parent_window: Option<u64>,
     },
     VerifyMasterPassword(Zeroizing<String>),
     Lock,
@@ -531,7 +551,8 @@ mod tests {
         );
         assert_eq!(
             Call::UnlockWithTouchId {
-                account_id: "a".to_owned()
+                account_id: "a".to_owned(),
+                parent_window: None
             }
             .timeout(),
             LONG_TIMEOUT,
@@ -559,11 +580,18 @@ mod tests {
         let account_id = "a".to_owned();
         assert!(
             !Call::EnrollTouchId {
-                account_id: account_id.clone()
+                account_id: account_id.clone(),
+                parent_window: None
             }
             .changes_state()
         );
-        assert!(Call::UnlockWithTouchId { account_id }.changes_state());
+        assert!(
+            Call::UnlockWithTouchId {
+                account_id,
+                parent_window: None
+            }
+            .changes_state()
+        );
         assert!(
             !Call::CopyToClipboard {
                 text: Zeroizing::new("x".to_owned()),

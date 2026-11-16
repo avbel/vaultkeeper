@@ -18,6 +18,8 @@ pub(crate) use auth_policy::AuthPolicy;
 pub use auth_policy::{AuthRequest, ConnectionContext, SessionBindContext, SignRequest};
 use connection::{Connection, ConnectionHandler};
 pub(crate) use listener::Listener;
+#[cfg(windows)]
+pub use listener::PipeNameTaken;
 pub use protocol::{SIGNamespace, SignFlags};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -70,6 +72,13 @@ where
     #[cfg(unix)]
     pub(crate) fn start_at_socket_path(&mut self, socket_path: std::path::PathBuf) -> Result<()> {
         let listeners = listener::create_listeners_at(socket_path)?;
+        self.start(listeners)
+    }
+
+    /// vk patch: starts the server on an explicit Windows pipe name.
+    #[cfg(windows)]
+    pub(crate) fn start_on_pipe(&mut self, name: &str) -> Result<()> {
+        let listeners = listener::create_listeners_on(name)?;
         self.start(listeners)
     }
 

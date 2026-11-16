@@ -2,10 +2,11 @@
 //!
 //! Every function takes the `Application Support` root explicitly so tests can use a temp dir.
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
     fs,
     io::{self, Write as _},
-    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
 };
 
@@ -16,6 +17,10 @@ use super::ids;
 pub const HOST_NAME: &str = "org.vaultkeeper.browser";
 pub const MANIFEST_FILE: &str = "org.vaultkeeper.browser.json";
 const HOSTS_DIR: &str = "NativeMessagingHosts";
+/// Subdirectory of the data dir holding the per-user Windows manifests; the registry keys point at
+/// a file inside it (§7.8).
+pub const WINDOWS_MANIFESTS_DIR: &str = "native-messaging";
+#[cfg(unix)]
 const MANIFEST_MODE: u32 = 0o644;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,12 +73,71 @@ impl ManifestBrowser {
     }
 
     #[must_use]
+    #[cfg(not(windows))]
     pub fn installed(self, app_support: &Path) -> bool {
         app_support.join(self.parent_dir()).is_dir()
     }
 
+    /// Browsers keep their profiles in the per-user app-data trees, not under our data dir.
+    #[must_use]
+    #[cfg(windows)]
+    pub fn installed(self, _data_dir: &Path) -> bool {
+        let var = if self.is_firefox() {
+            "APPDATA"
+        } else {
+            "LOCALAPPDATA"
+        };
+        std::env::var_os(var).is_some_and(|base| Path::new(&base).join(self.parent_dir()).is_dir())
+    }
+
     const fn is_firefox(self) -> bool {
         matches!(self, Self::Firefox)
+    }
+
+    /// The vendor segment of the Windows registry path. Backslash-separated and spelled without a
+    /// space, unlike [`Self::parent_dir`], which is slash-separated for the macOS file layout.
+    const fn registry_software_key(self) -> &'static str {
+        match self {
+            Self::Chrome => r"Google\Chrome",
+            Self::Chromium => "Chromium",
+            Self::Brave => r"BraveSoftware\Brave-Browser",
+            Self::Edge => r"Microsoft\Edge",
+            Self::Firefox => "Mozilla",
+        }
+    }
+
+    /// The full `HKCU` subkey whose default value points at this browser's manifest (§7.8).
+    #[must_use]
+    pub fn registry_key(self) -> String {
+        self.registry_key_under("Software")
+    }
+
+    /// [`Self::registry_key`] below another base key, so tests can write somewhere disposable.
+    #[must_use]
+    pub fn registry_key_under(self, base: &str) -> String {
+        format!(
+            "{base}\\{}\\NativeMessagingHosts\\{HOST_NAME}",
+            self.registry_software_key()
+        )
+    }
+
+    /// A stable suffix so the five manifests can share one directory.
+    const fn manifest_file_stem(self) -> &'static str {
+        match self {
+            Self::Chrome => "chrome",
+            Self::Chromium => "chromium",
+            Self::Brave => "brave",
+            Self::Edge => "edge",
+            Self::Firefox => "firefox",
+        }
+    }
+
+    /// Where the Windows manifest file lives under the data dir; the registry points at it.
+    #[must_use]
+    pub fn windows_manifest_path(self, data_dir: &Path) -> PathBuf {
+        data_dir
+            .join(WINDOWS_MANIFESTS_DIR)
+            .join(format!("{HOST_NAME}.{}.json", self.manifest_file_stem()))
     }
 }
 
@@ -136,9 +200,18 @@ pub fn render(browser: ManifestBrowser, exe_path: &Path, ids: &ExtensionIds<'_>)
 
 /// The manifest must name the binary that actually runs, so symlinks are resolved.
 pub fn current_exe_path() -> io::Result<PathBuf> {
-    fs::canonicalize(std::env::current_exe()?)
+    let exe = std::env::current_exe()?;
+    // `canonicalize` resolves the .app bundle symlinks on macOS but adds a `\\?\` verbatim prefix
+    // on Windows, which does not belong in a manifest `path` a browser will spawn.
+    #[cfg(not(windows))]
+    let exe = fs::canonicalize(exe)?;
+    Ok(exe)
 }
 
+#[cfg(windows)]
+pub use crate::os::browser::windows::{check_and_restore, install, remove};
+
+#[cfg(not(windows))]
 pub fn install(
     app_support: &Path,
     browser: ManifestBrowser,
@@ -165,6 +238,7 @@ pub fn install(
     Ok(outcome)
 }
 
+#[cfg(not(windows))]
 pub fn remove(app_support: &Path, browser: ManifestBrowser) -> io::Result<()> {
     match fs::remove_file(browser.manifest_path(app_support)) {
         Ok(()) => Ok(()),
@@ -175,6 +249,7 @@ pub fn remove(app_support: &Path, browser: ManifestBrowser) -> io::Result<()> {
 
 /// One browser failing must not stop the others from being checked, so errors are per browser.
 #[must_use]
+#[cfg(not(windows))]
 pub fn check_and_restore(
     app_support: &Path,
     enabled: &[ManifestBrowser],
@@ -195,14 +270,14 @@ pub fn restored_toast(browser: ManifestBrowser) -> String {
     )
 }
 
-enum Existing {
+pub(crate) enum Existing {
     Missing,
     Matches,
     Differs,
 }
 
 /// A symlink never counts as a match: the browser would read whatever it points at.
-fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
+pub(crate) fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
     let metadata = match fs::symlink_metadata(target) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Existing::Missing),
@@ -212,7 +287,11 @@ fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
         return Ok(Existing::Differs);
     }
     let current = fs::read(target)?;
+    // Windows: step 5d - manifests move to registry registration; file modes do not apply.
+    #[cfg(unix)]
     let mode_ok = metadata.permissions().mode() & 0o777 == MANIFEST_MODE;
+    #[cfg(not(unix))]
+    let mode_ok = true;
     Ok(if current == wanted && mode_ok {
         Existing::Matches
     } else {
@@ -220,7 +299,7 @@ fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existing> {
     })
 }
 
-fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
     let temp = dir.join(format!(
         ".{MANIFEST_FILE}.{}.{:016x}.tmp",
         std::process::id(),
@@ -234,19 +313,21 @@ fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
 }
 
 fn write_temp(temp: &Path, data: &[u8]) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(MANIFEST_MODE)
-        .open(temp)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(MANIFEST_MODE);
+    let mut file = options.open(temp)?;
     file.write_all(data)?;
     // The umask may have stripped bits from the creation mode.
+    #[cfg(unix)]
     file.set_permissions(fs::Permissions::from_mode(MANIFEST_MODE))?;
     file.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -261,12 +342,14 @@ mod tests {
         Path::new(EXE)
     }
 
+    #[cfg(not(windows))]
     fn root_with(browser: ManifestBrowser) -> tempfile::TempDir {
         let root = tempfile::tempdir().expect("directory");
         fs::create_dir_all(root.path().join(browser.parent_dir())).expect("browser dir");
         root
     }
 
+    #[cfg(unix)]
     fn read_json(path: &Path) -> serde_json::Value {
         serde_json::from_slice(&fs::read(path).expect("manifest")).expect("json")
     }
@@ -339,6 +422,7 @@ mod tests {
         assert!(text.starts_with("{\n  \"name\": \"org.vaultkeeper.browser\",\n"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn writes_then_reports_unchanged() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -353,6 +437,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn restores_a_tampered_manifest() {
         let root = root_with(ManifestBrowser::Firefox);
@@ -369,6 +454,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn a_changed_exe_path_counts_as_a_difference() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -378,6 +464,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Restored);
     }
 
+    #[cfg(unix)]
     #[test]
     fn restores_a_manifest_with_loosened_mode() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -392,6 +479,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o644);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn remove_deletes_and_tolerates_absence() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -403,6 +491,7 @@ mod tests {
         remove(root.path(), ManifestBrowser::Edge).expect("remove for an absent browser");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn uninstalled_browser_gets_nothing_created() {
         let root = tempfile::tempdir().expect("directory");
@@ -414,6 +503,7 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).expect("read").count(), 0);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn only_the_hosts_directory_is_created() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -427,6 +517,7 @@ mod tests {
         assert_eq!(leftovers, [MANIFEST_FILE]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn manifest_mode_is_0644() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -436,6 +527,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o644);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_at_the_manifest_path_is_replaced_not_followed() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -459,6 +551,7 @@ mod tests {
         assert_eq!(read_json(&path)["name"], HOST_NAME);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_to_identical_content_is_still_replaced() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -473,6 +566,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Restored);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn check_and_restore_covers_each_enabled_browser() {
         let root = root_with(ManifestBrowser::Chrome);
@@ -517,6 +611,11 @@ mod tests {
     fn current_exe_is_absolute_and_canonical() {
         let path = current_exe_path().expect("exe");
         assert!(path.is_absolute());
+        // Production skips `canonicalize` on Windows: it would add a `\\?\` prefix a browser
+        // cannot spawn.
+        #[cfg(windows)]
+        assert!(!path.to_string_lossy().starts_with(r"\\?\"));
+        #[cfg(not(windows))]
         assert_eq!(fs::canonicalize(&path).expect("canonical"), path);
     }
 
@@ -525,5 +624,39 @@ mod tests {
         let defaults = ExtensionIds::default();
         assert_eq!(defaults.chrome, ids::CHROME_EXTENSION_ID);
         assert_eq!(defaults.firefox, ids::FIREFOX_EXTENSION_ID);
+    }
+
+    #[test]
+    fn windows_registry_keys_and_manifest_paths_match_the_plan() {
+        assert_eq!(
+            ManifestBrowser::Chrome.registry_key(),
+            r"Software\Google\Chrome\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Chromium.registry_key(),
+            r"Software\Chromium\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Brave.registry_key(),
+            r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Edge.registry_key(),
+            r"Software\Microsoft\Edge\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+        assert_eq!(
+            ManifestBrowser::Firefox.registry_key(),
+            r"Software\Mozilla\NativeMessagingHosts\org.vaultkeeper.browser"
+        );
+
+        let data = Path::new("/data");
+        assert_eq!(
+            ManifestBrowser::Chrome.windows_manifest_path(data),
+            PathBuf::from("/data/native-messaging/org.vaultkeeper.browser.chrome.json")
+        );
+        assert_eq!(
+            ManifestBrowser::Firefox.windows_manifest_path(data),
+            PathBuf::from("/data/native-messaging/org.vaultkeeper.browser.firefox.json")
+        );
     }
 }

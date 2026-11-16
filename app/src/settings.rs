@@ -15,6 +15,46 @@ pub enum ThemeChoice {
     Dark,
 }
 
+/// Tray icon style. `Auto` follows the menu bar (macOS) or the taskbar theme (Windows); `White`
+/// and `Black` are the monochrome glyphs; `Blue` is the brand colour, independent of the bar.
+/// The wire names stay the old `system`/`light`/`dark` so a file written by this build still
+/// loads in a released one; the new names are accepted as aliases.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayIconChoice {
+    #[default]
+    #[serde(rename = "system", alias = "auto")]
+    Auto,
+    #[serde(rename = "light", alias = "white")]
+    White,
+    #[serde(rename = "dark", alias = "black")]
+    Black,
+    Blue,
+}
+
+impl TrayIconChoice {
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::Auto => 0,
+            Self::White => 1,
+            Self::Black => 2,
+            Self::Blue => 3,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Auto),
+            1 => Some(Self::White),
+            2 => Some(Self::Black),
+            3 => Some(Self::Blue),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LockTimeout {
@@ -119,12 +159,13 @@ impl WindowGeometry {
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeChoice,
-    /// Menu bar icon colour: `System` follows the menu bar, `Light` is the white icon, `Dark` the
-    /// black one.
-    pub tray_icon: ThemeChoice,
+    /// Tray icon style (see [`TrayIconChoice`]).
+    pub tray_icon: TrayIconChoice,
     pub text_scale: TextScale,
     /// Website icons on login rows, fetched through the account's server.
     pub show_site_icons: bool,
+    /// Windows only: keep Vaultkeeper windows out of screenshots, screen sharing and Recall.
+    pub hide_from_capture: bool,
     pub manager_geometry: Option<WindowGeometry>,
     pub lock_timeout: LockTimeout,
     /// Lock when the Mac sleeps or the screen locks, whatever the timeout.
@@ -133,6 +174,9 @@ pub struct Settings {
     pub start_at_login: bool,
     pub ask_unlock_on_start: bool,
     pub require_master_password_on_start: bool,
+    /// Off for a new install; a file written before this default changed and lacking the field
+    /// keeps the agent on, as it was then.
+    #[serde(default = "legacy_ssh_agent")]
     pub ssh_agent: bool,
     pub cli_access: bool,
     /// Check GitHub daily and install a verified update once the vault is locked; off makes no
@@ -143,6 +187,7 @@ pub struct Settings {
     pub browser_integration: bool,
     /// Per-browser install switches; they only matter while `browser_integration` is on.
     pub browser_chrome: bool,
+    pub browser_edge: bool,
     pub browser_firefox: bool,
     pub browser_touch_id: bool,
     pub browser_save_prompts: bool,
@@ -169,9 +214,10 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::System,
-            tray_icon: ThemeChoice::System,
+            tray_icon: TrayIconChoice::default(),
             text_scale: TextScale::Default,
             show_site_icons: true,
+            hide_from_capture: true,
             manager_geometry: None,
             lock_timeout: LockTimeout::Minutes(15),
             lock_on_sleep: true,
@@ -186,6 +232,7 @@ impl Default for Settings {
             ssh_touch_id: false,
             browser_integration: false,
             browser_chrome: true,
+            browser_edge: true,
             browser_firefox: true,
             browser_touch_id: false,
             browser_save_prompts: true,
@@ -193,7 +240,7 @@ impl Default for Settings {
             browser_fill_single: true,
             browser_passkeys: true,
             browser_default_match: BrowserMatch::Domain,
-            hotkey: "Cmd+Shift+Space".to_owned(),
+            hotkey: DEFAULT_HOTKEY.to_owned(),
             generator_hotkey: String::new(),
             touch_id_right_away: false,
             last_login: None,
@@ -244,6 +291,10 @@ impl Default for GeneratorPrefs {
 }
 
 /// A damaged `generator` entry falls back to the defaults instead of failing the whole file.
+const fn legacy_ssh_agent() -> bool {
+    true
+}
+
 fn lenient_generator<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<GeneratorPrefs, D::Error> {
@@ -284,6 +335,12 @@ impl Settings {
         }
     }
 }
+
+/// Windows reserves most Win+ chords and Ctrl+Alt is AltGr on many layouts, so Ctrl+Shift it is.
+#[cfg(windows)]
+pub const DEFAULT_HOTKEY: &str = "Ctrl+Shift+Space";
+#[cfg(not(windows))]
+pub const DEFAULT_HOTKEY: &str = "Cmd+Shift+Space";
 
 /// "Cmd+Shift+Space" as macOS shows it, "⌘⇧Space": modifiers as symbols in Apple's order
 /// (⌃⌥⇧⌘), then the key. `KeyK` / `Digit1` (global-hotkey's code names) become `K` / `1`.
@@ -344,6 +401,76 @@ pub fn hotkey_symbols(accelerator: &str) -> String {
         None => text.push_str(key),
     }
     text
+}
+
+/// The shortcut as this platform shows it: macOS symbols, or "Ctrl+Shift+Space" on Windows.
+#[must_use]
+pub fn hotkey_display(accelerator: &str) -> String {
+    if cfg!(windows) {
+        hotkey_names(accelerator)
+    } else {
+        hotkey_symbols(accelerator)
+    }
+}
+
+/// Exactly Ctrl and Alt held, no Shift and no Win/Cmd: AltGr on layouts that have it.
+#[must_use]
+pub fn ctrl_alt_only(accelerator: &str) -> bool {
+    let parts: Vec<String> = accelerator
+        .split('+')
+        .map(|part| part.trim().to_lowercase())
+        .filter(|part| !part.is_empty())
+        .collect();
+    let Some((_, modifiers)) = parts.split_last() else {
+        return false;
+    };
+    let has = |names: &[&str]| modifiers.iter().any(|part| names.contains(&part.as_str()));
+    has(&["ctrl", "control", "cmdorctrl", "commandorcontrol"])
+        && has(&["alt", "option"])
+        && !has(&["shift", "cmd", "command", "super", "meta", "win"])
+}
+
+/// "Ctrl+Shift+Space": modifiers by name in Windows order (Ctrl, Alt, Shift, Win) joined with `+`.
+#[must_use]
+pub fn hotkey_names(accelerator: &str) -> String {
+    const ORDER: [(&str, &[&str]); 4] = [
+        (
+            "Ctrl",
+            &["ctrl", "control", "cmdorctrl", "commandorcontrol"],
+        ),
+        ("Alt", &["alt", "option"]),
+        ("Shift", &["shift"]),
+        ("Win", &["cmd", "command", "super", "meta"]),
+    ];
+    let parts: Vec<&str> = accelerator
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    let Some((key, modifiers)) = parts.split_last() else {
+        return String::new();
+    };
+    let mut names: Vec<String> = ORDER
+        .iter()
+        .filter(|(_, aliases)| {
+            modifiers
+                .iter()
+                .any(|modifier| aliases.contains(&modifier.to_ascii_lowercase().as_str()))
+        })
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    let key = key
+        .strip_prefix("Key")
+        .or_else(|| key.strip_prefix("Digit"))
+        .filter(|rest| rest.len() == 1)
+        .or_else(|| key.strip_prefix("Arrow"))
+        .unwrap_or(key);
+    names.push(if key.len() == 1 {
+        key.to_ascii_uppercase()
+    } else {
+        key.to_owned()
+    });
+    names.join("+")
 }
 
 pub const LOCK_OPTIONS: [LockTimeout; 6] = [
@@ -431,6 +558,19 @@ impl ThemeChoice {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_bare_ctrl_alt_pair_counts_as_altgr() {
+        use super::ctrl_alt_only;
+        assert!(ctrl_alt_only("Ctrl+Alt+G"));
+        assert!(ctrl_alt_only("alt+control+F5"));
+        assert!(!ctrl_alt_only("Ctrl+Alt+Shift+G"));
+        assert!(!ctrl_alt_only("Ctrl+Alt+Cmd+G"));
+        assert!(!ctrl_alt_only("Ctrl+G"));
+        assert!(!ctrl_alt_only("Alt+G"));
+        assert!(!ctrl_alt_only("G"));
+        assert!(!ctrl_alt_only(""));
+    }
+
     use super::*;
 
     #[test]
@@ -447,10 +587,22 @@ mod tests {
     }
 
     #[test]
+    fn the_ssh_agent_is_off_for_new_installs_and_on_for_files_that_predate_the_default() {
+        assert!(!Settings::default().ssh_agent);
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
+        assert!(old.ssh_agent);
+        let off: Settings = serde_json::from_str(r#"{"ssh_agent":false}"#).expect("explicit off");
+        assert!(!off.ssh_agent);
+        let json = serde_json::to_string(&Settings::default()).expect("serialize");
+        assert!(json.contains(r#""ssh_agent":false"#), "{json}");
+    }
+
+    #[test]
     fn browser_settings_default_and_survive_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
         assert!(!old.browser_integration);
         assert!(old.browser_chrome);
+        assert!(old.browser_edge);
         assert!(old.browser_firefox);
         assert!(!old.browser_touch_id);
         assert!(old.browser_save_prompts);
@@ -461,6 +613,7 @@ mod tests {
         let settings = Settings {
             browser_integration: true,
             browser_chrome: false,
+            browser_edge: false,
             browser_firefox: false,
             browser_default_match: BrowserMatch::Host,
             ..old
@@ -470,6 +623,18 @@ mod tests {
             serde_json::from_str::<Settings>(&json).expect("deserialize"),
             settings
         );
+    }
+
+    #[test]
+    fn capture_exclusion_is_on_unless_a_file_says_otherwise() {
+        assert!(Settings::default().hide_from_capture);
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("old settings");
+        assert!(old.hide_from_capture);
+        let off: Settings =
+            serde_json::from_str(r#"{"hide_from_capture":false}"#).expect("explicit off");
+        assert!(!off.hide_from_capture);
+        let json = serde_json::to_string(&off).expect("serialize");
+        assert!(json.contains(r#""hide_from_capture":false"#), "{json}");
     }
 
     #[test]
@@ -551,6 +716,16 @@ mod tests {
         assert_eq!(hotkey_symbols("Cmd+Enter"), "⌘↩");
         assert_eq!(hotkey_symbols("Cmd+Shift+Tab"), "⇧⌘⇥");
         assert_eq!(hotkey_symbols("Cmd+Alt+,"), "⌥⌘,");
+    }
+
+    #[test]
+    fn hotkey_names_follow_the_windows_convention() {
+        assert_eq!(hotkey_names("Ctrl+Shift+Space"), "Ctrl+Shift+Space");
+        assert_eq!(hotkey_names("Shift+Cmd+KeyK"), "Shift+Win+K");
+        assert_eq!(hotkey_names("shift+alt+ctrl+Digit1"), "Ctrl+Alt+Shift+1");
+        assert_eq!(hotkey_names("Ctrl+ArrowLeft"), "Ctrl+Left");
+        assert_eq!(hotkey_names("Ctrl+Alt+,"), "Ctrl+Alt+,");
+        assert_eq!(hotkey_names(""), "");
         assert_eq!(hotkey_symbols(""), "");
     }
 
@@ -568,9 +743,10 @@ mod tests {
     fn json_round_trips_every_field() {
         let settings = Settings {
             theme: ThemeChoice::Dark,
-            tray_icon: ThemeChoice::Light,
+            tray_icon: TrayIconChoice::White,
             text_scale: TextScale::Larger,
             show_site_icons: false,
+            hide_from_capture: false,
             manager_geometry: Some(WindowGeometry {
                 x: 10,
                 y: 20,
@@ -591,6 +767,7 @@ mod tests {
             ssh_touch_id: true,
             browser_integration: true,
             browser_chrome: false,
+            browser_edge: true,
             browser_firefox: false,
             browser_touch_id: true,
             browser_save_prompts: false,
@@ -627,7 +804,7 @@ mod tests {
         assert_eq!(settings.ssh_approval, SshApproval::RememberUntilLock);
         assert_eq!(settings.text_scale, TextScale::Large);
         assert_eq!(
-            settings.hotkey, "Cmd+Shift+Space",
+            settings.hotkey, DEFAULT_HOTKEY,
             "missing fields take the default"
         );
         assert!(
@@ -683,7 +860,7 @@ mod tests {
         .sanitized();
         assert_eq!(odd.lock_timeout, LockTimeout::Minutes(1));
         assert_eq!(odd.clipboard_clear, ClipboardClear::Seconds(1));
-        assert_eq!(odd.hotkey, "Cmd+Shift+Space");
+        assert_eq!(odd.hotkey, DEFAULT_HOTKEY);
         assert_eq!(
             odd.manager_geometry.map(|g| (g.x, g.width, g.height)),
             Some((0, 760, 480))
@@ -697,5 +874,67 @@ mod tests {
             assert_eq!(ThemeChoice::from_index(choice.index()), Some(choice));
         }
         assert_eq!(ThemeChoice::from_index(3), None);
+    }
+
+    #[test]
+    fn tray_icon_index_round_trips() {
+        for choice in [
+            TrayIconChoice::Auto,
+            TrayIconChoice::White,
+            TrayIconChoice::Black,
+            TrayIconChoice::Blue,
+        ] {
+            assert_eq!(TrayIconChoice::from_index(choice.index()), Some(choice));
+        }
+        assert_eq!(TrayIconChoice::from_index(4), None);
+        assert_eq!(TrayIconChoice::from_index(-1), None);
+    }
+
+    #[test]
+    fn old_tray_icon_names_still_load() {
+        for (json, expected) in [
+            (r#"{"tray_icon":"system"}"#, TrayIconChoice::Auto),
+            (r#"{"tray_icon":"light"}"#, TrayIconChoice::White),
+            (r#"{"tray_icon":"dark"}"#, TrayIconChoice::Black),
+            (r#"{"tray_icon":"auto"}"#, TrayIconChoice::Auto),
+            (r#"{"tray_icon":"white"}"#, TrayIconChoice::White),
+            (r#"{"tray_icon":"black"}"#, TrayIconChoice::Black),
+        ] {
+            let settings: Settings = serde_json::from_str(json).expect(json);
+            assert_eq!(settings.tray_icon, expected, "{json}");
+        }
+    }
+
+    #[test]
+    fn the_tray_icon_is_auto_unless_a_file_says_otherwise() {
+        assert_eq!(Settings::default().tray_icon, TrayIconChoice::Auto);
+        let blue: Settings = serde_json::from_str(r#"{"tray_icon":"blue"}"#).expect("blue");
+        assert_eq!(blue.tray_icon, TrayIconChoice::Blue);
+    }
+
+    #[test]
+    fn tray_icon_blue_round_trips() {
+        let settings = Settings {
+            tray_icon: TrayIconChoice::Blue,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<Settings>(&json)
+                .expect("decode")
+                .tray_icon,
+            TrayIconChoice::Blue
+        );
+        assert!(json.contains(r#""tray_icon":"blue""#), "{json}");
+    }
+
+    #[test]
+    fn tray_icon_keeps_old_wire_names() {
+        let settings = Settings {
+            tray_icon: TrayIconChoice::White,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("encode");
+        assert!(json.contains(r#""tray_icon":"light""#), "{json}");
     }
 }

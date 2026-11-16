@@ -12,7 +12,7 @@ use vk_ipc::{
     BrowserPrompt, BrowserReply,
     browser::{
         BrowserConnection,
-        protocol::{Caller, ErrorCode, KnownBrowser, Request, State, Theme},
+        protocol::{Caller, ErrorCode, HostHello, KnownBrowser, Request, State, Theme},
     },
 };
 use zeroize::Zeroizing;
@@ -22,6 +22,18 @@ use super::{
     request,
     session::{PairingSession, Proof},
 };
+
+/// The verified parent, if it is a browser that can make this kind of call. An unverified parent
+/// reaches here only in development builds, which take the caller's word for it.
+pub(super) fn connection_browser(hello: &HostHello) -> Option<KnownBrowser> {
+    match hello.parent.browser {
+        Some(browser) => browser.serves(&hello.caller).then_some(browser),
+        None => Some(match hello.caller {
+            Caller::Chromium { .. } => KnownBrowser::Chrome,
+            Caller::Firefox { .. } => KnownBrowser::Firefox,
+        }),
+    }
+}
 
 /// Returns the authenticated connection, its public key and the state the proof reply carried,
 /// so the caller can tell the extension about any change after that. Closing/cancelling this future drops the
@@ -37,18 +49,12 @@ where
     Fut: Future<Output = BrowserReply>,
     S: Fn() -> (State, Theme),
 {
-    let (caller, inferred_browser) = match &connection.hello.caller {
-        Caller::Chromium { origin } => (origin.clone(), KnownBrowser::Chrome),
-        Caller::Firefox { extension_id } => (extension_id.clone(), KnownBrowser::Firefox),
+    let browser = connection_browser(&connection.hello)?;
+    let caller = match &connection.hello.caller {
+        Caller::Chromium { origin } => origin.clone(),
+        Caller::Firefox { extension_id } => extension_id.clone(),
     };
-    let browser = connection.hello.parent.browser.unwrap_or(inferred_browser);
-    if browser != inferred_browser {
-        return None;
-    }
-    let name = match browser {
-        KnownBrowser::Chrome => "Google Chrome",
-        KnownBrowser::Firefox => "Firefox",
-    };
+    let name = browser.display_name();
     let mut pairing = PairingSession::new(caller.clone());
     let (hello_id, protocol, public_key) =
         match tokio::time::timeout(Duration::from_secs(60), next(&mut connection))

@@ -7,9 +7,76 @@ use std::{collections::BTreeMap, sync::Mutex};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-#[derive(Debug, Error)]
-#[error("secret store: {0}")]
-pub struct SecretStoreError(pub String);
+/// How a [`SecretStore`] failed, so callers can tell a locked vault from a logged-out one and
+/// from a token that the user key no longer opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretStoreErrorKind {
+    Other,
+    /// The sealed store has no key for this account (the vault is locked).
+    Locked,
+    /// A stored secret no longer decrypts because the user key rotated elsewhere.
+    Undecryptable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("secret store: {message}")]
+pub struct SecretStoreError {
+    message: String,
+    kind: SecretStoreErrorKind,
+}
+
+impl SecretStoreError {
+    #[must_use]
+    pub fn other(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: SecretStoreErrorKind::Other,
+        }
+    }
+
+    #[must_use]
+    pub fn locked() -> Self {
+        Self {
+            message: "no key is loaded for this account".to_owned(),
+            kind: SecretStoreErrorKind::Locked,
+        }
+    }
+
+    #[must_use]
+    pub fn undecryptable() -> Self {
+        Self {
+            message: "the stored secret cannot be decrypted; log in again".to_owned(),
+            kind: SecretStoreErrorKind::Undecryptable,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> SecretStoreErrorKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn is_locked(&self) -> bool {
+        matches!(self.kind, SecretStoreErrorKind::Locked)
+    }
+
+    #[must_use]
+    pub const fn is_undecryptable(&self) -> bool {
+        matches!(self.kind, SecretStoreErrorKind::Undecryptable)
+    }
+}
+
+impl From<String> for SecretStoreError {
+    fn from(message: String) -> Self {
+        Self::other(message)
+    }
+}
+
+impl From<&str> for SecretStoreError {
+    fn from(message: &str) -> Self {
+        Self::other(message)
+    }
+}
 
 pub trait SecretStore: Send + Sync + 'static {
     fn get(&self, key: &str) -> Result<Option<Zeroizing<Vec<u8>>>, SecretStoreError>;
@@ -18,6 +85,16 @@ pub trait SecretStore: Send + Sync + 'static {
     fn delete(&self, key: &str) -> Result<(), SecretStoreError>;
     /// Deletes every key starting with `prefix` and returns how many were removed.
     fn delete_all_for(&self, prefix: &str) -> Result<usize, SecretStoreError>;
+
+    /// Hands a store that seals secrets the user key as soon as it is available. The keychain has
+    /// nothing to derive, so the default is a no-op.
+    fn provide_key(&self, _user_id: &str, _user_key: &[u8]) -> Result<(), SecretStoreError> {
+        Ok(())
+    }
+
+    /// Drops the seal key when the session zeroizes the user key; storing a secret afterwards
+    /// must fail as [`SecretStoreErrorKind::Locked`] rather than look like a logged-out account.
+    fn forget_key(&self, _user_id: &str) {}
 }
 
 pub(crate) fn refresh_token_key(user_id: &str) -> String {

@@ -12,19 +12,37 @@ use vaultkeeper::{
 };
 
 fn main() -> anyhow::Result<()> {
-    vk_platform::hardening::harden_process();
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let role = if raw_args.iter().any(|arg| arg == "--ui") {
+        vk_platform::hardening::Role::Ui
+    } else {
+        vk_platform::hardening::Role::Daemon
+    };
+    let is_ui = role == vk_platform::hardening::Role::Ui;
+    if is_ui {
+        vaultkeeper::os::early_log::start(&raw_args);
+    }
+    vk_platform::hardening::harden_process(role);
+    if is_ui {
+        vaultkeeper::os::early_log::note("process hardened");
+    }
     if matches!(
         raw_args.first().map(String::as_str),
         Some("list" | "get_fields" | "get")
     ) {
+        vaultkeeper::os::console::attach_parent_console();
         return vaultkeeper::cli_access::run(&raw_args);
     }
     if let Some(caller) = cli::browser_host_caller(&raw_args) {
         init_logging(Some("browser-host"));
         return vaultkeeper::browser_host::run(caller);
     }
-    let args = cli::parse(raw_args)?;
+    let args = cli::parse(raw_args.iter().cloned()).inspect_err(|_| {
+        vaultkeeper::os::console::attach_parent_console();
+    })?;
+    if args.wants_console() {
+        vaultkeeper::os::console::attach_parent_console();
+    }
     if args.help {
         writeln!(std::io::stdout(), "{}", cli::USAGE)?;
         return Ok(());
@@ -37,7 +55,27 @@ fn main() -> anyhow::Result<()> {
         )?;
         return Ok(());
     }
+    if args.quit {
+        return quit_daemon();
+    }
+    if is_ui {
+        vaultkeeper::os::early_log::note("arguments parsed");
+    }
     let mode = args.mode();
+    #[cfg(windows)]
+    if matches!(mode, Mode::Daemon(_)) {
+        match vaultkeeper::os::detached::relaunch_if_attached(&raw_args, args.detached) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            // Staying attached still works; the daemon just dies with its terminal.
+            Err(error) => {
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("vaultkeeper: cannot detach from the console: {error}");
+                }
+            }
+        }
+    }
     init_logging(match mode {
         Mode::Daemon(_) => Some("daemon"),
         Mode::Ui { .. } => Some("ui"),
@@ -45,7 +83,14 @@ fn main() -> anyhow::Result<()> {
     });
     match mode {
         Mode::Mock => run_mock(args),
-        Mode::Ui { first_unlock } => vaultkeeper::ui_process::run(first_unlock, args.no_activate),
+        Mode::Ui { first_unlock, pipe } => {
+            vaultkeeper::os::early_log::note("logging initialised");
+            let ran = vaultkeeper::ui_process::run(first_unlock, args.no_activate, pipe);
+            if let Err(error) = &ran {
+                vaultkeeper::os::early_log::note(&format!("the UI process failed: {error:#}"));
+            }
+            ran
+        }
         Mode::Daemon(launch) => vaultkeeper::daemon::run(launch, args.wait_for),
     }
 }
@@ -89,9 +134,19 @@ fn init_logging(file_name: Option<&str>) {
     // Release builds abort on panic; this puts the reason into the log file before they do.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        tracing::error!(%info, "panic");
+        let thread = std::thread::current();
+        tracing::error!(%info, thread = thread.name().unwrap_or("<unnamed>"), "panic");
         default_hook(info);
     }));
+}
+
+/// How long `--quit` waits for the daemon to exit: the installer and updater replace files next.
+const QUIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `--quit`: ask the running daemon to quit and wait until it has. Nothing running is success; a
+/// command that was not delivered, or a daemon that outlives the timeout, is an error.
+fn quit_daemon() -> anyhow::Result<()> {
+    vk_platform::single_instance::quit_running(QUIT_TIMEOUT).context("stop the running Vaultkeeper")
 }
 
 /// `--mock`: the UI alone, in one process with its own tray, on the built-in mock vault.

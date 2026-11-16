@@ -18,7 +18,7 @@ export component BrowserPicker inherits Window {
     in property <string> browser;
     in property <string> host;
     in property <bool> insecure;
-    in property <bool> touch-id;
+    in property <bool> biometric;
     in property <[BrowserPickerRow]> rows;
     in-out property <string> query;
     in-out property <int> selected: 0;
@@ -127,7 +127,7 @@ export component BrowserPicker inherits Window {
                     }
                 }
                 Rectangle { vertical-stretch: 1; }
-                Text { text: root.touch-id ? "Return · then Touch ID" : "Return · fill"; color: Theme.text-muted; font-size: Theme.font-meta; }
+                Text { text: root.biometric ? "Return · then " + Theme.biometric-label : "Return · fill"; color: Theme.text-muted; font-size: Theme.font-meta; }
                 Rectangle {
                     height: 3px; border-radius: 1.5px; background: Theme.surface-raised;
                     Rectangle { width: parent.width * max(0, root.seconds-left) / 60; height: 100%; border-radius: 1.5px; background: root.seconds-left < 6 ? Theme.warn : Theme.accent; animate width { duration: 1s; easing: linear; } }

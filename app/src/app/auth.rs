@@ -94,7 +94,7 @@ impl<S: VaultService> App<S> {
             window.set_email(email.as_str().into());
             window.set_initial(initial(email).into());
         }
-        window.set_touch_id_available(self.touch_id_enrolled());
+        window.set_biometric_available(self.touch_id_enrolled());
         if let SessionState::Locked { email, .. } = &state {
             window.set_avatar_color(viewmodel::avatar_color(email));
         }
@@ -119,7 +119,7 @@ impl<S: VaultService> App<S> {
         ));
         window.on_unlock(handler!(self, |app, password| app
             .unlock(Zeroizing::new(password.to_string()))));
-        window.on_unlock_touch_id(handler!(self, |app| {
+        window.on_unlock_biometric(handler!(self, |app| {
             app.unlock_touch_id();
         }));
         window.on_logout_confirmed(handler!(self, |app| app.logout()));
@@ -235,11 +235,25 @@ impl<S: VaultService> App<S> {
         self.touch_id_in_flight.set(true);
         self.set_lock_busy(true);
         let biometrics = Arc::clone(&self.hooks.biometrics);
+        let parent = self.prompt_parent_window();
         self.exec.spawn_blocking(
-            move || biometrics.unlock(&account.id),
+            move || biometrics.unlock(&account.id, parent),
             handler!(self, |app, result| app.touch_id_unlocked(result)),
         );
         true
+    }
+
+    /// The window the Hello dialog belongs to: the Quick Panel while it is up, else the lock
+    /// window.
+    fn prompt_parent_window(&self) -> Option<u64> {
+        let quick = self.quick.borrow();
+        let lock = self.lock_window.borrow();
+        let window = match (quick.as_ref(), lock.as_ref()) {
+            (Some(quick), _) => quick.window.window(),
+            (None, Some(lock)) => lock.window(),
+            (None, None) => return None,
+        };
+        crate::os::ui_window::window_handle(window)
     }
 
     fn touch_id_unlocked(&self, result: crate::hooks::HookResult<()>) {
@@ -257,7 +271,10 @@ impl<S: VaultService> App<S> {
     pub(super) fn show_touch_id_error(&self, error: &crate::hooks::HookError) {
         let attempts = self.failed_unlocks.get();
         self.show_unlock_error(
-            &format!("Touch ID failed: {error} · use your master password"),
+            &format!(
+                "{} failed: {error} · use your master password",
+                crate::os::BIOMETRIC_LABEL
+            ),
             attempts,
         );
     }

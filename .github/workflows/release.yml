@@ -19,10 +19,17 @@ jobs:
   version:
     name: Tag matches the version
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      # Every later job checks out this commit, so a tag moved after the environment approval
+      # cannot change what gets built or signed.
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
+
+      - id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - run: |
           VERSION=$(scripts/version.sh)
@@ -40,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
 
       - name: Install tools
         run: |
@@ -49,7 +56,7 @@ jobs:
 
       # A tag run can restore only caches saved on its own tag or on main, so cargo-cache.yml
       # fills the dependency cache from main and this job only reads it.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: macos-release
           save-if: false
@@ -130,7 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -175,9 +182,311 @@ jobs:
             browsers/store/amo-metadata.json
           if-no-files-found: error
 
+  # The Windows build is split in two so that no signing material exists where cargo runs: build
+  # scripts of dependencies execute in windows-build, which has no environment and no secrets, and
+  # windows-package, which holds them, only runs signtool, iscc and openssl on the artifact it gets.
+  windows-build:
+    name: Windows ${{ matrix.arch }} build (unsigned, no secrets)
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, target: x86_64-pc-windows-msvc, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc, prebuilt_nasm: "0"}
+    env:
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      # cargo-cache.yml fills this cache from main; a tag run only restores it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: windows-release-${{ matrix.arch }}
+          save-if: false
+
+      - name: Build vaultkeeper.exe
+        shell: pwsh
+        run: scripts/bundle-windows.ps1 -Build -Arch ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-${{ matrix.arch }}
+          path: out/stage/vaultkeeper.exe
+          if-no-files-found: error
+
+  # Signing material (Authenticode certificate, SignPath token, update key) is only visible here.
+  # This job runs no cargo and no package manager. Without a signing certificate the installer is
+  # still built and released, only unsigned: the in-app updater and winget then skip it.
+  windows-package:
+    name: Windows ${{ matrix.arch }} installer (sign)
+    needs: [version, windows-build]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest}
+          - {arch: arm64, runner: windows-11-arm}
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      signed: ${{ steps.result.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      # Data, not code: this vaultkeeper.exe is what gets signed, so signing it vouches for the
+      # tagged commit's build, which is inherent. Nothing from this artifact is executed here.
+      - uses: actions/download-artifact@v5
+        with:
+          name: windows-unsigned-${{ matrix.arch }}
+          path: out/stage
+
+      # Inno Setup comes from the runner image by absolute path: no tool from the build job's
+      # artifacts is ever executed or put on PATH in this job.
+      #
+      # The x64 image ships it. If the ARM64 image does not, it is installed here from the official
+      # release, pinned by SHA-256, before any secret is read (the signing steps come later) and never
+      # from the build job.
+      - name: Locate Inno Setup
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
+          INNO_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            $setup = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+            Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup
+            $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+            if ($hash -ne $env:INNO_SHA256.ToUpperInvariant()) { throw "Inno Setup installer hash mismatch: $hash" }
+            $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Inno Setup installer failed with exit code $($p.ExitCode)" }
+            if (-not (Test-Path -LiteralPath $iscc)) { throw "$iscc not found after installing Inno Setup" }
+          }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      # The x64 signtool runs under emulation on ARM64; the arm64 one is the fallback.
+      - name: Locate signtool
+        shell: pwsh
+        run: |
+          $signtool = foreach ($a in 'x64', 'arm64') {
+            Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\$a\signtool.exe" -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          } | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found on the runner image' }
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+
+      # Secrets cannot be tested in a step condition, so the choice is made here once.
+      - name: Choose signers
+        id: signers
+        shell: bash
+        env:
+          PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          SIGNPATH_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORG: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          UPDATE_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          pfx=false; signpath=false; minisign=false
+          if { [ -n "$PFX" ] && [ -z "$PFX_PASSWORD" ]; } || { [ -z "$PFX" ] && [ -n "$PFX_PASSWORD" ]; }; then
+            echo "::error::exactly one of WINDOWS_SIGN_PFX / WINDOWS_SIGN_PFX_PASSWORD is set"
+            exit 1
+          fi
+          if { [ -n "$SIGNPATH_TOKEN" ] && [ -z "$SIGNPATH_ORG" ]; } || { [ -z "$SIGNPATH_TOKEN" ] && [ -n "$SIGNPATH_ORG" ]; }; then
+            echo "::error::exactly one of SIGNPATH_API_TOKEN / SIGNPATH_ORGANIZATION_ID is set"
+            exit 1
+          fi
+          if [ -n "$PFX" ] && [ -n "$PFX_PASSWORD" ]; then
+            pfx=true
+          elif [ -n "$SIGNPATH_TOKEN" ] && [ -n "$SIGNPATH_ORG" ]; then
+            signpath=true
+          else
+            echo "::warning::no Windows code-signing secret is set: the installer is released unsigned"
+          fi
+          if [ -n "$UPDATE_KEY" ]; then
+            minisign=true
+          else
+            echo "::warning::UPDATE_SIGNING_KEY is not set: no .minisig is written, so the in-app updater cannot install this release"
+          fi
+          {
+            echo "pfx=$pfx"
+            echo "signpath=$signpath"
+            echo "minisign=$minisign"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign vaultkeeper.exe (signtool)
+        if: steps.signers.outputs.pfx == 'true'
+        shell: pwsh
+        env:
+          PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX))
+          try {
+            & $env:SIGNTOOL sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD out/stage/vaultkeeper.exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload vaultkeeper.exe for SignPath
+        id: exe-upload
+        if: steps.signers.outputs.signpath == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe-to-sign-${{ matrix.arch }}
+          path: out/stage/vaultkeeper.exe
+          if-no-files-found: error
+
+      # SignPath action v3.0
+      - name: Sign vaultkeeper.exe (SignPath)
+        if: steps.signers.outputs.signpath == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'vaultkeeper' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_EXE_CONFIGURATION }}
+          github-artifact-id: ${{ steps.exe-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed-exe
+
+      - name: Use the SignPath-signed exe
+        if: steps.signers.outputs.signpath == 'true'
+        shell: pwsh
+        run: Copy-Item -LiteralPath out/signed-exe/vaultkeeper.exe -Destination out/stage/vaultkeeper.exe -Force
+
+      - name: Build installer and zip
+        shell: pwsh
+        run: scripts/bundle-windows.ps1 -Package -Arch ${{ matrix.arch }} -Iscc $env:ISCC
+
+      - name: Sign the setup exe (signtool)
+        if: steps.signers.outputs.pfx == 'true'
+        shell: pwsh
+        env:
+          PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX))
+          try {
+            & $env:SIGNTOOL sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD (Get-Item out/*-${{ matrix.arch }}-setup.exe).FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload setup exe for SignPath
+        id: setup-upload
+        if: steps.signers.outputs.signpath == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup-to-sign-${{ matrix.arch }}
+          path: out/*-${{ matrix.arch }}-setup.exe
+          if-no-files-found: error
+
+      # SignPath action v3.0
+      - name: Sign the setup exe (SignPath)
+        if: steps.signers.outputs.signpath == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'vaultkeeper' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_CONFIGURATION }}
+          github-artifact-id: ${{ steps.setup-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed-setup
+
+      - name: Use the SignPath-signed setup exe
+        if: steps.signers.outputs.signpath == 'true'
+        shell: pwsh
+        run: Copy-Item -Path out/signed-setup/*-${{ matrix.arch }}-setup.exe -Destination out -Force
+
+      # The updater's format (app/src/daemon/update/signature.rs) is minisign-style (the same container,
+      # a different message): stock minisign can neither produce nor verify it. The Ed25519 signature is over
+      # "Ed" || key id || SHA-512(asset), and the global one over "Ed" || key id || signature ||
+      # trusted comment. UPDATE_SIGNING_KEY is an Ed25519 private key in PKCS#8 PEM.
+      - name: Sign the update asset
+        if: steps.signers.outputs.minisign == 'true'
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$work/key.pem"
+          version=${TAG#v}
+          asset=$(basename out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe)
+          if [ "$asset" != "Vaultkeeper-v$version-${{ matrix.arch }}-setup.exe" ]; then
+            echo "::error::unexpected installer name $asset for version $version"
+            exit 1
+          fi
+          openssl pkey -in "$work/key.pem" -pubout -out "$work/pub.pem"
+          openssl pkey -in "$work/key.pem" -pubout -outform DER | tail -c 32 > "$work/pub"
+          { printf Ed; cat "$work/pub"; } | openssl dgst -sha512 -binary | head -c 8 > "$work/keyid"
+          { printf Ed; cat "$work/keyid"; openssl dgst -sha512 -binary < "out/$asset"; } > "$work/msg"
+          openssl pkeyutl -sign -inkey "$work/key.pem" -rawin -in "$work/msg" -out "$work/sig"
+          { printf Ed; cat "$work/keyid" "$work/sig"; } > "$work/blob"
+          { cat "$work/blob"; printf 'vaultkeeper %s %s' "$version" "$asset"; } > "$work/gmsg"
+          openssl pkeyutl -sign -inkey "$work/key.pem" -rawin -in "$work/gmsg" -out "$work/gsig"
+          openssl pkeyutl -verify -pubin -inkey "$work/pub.pem" -rawin -in "$work/msg" -sigfile "$work/sig"
+          openssl pkeyutl -verify -pubin -inkey "$work/pub.pem" -rawin -in "$work/gmsg" -sigfile "$work/gsig"
+          {
+            echo "untrusted comment: vaultkeeper release signature"
+            base64 < "$work/blob" | tr -d '\n'; echo
+            echo "trusted comment: vaultkeeper $version $asset"
+            base64 < "$work/gsig" | tr -d '\n'; echo
+          } > "out/$asset.minisig"
+
+      - id: result
+        shell: pwsh
+        env:
+          SIGNED: ${{ steps.signers.outputs.pfx == 'true' || steps.signers.outputs.signpath == 'true' }}
+        run: |
+          if ($env:SIGNED -eq 'true') {
+            foreach ($f in @('out/stage/vaultkeeper.exe', (Get-Item out/*-${{ matrix.arch }}-setup.exe).FullName)) {
+              & $env:SIGNTOOL verify /pa /all $f
+              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $f" }
+            }
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "signed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-${{ matrix.arch }}
+          path: |
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe.minisig
+            out/Vaultkeeper-v*-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
   release:
     name: GitHub release
-    needs: [macos, extensions]
+    needs: [macos, extensions, windows-package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,6 +499,12 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           name: extensions
+          path: out
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: windows-package-*
+          merge-multiple: true
           path: out
 
       - name: Publish
@@ -254,3 +569,35 @@ jobs:
             --source-dir browsers/dist/firefox \
             --upload-source-code store/firefox-source.zip \
             --amo-metadata browsers/store/amo-metadata.json
+
+  # winget-releaser only updates a package that already exists in microsoft/winget-pkgs (the first
+  # version is submitted by hand, see packaging/winget/README.md). The PAT lives in its own
+  # environment so the signing job cannot read it. An unsigned build is never submitted.
+  winget:
+    name: winget
+    needs: [release, windows-package]
+    if: needs.windows-package.outputs.signed == 'true'
+    runs-on: ubuntu-latest
+    environment: winget
+    steps:
+      - id: gate
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "::warning::WINGET_TOKEN is not set: skipped winget"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # winget-releaser v2
+      - if: steps.gate.outputs.go == 'true'
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54
+        with:
+          identifier: avbel.Vaultkeeper
+          version: ${{ steps.gate.outputs.version }}
+          release-tag: ${{ env.TAG }}
+          installers-regex: '-${{ matrix.arch }}-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}

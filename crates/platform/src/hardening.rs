@@ -1,13 +1,29 @@
-//! Disables core dumps and debugger attach (`PT_DENY_ATTACH` on macOS) at startup.
+//! Startup hardening: no core dumps and no debugger attach on macOS, and the process DACL,
+//! loader search path and mitigation policies on Windows (docs/solutions/windows-support.md §5.1).
+
+/// Which Vaultkeeper process is hardening. Windows applies a slightly different policy set to the
+/// two; macOS ignores the role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Daemon,
+    Ui,
+}
 
 /// Call once, first thing in `main`. Failures are logged, not fatal: the app still works,
 /// just with a weaker posture.
-pub fn harden_process() {
+pub fn harden_process(role: Role) {
+    #[cfg(windows)]
+    windows::harden(role);
+
     #[cfg(unix)]
-    disable_core_dumps();
-    // Debug builds stay attachable so debuggers and profilers keep working.
-    #[cfg(all(target_os = "macos", not(debug_assertions)))]
-    deny_debugger_attach();
+    {
+        // macOS has the same posture in both processes, so there is nothing to vary.
+        let _ = role;
+        disable_core_dumps();
+        // Debug builds stay attachable so debuggers and profilers keep working.
+        #[cfg(all(target_os = "macos", not(debug_assertions)))]
+        deny_debugger_attach();
+    }
 }
 
 #[cfg(unix)]
@@ -30,6 +46,9 @@ fn deny_debugger_attach() {
     }
 }
 
+#[cfg(windows)]
+mod windows;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,7 +56,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn core_dumps_are_disabled_soft_and_hard() {
-        harden_process();
+        harden_process(Role::Daemon);
         let mut limit = libc::rlimit {
             rlim_cur: 1,
             rlim_max: 1,
@@ -50,7 +69,7 @@ mod tests {
 
     #[test]
     fn hardening_twice_is_harmless() {
-        harden_process();
-        harden_process();
+        harden_process(Role::Daemon);
+        harden_process(Role::Ui);
     }
 }

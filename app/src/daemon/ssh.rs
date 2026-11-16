@@ -13,7 +13,8 @@ use std::{
 };
 
 use tokio::sync::mpsc;
-use vk_ssh::{AgentKey, ApprovalRequest, SshAgent};
+use vk_ipc::transport::Endpoint;
+use vk_ssh::{AgentError, AgentKey, ApprovalRequest, SshAgent};
 use vk_vault::{
     Vault, VaultService,
     model::{Filter, ItemKind, SessionState},
@@ -58,8 +59,17 @@ pub struct KeyLabel {
     pub reprompt: bool,
 }
 
+/// What the user sees when the agent cannot start: a typed failure carries its own advice.
+#[must_use]
+pub fn start_failure_message(error: &anyhow::Error) -> String {
+    error.downcast_ref::<AgentError>().map_or_else(
+        || format!("The SSH agent could not start: {error:#}"),
+        ToString::to_string,
+    )
+}
+
 pub struct SshControl {
-    socket: PathBuf,
+    endpoint: Endpoint,
     approvals: mpsc::Sender<ApprovalRequest>,
     agent: Mutex<Option<SshAgent>>,
     /// Name and fingerprint per served cipher id, for the approval prompt.
@@ -68,15 +78,32 @@ pub struct SshControl {
     remembered: Mutex<HashSet<String>>,
 }
 
+/// `SshAgent` takes a `PathBuf` on both platforms: the socket file on Unix, the pipe name on Windows.
+#[cfg(unix)]
+fn agent_path(endpoint: &Endpoint) -> anyhow::Result<PathBuf> {
+    endpoint
+        .as_path()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("{endpoint} is not a socket file"))
+}
+
+#[cfg(windows)]
+fn agent_path(endpoint: &Endpoint) -> anyhow::Result<PathBuf> {
+    endpoint
+        .as_pipe()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("{endpoint} is not a named pipe"))
+}
+
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl SshControl {
     #[must_use]
-    pub fn new(socket: PathBuf, approvals: mpsc::Sender<ApprovalRequest>) -> Self {
+    pub fn new(endpoint: Endpoint, approvals: mpsc::Sender<ApprovalRequest>) -> Self {
         Self {
-            socket,
+            endpoint,
             approvals,
             agent: Mutex::new(None),
             labels: Mutex::new(HashMap::new()),
@@ -85,8 +112,8 @@ impl SshControl {
     }
 
     #[must_use]
-    pub fn socket(&self) -> &std::path::Path {
-        &self.socket
+    pub const fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 
     #[must_use]
@@ -102,11 +129,11 @@ impl SshControl {
         match (enabled, agent.is_some()) {
             (true, false) => {
                 *agent = Some(SshAgent::start_with_approval_timeout(
-                    self.socket.clone(),
+                    agent_path(&self.endpoint)?,
                     self.approvals.clone(),
                     APPROVAL_TIMEOUT,
                 )?);
-                tracing::info!(socket = %self.socket.display(), "SSH agent started");
+                tracing::info!(endpoint = %self.endpoint, "SSH agent started");
                 Ok(true)
             }
             (false, true) => {
@@ -222,9 +249,31 @@ fn load_keys(vault: &Vault) -> vk_vault::Result<(Vec<AgentKey>, HashMap<String, 
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use url::Url;
 
     use super::*;
+    use crate::os::layout;
+
+    #[test]
+    fn a_pipe_collision_shows_its_own_advice() {
+        let error = anyhow::Error::new(AgentError::PipeTaken {
+            service_running: true,
+        });
+
+        assert!(start_failure_message(&error).contains("Stop-Service ssh-agent"));
+    }
+
+    #[test]
+    fn other_start_failures_keep_their_cause() {
+        let error = anyhow::anyhow!("socket directory is read-only");
+
+        assert_eq!(
+            start_failure_message(&error),
+            "The SSH agent could not start: socket directory is read-only"
+        );
+    }
 
     fn locked() -> SessionState {
         SessionState::Locked {
@@ -247,7 +296,7 @@ mod tests {
     #[test]
     fn clearing_a_stopped_agent_forgets_the_labels() {
         let (approvals, _rx) = mpsc::channel(1);
-        let control = SshControl::new(PathBuf::from("/tmp/unused.sock"), approvals);
+        let control = SshControl::new(layout::ssh_endpoint(Path::new("unused")), approvals);
         control.replace(
             Vec::new(),
             HashMap::from([(
@@ -285,11 +334,23 @@ mod tests {
     #[test]
     fn remembered_approvals_are_forgotten_together() {
         let (approvals, _rx) = mpsc::channel(1);
-        let control = SshControl::new(PathBuf::from("/tmp/unused.sock"), approvals);
+        let control = SshControl::new(layout::ssh_endpoint(Path::new("unused")), approvals);
         control.remember("c1".to_owned());
         assert!(control.is_remembered("c1"));
         assert!(!control.is_remembered("c2"));
         control.forget_approvals();
         assert!(!control.is_remembered("c1"));
+    }
+
+    #[test]
+    fn the_agent_starts_on_the_endpoint_the_layout_names() {
+        let endpoint = layout::ssh_endpoint(Path::new("unused"));
+        let (approvals, _rx) = mpsc::channel(1);
+        let control = SshControl::new(endpoint.clone(), approvals);
+        assert_eq!(control.endpoint(), &endpoint);
+        let path = agent_path(&endpoint).expect("the layout's endpoint suits this platform");
+        assert_eq!(path.to_string_lossy(), endpoint.to_string());
+        #[cfg(windows)]
+        assert_eq!(path, PathBuf::from(r"\\.\pipe\openssh-ssh-agent"));
     }
 }

@@ -119,7 +119,11 @@ fn a_reprompt_item_needs_the_master_password_first() {
     let panel = h.app.quick_panel().expect("stays open");
     assert_eq!(
         panel.get_toast_text(),
-        "Open in Manager (⌘O) to confirm your master password"
+        if cfg!(windows) {
+            "Open in Manager (Ctrl+O) to confirm your master password"
+        } else {
+            "Open in Manager (⌘O) to confirm your master password"
+        }
     );
     key(&panel, "e", CMD);
     let manager = h.app.manager_window().expect("manager");
@@ -288,11 +292,21 @@ fn a_panel_opened_inside_the_app_does_not_reuse_an_old_target() {
 }
 
 #[test]
-fn the_selected_rows_shortcut_hint_and_the_footer_legend_show() {
+fn only_the_footer_legend_shows_the_shortcut() {
     let h = harness(Setup::default());
     let panel = hotkey(&h);
     type_into(&panel, "Quick search", "tailscale");
-    assert!(exists(&panel, "⌘⇧↩"), "the selected row's hint");
+    assert!(
+        !exists(
+            &panel,
+            if cfg!(windows) {
+                "Ctrl+Shift+Enter"
+            } else {
+                "⌘⇧↩"
+            }
+        ),
+        "a hint on the selected row overlaps its copy buttons"
+    );
     assert!(exists(&panel, "auto-type"), "the footer legend");
 }
 

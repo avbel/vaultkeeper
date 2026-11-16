@@ -1,8 +1,9 @@
 //! `vaultkeeper --ui`: the windows. Started by the daemon on demand, it proxies `VaultService` to the
-//! daemon over `ui.sock`, shows what the daemon asks for, and exits 120 s after its last window
+//! daemon over `ui.sock` (an inherited pipe on Windows), shows what the daemon asks for, and exits 120 s after its last window
 //! closed, at once when the daemon goes away. Copies go to the daemon, which clears them.
 
 pub mod bridge;
+pub mod channel;
 pub mod linger;
 
 use std::{
@@ -22,15 +23,29 @@ use self::{
 use crate::{
     app::{App, UiCommand},
     hooks::Hooks,
-    os::{Notifier, layout::UI_SOCKET},
+    os::Notifier,
     run::{Backend, UiOptions, run_ui, select_backend},
 };
 
 /// Activity notices reset the daemon's lock timer, which counts in minutes.
 const ACTIVITY_EVERY: Duration = Duration::from_secs(30);
 
-pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
+/// One start-up milestone, in `ui.log` and in the early log: a UI that never reaches the daemon
+/// leaves the last milestone it got to as the only clue.
+fn step(message: &str) {
+    tracing::info!("{message}");
+    crate::os::early_log::note(message);
+}
+
+pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow::Result<()> {
+    step(&format!(
+        "UI process starting (first_unlock={first_unlock} no_activate={no_activate} pipe={pipe:?})"
+    ));
+    channel::check(pipe)?;
     let data_dir = crate::os::layout::data_dir().context("locate the data directory")?;
+    step("data directory located");
+    crate::os::startup_check::enforce(&data_dir)?;
+    step("start-up check passed");
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -38,7 +53,8 @@ pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
         .enable_all()
         .build()
         .context("start the async runtime")?;
-    let (remote, events) = match runtime.block_on(RemoteVault::connect(data_dir.join(UI_SOCKET))) {
+    step("async runtime started; connecting to the daemon");
+    let (remote, events) = match runtime.block_on(channel::connect(&data_dir, pipe)) {
         Ok(connected) => connected,
         Err(IpcError::Busy) => {
             tracing::info!("another UI process is connected to the daemon");
@@ -46,6 +62,7 @@ pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
         }
         Err(error) => return Err(error).context("connect to the Vaultkeeper daemon"),
     };
+    step("connected to the daemon");
     let remote = Arc::new(remote);
     let notify = notifier(&remote);
     select_backend(Backend::Ui {
@@ -58,6 +75,7 @@ pub fn run(first_unlock: bool, no_activate: bool) -> anyhow::Result<()> {
         linger: linger_from_env(std::env::var("VAULTKEEPER_UI_LINGER_SECS").ok().as_deref()),
     });
     let (commands, received) = mpsc::unbounded_channel();
+    step("UI backend selected; entering the event loop");
     let forwarder = runtime.spawn(forward_events(events, commands, Arc::clone(&notify)));
     let on_closed = Rc::clone(&linger);
     let ran = run_ui(

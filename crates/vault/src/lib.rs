@@ -17,6 +17,7 @@ mod keys;
 pub mod model;
 mod passthrough;
 mod reveal;
+mod sealed_store;
 mod secrets;
 mod sends;
 mod service;
@@ -31,7 +32,8 @@ pub use config::{Timings, VaultConfig};
 pub use error::{
     CONFLICT_MESSAGE, Error, KDF_DOWNGRADE_MESSAGE, LogoutErrors, OFFLINE_MESSAGE, Result,
 };
-pub use secrets::{MemorySecretStore, SecretStore, SecretStoreError};
+pub use sealed_store::{BlobWrapper, SealedFileStore};
+pub use secrets::{MemorySecretStore, SecretStore, SecretStoreError, SecretStoreErrorKind};
 pub use sends::MAX_SEND_FILE_BYTES;
 pub use service::VaultService;
 pub use vault::{

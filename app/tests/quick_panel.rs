@@ -188,7 +188,11 @@ fn reprompt_items_are_refused_in_the_quick_panel() {
     assert!(panel.get_toast_shown());
     assert_eq!(
         panel.get_toast_text(),
-        "Open in Manager (⌘O) to confirm your master password"
+        if cfg!(windows) {
+            "Open in Manager (Ctrl+O) to confirm your master password"
+        } else {
+            "Open in Manager (⌘O) to confirm your master password"
+        }
     );
     drop(panel);
 }

@@ -1,6 +1,6 @@
 //! Runs one decoded [`Call`] against the real service.
 
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use vk_vault::{
     VaultService,
@@ -196,10 +196,14 @@ async fn touch_id_call<S: VaultService>(
     call: Call,
 ) -> Result<Reply, WireError> {
     with_touch_id(service, touch_id, move |service, backend| match call {
-        Call::EnrollTouchId { account_id } => enroll_touch_id(service, backend, &account_id),
-        Call::UnlockWithTouchId { account_id } => {
-            unlock_with_touch_id(service, backend, &account_id)
-        }
+        Call::EnrollTouchId {
+            account_id,
+            parent_window,
+        } => enroll_touch_id(service, backend, &account_id, parent_window),
+        Call::UnlockWithTouchId {
+            account_id,
+            parent_window,
+        } => unlock_with_touch_id(service, backend, &account_id, parent_window),
         _ => Err(WireError::internal("not a Touch ID call".to_owned())),
     })
     .await
@@ -251,6 +255,7 @@ fn enroll_touch_id<S: VaultService>(
     service: &S,
     backend: &dyn TouchIdBackend,
     account_id: &str,
+    parent_window: Option<u64>,
 ) -> Result<Reply, WireError> {
     if !is_active(service, account_id) {
         return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
@@ -258,18 +263,23 @@ fn enroll_touch_id<S: VaultService>(
     let user_key = service
         .user_key()
         .map_err(|error| WireError::from(&error))?;
-    Ok(Reply::TouchId(backend.enroll(account_id, &user_key)))
+    Ok(Reply::TouchId(backend.enroll(
+        account_id,
+        &user_key,
+        parent_window,
+    )))
 }
 
 fn unlock_with_touch_id<S: VaultService>(
     service: &S,
     backend: &dyn TouchIdBackend,
     account_id: &str,
+    parent_window: Option<u64>,
 ) -> Result<Reply, WireError> {
     if !is_active(service, account_id) {
         return Ok(Reply::TouchId(Err(TouchIdFailure::AccountChanged)));
     }
-    let user_key = match backend.unlock(account_id) {
+    let user_key = match backend.unlock(account_id, parent_window) {
         Ok(user_key) => user_key,
         Err(failure) => return Ok(Reply::TouchId(Err(failure))),
     };
@@ -307,8 +317,20 @@ fn convert_all<T, D: From<T>>(items: Vec<T>) -> Vec<D> {
     items.into_iter().map(D::from).collect()
 }
 
+#[cfg(unix)]
 fn os_path(bytes: Vec<u8>) -> PathBuf {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+
     PathBuf::from(OsString::from_vec(bytes))
+}
+
+/// Windows has no byte view of a path; the client sends UTF-8 (see `service.rs::path_bytes`).
+#[cfg(not(unix))]
+fn os_path(bytes: Vec<u8>) -> PathBuf {
+    match String::from_utf8(bytes) {
+        Ok(text) => PathBuf::from(text),
+        Err(error) => PathBuf::from(String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    }
 }
 
 async fn blocking<S, T, F>(service: &Arc<S>, work: F) -> Result<T, WireError>

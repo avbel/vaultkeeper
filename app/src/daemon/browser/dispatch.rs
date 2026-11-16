@@ -29,7 +29,7 @@ use vk_vault::{Vault, model::ItemId, uri_match::DefaultMatch};
 use zeroize::Zeroizing;
 
 use super::{
-    auth::authenticate,
+    auth::{authenticate, connection_browser},
     fill::{self, FillRequest, Filled, Via},
     limits::Limits,
     pairing::PairingStore,
@@ -261,7 +261,10 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
     fills: Arc<F>,
     host: Arc<H>,
 ) {
-    if !host.enabled(caller_kind(&connection)) {
+    let Some(browser_kind) = connection_browser(&connection.hello) else {
+        return;
+    };
+    if !host.enabled(browser_kind) {
         return;
     }
     let Some((connection, key, sent)) = authenticate(
@@ -280,11 +283,11 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
         outgoing,
         ..
     } = connection;
-    let (caller, browser_kind) = match hello.caller {
-        Caller::Chromium { origin } => (origin, KnownBrowser::Chrome),
-        Caller::Firefox { extension_id } => (extension_id, KnownBrowser::Firefox),
+    let caller = match hello.caller {
+        Caller::Chromium { origin } => origin,
+        Caller::Firefox { extension_id } => extension_id,
     };
-    let browser = browser_name(browser_kind);
+    let browser = browser_kind.display_name();
     let (completions, mut completed) = mpsc::channel(1);
     let mut changes = host.changes();
     // The current state goes out with the prove reply; only later changes push events.
@@ -924,20 +927,6 @@ async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
             || async { host.enabled(kind) },
         )
         .await
-}
-
-const fn caller_kind(connection: &BrowserConnection) -> KnownBrowser {
-    match connection.hello.caller {
-        Caller::Chromium { .. } => KnownBrowser::Chrome,
-        Caller::Firefox { .. } => KnownBrowser::Firefox,
-    }
-}
-
-const fn browser_name(browser: KnownBrowser) -> &'static str {
-    match browser {
-        KnownBrowser::Chrome => "Google Chrome",
-        KnownBrowser::Firefox => "Firefox",
-    }
 }
 
 const fn id_of(request: &Request) -> u64 {

@@ -22,12 +22,11 @@ export struct RowData {
     icon: image,
 }
 
-// Types username, Tab, password into the app behind the Quick Panel. The selected row shows the
-// shortcut next to the glyph, unless shortcut hints are off.
+// Types username, Tab, password into the app behind the Quick Panel. Its shortcut is only in the
+// footer legend: a hint on the selected row overlapped the copy buttons.
 component AutoTypeBtn inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> emphasized: false;
-    in property <bool> hint-shown: false;
     callback clicked();
 
     // Same width on every row, so the copy buttons stay in one column.
@@ -52,12 +51,6 @@ component AutoTypeBtn inherits Rectangle {
         alignment: end;
         spacing: Theme.s1;
         padding-right: (Theme.control-height - 16px * Theme.scale) / 2;
-        if root.enabled && root.hint-shown: Text {
-            text: "⌘⇧↩";
-            color: Theme.text-muted;
-            font-size: Theme.font-meta;
-            vertical-alignment: center;
-        }
         if root.enabled: Icon {
             y: (parent.height - self.height) / 2;
             source: @image-url("icons/keyboard.svg");
@@ -164,7 +157,6 @@ export component ItemRow inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 enabled: root.data.auto-type;
                 emphasized: ta.has-hover || root.selected;
-                hint-shown: root.selected;
                 clicked => { root.auto-type(); }
             }
             HorizontalLayout {

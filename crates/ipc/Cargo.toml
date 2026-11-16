@@ -35,6 +35,10 @@ zeroize = { workspace = true, features = ["serde"] }
 core-foundation = "0.10.1"
 security-framework.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+vk-win.workspace = true
+windows-sys.workspace = true
+
 [dev-dependencies]
 # A real transport failure for the offline-error round trip; already in the build via vk-api.
 reqwest.workspace = true

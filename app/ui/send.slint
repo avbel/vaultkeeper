@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Btn, BtnKind, Check, CopyBtn, Divider, Field, IconBtn, InlineConfirm, KindChip, MultiField, Segmented, Select, Spinner } from "kit.slint";
 
 // What the detail pane shows for a Send. `text` is masked until revealed when the Send hides
@@ -168,7 +169,7 @@ export component SendDetailView inherits Rectangle {
                 alignment: start;
                 if root.send.is-text: Btn {
                     text: "Edit";
-                    hint: "⌘E";
+                    hint: Keys.cmd + "E";
                     has-icon: true;
                     icon: @image-url("icons/edit.svg");
                     enabled: root.online && !root.busy;

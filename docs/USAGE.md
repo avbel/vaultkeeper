@@ -176,9 +176,26 @@ Each sign request opens an approval window (process and key fingerprint, auto-de
   connection shows the unlock window first and continues after you unlock. While logged out the
   agent lists no keys.
 
+### SSH agent on Windows
+
+The agent listens on the named pipe `\\.\pipe\openssh-ssh-agent`, which is where Windows OpenSSH
+(`C:\Windows\System32\OpenSSH\ssh.exe`) looks, so there is no `IdentityAgent` line or
+`SSH_AUTH_SOCK` to set. Settings → SSH agent shows the pipe name instead of a socket path.
+
+- The built-in *OpenSSH Authentication Agent* service uses the same pipe name. Stop and disable it
+  (`Stop-Service ssh-agent; Set-Service ssh-agent -StartupType Disabled`), or Vaultkeeper's agent
+  cannot start. If it is still running, Settings shows that message and turns the
+  toggle back off; run those two commands in an administrator PowerShell, then turn the agent on again.
+- Git for Windows bundles its own `ssh`, which does not use the pipe. Point Git at the Windows one:
+  `git config --global core.sshCommand C:/Windows/System32/OpenSSH/ssh.exe`.
+- WSL cannot open a Windows pipe directly; it needs a relay such as `npiperelay` that exposes the
+  pipe as `SSH_AUTH_SOCK` inside the distribution.
+- *SSH requires Windows Hello* asks for a Windows Hello gesture (face, fingerprint or PIN) after
+  you click Approve.
+
 ## Browsers
 
-Chrome and Firefox can fill logins from Vaultkeeper and offer to save new or changed passwords. The
+Chrome, Edge and Firefox can fill logins from Vaultkeeper and offer to save new or changed passwords. The
 browser extension is a thin client: it holds no password, key or copy of the vault. Matching, every
 decision and every prompt are in Vaultkeeper's own windows.
 
@@ -186,7 +203,8 @@ decision and every prompt are in Vaultkeeper's own windows.
    you use. This writes the native messaging connection file for each installed browser
    (`~/Library/Application Support/<browser>/NativeMessagingHosts/org.vaultkeeper.browser.json`).
    Integration starts only with the signed app build; otherwise the state line says why.
-2. Install the extension (see `browsers/README.md`) and open its popup. The first connection opens a
+2. Install the extension (see `browsers/README.md`; Edge installs it from the Chrome Web Store after you
+   allow extensions from other stores) and open its popup. The first connection opens a
    *Connect <browser>?* window with a code. Check that it matches the code in the extension popup,
    then click *Connect*. *Deny* is the default; Return does not approve.
 3. **Fill:** click the Vaultkeeper icon in a login field, press ⌘⇧L, or use the popup's *Fill this
@@ -250,7 +268,7 @@ and remove the extension in the browser.
 
 Settings → Security → *Start at login*. This installs `~/Library/LaunchAgents/vaultkeeper.plist`, which
 starts `vaultkeeper --tray`, so only the menu bar icon shows. *Ask to unlock on start* opens the unlock
-window at launch.
+window at launch. With no account added yet, the sign-in window opens instead.
 - Enable it from the copy in `/Applications`, because the agent stores the path of the executable
   that enabled it.
 - To remove it: turn the setting off, or `rm ~/Library/LaunchAgents/vaultkeeper.plist`.

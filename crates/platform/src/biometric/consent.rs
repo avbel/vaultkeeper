@@ -1,0 +1,110 @@
+//! Windows Hello presence check without a key: `UserConsentVerifier`, parented to a window of the
+//! UI process so the dialog comes up in the foreground (docs/solutions/windows-support.md §3.3).
+
+use std::{ffi::c_void, ptr, thread};
+
+use windows::{
+    Security::Credentials::UI::{
+        UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+    },
+    Win32::{
+        Foundation::HWND,
+        System::WinRT::{
+            IUserConsentVerifierInterop, RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize,
+        },
+    },
+    core::{HSTRING, factory},
+};
+
+use windows_future::IAsyncOperation;
+
+use super::owner_window::OwnerWindow;
+use crate::{Error, Result};
+
+/// Only `Verified` passes: cancel, retries exhausted, no Hello set up and policy blocks all deny.
+/// Without a UI window the dialog is parented to a transparent window of the daemon's own, so a
+/// check never fails for lack of an owner.
+pub(super) fn authenticate(reason: &str, parent_window: Option<u64>) -> Result<()> {
+    let ui_window = parent_window.and_then(|hwnd| usize::try_from(hwnd).ok());
+    let owner = if ui_window.is_none() {
+        tracing::debug!("no UI window; parenting the Windows Hello check to a daemon window");
+        Some(OwnerWindow::create().ok_or(Error::BiometricFailed)?)
+    } else {
+        None
+    };
+    let hwnd = ui_window
+        .or_else(|| owner.as_ref().map(OwnerWindow::hwnd))
+        .ok_or(Error::BiometricFailed)?;
+    let reason = reason.to_owned();
+    // A fresh thread, because WinRT needs the multithreaded apartment and a pooled blocking thread
+    // may already be initialised differently.
+    let worker = thread::Builder::new()
+        .name("hello-consent".to_owned())
+        .spawn(move || verify(hwnd, &reason))
+        .map_err(Error::Io)?;
+    let result = worker.join().map_err(|_| Error::BiometricFailed)?;
+    drop(owner);
+    result
+}
+
+fn verify(hwnd: usize, reason: &str) -> Result<()> {
+    // SAFETY: balanced by the `RoUninitialize` below on every path that gets this far; the thread
+    // is private to this call.
+    if let Err(error) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+        tracing::warn!(%error, "RoInitialize failed");
+        return Err(Error::BiometricFailed);
+    }
+    let result = request(hwnd, reason);
+    // SAFETY: pairs with the successful `RoInitialize` above, after every WinRT object is dropped.
+    unsafe { RoUninitialize() };
+    match result {
+        Ok(result) if result == UserConsentVerificationResult::Verified => Ok(()),
+        Ok(result) => {
+            tracing::info!(result = result.0, "Windows Hello did not verify");
+            Err(Error::BiometricFailed)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Windows Hello check failed");
+            Err(Error::BiometricFailed)
+        }
+    }
+}
+
+fn request(hwnd: usize, reason: &str) -> windows::core::Result<UserConsentVerificationResult> {
+    let interop = factory::<UserConsentVerifier, IUserConsentVerifierInterop>()?;
+    let window = HWND(ptr::with_exposed_provenance_mut::<c_void>(hwnd));
+    // SAFETY: the handle is a plain value the daemon already checked against the UI process; a
+    // window that went away makes the call fail, not misbehave.
+    let operation: IAsyncOperation<UserConsentVerificationResult> =
+        unsafe { interop.RequestVerificationForWindowAsync(window, &HSTRING::from(reason)) }?;
+    operation.join()
+}
+
+/// Whether Windows Hello is set up for this user. `None` when the WinRT call itself fails.
+/// Runs on a fresh thread for the same apartment reason as [`authenticate`].
+pub(super) fn availability() -> Option<UserConsentVerifierAvailability> {
+    let worker = thread::Builder::new()
+        .name("hello-availability".to_owned())
+        .spawn(check_availability)
+        .inspect_err(
+            |error| tracing::warn!(%error, "cannot start the Windows Hello availability check"),
+        )
+        .ok()?;
+    worker.join().ok().flatten()
+}
+
+fn check_availability() -> Option<UserConsentVerifierAvailability> {
+    // SAFETY: balanced by the `RoUninitialize` below on every path that gets this far; the thread
+    // is private to this call.
+    if let Err(error) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+        tracing::warn!(%error, "RoInitialize failed");
+        return None;
+    }
+    let result =
+        UserConsentVerifier::CheckAvailabilityAsync().and_then(|operation| operation.join());
+    // SAFETY: pairs with the successful `RoInitialize` above, after every WinRT object is dropped.
+    unsafe { RoUninitialize() };
+    result
+        .inspect_err(|error| tracing::warn!(%error, "Windows Hello availability check failed"))
+        .ok()
+}

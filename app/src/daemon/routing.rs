@@ -115,16 +115,38 @@ pub const fn second_launch(command: vk_platform::single_instance::Command) -> Ef
         vk_platform::single_instance::Command::ShowQuickPanel => {
             Effect::Show(UiCommand::ShowQuickPanel { target: None })
         }
+        vk_platform::single_instance::Command::Quit => Effect::Quit,
+    }
+}
+
+/// Runs what a second launch asked for: `Quit` takes the graceful path the tray's Quit takes
+/// (`quit`), everything else goes through `apply`.
+pub fn dispatch_second_launch(
+    command: vk_platform::single_instance::Command,
+    apply: impl FnOnce(Effect),
+    quit: impl FnOnce(),
+) {
+    match second_launch(command) {
+        Effect::Quit => quit(),
+        effect => apply(effect),
     }
 }
 
 /// What to show right after start. "Ask to unlock on start" applies to autostart only; a plain
-/// launch opens the Manager, which shows the lock or login screen itself.
+/// launch opens the Manager, which shows the lock or login screen itself. An autostart with no
+/// saved account at all (first run) asks to add one, since a bare tray icon gives nothing to do;
+/// a logged-out account that is still saved stays quiet.
 #[must_use]
-pub fn startup(launch: Launch, state: &SessionState, ask_unlock_on_start: bool) -> Option<Effect> {
+pub fn startup(
+    launch: Launch,
+    state: &SessionState,
+    has_accounts: bool,
+    ask_unlock_on_start: bool,
+) -> Option<Effect> {
     match launch {
         Launch::Manager => Some(Effect::Show(UiCommand::ShowManager)),
         Launch::QuickPanel => Some(Effect::Show(UiCommand::ShowQuickPanel { target: None })),
+        Launch::Tray if !has_accounts => Some(Effect::Show(UiCommand::ShowLogin)),
         Launch::Tray => (ask_unlock_on_start && matches!(state, SessionState::Locked { .. }))
             .then_some(Effect::Show(UiCommand::UnlockInTray)),
     }
@@ -295,24 +317,67 @@ mod tests {
         );
         assert_eq!(forwarded(Launch::QuickPanel), Command::ShowQuickPanel);
         assert_eq!(forwarded(Launch::Tray), Command::ShowManager);
+        assert_eq!(second_launch(Command::Quit), Effect::Quit);
+    }
+
+    #[test]
+    fn a_forwarded_quit_reaches_the_quit_path_and_nothing_else() {
+        use std::cell::Cell;
+
+        let applied = Cell::new(0);
+        let quits = Cell::new(0);
+        dispatch_second_launch(
+            Command::Quit,
+            |_| applied.set(applied.get() + 1),
+            || quits.set(quits.get() + 1),
+        );
+        assert_eq!((applied.get(), quits.get()), (0, 1));
+
+        dispatch_second_launch(
+            Command::ShowManager,
+            |effect| {
+                assert_eq!(effect, Effect::Show(UiCommand::ShowManager));
+                applied.set(applied.get() + 1);
+            },
+            || quits.set(quits.get() + 1),
+        );
+        assert_eq!((applied.get(), quits.get()), (1, 1));
     }
 
     #[test]
     fn startup_asks_to_unlock_only_for_a_locked_autostart() {
         assert_eq!(
-            startup(Launch::Tray, &locked(), true),
+            startup(Launch::Tray, &locked(), true, true),
             Some(Effect::Show(UiCommand::UnlockInTray))
         );
-        assert_eq!(startup(Launch::Tray, &locked(), false), None);
-        assert_eq!(startup(Launch::Tray, &SessionState::LoggedOut, true), None);
-        assert_eq!(startup(Launch::Tray, &unlocked(), true), None);
+        assert_eq!(startup(Launch::Tray, &locked(), true, false), None);
         assert_eq!(
-            startup(Launch::Manager, &locked(), false),
+            startup(Launch::Tray, &SessionState::LoggedOut, true, true),
+            None,
+            "a saved, logged-out account is not a first run"
+        );
+        assert_eq!(startup(Launch::Tray, &unlocked(), true, true), None);
+        assert_eq!(
+            startup(Launch::Manager, &locked(), true, false),
             Some(Effect::Show(UiCommand::ShowManager))
         );
         assert_eq!(
-            startup(Launch::QuickPanel, &SessionState::LoggedOut, false),
+            startup(Launch::QuickPanel, &SessionState::LoggedOut, true, false),
             Some(Effect::Show(UiCommand::ShowQuickPanel { target: None }))
+        );
+    }
+
+    #[test]
+    fn first_run_autostart_asks_to_add_an_account() {
+        for ask_unlock in [true, false] {
+            assert_eq!(
+                startup(Launch::Tray, &SessionState::LoggedOut, false, ask_unlock),
+                Some(Effect::Show(UiCommand::ShowLogin))
+            );
+        }
+        assert_eq!(
+            startup(Launch::Manager, &SessionState::LoggedOut, false, false),
+            Some(Effect::Show(UiCommand::ShowManager))
         );
     }
 }

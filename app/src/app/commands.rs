@@ -45,6 +45,13 @@ pub enum UiCommand {
         text: String,
         error: bool,
     },
+    /// The daemon could not start the SSH agent, with the reason to show.
+    SshAgentFailed(String),
+    /// The shortcuts the OS refused to register; Settings shows a notice next to each.
+    HotkeyIssues {
+        quick_panel: bool,
+        generator: bool,
+    },
 }
 
 impl<S: VaultService> App<S> {
@@ -93,6 +100,11 @@ impl<S: VaultService> App<S> {
             UiCommand::OfflineChanged(offline) => self.offline_changed(offline),
             UiCommand::SyncFinished(error) => self.sync_finished(error.as_deref()),
             UiCommand::Toast { text, error } => self.daemon_toast(text, error),
+            UiCommand::SshAgentFailed(message) => self.ssh_agent_failed(message),
+            UiCommand::HotkeyIssues {
+                quick_panel,
+                generator,
+            } => self.hotkey_issues_changed(quick_panel, generator),
         }
     }
 
@@ -114,6 +126,13 @@ impl<S: VaultService> App<S> {
         } else {
             self.pending_notice.replace(Some(text));
         }
+    }
+
+    fn ssh_agent_failed(&self, message: String) {
+        self.update_settings(|settings| settings.ssh_agent = false);
+        self.ssh_notice.replace(message.clone());
+        self.reload_settings();
+        self.daemon_toast(message, true);
     }
 
     fn offline_changed(&self, offline: bool) {
@@ -204,6 +223,8 @@ impl UiCommand {
                 | Self::OfflineChanged(_)
                 | Self::SyncFinished(_)
                 | Self::Toast { .. }
+                | Self::SshAgentFailed(_)
+                | Self::HotkeyIssues { .. }
                 | Self::ShowBrowserPrompt(BrowserPromptRequest {
                     prompt: vk_ipc::BrowserPrompt::Save { .. }
                         | vk_ipc::BrowserPrompt::AddAddress { .. }

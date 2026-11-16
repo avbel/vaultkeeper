@@ -14,11 +14,13 @@ pub mod secrets;
 mod site_icons;
 pub mod ssh;
 pub mod target;
-mod tray;
+pub(crate) mod tray;
 pub mod tray_sync;
 pub mod update;
 
-use std::{path::Path, sync::Arc, time::Duration};
+#[cfg(not(windows))]
+use std::path::Path;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use vk_platform::single_instance;
@@ -60,21 +62,28 @@ impl TestOverrides {
 }
 
 /// The exit status that asks launchd's `KeepAlive` to start the (updated) app again.
+#[cfg(not(windows))]
 const RESTART_EXIT: i32 = 75;
 /// How long an updated app waits for the old daemon to finish shutting down.
+#[cfg(unix)]
 const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
 
 pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     let overrides = TestOverrides::from_env();
+    // Windows: step 3b - the restart hand-off waits on the old process handle.
+    #[cfg(unix)]
     if let Some(pid) = wait_for
         && !single_instance::wait_for_exit(pid, WAIT_FOR_PREVIOUS)
     {
         tracing::warn!(pid, "the previous vaultkeeper is still running");
     }
+    #[cfg(not(unix))]
+    let _ = wait_for;
     if launch == Launch::Tray {
         refresh_login_agent();
     }
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
+    crate::os::startup_check::enforce(&data_dir)?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
     let instance = match single_instance::acquire_in(&data_dir, routing::forwarded(launch), {
         move |command| {
@@ -86,7 +95,10 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
             tracing::info!("vaultkeeper is already running; asked it to show a window");
             return Ok(());
         }
-        Err(error) => return Err(error).context("check for a running Vaultkeeper"),
+        Err(error) => {
+            tracing::error!(%error, "cannot start or reach a Vaultkeeper instance");
+            return Err(error).context("check for a running Vaultkeeper");
+        }
     };
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -96,13 +108,8 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
         .build()
         .context("start the async runtime")?;
     select_backend(Backend::Daemon)?;
-    let mut config = DaemonConfig::new(
-        data_dir,
-        Arc::new(match overrides.keychain_prefix.clone() {
-            Some(prefix) => secrets::KeychainStore::with_prefix(prefix),
-            None => secrets::KeychainStore::new(),
-        }),
-    );
+    let secrets = secrets::open(&data_dir, overrides.keychain_prefix.as_deref());
+    let mut config = DaemonConfig::new(data_dir, secrets);
     if overrides.any_peer {
         config.peers = Peers::AnyOfThisUser;
     }
@@ -117,7 +124,11 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
             .name("vaultkeeper-instance".to_owned())
             .spawn(move || {
                 for command in forward_rx {
-                    daemon.apply(routing::second_launch(command));
+                    routing::dispatch_second_launch(
+                        command,
+                        |effect| daemon.apply(effect),
+                        quit_event_loop,
+                    );
                 }
             })
             .context("start the second-launch listener")?
@@ -131,6 +142,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     if let Some(effect) = routing::startup(
         launch,
         &vk_vault::VaultService::state(daemon.vault().as_ref()),
+        !vk_vault::VaultService::accounts(daemon.vault().as_ref()).is_empty(),
         daemon.settings().ask_unlock_on_start,
     ) {
         daemon.apply(effect);
@@ -143,6 +155,14 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     // Still holding the single-instance lock: a browser host or a Dock click must not become the
     // daemon between this one quitting and the updated one starting.
     if let Some(bundle) = daemon.restart_after_shutdown() {
+        #[cfg(windows)]
+        if let Err(error) = daemon.run_update_installer(&bundle) {
+            tracing::error!(
+                error = format!("{error:#}"),
+                "the update installer did not start"
+            );
+        }
+        #[cfg(not(windows))]
         relaunch(&bundle);
     }
     drop(instance);
@@ -158,6 +178,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
 /// daemon stays launchd's job and is restarted after a crash; the exit releases the lock.
 /// Otherwise LaunchServices opens a new instance, which waits for this process to exit before
 /// taking the single-instance lock.
+#[cfg(not(windows))]
 fn relaunch(bundle: &Path) {
     if vk_platform::autostart::started_by_login_agent() {
         tracing::info!("exiting for launchd to start the updated app");
@@ -207,7 +228,11 @@ impl Shell {
         let hotkey = match hotkey::Hotkey::new(daemon) {
             Ok(hotkey) => {
                 let hotkey = std::rc::Rc::new(hotkey);
-                hotkey_pause::apply(&*hotkey, &daemon.settings(), daemon.hotkeys_paused());
+                daemon.report_hotkeys(hotkey_pause::apply(
+                    &*hotkey,
+                    &daemon.settings(),
+                    daemon.hotkeys_paused(),
+                ));
                 follow_hotkey_setting(daemon, &hotkey)?;
                 Some(hotkey)
             }
@@ -231,6 +256,7 @@ fn follow_hotkey_setting(
     let mut settings = daemon.subscribe_settings();
     let mut paused = daemon.subscribe_hotkey_pause();
     let weak = std::rc::Rc::downgrade(hotkey);
+    let daemon = Arc::clone(daemon);
     slint::spawn_local(async move {
         loop {
             tokio::select! {
@@ -242,7 +268,7 @@ fn follow_hotkey_setting(
             };
             let fresh = settings.borrow_and_update().clone();
             let pause = *paused.borrow_and_update();
-            hotkey_pause::apply(&*hotkey, &fresh, pause);
+            daemon.report_hotkeys(hotkey_pause::apply(&*hotkey, &fresh, pause));
         }
     })?;
     Ok(())
@@ -265,6 +291,11 @@ fn watch_power(daemon: &Arc<Daemon>) -> Option<vk_platform::power::PowerWatcher>
             for event in events {
                 tracing::debug!(?event, "power event");
                 daemon.power_event(event);
+                // Only Windows reports this to the daemon while it can still shut down cleanly.
+                #[cfg(windows)]
+                if event == vk_platform::power::PowerEvent::SessionEnding {
+                    quit_event_loop();
+                }
             }
         });
     if let Err(error) = spawned {
@@ -300,6 +331,7 @@ fn watch_network(daemon: &Arc<Daemon>) -> Option<vk_platform::network::NetworkWa
 }
 
 /// SIGTERM (logout, `launchctl`, `kill`) and SIGINT quit like the tray's Quit.
+#[cfg(unix)]
 async fn quit_on_signal() {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut term), Ok(mut interrupt)) = (
@@ -313,6 +345,10 @@ async fn quit_on_signal() {
         _ = term.recv() => tracing::info!("SIGTERM: quitting"),
         _ = interrupt.recv() => tracing::info!("SIGINT: quitting"),
     }
+    quit_event_loop();
+}
+
+fn quit_event_loop() {
     let quit = slint::invoke_from_event_loop(|| {
         if let Err(error) = slint::quit_event_loop() {
             tracing::error!(%error, "cannot quit the event loop");
@@ -321,4 +357,50 @@ async fn quit_on_signal() {
     if let Err(error) = quit {
         tracing::error!(%error, "cannot reach the event loop to quit");
     }
+}
+
+/// Closing the console, logging off and shutting down arrive as console control events.
+#[cfg(windows)]
+async fn quit_on_signal() {
+    use windows_sys::{
+        Win32::System::Console::{
+            CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT,
+            CTRL_SHUTDOWN_EVENT, SetConsoleCtrlHandler,
+        },
+        core::BOOL,
+    };
+
+    // How long the system waits for a handler before terminating the process anyway is 5 s for
+    // CTRL_CLOSE and shorter at shutdown; the handler must not return before the quit has run,
+    // because returning lets the system kill the process.
+    const GRACE: Duration = Duration::from_secs(4);
+
+    unsafe extern "system" fn handler(event: u32) -> BOOL {
+        match event {
+            CTRL_C_EVENT | CTRL_BREAK_EVENT => {
+                tracing::info!(event, "console interrupt: quitting");
+                quit_event_loop();
+                1
+            }
+            CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => {
+                tracing::info!(event, "console is going away: quitting");
+                quit_event_loop();
+                std::thread::sleep(GRACE);
+                1
+            }
+            _ => 0,
+        }
+    }
+
+    // SAFETY: `handler` is a `'static` function with the signature the API expects, and it only
+    // calls thread-safe code.
+    if unsafe { SetConsoleCtrlHandler(Some(handler), 1) } == 0 {
+        tracing::warn!(error = %std::io::Error::last_os_error(), "cannot listen for console events");
+    }
+    std::future::pending::<()>().await;
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn quit_on_signal() {
+    std::future::pending::<()>().await;
 }

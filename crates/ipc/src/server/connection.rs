@@ -8,10 +8,6 @@ use std::{
 
 use tokio::{
     io::AsyncWriteExt,
-    net::{
-        UnixStream,
-        unix::{OwnedReadHalf, OwnedWriteHalf},
-    },
     sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
     task::JoinSet,
 };
@@ -23,11 +19,11 @@ use crate::{
     IpcError,
     dto::WireError,
     frame::{decode, encode, read_frame},
-    peer,
     protocol::{
         BrowserReply, DaemonMessage, Event, PROTOCOL_VERSION, Refusal, Snapshot, SshDecision,
         UiMessage, UiNotice, Welcome,
     },
+    transport::{PeerCredentials, ReadHalf, Stream, WriteHalf},
 };
 
 /// Frames queued for the writer; producers wait when the UI reads slowly.
@@ -38,18 +34,16 @@ const FLUSH_GRACE: Duration = Duration::from_secs(1);
 type Frame = Zeroizing<Vec<u8>>;
 
 pub(super) async fn handle<S: VaultService>(
-    stream: UnixStream,
+    stream: Stream,
+    peer: Option<PeerCredentials>,
     shared: Arc<Shared<S>>,
     stop: watch::Receiver<bool>,
 ) {
-    let peer = match peer::credentials(&stream) {
-        Ok(peer) => peer,
-        Err(error) => {
-            tracing::warn!(%error, "cannot identify the IPC peer; closing");
-            return;
-        }
-    };
-    if peer.uid != shared.uid || !shared.verifier.verify(&peer) {
+    // `None`: the daemon handed in a channel it made for the process it spawned.
+    let pid = peer.as_ref().map(|peer| peer.pid);
+    if let Some(peer) = &peer
+        && (peer.uid != shared.uid || !shared.verifier.verify(peer))
+    {
         tracing::warn!(
             uid = peer.uid,
             pid = peer.pid,
@@ -59,13 +53,13 @@ pub(super) async fn handle<S: VaultService>(
         return;
     }
     match accept(stream, &shared, stop).await {
-        Ok(()) => tracing::debug!(pid = peer.pid, "UI process disconnected"),
-        Err(error) => tracing::info!(%error, pid = peer.pid, "IPC connection ended"),
+        Ok(()) => tracing::debug!(pid, "UI process disconnected"),
+        Err(error) => tracing::info!(%error, pid, "IPC connection ended"),
     }
 }
 
 async fn accept<S: VaultService>(
-    stream: UnixStream,
+    stream: Stream,
     shared: &Shared<S>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), IpcError> {
@@ -93,7 +87,7 @@ async fn accept<S: VaultService>(
     serve_session(read, write, shared, slot, stop).await
 }
 
-async fn read_hello(read: &mut OwnedReadHalf) -> Result<u32, IpcError> {
+async fn read_hello(read: &mut ReadHalf) -> Result<u32, IpcError> {
     let body = read_frame(read).await?.ok_or(IpcError::Disconnected)?;
     match decode(&body)? {
         UiMessage::Hello { protocol_version } => Ok(protocol_version),
@@ -101,7 +95,7 @@ async fn read_hello(read: &mut OwnedReadHalf) -> Result<u32, IpcError> {
     }
 }
 
-async fn refuse(write: &mut OwnedWriteHalf, refusal: Refusal) {
+async fn refuse(write: &mut WriteHalf, refusal: Refusal) {
     let sent = match encode(&DaemonMessage::Refused(refusal)) {
         Ok(frame) => write.write_all(&frame).await.map_err(IpcError::from),
         Err(error) => Err(error),
@@ -119,8 +113,8 @@ enum Ended {
 }
 
 async fn serve_session<S: VaultService>(
-    read: OwnedReadHalf,
-    write: OwnedWriteHalf,
+    read: ReadHalf,
+    write: WriteHalf,
     shared: &Shared<S>,
     slot: OwnedSemaphorePermit,
     mut stop: watch::Receiver<bool>,
@@ -199,7 +193,7 @@ fn flatten(joined: Result<Result<(), IpcError>, tokio::task::JoinError>) -> Resu
 }
 
 async fn write_frames(
-    mut write: OwnedWriteHalf,
+    mut write: WriteHalf,
     mut frames: mpsc::Receiver<Frame>,
 ) -> Result<(), IpcError> {
     while let Some(frame) = frames.recv().await {
@@ -221,7 +215,7 @@ struct Requests<S> {
 }
 
 async fn read_requests<S: VaultService>(
-    mut read: OwnedReadHalf,
+    mut read: ReadHalf,
     requests: Requests<S>,
 ) -> Result<(), IpcError> {
     while let Some(body) = read_frame(&mut read).await? {

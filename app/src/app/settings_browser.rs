@@ -2,7 +2,6 @@
 //! list of paired browsers.
 
 use slint::{ModelRc, VecModel};
-use vk_ipc::browser::protocol::KnownBrowser;
 use vk_vault::VaultService;
 
 use super::{App, handler};
@@ -12,13 +11,6 @@ use crate::{
     settings::{BrowserMatch, Settings},
     ui::{PairedBrowserRow, SettingsWindow},
 };
-
-const fn browser_name(browser: KnownBrowser) -> &'static str {
-    match browser {
-        KnownBrowser::Chrome => "Google Chrome",
-        KnownBrowser::Firefox => "Firefox",
-    }
-}
 
 const fn match_index(mode: BrowserMatch) -> i32 {
     match mode {
@@ -51,10 +43,12 @@ impl<S: VaultService> App<S> {
         show_state(window, settings);
         let installed = self.hooks.browsers.installed();
         window.set_chrome_installed(installed.contains(&ManifestBrowser::Chrome));
+        window.set_edge_installed(installed.contains(&ManifestBrowser::Edge));
         window.set_firefox_installed(installed.contains(&ManifestBrowser::Firefox));
         window.set_browser_chrome(settings.browser_chrome);
+        window.set_browser_edge(settings.browser_edge);
         window.set_browser_firefox(settings.browser_firefox);
-        window.set_browser_touch_id(settings.browser_touch_id);
+        window.set_browser_biometric(settings.browser_touch_id);
         window.set_browser_save_prompts(settings.browser_save_prompts);
         window.set_browser_copy_totp(settings.browser_copy_totp);
         window.set_browser_fill_single(settings.browser_fill_single);
@@ -70,7 +64,7 @@ impl<S: VaultService> App<S> {
             .paired()
             .into_iter()
             .map(|entry| PairedBrowserRow {
-                name: browser_name(entry.browser).into(),
+                name: entry.browser.display_name().into(),
                 fingerprint: entry.fingerprint.into(),
                 key: entry.public_key.into(),
             })
@@ -88,10 +82,13 @@ impl<S: VaultService> App<S> {
         window.on_browser_chrome_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.browser_chrome = enabled);
         }));
+        window.on_browser_edge_toggled(handler!(self, |app, enabled| {
+            app.update_settings(|settings| settings.browser_edge = enabled);
+        }));
         window.on_browser_firefox_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.browser_firefox = enabled);
         }));
-        window.on_browser_touch_id_toggled(handler!(self, |app, enabled| {
+        window.on_browser_biometric_toggled(handler!(self, |app, enabled| {
             app.update_settings(|settings| settings.browser_touch_id = enabled);
         }));
         window.on_browser_save_prompts_toggled(handler!(self, |app, enabled| {

@@ -4,6 +4,8 @@
 //! running. A plain `String` holding the sentinel is the control: it must be seen, which proves
 //! the detector works. This file has a single test so no other test frees memory meanwhile.
 
+#![cfg(unix)]
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},

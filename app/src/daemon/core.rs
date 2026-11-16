@@ -22,6 +22,7 @@ use tokio::{
     sync::{Notify, mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
+use vk_ipc::transport::Endpoint;
 use vk_ipc::{
     ClipboardHost, DaemonEvent, PeerCredentials, ServeOptions, ServerHandle, SshApprovalKind,
     SshDecision, SshPrompt, TouchIdBackend, TypingTarget, UiCommand, UiNotice,
@@ -32,12 +33,12 @@ use vk_vault::{SecretStore, Timings, Vault, VaultConfig, VaultService, model::Se
 
 use super::{
     device,
-    hotkey_pause::{HotkeyPause, PAUSE_LIMIT},
+    hotkey_pause::{HotkeyIssues, HotkeyPause, PAUSE_LIMIT},
     launcher::{Hang, Launcher, judge, restart_after_exit},
     lock::{self, Activity, LockCheck, LockWatch},
     routing::Effect,
     site_icons::{IconHost, SiteIcons},
-    ssh::{SshControl, purpose},
+    ssh::{SshControl, purpose, start_failure_message},
     target::{FrontmostApp, SystemFrontmost, outside},
     tray_sync::{self, TraySync},
     update,
@@ -45,7 +46,7 @@ use super::{
 use crate::{
     os::{
         ClipboardKeeper, DaemonBiometrics, Keeper, TouchId,
-        layout::{SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
+        layout::{self, SETTINGS_FILE},
         settings_file::SettingsFile,
     },
     settings::{Settings, SshApproval},
@@ -55,6 +56,10 @@ use crate::{
 const EVENT_QUEUE: usize = 32;
 const NOTICE_QUEUE: usize = 16;
 const APPROVAL_QUEUE: usize = 8;
+/// How long shutdown waits for the killed UI process to be gone before an installer may replace
+/// its exe.
+#[cfg(windows)]
+const UI_EXIT_WAIT: Duration = Duration::from_secs(3);
 /// A UI whose main loop has not got to a command after this long is killed and restarted. Cold
 /// starts measure well under a second; the margin covers a loaded machine.
 const UI_HANG_AFTER: Duration = Duration::from_secs(20);
@@ -105,6 +110,19 @@ impl DaemonConfig {
     }
 }
 
+const fn hotkey_issues_command(issues: HotkeyIssues) -> UiCommand {
+    UiCommand::HotkeyIssues {
+        quick_panel: issues.quick_panel,
+        generator: issues.generator,
+    }
+}
+
+#[derive(Default)]
+struct SetupIssues {
+    ssh_agent: Option<String>,
+    hotkeys: HotkeyIssues,
+}
+
 pub struct Daemon {
     vault: Arc<Vault>,
     runtime: Handle,
@@ -115,6 +133,8 @@ pub struct Daemon {
     hang: HangWatch,
     settings: watch::Sender<Arc<Settings>>,
     hotkey_pause: HotkeyPause,
+    /// What could not be set up, kept for a UI that starts later: nothing is spawned for it.
+    setup_issues: Mutex<SetupIssues>,
     activity: Activity,
     lock_wake: Notify,
     was_unlocked: AtomicBool,
@@ -136,6 +156,49 @@ pub struct Daemon {
     updater: Option<Arc<update::Updater>>,
     /// Set once an update was swapped in: the bundle to start again after shutdown.
     restart: Mutex<Option<PathBuf>>,
+}
+
+/// What the launcher needs to hand a UI process its channel: nothing on macOS, where the UI
+/// connects to `ui.sock`, and the sink for the server end of each spawned process's pipe on Windows.
+#[cfg(not(windows))]
+type UiLink = ();
+#[cfg(windows)]
+type UiLink = vk_ipc::UiSink;
+
+#[cfg(not(windows))]
+async fn listen_ui(
+    data_dir: &Path,
+    vault: Arc<Vault>,
+    queue: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> anyhow::Result<(ServerHandle, UiLink)> {
+    let ui_socket = layout::socket_path(&layout::ui_endpoint(data_dir))
+        .context("the UI channel is not a socket file")?;
+    let server = vk_ipc::serve_with(ui_socket, vault, queue, options)
+        .await
+        .context("listen on the UI socket")?;
+    Ok((server, ()))
+}
+
+#[cfg(windows)]
+#[allow(clippy::unused_async, reason = "keeps the macOS signature")]
+async fn listen_ui(
+    _data_dir: &Path,
+    vault: Arc<Vault>,
+    queue: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> anyhow::Result<(ServerHandle, UiLink)> {
+    Ok(vk_ipc::serve_inherited(vault, queue, options))
+}
+
+#[cfg(not(windows))]
+fn launcher(ui_exe: Option<PathBuf>, (): UiLink) -> Launcher {
+    Launcher::new(ui_exe)
+}
+
+#[cfg(windows)]
+fn launcher(ui_exe: Option<PathBuf>, sink: UiLink) -> Launcher {
+    Launcher::new(ui_exe).with_ui_sink(sink)
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -180,13 +243,10 @@ impl Daemon {
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
         .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>)
         .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))));
-        let server =
-            vk_ipc::serve_with(data_dir.join(UI_SOCKET), Arc::clone(&vault), queue, options)
-                .await
-                .context("listen on the UI socket")?;
+        let (server, ui_link) = listen_ui(&data_dir, Arc::clone(&vault), queue, options).await?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
         let updater = if self_update {
-            match update::Updater::new(data_dir.join("update")) {
+            match update::Updater::new(&data_dir) {
                 Ok(updater) => Some(Arc::new(updater)),
                 Err(error) => {
                     tracing::warn!(error = format!("{error:#}"), "updates are off");
@@ -198,7 +258,7 @@ impl Daemon {
         };
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
         let daemon = Arc::new(Self {
-            ssh: SshControl::new(data_dir.join(SSH_SOCKET), approvals),
+            ssh: SshControl::new(layout::ssh_endpoint(&data_dir), approvals),
             unlocked_once: AtomicBool::new(false),
             was_unlocked: AtomicBool::new(false),
             settings: watch::Sender::new(Arc::new(settings)),
@@ -208,7 +268,7 @@ impl Daemon {
             data_dir,
             events,
             server: Mutex::new(Some(server)),
-            launcher: Launcher::new(ui_exe),
+            launcher: launcher(ui_exe, ui_link),
             hang: HangWatch::new(ui_hang_after),
             activity: Activity::new(),
             lock_wake: Notify::new(),
@@ -219,6 +279,7 @@ impl Daemon {
             unlocked_as: Mutex::new(None),
             presence: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(Vec::new()),
+            setup_issues: Mutex::new(SetupIssues::default()),
             tray_sync: watch::Sender::new(TraySync::default()),
             browser: browser_glue::BrowserState::new(),
             cli_access: cli_access::CliAccessState::default(),
@@ -229,7 +290,7 @@ impl Daemon {
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
         {
-            tracing::error!(%error, "SSH agent not started");
+            daemon.ssh_start_failed(&error);
         }
         daemon.spawn_tasks(notices_rx, approvals_rx);
         daemon.reconcile_browser();
@@ -330,6 +391,13 @@ impl Daemon {
         }
     }
 
+    /// Runs the verified setup exe once the daemon has shut down (Windows).
+    #[cfg(windows)]
+    pub fn run_update_installer(&self, setup: &Path) -> anyhow::Result<()> {
+        let updater = self.updater.as_ref().context("updates are off")?;
+        updater.run_installer(setup)
+    }
+
     /// The bundle to start after shutdown, if an update was installed.
     #[must_use]
     pub fn restart_after_shutdown(&self) -> Option<PathBuf> {
@@ -342,8 +410,8 @@ impl Daemon {
     }
 
     #[must_use]
-    pub fn ssh_socket(&self) -> &Path {
-        self.ssh.socket()
+    pub const fn ssh_socket(&self) -> &Endpoint {
+        self.ssh.endpoint()
     }
 
     /// The app in front now, for auto-type from the Quick Panel; `None` when it is vaultkeeper
@@ -418,6 +486,9 @@ impl Daemon {
     }
 
     fn send_command(self: &Arc<Self>, command: UiCommand) {
+        if command == UiCommand::ShowSettings {
+            self.replay_setup_issues();
+        }
         self.send(|seq| DaemonEvent::Command { seq, command });
     }
 
@@ -447,6 +518,11 @@ impl Daemon {
             (seq, no_activate)
         };
         self.ensure_ui(no_activate);
+        if !no_activate && let Some(pid) = self.launcher.child_pid() {
+            // The daemon holds the foreground right (hotkey or tray click); the UI may only take
+            // the foreground for its window if the daemon grants it first.
+            crate::os::ui_window::allow_foreground(pid);
+        }
         if self.launcher.can_start() {
             drop(self.runtime.spawn(watch_answer(Arc::clone(self), seq)));
         }
@@ -504,6 +580,7 @@ impl Daemon {
         let current = self.settings();
         if previous.ssh_agent != current.ssh_agent {
             let _runtime = self.runtime.enter();
+            guard(&self.setup_issues).ssh_agent = None;
             match self.ssh.set_enabled(current.ssh_agent) {
                 // `ssh_key_changes` fires only on the next vault change, so load the keys now.
                 Ok(true) => {
@@ -514,7 +591,7 @@ impl Daemon {
                     );
                 }
                 Ok(false) => {}
-                Err(error) => tracing::error!(%error, "cannot start the SSH agent"),
+                Err(error) => self.ssh_start_failed(&error),
             }
         }
         if current.ssh_approval == SshApproval::Always {
@@ -528,6 +605,44 @@ impl Daemon {
         }
         if browser_settings_changed(&previous, &current) {
             self.reconcile_browser();
+        }
+    }
+
+    fn ssh_start_failed(self: &Arc<Self>, error: &anyhow::Error) {
+        let message = start_failure_message(error);
+        tracing::warn!(%message, error = ?error, "SSH agent not started");
+        guard(&self.setup_issues).ssh_agent = Some(message.clone());
+        if self.ui_connected() {
+            self.send_command(UiCommand::SshAgentFailed { message });
+        }
+    }
+
+    /// Called with what the last (re)binding of the global shortcuts left refused. A connected UI
+    /// hears about it at once; otherwise Settings gets it when it opens.
+    pub fn report_hotkeys(self: &Arc<Self>, issues: HotkeyIssues) {
+        let changed = std::mem::replace(&mut guard(&self.setup_issues).hotkeys, issues) != issues;
+        if (changed || issues.any()) && self.ui_connected() {
+            self.send_command(hotkey_issues_command(issues));
+        }
+    }
+
+    /// Settings is about to open in a UI that may have started after the failure.
+    fn replay_setup_issues(self: &Arc<Self>) {
+        let (ssh_agent, hotkeys) = {
+            let issues = guard(&self.setup_issues);
+            (issues.ssh_agent.clone(), issues.hotkeys)
+        };
+        if let Some(message) = ssh_agent {
+            self.send(|seq| DaemonEvent::Command {
+                seq,
+                command: UiCommand::SshAgentFailed { message },
+            });
+        }
+        if hotkeys.any() {
+            self.send(|seq| DaemonEvent::Command {
+                seq,
+                command: hotkey_issues_command(hotkeys),
+            });
         }
     }
 
@@ -545,6 +660,16 @@ impl Daemon {
             }
             PowerEvent::ScreenLocked => self.forget_browser_approvals(),
             PowerEvent::ScreenUnlocked => {}
+            PowerEvent::SessionEnding => {
+                // The session is ending and this process dies with it: flush the background
+                // worker and lock now, rather than running the full shutdown, which needs the
+                // UI and the event loop.
+                self.vault.on_sleep();
+                self.vault.lock();
+                self.clipboard.clear_if_ours();
+                vk_platform::power::session_end_handled();
+                return;
+            }
         }
         if lock::locks_on(event, self.settings().lock_on_sleep) {
             tracing::info!(?event, "locking on sleep / screen lock");
@@ -578,6 +703,9 @@ impl Daemon {
         }
         // A UI that is hung never reads the Shutdown it was just sent.
         self.launcher.kill();
+        // The installer replaces the exe the UI process runs from.
+        #[cfg(windows)]
+        self.launcher.stopped(UI_EXIT_WAIT).await;
         for task in guard(&self.tasks).drain(..) {
             task.abort();
         }
@@ -765,6 +893,7 @@ impl Daemon {
 const fn browser_settings_changed(previous: &Settings, current: &Settings) -> bool {
     previous.browser_integration != current.browser_integration
         || previous.browser_chrome != current.browser_chrome
+        || previous.browser_edge != current.browser_edge
         || previous.browser_firefox != current.browser_firefox
 }
 

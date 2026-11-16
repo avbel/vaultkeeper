@@ -15,6 +15,8 @@ pub enum PowerEvent {
     DidWake,
     ScreenLocked,
     ScreenUnlocked,
+    /// The user logged off or the machine is shutting down; the process will not outlive it.
+    SessionEnding,
 }
 
 impl PowerEvent {
@@ -29,6 +31,27 @@ impl PowerEvent {
             _ => None,
         }
     }
+
+    /// Windows `WM_POWERBROADCAST` `wParam`: `PBT_APMSUSPEND` and `PBT_APMRESUMEAUTOMATIC`.
+    /// Kept portable so the mapping is unit-tested on macOS too.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    const fn from_power_broadcast(code: usize) -> Option<Self> {
+        match code {
+            0x0004 => Some(Self::WillSleep),
+            0x0012 => Some(Self::DidWake),
+            _ => None,
+        }
+    }
+
+    /// Windows `WM_WTSSESSION_CHANGE` `wParam`: `WTS_SESSION_LOCK` and `WTS_SESSION_UNLOCK`.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    const fn from_session_change(code: usize) -> Option<Self> {
+        match code {
+            7 => Some(Self::ScreenLocked),
+            8 => Some(Self::ScreenUnlocked),
+            _ => None,
+        }
+    }
 }
 
 /// Dropping it unsubscribes; no event is sent after `drop` returns.
@@ -36,6 +59,8 @@ impl PowerEvent {
 pub struct PowerWatcher {
     #[cfg(target_os = "macos")]
     _subscription: macos::Subscription,
+    #[cfg(windows)]
+    _subscription: windows::Subscription,
 }
 
 /// Sends every event to `tx` until the returned watcher is dropped. Sending never blocks the
@@ -47,12 +72,29 @@ pub fn subscribe(tx: Sender<PowerEvent>) -> Result<PowerWatcher> {
             _subscription: macos::Subscription::new(tx),
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Ok(PowerWatcher {
+            _subscription: windows::Subscription::new(tx)?,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         drop(tx);
         Err(crate::Error::Unsupported)
     }
 }
+
+/// Tells the platform the daemon finished locking and flushing after
+/// [`PowerEvent::SessionEnding`]. Windows holds `WM_ENDSESSION` until then (bounded) so the work
+/// does not race process termination; elsewhere it does nothing.
+pub fn session_end_handled() {
+    #[cfg(windows)]
+    windows::session_end_handled();
+}
+
+#[cfg(windows)]
+mod windows;
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -127,6 +169,28 @@ mod tests {
         assert_eq!(PowerEvent::from_code(3), Some(PowerEvent::ScreenUnlocked));
         assert_eq!(PowerEvent::from_code(4), None);
         assert_eq!(PowerEvent::from_code(-1), None);
+    }
+
+    #[test]
+    fn windows_codes_map_to_events() {
+        assert_eq!(
+            PowerEvent::from_power_broadcast(0x0004),
+            Some(PowerEvent::WillSleep)
+        );
+        assert_eq!(
+            PowerEvent::from_power_broadcast(0x0012),
+            Some(PowerEvent::DidWake)
+        );
+        assert_eq!(PowerEvent::from_power_broadcast(0x0007), None);
+        assert_eq!(
+            PowerEvent::from_session_change(7),
+            Some(PowerEvent::ScreenLocked)
+        );
+        assert_eq!(
+            PowerEvent::from_session_change(8),
+            Some(PowerEvent::ScreenUnlocked)
+        );
+        assert_eq!(PowerEvent::from_session_change(4), None);
     }
 
     /// Posting on the workspace center delivers synchronously on the posting thread, so this

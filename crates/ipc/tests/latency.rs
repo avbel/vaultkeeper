@@ -1,6 +1,8 @@
 //! Measures the blocking round-trip the Slint UI thread pays for `search`.
 //! Run with `--nocapture` to see the numbers; `--release` for production figures.
 
+#![cfg(unix)]
+
 mod common;
 
 use std::{

@@ -3,22 +3,29 @@
 mod native;
 mod parent;
 
+use std::io;
+#[cfg(unix)]
 use std::os::fd::AsFd as _;
+#[cfg(windows)]
+use std::os::windows::io::AsHandle as _;
+use std::time::Duration;
+#[cfg(unix)]
 use std::{
-    io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
 };
 
 use anyhow::Context;
-use tokio::{io::AsyncWriteExt, net::UnixStream};
+use tokio::io::AsyncWriteExt;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use vk_ipc::{
     browser::{
         BROWSER_MAX_FRAME,
         protocol::{Caller, HostHello, PROTOCOL_VERSION},
     },
     frame::read_frame_with_limit,
+    transport::Endpoint,
 };
 use zeroize::Zeroizing;
 
@@ -42,8 +49,8 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         HostCaller::Chromium { origin } => Caller::Chromium { origin },
         HostCaller::Firefox { extension_id } => Caller::Firefox { extension_id },
     };
-    let socket = layout::data_dir()?.join(layout::BROWSER_SOCKET);
-    let mut stream = match connect(&socket).await {
+    let endpoint = layout::browser_endpoint(&layout::data_dir()?);
+    let mut stream = match connect_endpoint(&endpoint).await {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, "browser daemon unavailable");
@@ -70,9 +77,15 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         unavailable(reason).await?;
         return Ok(());
     }
+    #[cfg(unix)]
     let (mut read, mut write) = stream.into_split();
+    #[cfg(not(unix))]
+    let (mut read, mut write) = tokio::io::split(stream);
     let mut stdin = tokio::io::stdin();
+    #[cfg(unix)]
     let mut stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned()?);
+    #[cfg(windows)]
+    let mut stdout = std::fs::File::from(std::io::stdout().as_handle().try_clone_to_owned()?);
     let upstream = async {
         while let Some(body) = native::read_message(&mut stdin).await? {
             write_socket(&mut write, &body).await?;
@@ -109,7 +122,44 @@ async fn unavailable(reason: &str) -> io::Result<()> {
     native::write_message(&mut tokio::io::stdout(), &body).await
 }
 
+#[cfg(unix)]
+async fn connect_endpoint(endpoint: &Endpoint) -> io::Result<UnixStream> {
+    connect(&layout::socket_path(endpoint)?).await
+}
+
+#[cfg(windows)]
+type Socket = vk_ipc::transport::Stream;
+
+// Both a missing pipe (no daemon yet) and a busy one (daemon between two clients) are worth
+// another try.
+#[cfg(windows)]
+fn daemon_not_ready(error: &io::Error) -> bool {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+}
+
 // Cancel-safe: cancelling a connection attempt drops its socket.
+#[cfg(windows)]
+async fn connect_endpoint(endpoint: &Endpoint) -> io::Result<Socket> {
+    match vk_ipc::transport::connect(endpoint).await {
+        Ok(stream) => return Ok(stream),
+        Err(error) if daemon_not_ready(&error) => {}
+        Err(error) => return Err(error),
+    }
+    crate::os::detached::start_daemon()?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        match vk_ipc::transport::connect(endpoint).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) if daemon_not_ready(&error) && tokio::time::Instant::now() < deadline => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+// Cancel-safe: cancelling a connection attempt drops its socket.
+#[cfg(unix)]
 async fn connect(path: &Path) -> io::Result<UnixStream> {
     match UnixStream::connect(path).await {
         Ok(stream) => return Ok(stream),
@@ -136,6 +186,7 @@ async fn connect(path: &Path) -> io::Result<UnixStream> {
     }
 }
 
+#[cfg(unix)]
 fn bundle_path(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
@@ -146,6 +197,7 @@ fn bundle_path(exe: &Path) -> Option<PathBuf> {
     .then(|| bundle.to_path_buf())
 }
 
+#[cfg(unix)]
 fn start_daemon() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let mut command = if let Some(bundle) = bundle_path(&exe) {

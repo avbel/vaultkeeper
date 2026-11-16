@@ -201,7 +201,10 @@ fn a_failure_shows_the_lock_window_with_the_reason() {
     let lock = h.app.lock_window().expect("lock window after the failure");
     assert_eq!(
         value_of(&lock, "Unlock error"),
-        "Touch ID failed: sensor unavailable · use your master password"
+        format!(
+            "{} failed: sensor unavailable · use your master password",
+            vaultkeeper::os::BIOMETRIC_LABEL
+        )
     );
 }
 

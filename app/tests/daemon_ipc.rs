@@ -1,6 +1,8 @@
 //! The daemon core in-process (vault + IPC server + SSH agent over a temp data dir and an
 //! in-memory secret store), driven by a `RemoteVault` the way the `--ui` process drives it.
 
+// Windows: step 3l - this suite binds Unix sockets; the named-pipe version lands then.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 
 use std::{
@@ -19,7 +21,7 @@ use vaultkeeper::{
     },
     os::{
         ClipboardKeeper,
-        layout::{CLI_SOCKET, SETTINGS_FILE, SSH_SOCKET, UI_SOCKET},
+        layout::{self, SETTINGS_FILE},
         settings_file::SettingsFile,
     },
     settings::Settings,
@@ -37,6 +39,13 @@ use vk_vault::{
 use zeroize::Zeroizing;
 
 const WAIT: Duration = Duration::from_secs(5);
+
+fn socket_path(endpoint: &vk_ipc::transport::Endpoint) -> PathBuf {
+    endpoint
+        .as_path()
+        .expect("Unix endpoints are paths")
+        .to_path_buf()
+}
 
 /// Under /tmp: macOS caps socket paths at 104 bytes and `$TMPDIR` is long.
 struct DataDir(PathBuf);
@@ -112,7 +121,7 @@ impl ClipboardKeeper for FakeClipboard {
 }
 
 async fn connect(dir: &DataDir) -> (RemoteVault, EventStream) {
-    RemoteVault::connect(dir.path().join(UI_SOCKET))
+    RemoteVault::connect(layout::ui_endpoint(dir.path()))
         .await
         .unwrap()
 }
@@ -327,7 +336,7 @@ async fn the_agent_follows_the_saved_setting() {
         },
     );
     let daemon = start(&dir).await;
-    let socket = dir.path().join(SSH_SOCKET);
+    let socket = socket_path(&layout::ssh_endpoint(dir.path()));
     assert!(!daemon.ssh_agent_running());
     assert!(!socket.exists());
     let (vault, _events) = connect(&dir).await;
@@ -437,7 +446,7 @@ async fn cli_follows_settings_and_requests_unlock_in_the_app() {
     let dir = DataDir::new();
     let key = cli_test_vault(&dir);
     let daemon = start(&dir).await;
-    let socket = dir.path().join(CLI_SOCKET);
+    let socket = socket_path(&layout::cli_endpoint(dir.path()));
     let (vault, mut events) = connect(&dir).await;
     assert!(matches!(vault.state(), SessionState::Locked { .. }));
     assert!(!socket.exists());
@@ -581,7 +590,7 @@ async fn a_logged_out_agent_serves_no_keys() {
     let dir = DataDir::new();
     write_settings(dir.path(), &agent_on());
     let daemon = start(&dir).await;
-    let socket = dir.path().join(SSH_SOCKET);
+    let socket = socket_path(&layout::ssh_endpoint(dir.path()));
     eventually(|| socket.exists()).await;
     let listed = tokio::process::Command::new("ssh-add")
         .arg("-l")
@@ -605,8 +614,8 @@ async fn shutdown_tells_the_ui_and_removes_the_sockets() {
     write_settings(dir.path(), &agent_on());
     let daemon = start(&dir).await;
     let (_vault, mut events) = connect(&dir).await;
-    let ui_socket = dir.path().join(UI_SOCKET);
-    let agent_socket = dir.path().join(SSH_SOCKET);
+    let ui_socket = socket_path(&layout::ui_endpoint(dir.path()));
+    let agent_socket = socket_path(&layout::ssh_endpoint(dir.path()));
     assert!(ui_socket.exists() && agent_socket.exists());
     daemon.shutdown().await;
     let last = tokio::time::timeout(WAIT, events.next()).await.unwrap();

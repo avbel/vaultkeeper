@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  push:
+    branches: [main, windows-support]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push supersedes the previous run's checks; only the tip matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: macos-ci
+
+      - name: Checks
+        run: scripts/check.sh
+
+      - name: Tests
+        # --no-fail-fast runs every test so one failure doesn't hide the rest.
+        # The skipped test needs a code-signing identity the GitHub macOS runner cannot trust.
+        run: cargo test --workspace --no-fail-fast -- --skip a_certificate_requirement_admits_every_build_signed_with_that_certificate
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
+    timeout-minutes: 30
+    env:
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: windows-ci-${{ matrix.arch }}
+
+      - name: Checks
+        shell: bash
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        shell: bash
+        run: cargo test --workspace --no-fail-fast
+
+  # The named-pipe tests alone, so a hang or an access problem shows up in minutes, not after the
+  # full Windows job.
+  windows-pipes:
+    name: Windows pipes ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
+    timeout-minutes: 15
+    env:
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: windows-ci-${{ matrix.arch }}
+
+      # vk-win has no windows_pipes target, so --test cannot span both packages.
+      - name: vk-win
+        run: cargo test --no-fail-fast -p vk-win
+
+      - name: IPC pipes
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast -p vk-ipc --test windows_pipes
+
+      - name: SSH agent
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast -p ssh_agent
+
+      - name: Single instance
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast -p vk-platform single_instance
+
+      # The real daemon spawns the real UI the way production does; the log files it prints on
+      # failure say how far the UI got.
+      - name: UI launch
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast -p vaultkeeper --test windows_ui_launch -- --nocapture
+
+  # Test builds for manual testing on a Windows PC without a Rust toolchain. Both architectures
+  # are built natively: the maintainer's test laptop is Windows on ARM64.
+  windows-build:
+    name: Windows Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
+          - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
+    env:
+      # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/ensure-clang-cl
+        if: matrix.arch == 'arm64'
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: windows-test-build-${{ matrix.arch }}
+
+      - name: Build vaultkeeper
+        run: cargo build --release --locked -p vaultkeeper
+
+      # Compiles the installer script on every push; no secrets are involved, so choco is fine here
+      # (the release workflow keeps package managers out of its signing job).
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $paths = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
+          if (-not ($paths | Where-Object { Test-Path $_ })) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'choco install innosetup failed' }
+          }
+          $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after the install' }
+          New-Item -ItemType Directory -Force -Path out/stage | Out-Null
+          Copy-Item target/release/vaultkeeper.exe out/stage/vaultkeeper.exe -Force
+          scripts/bundle-windows.ps1 -Package -Arch ${{ matrix.arch }} -Iscc $iscc
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/vaultkeeper-windows-${{ matrix.arch }} | Out-Null
+          Copy-Item `
+            target/release/vaultkeeper.exe, `
+            out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe `
+            out/vaultkeeper-windows-${{ matrix.arch }}/
+          @"
+          commit: ${{ github.sha }}
+          branch: ${{ github.ref_name }}
+          arch: ${{ matrix.arch }}
+          date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
+          "@ | Set-Content out/vaultkeeper-windows-${{ matrix.arch }}/BUILD.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vaultkeeper-windows-${{ matrix.arch }}
+          path: out/vaultkeeper-windows-${{ matrix.arch }}/
+          retention-days: 14
+          if-no-files-found: error

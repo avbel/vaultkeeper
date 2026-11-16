@@ -181,14 +181,31 @@ impl Inner {
         self.refresh(ctx).await
     }
 
+    /// Reads the sealed refresh token. A file the current user key cannot open is discarded, and
+    /// a missing key means the session is gone: both send the caller down the log-in-again path.
+    fn stored_refresh_token(&self, key: &str) -> Result<Zeroizing<Vec<u8>>> {
+        match self.secrets.get(key) {
+            Ok(Some(stored)) => Ok(stored),
+            Ok(None) => Err(Error::Api(vk_api::Error::Unauthorized)),
+            Err(error) if error.is_undecryptable() => {
+                // The user key rotated elsewhere; nothing can read this file again.
+                self.secrets.delete(key).map_err(secret_error)?;
+                Err(Error::Api(vk_api::Error::Unauthorized))
+            }
+            Err(error) if error.is_locked() => {
+                // Refresh runs only while unlocked, so this is a bug; treat it like a rejected
+                // token instead of leaving the session half alive.
+                tracing::error!(%error, "the sealed token store lost its key while unlocked");
+                Err(Error::Api(vk_api::Error::Unauthorized))
+            }
+            Err(error) => Err(secret_error(error)),
+        }
+    }
+
     /// A refresh token the server rejects is deleted: the user has to log in again.
     async fn refresh(&self, ctx: &Ctx) -> Result<Zeroizing<String>> {
         let key = refresh_token_key(&ctx.account_id);
-        let stored = self
-            .secrets
-            .get(&key)
-            .map_err(secret_error)?
-            .ok_or(Error::Api(vk_api::Error::Unauthorized))?;
+        let stored = self.stored_refresh_token(&key)?;
         let refresh = std::str::from_utf8(&stored)
             .map_err(|_| Error::protocol("the stored refresh token is not text"))?;
         let response = match ctx.client.refresh(refresh).await {

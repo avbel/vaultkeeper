@@ -12,11 +12,19 @@ export component TrayIcon inherits SystemTrayIcon {
     // "Last synced 12:04", or why the last "Sync now" failed; empty hides the line.
     in property <string> sync-label;
     in property <ColorScheme> menu-bar-scheme: ColorScheme.unknown;
+    // The brand-blue glyph ignores the bar appearance (the Windows default).
+    in property <bool> blue-icon: false;
+    // Windows: the glyph rasterised at the notification area's pixel size; it replaces the SVG
+    // choice below once the daemon has rendered one.
+    in property <image> rendered-icon;
+    in property <bool> use-rendered-icon: false;
     // The update item ("Check for Updates…", "Install Vaultkeeper 0.2.0 and Restart", …); empty
     // hides it in a daemon that does not update itself.
     in property <string> update-label;
     in property <bool> update-enabled: true;
-    icon: root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
+    icon: root.use-rendered-icon ? root.rendered-icon
+        : root.blue-icon ? @image-url("icons/tray-blue.svg")
+        : root.menu-bar-scheme == ColorScheme.dark ? @image-url("icons/tray-light.svg")
         : root.menu-bar-scheme == ColorScheme.light ? @image-url("icons/tray-dark.svg")
         : @image-url("icons/tray-neutral.svg");
     tooltip: "Vaultkeeper";
@@ -30,15 +38,20 @@ export component TrayIcon inherits SystemTrayIcon {
     callback switch-account(int);
     callback update();
     callback quit();
+    // Slint's Windows tray fires `clicked` on every left-button release and has no double-click
+    // event, so the daemon pairs the clicks itself. AppKit never fires it while the menu is set.
+    callback icon-clicked();
+    clicked => { root.icon-clicked(); }
 
     Menu {
-        MenuItem {
-            title: "Quick search";
-            activated => { root.quick-search(); }
-        }
+        // First, as the action a double-click on the icon runs.
         MenuItem {
             title: "Open vault";
             activated => { root.open-vault(); }
+        }
+        MenuItem {
+            title: "Quick search";
+            activated => { root.quick-search(); }
         }
         MenuItem {
             title: "Generator";

@@ -16,9 +16,24 @@ pub struct Mods {
     pub shift: bool,
 }
 
+/// The modifiers `accelerator` accepts, spelled the way this platform labels the keys.
+pub const MODIFIER_HINT: &str = if cfg!(windows) {
+    "Ctrl, Alt or Win"
+} else {
+    "⌘, ⌥ or ⌃"
+};
+
+pub const UNAVAILABLE_NOTICE: &str = if cfg!(windows) {
+    "This shortcut is used by another app or reserved by Windows. Pick another one."
+} else {
+    "This shortcut is used by another app or reserved by macOS. Pick another one."
+};
+
+pub const ALTGR_WARNING: &str = "Ctrl+Alt works like AltGr on some keyboard layouts and can block typing characters such as @. Consider adding Shift.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Reject {
-    #[error("Add ⌘, ⌥ or ⌃ to the shortcut")]
+    #[error("Add {} to the shortcut", MODIFIER_HINT)]
     NeedsModifier,
     #[error("This key can't be a global shortcut")]
     UnsupportedKey,

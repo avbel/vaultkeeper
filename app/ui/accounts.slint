@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Avatar, Btn, BtnKind, Divider, Icon, MenuRow, PopupPanel } from "kit.slint";
 
 export struct AccountRow {
@@ -159,7 +160,7 @@ export component AccountSwitcher inherits Rectangle {
                 }
                 if root.show-lock: MenuRow {
                     text: "Lock";
-                    hint: "⌘⇧L";
+                    hint: Keys.cmd-shift + "L";
                     clicked => {
                         root.lock();
                         popup.close();

@@ -23,7 +23,11 @@ pub(super) enum Pending {
     Edit,
 }
 
-pub const CONFIRM_IN_MANAGER: &str = "Open in Manager (⌘O) to confirm your master password";
+pub const CONFIRM_IN_MANAGER: &str = if cfg!(windows) {
+    "Open in Manager (Ctrl+O) to confirm your master password"
+} else {
+    "Open in Manager (⌘O) to confirm your master password"
+};
 
 #[must_use]
 pub const fn is_secret(field: CopyField) -> bool {

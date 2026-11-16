@@ -1,13 +1,21 @@
-//! Touch ID. The user key is wrapped to a Secure Enclave P-256 key whose use requires the
-//! currently enrolled biometrics (CryptoKit, `.biometryCurrentSet`). See the solution doc.
+//! Biometrics. The user key is wrapped to a hardware key whose use requires the currently
+//! enrolled biometrics: a Secure Enclave P-256 key on macOS (Touch ID), or a Passport KSP RSA key
+//! on Windows (Windows Hello). See the solution doc.
 //!
 //! The functions that show a prompt block until the user answers it, so call them from a
 //! background thread, never from the UI event loop.
 
-// The wrap/unwrap core builds and is tested on every target but is wired up on macOS only.
+// The wrap/unwrap core builds and is tested on every target; each OS wires up only its own half
+// (macOS the Secure Enclave ECDH, Windows the Passport KSP), so the other half is dead code there.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+#[cfg(windows)]
+mod consent;
 mod envelope;
+#[cfg(windows)]
+mod owner_window;
+#[cfg(windows)]
+mod passport;
 #[cfg(target_os = "macos")]
 mod secure_enclave;
 
@@ -44,24 +52,33 @@ fn status_result(status: i32, operation: Operation, detail: &str) -> Result<()> 
     }
 }
 
-/// True when this Mac has a Secure Enclave and at least one enrolled fingerprint.
+/// True when the machine has a usable biometric key: a Secure Enclave with an enrolled fingerprint
+/// on macOS, or the Passport KSP reachable in a local (non-RDP) session on Windows.
 #[must_use]
 pub fn is_available() -> bool {
     #[cfg(target_os = "macos")]
     {
         secure_enclave::is_available()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        passport::is_available()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         false
     }
 }
 
-/// Creates a new Secure Enclave key and writes the wrapped `user_key` to `path` (mode 0600).
+/// Creates a new hardware key and writes the wrapped `user_key` to `path` (mode 0600).
 /// Replaces an earlier enrollment atomically. Never prompts.
-pub fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
+///
+/// `parent_window` is the window handle (an `HWND`) the Windows Hello dialog should be parented to;
+/// macOS ignores it.
+pub fn enroll(path: &Path, user_key: &[u8], parent_window: Option<u64>) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let _ = parent_window;
         let key = secure_enclave::generate()?;
         let device_key = envelope::DeviceKey {
             blob: &key.blob,
@@ -70,9 +87,13 @@ pub fn enroll(path: &Path, user_key: &[u8]) -> Result<()> {
         let sealed = envelope::seal(&key.public, &device_key, user_key)?;
         Ok(crate::fs::write_private_atomic(path, &sealed)?)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = (path, user_key);
+        passport::enroll(path, user_key, parent_window)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (path, user_key, parent_window);
         Err(Error::Unsupported)
     }
 }
@@ -82,21 +103,28 @@ pub fn is_enrolled(path: &Path) -> bool {
     path.exists()
 }
 
-/// Shows the Touch ID prompt with `reason` and returns the unwrapped user key.
+/// Shows the biometric prompt with `reason` and returns the unwrapped user key.
 ///
 /// [`Error::BiometricInvalidated`] means the enrollment can never work again (fingerprints
-/// changed, or the file is corrupt or from another Mac): unlock with the master password and
+/// changed, or the file is corrupt or from another machine): unlock with the master password and
 /// enroll again. [`Error::BiometricFailed`] covers cancel, no match and temporary unavailability.
-pub fn unlock(path: &Path, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
+///
+/// `parent_window` as for [`enroll`].
+pub fn unlock(path: &Path, reason: &str, parent_window: Option<u64>) -> Result<Zeroizing<Vec<u8>>> {
     #[cfg(target_os = "macos")]
     {
+        let _ = parent_window;
         let reason = secure_enclave::prompt_reason(reason)?;
         let bytes = std::fs::read(path)?;
         envelope::open(&bytes, &secure_enclave::SecureEnclave { reason: &reason })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = (path, reason);
+        passport::unlock(path, reason, parent_window)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (path, reason, parent_window);
         Err(Error::Unsupported)
     }
 }
@@ -110,15 +138,21 @@ pub fn unenroll(path: &Path) -> Result<()> {
     }
 }
 
-/// Plain Touch ID check (no key), used to approve SSH sign requests. Blocks until answered.
-pub fn authenticate(reason: &str) -> Result<()> {
+/// Plain Touch ID / Windows Hello check (no key), used to approve SSH sign requests and browser
+/// fills. Blocks until answered. `parent_window` as for [`enroll`]; Hello cannot ask without one.
+pub fn authenticate(reason: &str, parent_window: Option<u64>) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let _ = parent_window;
         secure_enclave::authenticate(reason)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = reason;
+        consent::authenticate(reason, parent_window)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (reason, parent_window);
         Err(Error::Unsupported)
     }
 }
@@ -208,11 +242,11 @@ mod tests {
         let path = dir.path().join("touchid.bin");
         for reason in ["", "   ", "a\0b"] {
             assert!(
-                matches!(unlock(&path, reason), Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidInput),
+                matches!(unlock(&path, reason, None), Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidInput),
                 "{reason:?}"
             );
             assert!(
-                matches!(authenticate(reason), Err(Error::Io(_))),
+                matches!(authenticate(reason, None), Err(Error::Io(_))),
                 "{reason:?}"
             );
         }
@@ -222,7 +256,7 @@ mod tests {
     #[test]
     fn unlock_of_a_missing_file_is_an_io_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = unlock(&dir.path().join("missing.bin"), "unlock the vault");
+        let result = unlock(&dir.path().join("missing.bin"), "unlock the vault", None);
         assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound));
     }
 
@@ -233,7 +267,7 @@ mod tests {
         let path = dir.path().join("touchid.bin");
         std::fs::write(&path, b"BWLT\x01 garbage").expect("write");
         assert!(matches!(
-            unlock(&path, "unlock the vault"),
+            unlock(&path, "unlock the vault", None),
             Err(Error::BiometricInvalidated)
         ));
     }
@@ -252,7 +286,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("touchid.bin");
-        enroll(&path, &[0x42; 64]).expect("enroll");
+        enroll(&path, &[0x42; 64], None).expect("enroll");
         let mode = std::fs::metadata(&path)
             .expect("metadata")
             .permissions()

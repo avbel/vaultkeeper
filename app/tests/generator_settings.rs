@@ -39,6 +39,24 @@ fn opening_generates_and_option_changes_regenerate() {
     assert_eq!(state.get_result().chars().count(), 32);
 }
 
+#[test]
+fn every_opening_shows_a_new_value() {
+    let (h, window) = open_generator();
+    let first = window.global::<GeneratorState>().get_result().to_string();
+    window.invoke_close_generator();
+    pump();
+    h.app.open_generator_window();
+    let reopened = h.app.generator_window().expect("generator");
+    let second = reopened.global::<GeneratorState>().get_result().to_string();
+    assert_ne!(second, first);
+    h.app.open_generator_window();
+    let third = reopened.global::<GeneratorState>().get_result().to_string();
+    assert_ne!(
+        third, second,
+        "showing the open window again regenerates too"
+    );
+}
+
 fn find_slider(
     window: &vaultkeeper::ui::GeneratorWindow,
 ) -> i_slint_backend_testing::ElementHandle {
@@ -277,7 +295,14 @@ fn a_generator_hotkey_is_saved_and_clearing_it_removes_it() {
 fn the_quick_panel_shortcut_is_refused_as_the_generator_hotkey() {
     let h = harness(Setup::default());
     let window = settings_window(&h);
-    window.invoke_generator_hotkey_accepted("shift+cmd+space".into());
+    window.invoke_generator_hotkey_accepted(
+        if cfg!(windows) {
+            "shift+ctrl+space"
+        } else {
+            "shift+cmd+space"
+        }
+        .into(),
+    );
     pump();
     assert_eq!(saved_generator_hotkey(&h), "");
     assert!(window.get_error_text().contains("Quick Panel"));

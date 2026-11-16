@@ -23,7 +23,7 @@ component SettingRow inherits HorizontalLayout {
 
 export component SettingsWindow inherits Window {
     title: "Vaultkeeper — settings";
-    icon: @image-url("icons/tray-dark.svg");
+    icon: @image-url("icons/tray-blue.svg");
     preferred-width: 520px;
     preferred-height: 640px;
     min-width: 440px;
@@ -34,6 +34,8 @@ export component SettingsWindow inherits Window {
     in property <string> server;
     in-out property <int> theme-index;
     in-out property <int> tray-icon-index;
+    // "Tray icon" on Windows, "Menu bar icon" on macOS.
+    in property <string> tray-icon-label: "Menu bar icon";
     in-out property <int> scale-index;
     in property <[string]> lock-options;
     in-out property <int> lock-index;
@@ -44,24 +46,39 @@ export component SettingsWindow inherits Window {
     in-out property <bool> ask-unlock-on-start;
     in-out property <bool> lock-on-sleep: true;
     in-out property <bool> require-master-password;
-    in property <bool> touch-id-available;
-    in property <bool> touch-id-enrolled;
+    in property <bool> biometric-available;
+    in property <bool> biometric-enrolled;
+    // Windows hides the enrol rows when Hello is missing; macOS keeps saying "Touch ID is not available".
+    in property <bool> hide-missing-biometric;
+    property <bool> biometric-row-visible: root.biometric-available || root.biometric-enrolled || !root.hide-missing-biometric;
     in property <bool> unlocked;
     in-out property <bool> ssh-agent;
     in-out property <bool> cli-access;
     in property <string> cli-path-setup;
     in property <string> ssh-socket;
+    // Non-empty on Windows: replaces the ~/.ssh/config lines, which ssh.exe does not need.
+    in property <string> ssh-hint;
     // The ~/.ssh/config lines that point ssh at the agent.
     in property <string> ssh-config;
     in-out property <int> ssh-approval-index;
-    in-out property <bool> ssh-touch-id;
-    in-out property <bool> touch-id-right-away;
+    in-out property <bool> ssh-biometric;
+    in-out property <bool> biometric-right-away;
     in-out property <bool> show-site-icons: true;
+    // Windows only; the row stays hidden elsewhere.
+    in property <bool> capture-exclusion-available: false;
+    in-out property <bool> hide-from-capture: true;
     // Saved accelerators ("Cmd+Shift+Space") and the same in symbols ("⇧⌘Space").
     in property <string> hotkey;
     in property <string> generator-hotkey;
     in property <string> hotkey-shown;
     in property <string> generator-hotkey-shown;
+    // Under a recorder: the OS refused the shortcut (error) or a Windows-only hint (not an error).
+    in property <string> hotkey-note;
+    in property <bool> hotkey-note-is-error;
+    in property <string> generator-hotkey-note;
+    in property <bool> generator-hotkey-note-is-error;
+    // Why the daemon could not start the SSH agent; empty when it could.
+    in property <string> ssh-notice;
     // Which recorder waits for a key: 0 none, 1 Quick Panel, 2 Generator. Read by the winit key
     // filter, which records by physical key.
     out property <int> recording-slot: quick-recorder.recording ? 1 : generator-recorder.recording ? 2 : 0;
@@ -69,10 +86,12 @@ export component SettingsWindow inherits Window {
     // The muted line under the master switch: "Off", "On" or why it cannot start.
     in property <string> browser-state;
     in property <bool> chrome-installed;
+    in property <bool> edge-installed;
     in property <bool> firefox-installed;
     in-out property <bool> browser-chrome;
+    in-out property <bool> browser-edge;
     in-out property <bool> browser-firefox;
-    in-out property <bool> browser-touch-id;
+    in-out property <bool> browser-biometric;
     in-out property <bool> browser-save-prompts;
     in-out property <bool> browser-copy-totp;
     in-out property <bool> browser-fill-single;
@@ -83,6 +102,7 @@ export component SettingsWindow inherits Window {
 
     callback theme-selected(int);
     callback tray-icon-selected(int);
+    callback hide-from-capture-toggled(bool);
     callback scale-selected(int);
     callback lock-selected(int);
     callback clipboard-selected(int);
@@ -91,21 +111,22 @@ export component SettingsWindow inherits Window {
     callback ask-unlock-toggled(bool);
     callback lock-on-sleep-toggled(bool);
     callback require-master-password-toggled(bool);
-    callback touch-id-enroll();
-    callback touch-id-remove();
+    callback biometric-enroll();
+    callback biometric-remove();
     callback ssh-agent-toggled(bool);
     callback cli-access-toggled(bool);
     callback copy-cli-path-setup() -> bool;
     callback copy-socket() -> bool;
     callback copy-ssh-config() -> bool;
     callback ssh-approval-selected(int);
-    callback ssh-touch-id-toggled(bool);
-    callback touch-id-right-away-toggled(bool);
+    callback ssh-biometric-toggled(bool);
+    callback biometric-right-away-toggled(bool);
     callback site-icons-toggled(bool);
     callback browser-integration-toggled(bool);
     callback browser-chrome-toggled(bool);
+    callback browser-edge-toggled(bool);
     callback browser-firefox-toggled(bool);
-    callback browser-touch-id-toggled(bool);
+    callback browser-biometric-toggled(bool);
     callback browser-save-prompts-toggled(bool);
     callback browser-copy-totp-toggled(bool);
     callback browser-fill-single-toggled(bool);
@@ -176,11 +197,11 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 SettingRow {
-                    text: "Menu bar icon";
+                    text: root.tray-icon-label;
                     Segmented {
-                        width: 220px;
-                        label: "Menu bar icon";
-                        options: ["Auto", "White", "Black"];
+                        width: 240px;
+                        label: root.tray-icon-label;
+                        options: ["Auto", "White", "Black", "Blue"];
                         index <=> root.tray-icon-index;
                         selected(i) => { root.tray-icon-selected(i); }
                     }
@@ -213,6 +234,12 @@ export component SettingsWindow inherits Window {
                         selected(i) => { root.lock-selected(i); }
                     }
                 }
+                if root.capture-exclusion-available: Toggle {
+                    text: "Hide Vaultkeeper from screenshots and screen sharing";
+                    description: "Windows shows the windows as black in captures and keeps them out of Recall";
+                    checked <=> root.hide-from-capture;
+                    toggled(v) => { root.hide-from-capture-toggled(v); }
+                }
                 Toggle { text: "Lock on sleep or screen lock"; checked <=> root.lock-on-sleep; toggled(v) => { root.lock-on-sleep-toggled(v); } }
                 SettingRow {
                     text: "Clear clipboard";
@@ -234,37 +261,46 @@ export component SettingsWindow inherits Window {
                 Toggle { text: "Ask to unlock on start"; checked <=> root.ask-unlock-on-start; toggled(v) => { root.ask-unlock-toggled(v); } }
                 Toggle {
                     text: "Require master password on app start";
-                    description: "Off: Touch ID alone unlocks after a restart";
+                    description: "Off: " + Theme.biometric-label + " alone unlocks after a restart";
                     checked <=> root.require-master-password;
                     toggled(v) => { root.require-master-password-toggled(v); }
                 }
-                SettingRow {
-                    text: root.touch-id-enrolled ? "Touch ID is enrolled" : root.touch-id-available ? "Touch ID" : "Touch ID is not available";
-                    if root.touch-id-available && !root.touch-id-enrolled: Btn {
+                if root.biometric-row-visible: SettingRow {
+                    text: root.biometric-enrolled ? Theme.biometric-label + " is enrolled" : root.biometric-available ? Theme.biometric-label : Theme.biometric-label + " is not available";
+                    if root.biometric-available && !root.biometric-enrolled: Btn {
                         text: "Enrol";
-                        label: "Enrol Touch ID";
+                        label: "Enrol " + Theme.biometric-label;
                         enabled: root.unlocked;
-                        clicked => { root.touch-id-enroll(); }
+                        clicked => { root.biometric-enroll(); }
                     }
-                    if root.touch-id-enrolled: Btn {
+                    if root.biometric-enrolled: Btn {
                         text: "Remove";
-                        label: "Remove Touch ID";
+                        label: "Remove " + Theme.biometric-label;
                         kind: BtnKind.danger;
-                        clicked => { root.touch-id-remove(); }
+                        clicked => { root.biometric-remove(); }
                     }
                 }
-                Toggle {
-                    text: "Unlock with Touch ID right away";
-                    description: root.touch-id-enrolled ? "Skips the lock screen; it opens if Touch ID is cancelled" : "Enrol Touch ID to use this";
-                    enabled: root.touch-id-enrolled;
-                    checked <=> root.touch-id-right-away;
-                    toggled(v) => { root.touch-id-right-away-toggled(v); }
+                if root.biometric-row-visible: Toggle {
+                    text: "Unlock with " + Theme.biometric-label + " right away";
+                    description: root.biometric-enrolled ? "Skips the lock screen; it opens if " + Theme.biometric-label + " is cancelled" : "Enrol " + Theme.biometric-label + " to use this";
+                    enabled: root.biometric-enrolled;
+                    checked <=> root.biometric-right-away;
+                    toggled(v) => { root.biometric-right-away-toggled(v); }
                 }
                 Divider { }
                 SectionLabel { text: "SSH AGENT"; }
                 Toggle { text: "SSH agent"; checked <=> root.ssh-agent; toggled(v) => { root.ssh-agent-toggled(v); } }
+                if root.ssh-notice != "": Text {
+                    text: root.ssh-notice;
+                    color: Theme.danger-small;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "SSH agent error";
+                    accessible-value: self.text;
+                }
                 SettingRow {
-                    text: "Socket";
+                    text: root.ssh-hint != "" ? "Pipe" : "Socket";
                     Text {
                         text: root.ssh-socket;
                         font-family: Theme.mono;
@@ -282,7 +318,13 @@ export component SettingsWindow inherits Window {
                         copy => { return root.copy-socket(); }
                     }
                 }
-                VerticalLayout {
+                if root.ssh-hint != "": Text {
+                    text: root.ssh-hint;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                }
+                if root.ssh-hint == "": VerticalLayout {
                     spacing: Theme.s1;
                     Text {
                         text: "To use it, add to ~/.ssh/config:";
@@ -328,7 +370,7 @@ export component SettingsWindow inherits Window {
                         selected(i) => { root.ssh-approval-selected(i); }
                     }
                 }
-                Toggle { text: "SSH requires Touch ID"; checked <=> root.ssh-touch-id; toggled(v) => { root.ssh-touch-id-toggled(v); } }
+                if root.biometric-row-visible: Toggle { text: "SSH requires " + Theme.biometric-label; checked <=> root.ssh-biometric; toggled(v) => { root.ssh-biometric-toggled(v); } }
                 Divider { }
                 SectionLabel { text: "CLI ACCESS"; }
                 Toggle {
@@ -384,28 +426,34 @@ export component SettingsWindow inherits Window {
                     checked <=> root.browser-chrome;
                     toggled(v) => { root.browser-chrome-toggled(v); }
                 }
+                if root.edge-installed: Toggle {
+                    text: "Install for Microsoft Edge";
+                    enabled: root.browser-integration;
+                    checked <=> root.browser-edge;
+                    toggled(v) => { root.browser-edge-toggled(v); }
+                }
                 if root.firefox-installed: Toggle {
                     text: "Install for Firefox";
                     enabled: root.browser-integration;
                     checked <=> root.browser-firefox;
                     toggled(v) => { root.browser-firefox-toggled(v); }
                 }
-                if root.touch-id-available: Toggle {
-                    text: "Require Touch ID to fill";
-                    checked <=> root.browser-touch-id;
-                    toggled(v) => { root.browser-touch-id-toggled(v); }
+                if root.biometric-available: Toggle {
+                    text: "Require " + Theme.biometric-label + " to fill";
+                    checked <=> root.browser-biometric;
+                    toggled(v) => { root.browser-biometric-toggled(v); }
                 }
                 Toggle { text: "Offer to save logins"; checked <=> root.browser-save-prompts; toggled(v) => { root.browser-save-prompts-toggled(v); } }
                 Toggle { text: "Copy TOTP code after filling"; checked <=> root.browser-copy-totp; toggled(v) => { root.browser-copy-totp-toggled(v); } }
                 Toggle {
                     text: "Fill at once when only one login matches";
-                    description: "Skips the picker when a single saved login matches the site. Touch ID still applies.";
+                    description: "Skips the picker when a single saved login matches the site. " + Theme.biometric-label + " still applies.";
                     checked <=> root.browser-fill-single;
                     toggled(v) => { root.browser-fill-single-toggled(v); }
                 }
                 Toggle {
                     text: "Save and use passkeys";
-                    description: "Sites create and sign in with passkeys kept in the vault, after Touch ID. Off: the browser's own passkeys answer.";
+                    description: "Sites create and sign in with passkeys kept in the vault, after " + Theme.biometric-label + ". Off: the browser's own passkeys answer.";
                     checked <=> root.browser-passkeys;
                     toggled(v) => { root.browser-passkeys-toggled(v); }
                 }
@@ -458,6 +506,15 @@ export component SettingsWindow inherits Window {
                         entered(accelerator) => { root.hotkey-accepted(accelerator); }
                     }
                 }
+                if root.hotkey-note != "": Text {
+                    text: root.hotkey-note;
+                    color: root.hotkey-note-is-error ? Theme.danger-small : Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Quick Panel hotkey note";
+                    accessible-value: self.text;
+                }
                 SettingRow {
                     text: "Generator hotkey";
                     generator-recorder := ShortcutRecorder {
@@ -471,6 +528,15 @@ export component SettingsWindow inherits Window {
                         entered(accelerator) => { root.generator-hotkey-accepted(accelerator); }
                         cleared => { root.generator-hotkey-accepted(""); }
                     }
+                }
+                if root.generator-hotkey-note != "": Text {
+                    text: root.generator-hotkey-note;
+                    color: root.generator-hotkey-note-is-error ? Theme.danger-small : Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Generator hotkey note";
+                    accessible-value: self.text;
                 }
                 if root.error-text != "": Text {
                     text: root.error-text;
@@ -489,7 +555,7 @@ export component SettingsWindow inherits Window {
 
 export component GeneratorWindow inherits Window {
     title: "Vaultkeeper — generator";
-    icon: @image-url("icons/tray-dark.svg");
+    icon: @image-url("icons/tray-blue.svg");
     preferred-width: 420px;
     preferred-height: 28px + view.content-height;
     min-width: 360px;

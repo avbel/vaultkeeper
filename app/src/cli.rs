@@ -76,6 +76,7 @@ Desktop options
   --daemon     run in the menu bar only; windows open on demand
   --tray       same as --daemon (what start at login uses)
   --quick      open the Quick Panel
+  --quit       stop the running vaultkeeper
   --mock       run on the built-in mock vault (master password: mock)
   --offline    mock: start with the server unreachable
   --unlocked   mock: start with the first account unlocked
@@ -93,6 +94,8 @@ pub struct Args {
     pub ui: bool,
     /// With `--ui`: no unlock happened since the daemon started.
     pub first_unlock: bool,
+    /// With `--ui` on Windows: the inherited pipe handle that carries the daemon connection.
+    pub ui_pipe: Option<usize>,
     pub no_activate: bool,
     pub tray: bool,
     pub offline: bool,
@@ -105,10 +108,15 @@ pub struct Args {
     pub size: Option<(u32, u32)>,
     pub select: Option<String>,
     pub quick: bool,
+    /// Ask a running daemon to quit (the installer, uninstaller and updater use it).
+    pub quit: bool,
     pub help: bool,
     pub version: bool,
     /// The previous daemon after an update: wait for this pid to exit before starting.
     pub wait_for: Option<i32>,
+    /// Hidden marker on Windows: this daemon was already re-launched without a console, so it must
+    /// not do so again.
+    pub detached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -123,6 +131,8 @@ pub enum CliError {
     Select,
     #[error("--wait-for needs a process id")]
     WaitFor,
+    #[error("--ui-pipe needs a handle value")]
+    UiPipe,
 }
 
 fn parse_size(text: Option<&str>) -> Result<(u32, u32), CliError> {
@@ -153,6 +163,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--demo-browser-pair" => parsed.demo_browser_pair = true,
             "--demo-browser-save" => parsed.demo_browser_save = true,
             "--quick" => parsed.quick = true,
+            "--quit" => parsed.quit = true,
+            "--detached" => parsed.detached = true,
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
             "--select" => parsed.select = Some(args.next().ok_or(CliError::Select)?),
             "--wait-for" => {
@@ -161,6 +173,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
                         .and_then(|pid| pid.parse().ok())
                         .filter(|pid: &i32| *pid > 0)
                         .ok_or(CliError::WaitFor)?,
+                );
+            }
+            "--ui-pipe" => {
+                parsed.ui_pipe = Some(
+                    args.next()
+                        .and_then(|handle| handle.parse().ok())
+                        .filter(|handle: &usize| *handle != 0)
+                        .ok_or(CliError::UiPipe)?,
                 );
             }
             "-h" | "--help" => parsed.help = true,
@@ -185,6 +205,12 @@ mod tests {
 
     fn args(list: &[&str]) -> Result<Args, CliError> {
         parse(list.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn the_detached_marker_is_accepted() {
+        assert!(args(&["--tray", "--detached"]).expect("args").detached);
+        assert!(!args(&["--tray"]).expect("args").detached);
     }
 
     #[test]
@@ -252,6 +278,17 @@ mod tests {
     }
 
     #[test]
+    fn the_ui_pipe_is_a_nonzero_handle_value() {
+        assert_eq!(
+            args(&["--ui", "--ui-pipe", "4660"]).expect("args").ui_pipe,
+            Some(4660)
+        );
+        for bad in [&["--ui-pipe"][..], &["--ui-pipe", "0"], &["--ui-pipe", "x"]] {
+            assert_eq!(args(bad), Err(CliError::UiPipe));
+        }
+    }
+
+    #[test]
     fn rejects_unknown_and_bad_theme() {
         assert_eq!(
             args(&["--nope"]),
@@ -266,11 +303,22 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Mock,
-    Ui { first_unlock: bool },
+    Ui {
+        first_unlock: bool,
+        pipe: Option<usize>,
+    },
     Daemon(crate::daemon::routing::Launch),
 }
 
 impl Args {
+    /// Whether the process joins its parent's console. Windows starts it without one. The
+    /// detached daemon and the UI process must stay without, or they would die with the shell's
+    /// window; a daemon started from a shell joins it only so that it can re-launch detached.
+    #[must_use]
+    pub const fn wants_console(&self) -> bool {
+        !self.detached && !self.ui
+    }
+
     #[must_use]
     pub const fn mode(&self) -> Mode {
         use crate::daemon::routing::Launch;
@@ -279,6 +327,7 @@ impl Args {
         } else if self.ui {
             Mode::Ui {
                 first_unlock: self.first_unlock,
+                pipe: self.ui_pipe,
             }
         } else if self.daemon || self.tray {
             Mode::Daemon(Launch::Tray)
@@ -302,6 +351,25 @@ mod mode_tests {
     }
 
     #[test]
+    fn detached_and_ui_processes_stay_without_a_console() {
+        let wants = |list: &[&str]| {
+            parse(list.iter().map(|arg| (*arg).to_owned()))
+                .expect("args")
+                .wants_console()
+        };
+        assert!(wants(&["--help"]));
+        assert!(wants(&["--version"]));
+        assert!(wants(&["--quit"]));
+        assert!(wants(&[]));
+        assert!(wants(&["--tray"]));
+        assert!(!wants(&["--tray", "--detached"]));
+        assert!(!wants(&["--daemon", "--detached"]));
+        assert!(!wants(&["--ui"]));
+        assert!(!wants(&["--ui", "--help"]));
+        assert!(!wants(&["--quit", "--detached"]));
+    }
+
+    #[test]
     fn flags_pick_the_process() {
         assert_eq!(mode(&[]), Mode::Daemon(Launch::Manager));
         assert_eq!(mode(&["--tray"]), Mode::Daemon(Launch::Tray), "autostart");
@@ -310,12 +378,16 @@ mod mode_tests {
         assert_eq!(
             mode(&["--ui"]),
             Mode::Ui {
-                first_unlock: false
+                first_unlock: false,
+                pipe: None
             }
         );
         assert_eq!(
-            mode(&["--ui", "--first-unlock"]),
-            Mode::Ui { first_unlock: true }
+            mode(&["--ui", "--first-unlock", "--ui-pipe", "812"]),
+            Mode::Ui {
+                first_unlock: true,
+                pipe: Some(812)
+            }
         );
         assert_eq!(mode(&["--mock", "--tray"]), Mode::Mock);
     }

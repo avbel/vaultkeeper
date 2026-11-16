@@ -1,5 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Keys } from "keys.slint";
 import { Btn, BtnKind, Divider, EmptyState, Field, Icon, MenuRow, PopupPanel, SkeletonRows, Toast } from "kit.slint";
 import { ItemRow, RowData } from "row.slint";
 import { AssignChoice, AttachmentRow, DetailField, DetailHeader, DetailView, EditField, EditForm } from "detail.slint";
@@ -16,7 +17,7 @@ component NewMenu inherits Rectangle {
     Btn {
         width: 100%;
         height: root.height;
-        hint: "⌘N";
+        hint: Keys.cmd + "N";
         has-icon: true;
         icon: @image-url("icons/plus.svg");
         has-chevron: true;
@@ -111,7 +112,7 @@ component Footer inherits Rectangle {
 
 export component ManagerWindow inherits Window {
     title: "Vaultkeeper";
-    icon: @image-url("icons/tray-dark.svg");
+    icon: @image-url("icons/tray-blue.svg");
     preferred-width: 1120px;
     preferred-height: 700px;
     min-width: 760px;
@@ -353,7 +354,7 @@ export component ManagerWindow inherits Window {
                         y: (parent.height - self.height) / 2;
                         has-icon: true;
                         icon: @image-url("icons/search.svg");
-                        cap: "⌘F";
+                        cap: Keys.cmd + "F";
                         placeholder: "Search vault";
                         label: "Search vault";
                         text <=> root.query;
@@ -369,7 +370,7 @@ export component ManagerWindow inherits Window {
                         width: Theme.field-height;
                         height: Theme.field-height;
                         y: (parent.height - self.height) / 2;
-                        hint: "⌘⇧L";
+                        hint: Keys.cmd-shift + "L";
                         has-icon: true;
                         icon: @image-url("icons/lock.svg");
                         label: "Lock";
@@ -434,7 +435,7 @@ export component ManagerWindow inherits Window {
                         title: "No items yet";
                         body: "Add your first login";
                         action: "+ New";
-                        action-hint: "⌘N";
+                        action-hint: Keys.cmd + "N";
                         action-clicked => { root.new-item(0); }
                     }
                     if root.rows.length == 0 && !root.loading && root.empty-kind == 1: EmptyState {
@@ -455,7 +456,7 @@ export component ManagerWindow inherits Window {
                         title: "No Sends yet";
                         body: "Share text through an encrypted link that deletes itself";
                         action: "+ New Send";
-                        action-hint: "⌘N";
+                        action-hint: Keys.cmd + "N";
                         action-clicked => { root.new-item(5); }
                     }
                 }
@@ -470,12 +471,12 @@ export component ManagerWindow inherits Window {
                     if root.detail-mode == 0 && !root.send-mode: EmptyState {
                         icon: @image-url("icons/kind-note.svg");
                         title: "Select an item";
-                        body: "↑↓ move · Return copies the password · ⌘E edit";
+                        body: "↑↓ move · Return copies the password · " + Keys.cmd + "E edit";
                     }
                     if root.detail-mode == 0 && root.send-mode: EmptyState {
                         icon: @image-url("icons/send.svg");
                         title: "Select a Send";
-                        body: "↑↓ move · Return copies the link · ⌘E edit";
+                        body: "↑↓ move · Return copies the link · " + Keys.cmd + "E edit";
                     }
                     if root.detail-mode == 4: SendDetailView {
                         send: root.send-detail;
