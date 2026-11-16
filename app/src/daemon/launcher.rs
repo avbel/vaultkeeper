@@ -307,7 +307,11 @@ impl UiChild {
         let status = tokio::select! {
             status = &mut exit => status,
             Ok(()) = killed => {
-                tracing::warn!(pid = child.pid(), "the UI process stopped answering; killing it");
+                tracing::warn!(
+                    pid = child.pid(),
+                    exit_code = ?child.exit_code(),
+                    "the UI process stopped answering; killing it"
+                );
                 if let Err(error) = child.kill() {
                     tracing::warn!(%error, "cannot kill the UI process");
                 }
@@ -315,7 +319,12 @@ impl UiChild {
             }
         };
         match status {
-            Ok(status) => tracing::debug!(%status, "UI process exited"),
+            Ok(status) if status.success() => tracing::debug!(%status, "UI process exited"),
+            Ok(status) => tracing::warn!(
+                pid = child.pid(),
+                code = status.code().map(|code| format!("{code:#x}")),
+                "UI process exited with an error"
+            ),
             Err(error) => tracing::warn!(%error, "lost track of the UI process"),
         }
     }

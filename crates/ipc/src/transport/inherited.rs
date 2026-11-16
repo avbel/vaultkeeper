@@ -185,8 +185,10 @@ fn random_bytes() -> io::Result<[u8; 16]> {
 pub unsafe fn adopt_ui_pipe(handle: usize) -> io::Result<(Stream, u32)> {
     let raw = handle as RawHandle;
     let parent = parent_process_id()?;
+    tracing::info!(handle, parent, "adopting the UI pipe");
     let server_pid = u32::try_from(credentials(raw, true)?.pid)
         .map_err(|_| io::Error::other("the pipe server's pid is negative"))?;
+    tracing::info!(server_pid, "the UI pipe's server found");
     if server_pid != parent {
         return Err(io::Error::other(
             "the UI pipe is not served by the process that started this one",
@@ -200,6 +202,7 @@ pub unsafe fn adopt_ui_pipe(handle: usize) -> io::Result<(Stream, u32)> {
     // SAFETY: the caller guarantees sole ownership of `handle`; the checks above proved it is a
     // pipe whose server is the daemon.
     let client = unsafe { NamedPipeClient::from_raw_handle(raw) }?;
+    tracing::info!("the UI pipe is registered with the runtime");
     Ok((Stream::client(client), server_pid))
 }
 

@@ -8,6 +8,7 @@ pub mod browser;
 mod clipboard;
 pub mod console;
 pub mod detached;
+pub mod early_log;
 pub mod fs;
 pub mod layout;
 pub mod log_file;

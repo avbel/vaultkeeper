@@ -117,6 +117,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast -p vk-platform single_instance
 
+      # The real daemon spawns the real UI the way production does; the log files it prints on
+      # failure say how far the UI got.
+      - name: UI launch
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast -p vaultkeeper --test windows_ui_launch -- --nocapture
+
   # Test builds for manual testing on a Windows PC without a Rust toolchain. Both architectures
   # are built natively: the maintainer's test laptop is Windows on ARM64.
   windows-build:

@@ -5,6 +5,7 @@ use std::{io, path::Path};
 
 use vk_ipc::{UiSink, transport::UiPipe};
 use vk_win::{Child, SpawnOptions, sddl};
+use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 
 use super::ui_args_with_pipe;
 
@@ -53,10 +54,20 @@ pub fn spawn(
         thread_sddl: Some(sddl::thread(&sid)?),
         inherit_handles: vec![handle],
         mitigation_policy: creation_mitigations(strict_enabled()),
-        creation_flags: 0,
+        // The UI needs no console. Without this a console-subsystem build gets one allocated
+        // when the manifest's detached policy is not honoured (Windows before 24H2), and the
+        // process waits for the default terminal to take it over before running anything.
+        creation_flags: DETACHED_PROCESS,
     };
     let args = ui_args_with_pipe(first_unlock, no_activate, handle as usize);
+    tracing::info!(
+        exe = %exe.display(),
+        handle = handle as usize,
+        mitigations = format!("{:#x}", options.mitigation_policy),
+        "starting the UI process"
+    );
     let child = vk_win::spawn_hardened(exe, &args, &options)?;
+    tracing::info!(pid = child.pid(), "UI process created");
     // The child owns its copy now; keeping ours would hold the pipe open after the UI dies.
     pipe.close_client();
     if let Err(error) = sink.offer(pipe.into_stream()) {

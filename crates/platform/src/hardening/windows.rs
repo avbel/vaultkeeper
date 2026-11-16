@@ -16,6 +16,7 @@ use windows_sys::Win32::{
         DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
     },
     System::{
+        Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode},
         LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories},
         Threading::{
             GetCurrentProcess, PROCESS_MITIGATION_POLICY, ProcessDynamicCodePolicy,
@@ -52,6 +53,10 @@ pub const UI_MITIGATIONS: &[Policy] = &[
 ];
 
 pub(super) fn harden(role: Role) {
+    // A crash must end the process at once: the daemon reaps a UI that is stuck in the system's
+    // crash dialog only after its 20 s hang timeout, and logs nothing about why.
+    // SAFETY: takes flag values only and changes this process's error mode.
+    unsafe { SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX) };
     set_loader_search_path();
 
     match current_user_sid() {

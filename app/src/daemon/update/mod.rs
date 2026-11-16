@@ -227,7 +227,11 @@ async fn check(updater: &Updater, manual: bool) -> Duration {
             return CHECK_EVERY;
         }
         Err(error) => {
-            tracing::info!(%error, "update check failed");
+            if let CheckError::Release(release::ReleaseError::MissingAsset(name)) = &error {
+                tracing::debug!(asset = %name, "the latest release has no build for this platform yet");
+            } else {
+                tracing::info!(%error, "update check failed");
+            }
             updater.set(if manual { Status::Failed } else { before });
             return match error {
                 CheckError::RateLimited => RATE_LIMIT_BACKOFF,

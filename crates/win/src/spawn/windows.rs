@@ -84,6 +84,18 @@ impl Child {
         Ok(())
     }
 
+    /// The exit code, or `None` while the process still runs. A crash shows up here as an
+    /// NTSTATUS such as `0xc0000409`.
+    pub fn exit_code(&self) -> io::Result<Option<u32>> {
+        const STILL_ACTIVE: u32 = 259;
+        let mut code = 0_u32;
+        // SAFETY: `handle` is a live process handle owned by this `Child`; `code` is an out pointer.
+        if unsafe { GetExitCodeProcess(self.handle.as_raw_handle(), &raw mut code) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((code != STILL_ACTIVE).then_some(code))
+    }
+
     /// Waits for the process to exit without blocking the calling thread.
     #[must_use]
     pub fn wait(&self) -> Wait {

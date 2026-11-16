@@ -18,7 +18,14 @@ fn main() -> anyhow::Result<()> {
     } else {
         vk_platform::hardening::Role::Daemon
     };
+    let is_ui = role == vk_platform::hardening::Role::Ui;
+    if is_ui {
+        vaultkeeper::os::early_log::start(&raw_args);
+    }
     vk_platform::hardening::harden_process(role);
+    if is_ui {
+        vaultkeeper::os::early_log::note("process hardened");
+    }
     if matches!(
         raw_args.first().map(String::as_str),
         Some("list" | "get_fields" | "get")
@@ -51,6 +58,9 @@ fn main() -> anyhow::Result<()> {
     if args.quit {
         return quit_daemon();
     }
+    if is_ui {
+        vaultkeeper::os::early_log::note("arguments parsed");
+    }
     let mode = args.mode();
     #[cfg(windows)]
     if matches!(mode, Mode::Daemon(_)) {
@@ -74,7 +84,12 @@ fn main() -> anyhow::Result<()> {
     match mode {
         Mode::Mock => run_mock(args),
         Mode::Ui { first_unlock, pipe } => {
-            vaultkeeper::ui_process::run(first_unlock, args.no_activate, pipe)
+            vaultkeeper::os::early_log::note("logging initialised");
+            let ran = vaultkeeper::ui_process::run(first_unlock, args.no_activate, pipe);
+            if let Err(error) = &ran {
+                vaultkeeper::os::early_log::note(&format!("the UI process failed: {error:#}"));
+            }
+            ran
         }
         Mode::Daemon(launch) => vaultkeeper::daemon::run(launch, args.wait_for),
     }
@@ -119,7 +134,8 @@ fn init_logging(file_name: Option<&str>) {
     // Release builds abort on panic; this puts the reason into the log file before they do.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        tracing::error!(%info, "panic");
+        let thread = std::thread::current();
+        tracing::error!(%info, thread = thread.name().unwrap_or("<unnamed>"), "panic");
         default_hook(info);
     }));
 }
