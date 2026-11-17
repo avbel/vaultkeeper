@@ -86,6 +86,10 @@ A `v*` tag runs `.github/workflows/release.yml`. After the GitHub release it upl
   archive and listing in `store/amo-metadata.json`. Secrets: `AMO_JWT_ISSUER`, `AMO_JWT_SECRET`. AMO accepts each
   version number only once across both channels, so every release needs a new version.
 
+The stores are skipped when nothing under `browsers/` changed since the previous `v*` tag, except tests (`test/`,
+`e2e/`) and this README: a release that only bumps the version does not publish a new store version. To submit anyway,
+run the workflow by hand with **publish_extensions** checked.
+
 The extension has no version of its own: `scripts/build.mjs` writes the `[workspace.package]` version from the
 repository's `Cargo.toml` into both manifests, and the release tag must be `v<that version>`.
 
