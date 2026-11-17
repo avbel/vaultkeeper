@@ -322,6 +322,26 @@ fn choosing_login_in_the_new_menu_opens_the_new_login_form() {
 }
 
 #[test]
+fn a_long_password_does_not_widen_its_field() {
+    let (_h, manager) = open();
+    click(&manager, "New item");
+    pump();
+    click(&manager, "Login");
+    pump();
+    let input_width = |label: &str| {
+        ElementHandle::find_by_accessible_label(&manager, label)
+            .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+            .unwrap_or_else(|| panic!("no {label} input"))
+            .size()
+            .width
+    };
+    let before = input_width("Password");
+    type_into(&manager, "Password", &"x".repeat(400));
+    assert_eq!(input_width("Password"), before);
+    assert!(input_width("Password") <= input_width("Name"));
+}
+
+#[test]
 fn add_account_in_the_account_menu_opens_the_login_window() {
     let (h, manager) = open();
     click(&manager, "Accounts");

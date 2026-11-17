@@ -57,8 +57,13 @@ export component Field inherits Rectangle {
             source: root.icon;
             tint: Theme.text-muted;
         }
+        // A TextInput's minimum width is its text width, so a long generated password would widen
+        // the field past the pane; zero it and scroll the text inside instead.
         Rectangle {
             horizontal-stretch: 1;
+            min-width: 0px;
+            preferred-width: 0px;
+            clip: true;
             input := TextInput {
                 width: 100%;
                 height: 100%;
