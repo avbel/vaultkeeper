@@ -8,6 +8,10 @@ on:
       tag:
         description: Existing tag to build and publish (e.g. v0.1.0)
         required: true
+      publish_extensions:
+        description: Submit the browser extensions to the stores even if their code did not change
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -131,13 +135,46 @@ jobs:
     name: Browser extensions
     needs: version
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
     defaults:
       run:
         working-directory: browsers
     steps:
+      # Full history and tags, to find the previous release tag.
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.sha }}
+          fetch-depth: 0
+
+      # The stores only get a new version when the extension itself changed since the previous
+      # release tag. The manifest version comes from Cargo.toml, outside browsers/, so a version bump
+      # alone does not count; neither do tests or the README. The GitHub release still carries the
+      # extension zip every time.
+      - name: Did the extension change?
+        id: changes
+        env:
+          FORCE: ${{ inputs.publish_extensions || false }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "Store submission forced by the workflow input"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          if [ -z "$PREV" ]; then
+            echo "No previous release tag: the extension counts as changed"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "$PREV" HEAD -- . ':(exclude)test' ':(exclude)e2e' ':(exclude)README.md'; then
+            echo "::notice::the browser extension is unchanged since $PREV: the stores are skipped"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "The browser extension changed since $PREV:"
+            git diff --stat "$PREV" HEAD -- . ':(exclude)test' ':(exclude)e2e' ':(exclude)README.md'
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: pnpm/action-setup@v4
         with:
@@ -518,10 +555,12 @@ jobs:
           gh release create "$TAG" * --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Vaultkeeper $TAG"
 
   # Store submissions wait for the GitHub release, so a store version never points users at an app
-  # release that failed to build. A missing credential skips the store with a warning.
+  # release that failed to build. A missing credential skips the store with a warning, and an
+  # extension unchanged since the previous release skips both stores.
   chrome-web-store:
     name: Chrome Web Store
-    needs: release
+    needs: [release, extensions]
+    if: needs.extensions.outputs.changed == 'true'
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -545,7 +584,8 @@ jobs:
 
   firefox-add-ons:
     name: Firefox Add-ons (AMO)
-    needs: release
+    needs: [release, extensions]
+    if: needs.extensions.outputs.changed == 'true'
     runs-on: ubuntu-latest
     environment: release
     steps:
