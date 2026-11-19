@@ -366,4 +366,12 @@ mod tests {
         let reprompt = [login("a", false), login("b", true)];
         assert!(silent_item(&single_request(false, Some("b")), &https, &reprompt).is_none());
     }
+
+    #[test]
+    fn a_remembered_item_that_no_longer_matches_the_page_falls_back_to_the_picker() {
+        let https = validation::page("https://example.com", "/").expect("page");
+        let two = [login("a", false), login("b", false)];
+        assert!(silent_item(&single_request(false, Some("gone")), &https, &two).is_none());
+        assert!(silent_item(&single_request(false, Some("gone")), &https, &[]).is_none());
+    }
 }

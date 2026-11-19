@@ -13,6 +13,7 @@ const SSH_SOCKET: &str = "ssh-agent.sock";
 #[cfg(any(windows, test))]
 const OPENSSH_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
 pub const BROWSER_PAIRINGS_FILE: &str = "browsers.json";
+pub const BROWSER_CHOICES_FILE: &str = "browser-choices.json";
 pub const SETTINGS_FILE: &str = "settings.json";
 pub const DEVICE_FILE: &str = "device.json";
 const ACCOUNTS_DIR: &str = "accounts";

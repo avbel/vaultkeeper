@@ -1,7 +1,6 @@
 //! Request dispatch for one authenticated browser connection.
 
 use std::{
-    collections::HashMap,
     future::Future,
     sync::{
         Arc,
@@ -10,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -30,15 +30,16 @@ use zeroize::Zeroizing;
 
 use super::{
     auth::{authenticate, connection_browser},
+    choices::ChoiceStore,
     fill::{self, FillRequest, Filled, Via},
     limits::Limits,
     pairing::PairingStore,
     passkey::{self, PasskeyCeremony, PasskeyRequest},
+    remembered::Remembered,
     request,
 };
 
 const UNLOCK_WAIT: Duration = Duration::from_secs(120);
-const MAX_REMEMBERED: usize = 32;
 const MAX_UNLOCKS: usize = 2;
 
 /// The fill flow behind the dispatch seam. The real implementation binds the vault snapshot;
@@ -146,6 +147,9 @@ pub trait BrowserHost: Send + Sync {
     /// Rate-limit state of one paired key. Shared by its connections so a reconnect does not
     /// reset the buckets or the cancellation cooldown.
     fn limits(&self, key: &[u8; 65]) -> Arc<std::sync::Mutex<Limits>>;
+    /// The logins picked per site, shared by every connection. They outlive locks and
+    /// reconnects; the daemon clears them on log out and account switch.
+    fn choices(&self) -> Arc<std::sync::Mutex<ChoiceStore>>;
     fn default_match(&self) -> DefaultMatch;
     fn browser_touch_id(&self) -> bool;
     fn browser_fill_single(&self) -> bool;
@@ -201,34 +205,6 @@ struct InFlight {
     /// counts as dismissed.
     _cancel: oneshot::Sender<()>,
     task: JoinHandle<()>,
-}
-
-/// Approvals the user gave on this connection, valid only within one approvals epoch.
-struct Remembered {
-    epoch: u64,
-    items: HashMap<String, ItemId>,
-}
-
-impl Remembered {
-    fn sync(&mut self, epoch: u64) {
-        if self.epoch != epoch {
-            self.items.clear();
-            self.epoch = epoch;
-        }
-    }
-
-    fn get(&mut self, epoch: u64, origin: &str) -> Option<ItemId> {
-        self.sync(epoch);
-        self.items.get(origin).cloned()
-    }
-
-    fn insert(&mut self, epoch: u64, origin: String, item: ItemId) {
-        self.sync(epoch);
-        if self.items.len() >= MAX_REMEMBERED && !self.items.contains_key(&origin) {
-            self.items.clear();
-        }
-        self.items.insert(origin, item);
-    }
 }
 
 struct Closed;
@@ -301,10 +277,7 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
         kind: browser_kind,
         fills,
         limits: host.limits(&key),
-        remembered: Remembered {
-            epoch: host.approvals_epoch(),
-            items: HashMap::new(),
-        },
+        remembered: Remembered::new(host.approvals_epoch(), host.choices(), STANDARD.encode(key)),
         inflight: None,
         unlocks: JoinSet::new(),
         completions,
@@ -432,6 +405,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
         }
         let epoch = self.host.approvals_epoch();
         let remembered = self.remembered.get(epoch, &key);
+        let persisted = self.remembered.persisted(&key);
         let task = FillTask {
             id,
             key,
@@ -441,6 +415,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             fields,
             epoch,
             remembered,
+            persisted,
             browser: self.browser,
             kind: self.kind,
             completions: self.completions.clone(),
@@ -706,6 +681,7 @@ struct FillTask {
     fields: FillFields,
     epoch: u64,
     remembered: Option<ItemId>,
+    persisted: Option<ItemId>,
     browser: &'static str,
     kind: KnownBrowser,
     completions: mpsc::Sender<Completion>,
@@ -725,6 +701,7 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
         fields,
         epoch,
         remembered,
+        persisted,
         browser,
         kind,
         completions,
@@ -734,7 +711,7 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
     let host = Arc::clone(host);
     let task = tokio::spawn(async move {
         let (answer, abandoned) = tokio::select! {
-            done = run_fill(&*fills, &host, FillInput { browser, kind, origin, path, choose, fields, remembered }) => done,
+            done = run_fill(&*fills, &host, FillInput { browser, kind, origin, path, choose, fields, remembered, persisted }) => done,
             _ = cancelled => return,
         };
         let _ = completions
@@ -858,6 +835,8 @@ struct FillInput {
     choose: bool,
     fields: FillFields,
     remembered: Option<ItemId>,
+    /// The choice that outlives a lock, unlike the connection's approval in `remembered`.
+    persisted: Option<ItemId>,
 }
 
 /// A locked vault shows the lock screen first; the picker follows once it is unlocked.
@@ -881,8 +860,8 @@ async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
     let mut input = input;
     if host.status().0 == State::Locked {
         // The approvals epoch moves a moment after the lock, so a remembered approval read
-        // before it must not survive a lock seen here.
-        input.remembered = None;
+        // before it must not survive a lock seen here; the persisted choice does.
+        input.remembered = input.persisted.take();
         let _ = tokio::time::timeout(UNLOCK_WAIT, host.unlock()).await;
         if host.status().0 == State::Locked {
             return Err(ErrorCode::Locked);
@@ -896,6 +875,7 @@ async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
         choose,
         fields,
         remembered,
+        ..
     } = input;
     let touch_id = host.browser_touch_id();
     let fill_single = host.browser_fill_single();

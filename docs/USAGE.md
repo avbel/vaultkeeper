@@ -250,11 +250,16 @@ decision and every prompt are in Vaultkeeper's own windows.
 The activity log is `~/Library/Logs/vaultkeeper/browser.log`: time, browser, host and item id of
 every fill, never a secret.
 
+The login you pick for a site is remembered for that paired browser until you log out, so the next fill on the
+same site skips the picker, also after restarting the browser or the app and after the vault was locked. Logging
+out, switching accounts and removing the browser under *Paired browsers* forget it. Touch ID, if required, is still
+asked for.
+
 Known limits:
 
 - Malware running as your macOS user can drive a real browser with a copied profile, so pairing and
   the browser signature check are barriers, not guarantees. Nothing is released without a click in a
-  Vaultkeeper window, and remembered approvals belong to one live connection.
+  Vaultkeeper window, and a remembered login belongs to one paired browser and ends at log out.
 - A filled password can be read by scripts of the page it was filled into (for example after XSS).
 - JavaScript strings cannot be wiped; the extension keeps a credential only for one message hand-off.
 - The parent-process check can be bypassed by starting the host and then replacing its parent.

@@ -5,6 +5,7 @@ pub mod address;
 pub mod auth;
 #[cfg(test)]
 mod auth_tests;
+pub mod choices;
 pub mod control;
 pub mod dedupe;
 pub mod dispatch;
@@ -16,6 +17,7 @@ pub mod limits;
 pub mod manifests;
 pub mod pairing;
 pub mod passkey;
+pub mod remembered;
 pub mod request;
 pub mod save;
 pub mod save_queue;

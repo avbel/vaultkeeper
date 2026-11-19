@@ -4,7 +4,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -19,11 +19,12 @@ use vk_ipc::{
 };
 use vk_vault::{VaultService, model::SessionState, uri_match::DefaultMatch};
 
-use super::{Daemon, guard};
+use super::{Daemon, Identity, guard};
 use crate::{
     daemon::browser::{
         activity::ActivityLog,
         address::{AddressOffer, AddressOffers},
+        choices::ChoiceStore,
         control::BrowserControl,
         dispatch::{BrowserHost, Candidate, FillRecord, RealFills, serve},
         fill::Via,
@@ -32,7 +33,7 @@ use crate::{
         pairing::PairingStore,
         save::{Outcome as SaveOutcome, SaveError, SaveManager, SaveSettings},
     },
-    os::layout::{BROWSER_PAIRINGS_FILE, browser_endpoint},
+    os::layout::{BROWSER_CHOICES_FILE, BROWSER_PAIRINGS_FILE, browser_endpoint},
     settings::{BrowserMatch, Settings, ThemeChoice},
 };
 
@@ -58,11 +59,15 @@ pub(super) struct BrowserState {
     stopping: std::sync::Mutex<Option<JoinHandle<()>>>,
     log: ActivityLog,
     limits: std::sync::Mutex<HashMap<[u8; 65], Arc<std::sync::Mutex<Limits>>>>,
+    /// Owned here rather than by the listener so a log out clears it while integration is off.
+    choices: Arc<std::sync::Mutex<ChoiceStore>>,
+    /// The account the vault was last seen locked or unlocked for; `None` once logged out.
+    account: std::sync::Mutex<Option<Identity>>,
     pair_prompts: std::sync::Mutex<VecDeque<Instant>>,
 }
 
 impl BrowserState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(data_dir: &Path) -> Self {
         Self {
             run: std::sync::Mutex::new(None),
             store: std::sync::Mutex::new(None),
@@ -75,6 +80,10 @@ impl BrowserState {
             stopping: std::sync::Mutex::new(None),
             log: ActivityLog::new(),
             limits: std::sync::Mutex::new(HashMap::new()),
+            choices: Arc::new(std::sync::Mutex::new(ChoiceStore::load(
+                &data_dir.join(BROWSER_CHOICES_FILE),
+            ))),
+            account: std::sync::Mutex::new(None),
             pair_prompts: std::sync::Mutex::new(VecDeque::new()),
         }
     }
@@ -166,7 +175,9 @@ impl Daemon {
                         return;
                     }
                 };
-            *guard(&daemon.browser.store) = Some(control.store());
+            let store = control.store();
+            daemon.retain_paired_choices(&store).await;
+            *guard(&daemon.browser.store) = Some(store);
             let fills = Arc::new(RealFills {
                 vault: Arc::clone(&daemon.vault),
             });
@@ -237,6 +248,42 @@ impl Daemon {
         self.browser.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// A browser whose pairing was removed loses its remembered logins.
+    async fn retain_paired_choices(&self, store: &AsyncMutex<PairingStore>) {
+        let paired: Vec<String> = store
+            .lock()
+            .await
+            .paired
+            .iter()
+            .map(|entry| entry.public_key.clone())
+            .collect();
+        let retained = guard(&self.browser.choices).retain_keys(&paired);
+        if let Err(error) = retained {
+            tracing::warn!(%error, "cannot drop the remembered logins of removed browsers");
+        }
+    }
+
+    /// Log out and an account switch forget the remembered logins; a lock, sleep or screen lock
+    /// does not. `Locked` carries the account too, so lock -> other account -> unlock is a switch.
+    pub(super) fn forget_browser_choices_on_account_change(&self, state: &SessionState) {
+        let current = match state {
+            SessionState::Locked { server, email } | SessionState::Unlocked { server, email } => {
+                Some(Identity {
+                    server: server.clone(),
+                    email: email.clone(),
+                })
+            }
+            SessionState::LoggedOut => None,
+        };
+        let previous = std::mem::replace(&mut *guard(&self.browser.account), current.clone());
+        if !forgets_choices(previous.as_ref(), current.as_ref()) {
+            return;
+        }
+        if let Err(error) = guard(&self.browser.choices).clear() {
+            tracing::warn!(%error, "cannot forget the remembered browser logins");
+        }
+    }
+
     /// Waits for an open save prompt to finish rather than skipping the wipe.
     pub(super) fn clear_browser_saves(self: &Arc<Self>) {
         let daemon = Arc::clone(self);
@@ -254,6 +301,7 @@ impl Daemon {
         let reloaded = store.lock().await.reload();
         match reloaded {
             Ok(()) => {
+                self.retain_paired_choices(&store).await;
                 self.browser.log.record("pairings reloaded");
                 self.browser.pairings_changed.notify_one();
             }
@@ -460,6 +508,12 @@ impl Daemon {
     }
 }
 
+/// Logged out, or another account than the one last seen. A first sighting after start-up is
+/// neither, so the choices of the account the app was closed with survive a restart.
+pub(super) fn forgets_choices(previous: Option<&Identity>, now: Option<&Identity>) -> bool {
+    now.is_none() || previous.is_some_and(|previous| Some(previous) != now)
+}
+
 /// One watch for the sessions: it moves on every vault change and on a pairing reload, and each
 /// session decides whether anything it cares about changed. Also sweeps expired save candidates.
 async fn forward_changes(daemon: Arc<Daemon>) {
@@ -521,6 +575,10 @@ impl BrowserHost for DaemonBrowser {
                 .entry(*key)
                 .or_insert_with(|| Arc::new(std::sync::Mutex::new(Limits::new(Instant::now())))),
         )
+    }
+
+    fn choices(&self) -> Arc<std::sync::Mutex<ChoiceStore>> {
+        Arc::clone(&self.0.browser.choices)
     }
 
     fn default_match(&self) -> DefaultMatch {
