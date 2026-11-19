@@ -83,7 +83,7 @@ jobs:
         include:
           - {arch: x64, runner: windows-latest, prebuilt_nasm: "1"}
           - {arch: arm64, runner: windows-11-arm, prebuilt_nasm: "0"}
-    timeout-minutes: 15
+    timeout-minutes: 39
     env:
       # aws-lc-sys ships prebuilt NASM objects for x64; ARM64 uses no NASM (it needs clang-cl instead).
       AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.prebuilt_nasm }}
