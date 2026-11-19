@@ -31,7 +31,11 @@ function fakePort() {
 
 const store = (): KeyStore => {
   let pair: CryptoKeyPair | undefined;
-  return { load: async () => pair, save: async (p) => void (pair = p) };
+  return {
+    load: async () => pair,
+    save: async (p) => void (pair = p),
+    clear: async () => void (pair = undefined),
+  };
 };
 
 async function flush(): Promise<void> {
@@ -51,6 +55,7 @@ describe("Session handshake", () => {
     const session = new Session({
       native,
       keys: () => getOrCreateKeyPair(keys),
+      resetKeys: async () => undefined,
       caller,
       extensionVersion: "0.1.0",
       onChange: (s) => changes.push(s),
@@ -101,6 +106,7 @@ describe("Session handshake", () => {
     const session = new Session({
       native,
       keys: () => getOrCreateKeyPair(store()),
+      resetKeys: async () => undefined,
       caller: "c",
       extensionVersion: "0.1.0",
       onChange: () => undefined,
@@ -122,6 +128,7 @@ describe("Session handshake", () => {
     const session = new Session({
       native,
       keys: () => getOrCreateKeyPair(store()),
+      resetKeys: async () => undefined,
       caller: "c",
       extensionVersion: "0.1.0",
       onChange: () => undefined,
@@ -143,6 +150,7 @@ describe("Session handshake", () => {
     const session = new Session({
       native,
       keys: () => getOrCreateKeyPair(store()),
+      resetKeys: async () => undefined,
       caller: "c",
       extensionVersion: "0.1.0",
       onChange: () => undefined,
@@ -166,5 +174,47 @@ describe("Session handshake", () => {
     port.emit({ id: 4, ok: true, result: { state: "locked", theme: "light" } });
     await refresh;
     expect(session.status).toMatchObject({ state: "locked", theme: "light" });
+  });
+
+  it("resets pairing: drops the key and pairs again as a new browser", async () => {
+    resetKeyPairCache();
+    const keys = store();
+    const ports = [fakePort(), fakePort()];
+    let next = 0;
+    const native = new NativeClient({ connectNative: () => ports[next++]! });
+    const session = new Session({
+      native,
+      keys: () => getOrCreateKeyPair(keys),
+      resetKeys: async () => {
+        await keys.clear();
+        resetKeyPairCache();
+      },
+      caller: "c",
+      extensionVersion: "0.1.0",
+      onChange: () => undefined,
+    });
+
+    const first = session.ensureReady();
+    const firstFailure = expect(first).rejects.toMatchObject({ code: "denied" });
+    await flush();
+    const oldKey = ports[0]!.sent[0]!.public_key;
+    ports[0]!.emit({ id: 1, ok: true, result: { challenge: btoa("x".repeat(32)), known: true } });
+    await flush();
+    ports[0]!.emit({ id: 2, ok: false, error: "denied" });
+    await firstFailure;
+    expect(session.status.phase).toBe("denied");
+
+    await session.resetPairing();
+    await flush();
+    expect(ports[1]!.sent[0]).toMatchObject({ type: "hello" });
+    expect(ports[1]!.sent[0]!.public_key).not.toBe(oldKey);
+    const helloId = ports[1]!.sent[0]!.id;
+    ports[1]!.emit({
+      id: helloId,
+      ok: true,
+      result: { challenge: btoa("y".repeat(32)), known: false },
+    });
+    await flush();
+    expect(session.status.phase).toBe("pairing");
   });
 });

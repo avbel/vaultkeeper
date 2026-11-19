@@ -7,6 +7,7 @@ import {
   getOrCreateKeyPair,
   proofMessage,
   resetKeyPairCache,
+  resetPairing,
   signProof,
   toBase64,
   type KeyStore,
@@ -22,6 +23,9 @@ function memoryStore(): KeyStore & { saved: number } {
     async save(next: CryptoKeyPair) {
       pair = next;
       store.saved += 1;
+    },
+    async clear() {
+      pair = undefined;
     },
   };
   return store;
@@ -127,5 +131,15 @@ describe("base64 and caller", () => {
         getURL: (p) => `moz-extension://uuid${p}`,
       }),
     ).toBe("browser-extension@vaultkeeper");
+  });
+
+  it("generates a new key after the pairing is reset", async () => {
+    resetKeyPairCache();
+    const store = memoryStore();
+    const first = await getOrCreateKeyPair(store);
+    await resetPairing(store);
+    const second = await getOrCreateKeyPair(store);
+    expect(second).not.toBe(first);
+    expect(store.saved).toBe(2);
   });
 });

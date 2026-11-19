@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::daemon::browser::manifests::ManifestBrowser;
 
 pub const SIGNED_BUILD_REASON: &str = "Cannot start: needs the signed app build";
+pub const UNHARDENED_REASON: &str = "Cannot start: process hardening failed";
 
 /// The browsers that get a per-browser switch. The other manifest targets are out of version 1.
 const SWITCHABLE: [ManifestBrowser; 2] = [ManifestBrowser::Chrome, ManifestBrowser::Firefox];
@@ -16,8 +17,26 @@ pub fn start_blocker() -> Option<&'static str> {
     let dev_override = cfg!(debug_assertions)
         && std::env::var_os("VAULTKEEPER_DEV_BROWSER").as_deref()
             == Some(std::ffi::OsStr::new("1"));
-    let allowed = vk_ipc::has_hardened_runtime() || cfg!(feature = "vw-it") || dev_override;
-    (!allowed).then_some(SIGNED_BUILD_REASON)
+    let allowed = runtime_hardened() || cfg!(feature = "vw-it") || dev_override;
+    let reason = if cfg!(windows) {
+        UNHARDENED_REASON
+    } else {
+        SIGNED_BUILD_REASON
+    };
+    (!allowed).then_some(reason)
+}
+
+// Authenticode is not consulted on Windows: a signature does not stop same-user injection, the
+// process DACL does (docs/solutions/windows-support.md §5.1, §5.3).
+fn runtime_hardened() -> bool {
+    #[cfg(windows)]
+    {
+        vk_platform::hardening::process_dacl_applied()
+    }
+    #[cfg(not(windows))]
+    {
+        vk_ipc::has_hardened_runtime()
+    }
 }
 
 #[must_use]

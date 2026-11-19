@@ -22,7 +22,7 @@ pub fn browser_host_caller(args: &[String]) -> Option<HostCaller> {
         }
     }
     if args.len() == 2
-        && first.ends_with("/org.vaultkeeper.browser.json")
+        && is_firefox_manifest(first, cfg!(windows))
         && args[1] == FIREFOX_EXTENSION_ID
     {
         return Some(HostCaller::Firefox {
@@ -30,6 +30,16 @@ pub fn browser_host_caller(args: &[String]) -> Option<HostCaller> {
         });
     }
     None
+}
+
+/// Firefox passes the path of the manifest it read; on Windows that is the per-browser file the
+/// registry points at (`ManifestBrowser::windows_manifest_path`).
+fn is_firefox_manifest(path: &str, windows: bool) -> bool {
+    if windows {
+        path.ends_with(r"\org.vaultkeeper.browser.firefox.json")
+    } else {
+        path.ends_with("/org.vaultkeeper.browser.json")
+    }
 }
 
 pub const USAGE: &str = r#"Usage: vaultkeeper list
@@ -205,6 +215,25 @@ mod tests {
 
     fn args(list: &[&str]) -> Result<Args, CliError> {
         parse(list.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn firefox_manifest_argument_follows_the_platform_layout() {
+        let windows = r"C:\Users\a\AppData\Local\Vaultkeeper\native-messaging\org.vaultkeeper.browser.firefox.json";
+        assert!(is_firefox_manifest(windows, true));
+        assert!(!is_firefox_manifest(windows, false));
+        assert!(is_firefox_manifest(
+            "/tmp/org.vaultkeeper.browser.json",
+            false
+        ));
+        assert!(!is_firefox_manifest(
+            "/tmp/org.vaultkeeper.browser.json",
+            true
+        ));
+        assert!(!is_firefox_manifest(
+            r"C:\x\org.vaultkeeper.browser.chrome.json",
+            true
+        ));
     }
 
     #[test]

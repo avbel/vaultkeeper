@@ -4,7 +4,13 @@
 //! Layout and rationale: docs/solutions/windows-support.md §5.1. The process DACL is the shape
 //! Bitwarden applies in `core/src/process_isolation/windows.rs` (same GPL-3.0 licence).
 
-use std::{ffi::c_void, io, mem::size_of, ptr};
+use std::{
+    ffi::c_void,
+    io,
+    mem::size_of,
+    ptr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use tracing::{info, warn};
 use vk_win::{SecurityDescriptor, current_user_sid, sddl};
@@ -52,6 +58,8 @@ pub const UI_MITIGATIONS: &[Policy] = &[
     (ProcessStrictHandleCheckPolicy, STRICT_HANDLE_FLAGS),
 ];
 
+pub(super) static DACL_APPLIED: AtomicBool = AtomicBool::new(false);
+
 pub(super) fn harden(role: Role) {
     // A crash must end the process at once: the daemon reaps a UI that is stuck in the system's
     // crash dialog only after its 20 s hang timeout, and logs nothing about why.
@@ -61,7 +69,10 @@ pub(super) fn harden(role: Role) {
 
     match current_user_sid() {
         Ok(sid) => match apply_process_dacl(&sid) {
-            Ok(()) => info!("process DACL applied"),
+            Ok(()) => {
+                DACL_APPLIED.store(true, Ordering::Relaxed);
+                info!("process DACL applied");
+            }
             Err(error) => warn!(%error, "could not apply the process DACL"),
         },
         Err(error) => warn!(%error, "could not read the user SID for the process DACL"),
@@ -187,6 +198,12 @@ mod tests {
         let strict = policies(Role::Daemon, true);
         assert!(contains(&strict, ProcessExtensionPointDisablePolicy));
         assert!(contains(&strict, ProcessSignaturePolicy));
+    }
+
+    #[test]
+    fn hardening_records_the_applied_process_dacl() {
+        harden(Role::Daemon);
+        assert!(DACL_APPLIED.load(Ordering::Relaxed));
     }
 
     #[test]

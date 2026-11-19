@@ -7,7 +7,7 @@ import {
 } from "../shared/popup.ts";
 import type { Theme } from "../shared/protocol.ts";
 import { NativeClient } from "./native.ts";
-import { callerString, getOrCreateKeyPair } from "./pairing.ts";
+import { callerString, getOrCreateKeyPair, resetPairing } from "./pairing.ts";
 import { createPopupHandler } from "./popup-handler.ts";
 import { createRouter, type SenderLike } from "./router.ts";
 import { Session } from "./session.ts";
@@ -25,6 +25,7 @@ const native = new NativeClient({
 const session = new Session({
   native,
   keys: () => getOrCreateKeyPair(),
+  resetKeys: () => resetPairing(),
   caller: callerString(api.runtime),
   extensionVersion: api.runtime.getManifest().version,
   onChange: (status) => {

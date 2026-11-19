@@ -11,6 +11,7 @@ export interface PopupDeps {
     readonly status: PopupStatus;
     ensureReady(): Promise<void>;
     refresh(): Promise<void>;
+    resetPairing(): Promise<void>;
     request<T extends RequestType>(
       type: T,
       fields: RequestMap[T]["fields"],
@@ -50,6 +51,10 @@ export function createPopupHandler(deps: PopupDeps) {
       }
       case "popup_unlock": {
         await deps.session.request("unlock", {});
+        return { ok: true };
+      }
+      case "popup_reset_pairing": {
+        await deps.session.resetPairing();
         return { ok: true };
       }
       case "popup_open_app": {

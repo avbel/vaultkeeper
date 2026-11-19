@@ -22,6 +22,7 @@ export type PopupRequest =
   | { kind: "popup_status" }
   | { kind: "popup_fill"; choose: boolean }
   | { kind: "popup_unlock" }
+  | { kind: "popup_reset_pairing" }
   | { kind: "popup_open_app"; view: "manager" | "settings" };
 
 /** background -> popup, pushed with runtime.sendMessage */
@@ -34,6 +35,7 @@ export const POPUP_KINDS: readonly string[] = [
   "popup_status",
   "popup_fill",
   "popup_unlock",
+  "popup_reset_pairing",
   "popup_open_app",
 ];
 
