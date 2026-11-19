@@ -1,5 +1,9 @@
 # Vaultkeeper
 
+<p align="center">
+  <img src="docs/vaultkeeper-logo.png" alt="An orange Rust crab holding Vaultkeeper’s blue keyhole shield" width="220">
+</p>
+
 Vaultkeeper is a lightweight native macOS (Apple silicon) desktop client for self-hosted
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden) servers, which speak the Bitwarden API. It is written in Rust with a
 [Slint](https://slint.dev) UI, lives in the menu bar, and opens a window only when you need one.
