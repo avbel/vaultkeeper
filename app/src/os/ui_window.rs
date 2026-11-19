@@ -65,6 +65,7 @@ mod windows {
         ffi::c_void,
         ptr,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
+        time::Duration,
     };
 
     use slint::winit_030::{
@@ -73,12 +74,13 @@ mod windows {
     };
     use windows_sys::{
         Win32::{
-            Foundation::{HWND, LPARAM},
+            Foundation::{HWND, LPARAM, RECT},
             System::Threading::{AttachThreadInput, GetCurrentThreadId},
             UI::WindowsAndMessaging::{
                 AllowSetForegroundWindow, BringWindowToTop, EnumThreadWindows, EnumWindows,
-                GetForegroundWindow, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
-                SetForegroundWindow, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+                GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow,
+                IsWindowVisible, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow,
+                SetWindowDisplayAffinity, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
             },
         },
         core::BOOL,
@@ -132,6 +134,7 @@ mod windows {
             // does not, and the repaint request covers a surface that was released meanwhile.
             window.set_minimized(false);
             window.request_redraw();
+            repaint_after_restore(hwnd);
         }
         // SAFETY: the handle belongs to this process's live window; a stale one only fails.
         unsafe { SetForegroundWindow(hwnd) };
@@ -142,6 +145,63 @@ mod windows {
         }
         tracing::debug!("SetForegroundWindow refused");
         false
+    }
+
+    /// Time for the restore to finish before the window is resized; sooner and the size is the
+    /// minimized one.
+    const RESTORE_SETTLE: Duration = Duration::from_millis(120);
+    const RESIZE_BACK: Duration = Duration::from_millis(40);
+
+    /// A window restored from the taskbar repaints only the regions that changed and shows the
+    /// desktop through the rest, because its back buffer was dropped while it was minimized. A
+    /// resize repaints everything, so the window is made one pixel wider and put back, which is
+    /// what the user's own resize does.
+    fn repaint_after_restore(hwnd: HWND) {
+        let hwnd = hwnd.expose_provenance();
+        slint::Timer::single_shot(RESTORE_SETTLE, move || {
+            let hwnd = ptr::with_exposed_provenance_mut::<c_void>(hwnd);
+            let Some((width, height)) = window_size(hwnd) else {
+                return;
+            };
+            set_size(hwnd, width + 1, height);
+            let hwnd = hwnd.expose_provenance();
+            slint::Timer::single_shot(RESIZE_BACK, move || {
+                set_size(
+                    ptr::with_exposed_provenance_mut::<c_void>(hwnd),
+                    width,
+                    height,
+                );
+            });
+        });
+    }
+
+    fn window_size(hwnd: HWND) -> Option<(i32, i32)> {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: `rect` is a live out pointer; a stale handle only makes the call fail.
+        if unsafe { GetWindowRect(hwnd, &raw mut rect) } == 0 {
+            return None;
+        }
+        Some((rect.right - rect.left, rect.bottom - rect.top))
+    }
+
+    fn set_size(hwnd: HWND, width: i32, height: i32) {
+        // SAFETY: a stale handle only makes the call fail; no memory is passed.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                ptr::null_mut(),
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
     }
 
     fn is_foreground(hwnd: HWND) -> bool {
