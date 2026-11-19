@@ -20,7 +20,7 @@ fn accept_window(
 #[cfg(windows)]
 pub use windows::{
     allow_foreground, bring_to_front, clear_ui_pid, exclude_from_capture, prompt_window,
-    set_capture_exclusion, set_ui_pid, trusted_parent_window, window_handle,
+    set_capture_exclusion, set_ui_pid, trusted_parent_window, watch_restore, window_handle,
 };
 
 #[cfg(not(windows))]
@@ -31,6 +31,9 @@ pub const fn allow_foreground(_pid: u32) {}
 pub const fn bring_to_front(_window: &slint::Window) -> bool {
     true
 }
+
+#[cfg(not(windows))]
+pub const fn watch_restore(_window: &slint::Window) {}
 
 #[cfg(not(windows))]
 pub const fn exclude_from_capture(_window: &slint::Window) {}
@@ -69,8 +72,11 @@ mod windows {
     };
 
     use slint::winit_030::{
-        WinitWindowAccessor,
-        winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
+        EventResult, WinitWindowAccessor,
+        winit::{
+            event::WindowEvent,
+            raw_window_handle::{HasWindowHandle, RawWindowHandle},
+        },
     };
     use windows_sys::{
         Win32::{
@@ -151,6 +157,29 @@ mod windows {
     /// minimized one.
     const RESTORE_SETTLE: Duration = Duration::from_millis(120);
     const RESIZE_BACK: Duration = Duration::from_millis(40);
+
+    /// Repaints a window that comes back from the taskbar or the title bar. Those restores do
+    /// not pass through `bring_to_front`, and a minimized window reports a zero size, so the
+    /// first real size after one is the restore.
+    pub fn watch_restore(window: &slint::Window) {
+        let mut minimized = false;
+        window.on_winit_window_event(move |window, event| {
+            if let WindowEvent::Resized(size) = event {
+                if size.width == 0 || size.height == 0 {
+                    minimized = true;
+                } else if minimized {
+                    minimized = false;
+                    if let Some(hwnd) = window_handle(window)
+                        .and_then(|hwnd| usize::try_from(hwnd).ok())
+                        .map(ptr::with_exposed_provenance_mut::<c_void>)
+                    {
+                        repaint_after_restore(hwnd);
+                    }
+                }
+            }
+            EventResult::Propagate
+        });
+    }
 
     /// A window restored from the taskbar repaints only the regions that changed and shows the
     /// desktop through the rest, because its back buffer was dropped while it was minimized. A
