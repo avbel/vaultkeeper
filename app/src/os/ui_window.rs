@@ -74,10 +74,11 @@ mod windows {
     use windows_sys::{
         Win32::{
             Foundation::{HWND, LPARAM},
-            System::Threading::GetCurrentThreadId,
+            System::Threading::{AttachThreadInput, GetCurrentThreadId},
             UI::WindowsAndMessaging::{
-                AllowSetForegroundWindow, EnumThreadWindows, EnumWindows, GetWindowThreadProcessId,
-                IsWindow, IsWindowVisible, SetForegroundWindow, SetWindowDisplayAffinity,
+                AllowSetForegroundWindow, BringWindowToTop, EnumThreadWindows, EnumWindows,
+                GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
+                SW_RESTORE, SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow,
                 WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
             },
         },
@@ -125,12 +126,60 @@ mod windows {
             tracing::debug!("no native window to bring to the front yet");
             return false;
         };
+        let hwnd = ptr::with_exposed_provenance_mut::<c_void>(hwnd);
         // SAFETY: the handle belongs to this process's live window; a stale one only fails.
-        if unsafe { SetForegroundWindow(ptr::with_exposed_provenance_mut::<c_void>(hwnd)) } == 0 {
-            tracing::debug!("SetForegroundWindow refused");
+        if unsafe { IsIconic(hwnd) } != 0 {
+            // SetForegroundWindow leaves a minimized window minimized.
+            // SAFETY: as above.
+            unsafe { ShowWindow(hwnd, SW_RESTORE) };
+        }
+        // SAFETY: as above.
+        unsafe { SetForegroundWindow(hwnd) };
+        // The return value is not trusted: a refused request can still report success while the
+        // keyboard stays with the previous app, so the foreground window itself is checked.
+        if is_foreground(hwnd) || take_foreground_through_input_queue(hwnd) {
+            return true;
+        }
+        tracing::debug!("SetForegroundWindow refused");
+        false
+    }
+
+    fn is_foreground(hwnd: HWND) -> bool {
+        // SAFETY: no arguments; the handle is only compared.
+        unsafe { GetForegroundWindow() == hwnd }
+    }
+
+    /// Windows refuses the foreground to a process that does not hold it. That is the case when
+    /// the user clicked "Open Vaultkeeper" in the browser: the foreground belongs to the browser,
+    /// not to the daemon, so `allow_foreground` has nothing to hand over. Sharing the foreground
+    /// thread's input queue for the duration of the call is the documented way to act on a user
+    /// click that arrived in another process.
+    fn take_foreground_through_input_queue(hwnd: HWND) -> bool {
+        // SAFETY: no arguments; returns the current foreground window or null.
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.is_null() {
             return false;
         }
-        true
+        // SAFETY: the foreground handle was just read; a stale one yields thread id 0.
+        let owner = unsafe { GetWindowThreadProcessId(foreground, ptr::null_mut()) };
+        // SAFETY: no arguments.
+        let current = unsafe { GetCurrentThreadId() };
+        if owner == 0 || owner == current {
+            return false;
+        }
+        // SAFETY: both ids name live threads or the call fails; it has no memory effects.
+        if unsafe { AttachThreadInput(current, owner, 1) } == 0 {
+            return false;
+        }
+        // SAFETY: the handle belongs to this process's live window; a stale one only fails.
+        unsafe {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+        let shown = is_foreground(hwnd);
+        // SAFETY: undoes the attach above.
+        unsafe { AttachThreadInput(current, owner, 0) };
+        shown
     }
 
     /// Whether windows shown from now on are excluded from capture; mirrors the setting.

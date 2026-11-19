@@ -22,7 +22,8 @@ export component LockWindow inherits Window {
     title: "Vaultkeeper — locked";
     icon: @image-url("icons/tray-blue.svg");
     width: 420px;
-    height: 500px;
+    // Windows draws a native title bar, so the content needs less room above and below it.
+    height: Keys.windows ? 430px : 500px;
     background: Theme.bg;
     default-font-size: Theme.font-body;
     forward-focus: password-field;
@@ -68,7 +69,8 @@ export component LockWindow inherits Window {
 
     VerticalLayout {
         padding: Theme.s6;
-        padding-top: 44px;
+        padding-top: Keys.windows ? Theme.s3 : 44px;
+        padding-bottom: Keys.windows ? Theme.s4 : Theme.s6;
         spacing: Theme.s3;
         alignment: center;
         HorizontalLayout {

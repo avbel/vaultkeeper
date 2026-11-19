@@ -253,19 +253,18 @@ mod tests {
             })
         );
         assert!(browser_host_caller(&["chrome-extension://invalid/".into()]).is_none());
+        let manifest = if cfg!(windows) {
+            r"C:\x\native-messaging\org.vaultkeeper.browser.firefox.json"
+        } else {
+            "/tmp/org.vaultkeeper.browser.json"
+        };
         assert_eq!(
-            browser_host_caller(&[
-                "/tmp/org.vaultkeeper.browser.json".into(),
-                FIREFOX_EXTENSION_ID.into()
-            ]),
+            browser_host_caller(&[manifest.into(), FIREFOX_EXTENSION_ID.into()]),
             Some(HostCaller::Firefox {
                 extension_id: FIREFOX_EXTENSION_ID.into()
             })
         );
-        assert!(
-            browser_host_caller(&["/tmp/org.vaultkeeper.browser.json".into(), "other".into()])
-                .is_none()
-        );
+        assert!(browser_host_caller(&[manifest.into(), "other".into()]).is_none());
     }
 
     #[test]
