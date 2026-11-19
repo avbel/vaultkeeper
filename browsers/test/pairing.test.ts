@@ -8,6 +8,7 @@ import {
   proofMessage,
   resetKeyPairCache,
   resetPairing,
+  hasKeyPair,
   signProof,
   toBase64,
   type KeyStore,
@@ -131,6 +132,14 @@ describe("base64 and caller", () => {
         getURL: (p) => `moz-extension://uuid${p}`,
       }),
     ).toBe("browser-extension@vaultkeeper");
+  });
+
+  it("knows whether the browser was set up before", async () => {
+    resetKeyPairCache();
+    const store = memoryStore();
+    expect(await hasKeyPair(store)).toBe(false);
+    await getOrCreateKeyPair(store);
+    expect(await hasKeyPair(store)).toBe(true);
   });
 
   it("generates a new key after the pairing is reset", async () => {

@@ -55,6 +55,11 @@ export class Session {
     return this.#handshake;
   }
 
+  /** Resolves once a handshake that is already running has finished, successfully or not. */
+  async settled(): Promise<void> {
+    await this.#handshake?.catch(() => undefined);
+  }
+
   /**
    * Drops the connection and the stored key, then pairs again with a new one. Returns once the
    * reset is done; the handshake runs on in the background because pairing waits for the user.

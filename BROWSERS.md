@@ -995,7 +995,7 @@ Not required for the feature; ordered by value.
    by team id would then also let the host check be expressed without cdhash pinning, and Gatekeeper would cover the
    bundle the manifests point to.
 8. **Warn on reused or weak passwords at save time** in the save prompt (the daemon already has both values in hand).
-9. **Autofill on page load is opt-in only** (`browser_autofill`, off by default, D10). Never make it the default, never extend it past remembered picks, and keep `no_auto` silent. It does not work until the extension has connected once in this browser run (any click, or a saved candidate), because an automatic fill must not start the app.
+9. **Autofill on page load is opt-in only** (`browser_autofill`, off by default, D10). Never make it the default, never extend it past remembered picks, and keep `no_auto` silent. An automatic fill never starts the app or the host itself; the extension connects at browser start (`runtime.onStartup`, only when a pairing key already exists) and an automatic fill on a restored tab waits up to 3 s for that handshake. That connection starts the app when it is closed, like any click does.
 
 ## 14. Verified facts (Phase 0)
 
@@ -1067,5 +1067,5 @@ Facts learned:
   cannot be woken); harmless in practice.
 - Fill on page load (`browser_autofill`) is covered by `app/src/daemon/browser/dispatch_tests/auto.rs`,
   `app/tests/browser_daemon/autofill.rs` and `browsers/test/content-autofill.test.ts`. Not tried by hand on real sites:
-  sites that build the form late or in a shadow root, and the wait for the first connection after a browser restart.
+  sites that build the form late or in a shadow root, and the first fill right after a browser restart (the wait for the start-up handshake is covered by `browsers/test/router.test.ts`).
 - Not logged in `browser.log`: pairings, removals and refused connections (only fills and restored manifests are).

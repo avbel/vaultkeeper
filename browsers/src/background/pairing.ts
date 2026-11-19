@@ -92,6 +92,11 @@ export function resetKeyPairCache(): void {
   inFlight = null;
 }
 
+/** Whether this browser has been set up before; a fresh install has no key to pair with yet. */
+export async function hasKeyPair(store: KeyStore = idbKeyStore()): Promise<boolean> {
+  return (await store.load()) !== undefined;
+}
+
 /** Forgets the pairing key; the next use generates a new one, which the app sees as a new browser. */
 export async function resetPairing(store: KeyStore = idbKeyStore()): Promise<void> {
   await store.clear();

@@ -25,6 +25,8 @@ export interface RouterDeps {
     ): Promise<RequestMap[T]["result"]>;
     readonly theme: Theme;
     readonly status: { phase: string; state?: string | null };
+    /** Resolves when a handshake that is already running is done. */
+    settled(): Promise<void>;
   };
 }
 
@@ -37,6 +39,8 @@ interface VerifiedSender {
 }
 
 const MAX_NONCE = 128;
+/** How long an automatic fill waits for a handshake that the browser start is still running. */
+const HANDSHAKE_WAIT_MS = 3000;
 const NO_RECEIVER = /receiving end does not exist|could not establish connection/i;
 
 export type BeginFillResult = { reached: true; found: boolean } | { reached: false };
@@ -87,6 +91,9 @@ export function createRouter(deps: RouterDeps) {
     message: Extract<ToBackground, { kind: "fill_request" }>,
   ): Promise<ToContent | null> {
     const { nonce } = message;
+    if (message.auto && deps.session.status.phase === "connecting") {
+      await waitForHandshake();
+    }
     if (message.auto && (message.choose || !autoAllowed(from))) {
       return autoRefused(nonce);
     }
@@ -116,6 +123,15 @@ export function createRouter(deps: RouterDeps) {
       const code = error instanceof NativeError ? error.code : "internal";
       return { kind: "fill_error", nonce, code, theme: deps.session.theme };
     }
+  }
+
+  async function waitForHandshake(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, HANDSHAKE_WAIT_MS);
+    });
+    await Promise.race([deps.session.settled(), timeout]);
+    clearTimeout(timer);
   }
 
   // A fill nobody asked for must not start the app or the native host: it goes only over a

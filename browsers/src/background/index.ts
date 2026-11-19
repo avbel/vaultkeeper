@@ -7,7 +7,7 @@ import {
 } from "../shared/popup.ts";
 import type { Theme } from "../shared/protocol.ts";
 import { NativeClient } from "./native.ts";
-import { callerString, getOrCreateKeyPair, resetPairing } from "./pairing.ts";
+import { callerString, getOrCreateKeyPair, hasKeyPair, resetPairing } from "./pairing.ts";
 import { createPopupHandler } from "./popup-handler.ts";
 import { createRouter, type SenderLike } from "./router.ts";
 import { Session } from "./session.ts";
@@ -112,6 +112,15 @@ api.contextMenus.onClicked.addListener((info, tab) => {
   } else if (info.menuItemId === MENU_CHOOSE) {
     void fillActiveTab(tab?.id, true);
   }
+});
+
+// Restored tabs load while the browser starts, and an automatic fill only goes over a connection
+// that is already up. A browser that was never set up has no key yet and would only raise a
+// pairing prompt, so it waits for the user's first click.
+api.runtime.onStartup.addListener(() => {
+  hasKeyPair()
+    .then((known) => (known ? session.ensureReady() : undefined))
+    .catch(() => undefined);
 });
 
 api.runtime.onInstalled.addListener(() => {

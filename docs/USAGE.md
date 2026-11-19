@@ -267,8 +267,9 @@ Known limits:
 - JavaScript strings cannot be wiped; the extension keeps a credential only for one message hand-off.
 - The parent-process check can be bypassed by starting the host and then replacing its parent.
 - Equivalent-domain lists are not supported. Filling on page load is off unless you turn on *Fill remembered logins when
-  a page opens*; it covers only remembered picks on encrypted pages, never asks to unlock, and starts only after the
-  extension has connected once in this browser run (for example after a click on its icon).
+  a page opens*; it covers only remembered picks on encrypted pages, never asks to unlock, and never starts the app on a
+  page load. The extension connects when the browser starts (only once it has been paired before; this starts the app
+  if it is closed, as a click on the extension does), and a fill on a restored tab waits up to 3 s for that connection.
 
 To remove a browser, turn off *Install for …* (the connection file is deleted), remove the pairing,
 and remove the extension in the browser.

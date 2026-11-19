@@ -23,6 +23,7 @@ function setup(
     phase?: string;
     state?: string | null;
     sendToTab?: RouterDeps["sendToTab"];
+    settled?: () => Promise<void>;
   } = {},
 ) {
   const request = vi.fn(
@@ -47,9 +48,10 @@ function setup(
         phase: options.phase ?? "ready",
         state: options.state === undefined ? "unlocked" : options.state,
       },
+      settled: options.settled ?? (async () => undefined),
     },
   };
-  return { router: createRouter(deps), request, sent, injectContent };
+  return { router: createRouter(deps), request, sent, injectContent, status: deps.session.status };
 }
 
 const FILL = {
@@ -195,6 +197,41 @@ describe("automatic fill", () => {
       fields: { username: true, password: true },
     });
     expect(sent[0]?.message).toMatchObject({ kind: "fill_result", username: "alice" });
+  });
+
+  it("waits for the handshake the browser start is still running, then fills", async () => {
+    const holder: { status?: { phase: string } } = {};
+    const { router, request, sent, status } = setup({
+      phase: "connecting",
+      settled: async () => {
+        if (holder.status) {
+          holder.status.phase = "ready";
+        }
+      },
+    });
+    holder.status = status;
+    await router.handleContentMessage(AUTO, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledOnce();
+    expect(sent[0]?.message).toMatchObject({ kind: "fill_result" });
+  });
+
+  it("gives up quietly when the handshake takes longer than the wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const { router, request, sent } = setup({
+        phase: "connecting",
+        settled: () => new Promise<void>(() => undefined),
+      });
+      const handled = router.handleContentMessage(AUTO, sender());
+      await vi.advanceTimersByTimeAsync(3100);
+      await handled;
+      await router.idle();
+      expect(request).not.toHaveBeenCalled();
+      expect(sent[0]?.message).toMatchObject({ kind: "fill_error", code: "no_auto" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("maps every failure, including no_auto, to a silent drop of the pending request", async () => {
