@@ -7,7 +7,7 @@ export type VaultState = "unlocked" | "locked" | "logged_out";
 
 export interface RequestMap {
   hello: {
-    fields: { protocol: 1; extension_version: string; public_key: string };
+    fields: { protocol: 2; extension_version: string; public_key: string };
     result: { challenge: string; known: boolean };
   };
   prove: {
@@ -23,6 +23,7 @@ export interface RequestMap {
       origin: string;
       path: string;
       choose: boolean;
+      auto: boolean;
       fields: { username: boolean; password: boolean };
     };
     result: { username: string | null; password: string | null };

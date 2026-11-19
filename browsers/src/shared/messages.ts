@@ -18,7 +18,8 @@ export type ErrorCode =
   | "internal"
   | "fallback"
   | "not_allowed"
-  | "invalid_state";
+  | "invalid_state"
+  | "no_auto";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -37,7 +38,15 @@ export type PasskeyOutcome =
 export type ToBackground =
   | { kind: "passkey_request"; nonce: string; ceremony: "create" | "get"; options: object }
   | { kind: "passkey_cancel"; nonce: string }
-  | { kind: "fill_request"; nonce: string; choose: boolean; fields: FillFields; path: string }
+  | {
+      kind: "fill_request";
+      nonce: string;
+      choose: boolean;
+      /** Started by the page opening, not by the user; the app answers it quietly or not at all. */
+      auto: boolean;
+      fields: FillFields;
+      path: string;
+    }
   | {
       kind: "save_candidate";
       username: string;

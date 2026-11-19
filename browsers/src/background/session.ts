@@ -6,6 +6,7 @@ import { exportPublicKey, fingerprint, fromBase64, signProof, toBase64 } from ".
 export interface SessionDeps {
   native: NativeClient;
   keys(): Promise<CryptoKeyPair>;
+  resetKeys(): Promise<void>;
   caller: string;
   extensionVersion: string;
   onChange(status: PopupStatus): void;
@@ -54,6 +55,23 @@ export class Session {
     return this.#handshake;
   }
 
+  /** Resolves once a handshake that is already running has finished, successfully or not. */
+  async settled(): Promise<void> {
+    await this.#handshake?.catch(() => undefined);
+  }
+
+  /**
+   * Drops the connection and the stored key, then pairs again with a new one. Returns once the
+   * reset is done; the handshake runs on in the background because pairing waits for the user.
+   */
+  async resetPairing(): Promise<void> {
+    this.#deps.native.disconnect();
+    await this.#handshake?.catch(() => undefined);
+    await this.#deps.resetKeys();
+    this.#set({ phase: "idle", state: null, fingerprint: null, reason: null });
+    this.ensureReady().catch(() => undefined);
+  }
+
   async request<T extends RequestType>(
     type: T,
     fields: RequestMap[T]["fields"],
@@ -90,7 +108,7 @@ export class Session {
       const print = await fingerprint(publicKey);
       this.#set({ fingerprint: print });
       const hello = await native.request("hello", {
-        protocol: 1,
+        protocol: 2,
         extension_version: this.#deps.extensionVersion,
         public_key: toBase64(publicKey),
       });

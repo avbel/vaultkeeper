@@ -2,7 +2,7 @@
 
 use std::{future::Future, path::PathBuf, sync::Arc};
 
-use anyhow::{Context, ensure};
+use anyhow::{Context, bail};
 use tokio::{
     sync::{Mutex, mpsc},
     task::JoinSet,
@@ -25,10 +25,9 @@ impl BrowserControl {
     /// Bind only after the runtime and store checks succeed. Dropping this value closes the
     /// listener and transport tasks; the owner must also cancel its session tasks.
     pub async fn start(socket: Endpoint, store_path: PathBuf) -> anyhow::Result<Self> {
-        ensure!(
-            runtime_allowed(),
-            "browser integration requires a hardened runtime"
-        );
+        if let Some(reason) = crate::browser_status::start_blocker() {
+            bail!("browser integration refused: {reason}");
+        }
         let store = PairingStore::load(&store_path).context("load browser pairings")?;
         let verifier = SameExecutable::current().context("identify browser host executable")?;
         let (sender, connections) = mpsc::channel(4);
@@ -168,10 +167,6 @@ mod tests {
         );
         assert!(!socket.exists());
     }
-}
-
-fn runtime_allowed() -> bool {
-    crate::browser_status::start_blocker().is_none()
 }
 
 fn dev_browser_enabled() -> bool {

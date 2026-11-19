@@ -8,6 +8,7 @@ const ECDSA_SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 export interface KeyStore {
   load(): Promise<CryptoKeyPair | undefined>;
   save(pair: CryptoKeyPair): Promise<void>;
+  clear(): Promise<void>;
 }
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
@@ -57,6 +58,14 @@ export function idbKeyStore(): KeyStore {
         db.close();
       }
     },
+    async clear() {
+      const db = await openDb();
+      try {
+        await request(db.transaction(STORE, "readwrite").objectStore(STORE).delete(KEY_NAME));
+      } finally {
+        db.close();
+      }
+    },
   };
 }
 
@@ -81,6 +90,17 @@ export function getOrCreateKeyPair(store: KeyStore = idbKeyStore()): Promise<Cry
 
 export function resetKeyPairCache(): void {
   inFlight = null;
+}
+
+/** Whether this browser has been set up before; a fresh install has no key to pair with yet. */
+export async function hasKeyPair(store: KeyStore = idbKeyStore()): Promise<boolean> {
+  return (await store.load()) !== undefined;
+}
+
+/** Forgets the pairing key; the next use generates a new one, which the app sees as a new browser. */
+export async function resetPairing(store: KeyStore = idbKeyStore()): Promise<void> {
+  await store.clear();
+  resetKeyPairCache();
 }
 
 export async function exportPublicKey(pair: CryptoKeyPair): Promise<Uint8Array> {

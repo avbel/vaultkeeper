@@ -22,11 +22,16 @@ pub enum Via {
     Remembered,
     /// The only login matching the site, released without the picker.
     Single,
+    /// The remembered login, released as the page opened, with no click and no window.
+    Auto,
 }
 
 pub struct FillRequest {
     pub browser: String,
     pub choose: bool,
+    /// Started by the page opening, not by the user: answered only from what is remembered,
+    /// never with a window, a presence check or a wait for an unlock.
+    pub auto: bool,
     pub fill_single: bool,
     /// The item approved earlier on this connection for this origin, if any.
     pub remembered: Option<ItemId>,
@@ -86,6 +91,9 @@ where
     A: FnOnce() -> AFut,
     AFut: Future<Output = bool>,
 {
+    if request.auto {
+        return auto_fill(vault, request, authorized).await;
+    }
     let page = validation::page(&request.origin, &request.path)?;
     let snapshot = vault
         .browser_snapshot()
@@ -163,6 +171,59 @@ where
     Ok(filled(revealed, item, &page, Via::Picker))
 }
 
+/// The automatic fill: every refusal is the quiet `no_auto`, and nothing here can reach the UI or
+/// the presence sheet. Only an encrypted page, with Touch ID off, and only the remembered login
+/// that still matches the page and needs no master-password re-prompt.
+async fn auto_fill<A, AFut>(
+    vault: &Vault,
+    request: FillRequest,
+    authorized: A,
+) -> Result<Filled, ErrorCode>
+where
+    A: FnOnce() -> AFut,
+    AFut: Future<Output = bool>,
+{
+    let page = validation::page(&request.origin, &request.path).map_err(|_| ErrorCode::NoAuto)?;
+    if request.choose || request.touch_id || !page.is_https() {
+        return Err(ErrorCode::NoAuto);
+    }
+    let snapshot = vault.browser_snapshot().map_err(|_| ErrorCode::NoAuto)?;
+    let matches = vault
+        .logins_for(&page, request.default_match)
+        .map_err(|_| ErrorCode::NoAuto)?;
+    let Some(item) = auto_item(&request, &matches) else {
+        return Err(ErrorCode::NoAuto);
+    };
+    if !authorized().await {
+        return Err(ErrorCode::NoAuto);
+    }
+    let fields = BrowserFields {
+        username: request.fields.username,
+        password: request.fields.password,
+    };
+    let revealed = reveal_retrying(
+        vault,
+        snapshot,
+        &item,
+        &page,
+        (request.default_match, false),
+        fields,
+    )
+    .map_err(|_| ErrorCode::NoAuto)?;
+    if !revealed.matched || revealed.reprompt {
+        return Err(ErrorCode::NoAuto);
+    }
+    Ok(filled(revealed, item, &page, Via::Auto))
+}
+
+fn auto_item(request: &FillRequest, matches: &[LoginMatch]) -> Option<ItemId> {
+    let item = request.remembered.as_ref()?;
+    matches
+        .iter()
+        .any(|found| found.summary.id == *item && !found.summary.reprompt)
+        .then(|| item.clone())
+}
+
 /// Reveals under the snapshot taken before the prompt or Touch ID sheet. A background sync can
 /// move the index while the user is deciding; the user approved this item for this page and
 /// `browser_reveal` rechecks both, so a fresh snapshot of the same session is enough. A different
@@ -229,7 +290,8 @@ fn silent_item(
 fn filled(revealed: BrowserCredentials, item: ItemId, page: &PageUrl, via: Via) -> Filled {
     Filled {
         unsaved_address: (!revealed.matched).then(|| page.origin()),
-        remember: revealed.matched && !revealed.reprompt,
+        // An automatic fill never re-picks: what it filled is already the remembered choice.
+        remember: via != Via::Auto && revealed.matched && !revealed.reprompt,
         has_totp: revealed.has_totp,
         result: FillResult {
             username: revealed.username,
@@ -261,6 +323,7 @@ mod tests {
         FillRequest {
             browser: "Firefox".into(),
             choose: false,
+            auto: false,
             fill_single: false,
             remembered: None,
             origin: origin.into(),
@@ -365,5 +428,83 @@ mod tests {
         assert!(matches!(picked, Some((item, Via::Remembered)) if item.0.as_ref() == "b"));
         let reprompt = [login("a", false), login("b", true)];
         assert!(silent_item(&single_request(false, Some("b")), &https, &reprompt).is_none());
+    }
+
+    #[test]
+    fn a_remembered_item_that_no_longer_matches_the_page_falls_back_to_the_picker() {
+        let https = validation::page("https://example.com", "/").expect("page");
+        let two = [login("a", false), login("b", false)];
+        assert!(silent_item(&single_request(false, Some("gone")), &https, &two).is_none());
+        assert!(silent_item(&single_request(false, Some("gone")), &https, &[]).is_none());
+    }
+
+    fn auto_request(origin: &str, remembered: Option<&str>) -> FillRequest {
+        FillRequest {
+            auto: true,
+            fill_single: true,
+            remembered: remembered.map(|id| ItemId(id.into())),
+            ..request(origin)
+        }
+    }
+
+    #[test]
+    fn an_auto_fill_takes_only_the_remembered_item_that_still_matches() {
+        let two = [login("a", false), login("b", false)];
+        let picked = auto_item(&auto_request("https://example.com", Some("b")), &two);
+        assert_eq!(picked.expect("remembered").0.as_ref(), "b");
+        let request = auto_request("https://example.com", None);
+        assert!(
+            auto_item(&request, &two).is_none(),
+            "a lone match is not enough"
+        );
+        assert!(auto_item(&request, &[login("a", false)]).is_none());
+        let gone = auto_request("https://example.com", Some("gone"));
+        assert!(auto_item(&gone, &two).is_none());
+        let reprompt = [login("a", false), login("b", true)];
+        let request = auto_request("https://example.com", Some("b"));
+        assert!(auto_item(&request, &reprompt).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_auto_fill_answers_no_auto_without_asking_anyone() {
+        let dir = tempfile::tempdir().expect("directory");
+        let config = VaultConfig::new(
+            dir.path().to_owned(),
+            vk_api::DeviceInfo {
+                identifier: uuid::Uuid::new_v4(),
+                name: "test".into(),
+                device_type: 7,
+            },
+            tokio::runtime::Handle::current(),
+        );
+        let vault = Vault::open(config, Arc::new(MemorySecretStore::new())).expect("vault");
+        let touch = FillRequest {
+            touch_id: true,
+            ..auto_request("https://example.com", Some("a"))
+        };
+        let choose = FillRequest {
+            choose: true,
+            ..auto_request("https://example.com", Some("a"))
+        };
+        for request in [
+            auto_request("http://example.com", Some("a")),
+            auto_request("http://localhost:3000", Some("a")),
+            auto_request("https://example.com", Some("a")),
+            touch,
+            choose,
+        ] {
+            let result = fill(
+                &vault,
+                request,
+                |_| async { panic!("unexpected prompt") },
+                || async { panic!("unexpected presence check") },
+                || async { panic!("unexpected authorization check") },
+            )
+            .await;
+            let Err(error) = result else {
+                panic!("auto fill unexpectedly succeeded");
+            };
+            assert_eq!(serde_json::to_value(error).expect("serialize"), "no_auto");
+        }
     }
 }

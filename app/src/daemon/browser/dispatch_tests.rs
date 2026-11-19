@@ -19,13 +19,19 @@ use vk_ipc::{
 use zeroize::Zeroizing;
 
 use super::{
+    choices::ChoiceStore,
     dispatch::{BrowserHost, Candidate, FillFlow, serve},
-    fill::{FillRequest, Filled},
+    fill::{FillRequest, Filled, Via},
     pairing::PairingStore,
 };
 
 struct StubHost {
     enabled: AtomicBool,
+    autofill: AtomicBool,
+    touch_id: AtomicBool,
+    prompts: AtomicUsize,
+    unlocks: AtomicUsize,
+    presences: AtomicUsize,
     replies: Mutex<Vec<BrowserReply>>,
     unlocked: Mutex<Vec<oneshot::Sender<()>>>,
     activity: AtomicUsize,
@@ -35,14 +41,22 @@ struct StubHost {
     epoch: AtomicUsize,
     records: Mutex<Vec<String>>,
     limits: Arc<Mutex<super::limits::Limits>>,
+    choices: Arc<Mutex<ChoiceStore>>,
+    _choices_dir: tempfile::TempDir,
     changes: watch::Receiver<u64>,
 }
 
 impl StubHost {
     fn new() -> (Arc<Self>, watch::Sender<u64>) {
         let (changes, changes_rx) = watch::channel(0);
+        let choices_dir = tempfile::tempdir().expect("directory");
         let host = Arc::new(Self {
             enabled: AtomicBool::new(true),
+            autofill: AtomicBool::new(false),
+            touch_id: AtomicBool::new(false),
+            prompts: AtomicUsize::new(0),
+            unlocks: AtomicUsize::new(0),
+            presences: AtomicUsize::new(0),
             replies: Mutex::new(Vec::new()),
             unlocked: Mutex::new(Vec::new()),
             activity: AtomicUsize::new(0),
@@ -54,6 +68,10 @@ impl StubHost {
             limits: Arc::new(Mutex::new(super::limits::Limits::new(
                 std::time::Instant::now(),
             ))),
+            choices: Arc::new(Mutex::new(ChoiceStore::load(
+                &choices_dir.path().join("browser-choices.json"),
+            ))),
+            _choices_dir: choices_dir,
             changes: changes_rx,
         });
         (host, changes)
@@ -66,6 +84,7 @@ impl StubHost {
 
 impl BrowserHost for StubHost {
     fn prompt(&self, _prompt: BrowserPrompt) -> impl Future<Output = BrowserReply> + Send {
+        self.prompts.fetch_add(1, Ordering::SeqCst);
         let reply = self
             .replies
             .lock()
@@ -75,9 +94,11 @@ impl BrowserHost for StubHost {
         std::future::ready(reply)
     }
     fn presence(&self, _reason: &str) -> impl Future<Output = bool> + Send {
+        self.presences.fetch_add(1, Ordering::SeqCst);
         std::future::ready(true)
     }
     fn unlock(&self) -> impl Future<Output = ()> + Send {
+        self.unlocks.fetch_add(1, Ordering::SeqCst);
         if let Some(done) = self.unlocked.lock().expect("waiters").pop() {
             let _ = done.send(());
         }
@@ -102,6 +123,9 @@ impl BrowserHost for StubHost {
     fn limits(&self, _key: &[u8; 65]) -> Arc<Mutex<super::limits::Limits>> {
         Arc::clone(&self.limits)
     }
+    fn choices(&self) -> Arc<Mutex<ChoiceStore>> {
+        Arc::clone(&self.choices)
+    }
     fn approvals_epoch(&self) -> u64 {
         self.epoch.load(Ordering::SeqCst) as u64
     }
@@ -117,11 +141,14 @@ impl BrowserHost for StubHost {
     fn browser_fill_single(&self) -> bool {
         false
     }
+    fn browser_autofill(&self) -> bool {
+        self.autofill.load(Ordering::SeqCst)
+    }
     fn browser_passkeys(&self) -> bool {
         true
     }
     fn browser_touch_id(&self) -> bool {
-        false
+        self.touch_id.load(Ordering::SeqCst)
     }
     fn enabled(&self, _browser: vk_ipc::browser::protocol::KnownBrowser) -> bool {
         self.enabled.load(Ordering::SeqCst)
@@ -140,6 +167,7 @@ impl BrowserHost for StubHost {
 struct GatedFills {
     gate: mpsc::Sender<oneshot::Sender<Result<Filled, ErrorCode>>>,
     seen: Mutex<Vec<Option<vk_vault::model::ItemId>>>,
+    auto_requests: AtomicUsize,
 }
 
 impl GatedFills {
@@ -147,6 +175,7 @@ impl GatedFills {
         Self {
             gate,
             seen: Mutex::new(Vec::new()),
+            auto_requests: AtomicUsize::new(0),
         }
     }
 }
@@ -167,6 +196,9 @@ impl FillFlow for GatedFills {
         A: FnOnce() -> AFut + Send,
         AFut: Future<Output = bool> + Send,
     {
+        if request.auto {
+            self.auto_requests.fetch_add(1, Ordering::SeqCst);
+        }
         self.seen.lock().expect("seen").push(request.remembered);
         let (done, answer) = oneshot::channel();
         self.gate.send(done).await.expect("gate open");
@@ -262,7 +294,7 @@ async fn authenticate(
     key: &SigningKey,
 ) {
     let encoded = STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
-    let hello = serde_json::json!({"type":"hello","id":1,"protocol":1,"extension_version":"test","public_key":encoded});
+    let hello = serde_json::json!({"type":"hello","id":1,"protocol":2,"extension_version":"test","public_key":encoded});
     incoming_tx
         .send(Zeroizing::new(serde_json::to_vec(&hello).expect("hello")))
         .await
@@ -305,7 +337,7 @@ async fn answers_status_and_rejects_reauthentication() {
     let reply = next(&mut outgoing_rx).await;
     assert_eq!(reply["id"], 5);
     assert_eq!(reply["result"]["state"], "unlocked");
-    let hello = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"type":"hello","id":6,"protocol":1,"extension_version":"1","public_key":"x"})).expect("hello"));
+    let hello = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"type":"hello","id":6,"protocol":2,"extension_version":"1","public_key":"x"})).expect("hello"));
     incoming_tx.send(hello).await.expect("send");
     let reply = next(&mut outgoing_rx).await;
     assert_eq!(reply["error"], "unpaired");
@@ -503,7 +535,7 @@ fn filled(remember: bool) -> Result<Filled, ErrorCode> {
 }
 
 #[tokio::test]
-async fn approval_is_remembered_per_origin_until_the_epoch_moves() {
+async fn approval_is_remembered_per_origin_and_a_lock_does_not_forget_it() {
     let (connection, incoming_tx, mut outgoing_rx) = connection();
     let (host, _changes) = StubHost::new();
     let pairing = store();
@@ -539,10 +571,155 @@ async fn approval_is_remembered_per_origin_until_the_epoch_moves() {
     assert_eq!(next(&mut outgoing_rx).await["ok"], true);
     let seen = fills.seen.lock().expect("seen").clone();
     let id = |item: &str| Some(vk_vault::model::ItemId(item.into()));
-    assert_eq!(seen, vec![None, id("item"), None, None]);
+    assert_eq!(seen, vec![None, id("item"), None, id("item")]);
     assert_eq!(host.records.lock().expect("records").len(), 4);
     drop(incoming_tx);
     task.await.expect("serve ends");
+}
+
+struct Session {
+    incoming: mpsc::Sender<Zeroizing<Vec<u8>>>,
+    outgoing: mpsc::Receiver<Zeroizing<Vec<u8>>>,
+    gate: mpsc::Receiver<oneshot::Sender<Result<Filled, ErrorCode>>>,
+    fills: Arc<GatedFills>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Session {
+    async fn open(
+        host: &Arc<StubHost>,
+        pairing: &Arc<tokio::sync::Mutex<PairingStore>>,
+        key: &SigningKey,
+    ) -> Self {
+        let (connection, incoming, mut outgoing) = connection();
+        let (gate_tx, gate) = mpsc::channel(1);
+        let fills = Arc::new(GatedFills::new(gate_tx));
+        let task = tokio::spawn(serve(
+            connection,
+            Arc::clone(pairing),
+            Arc::clone(&fills),
+            Arc::clone(host),
+        ));
+        authenticate(&incoming, &mut outgoing, key).await;
+        Self {
+            incoming,
+            outgoing,
+            gate,
+            fills,
+            task,
+        }
+    }
+
+    async fn fill(&mut self, id: u64, origin: &str, answer: Result<Filled, ErrorCode>) {
+        self.incoming
+            .send(fill_request(id, origin))
+            .await
+            .expect("send");
+        let done = self.gate.recv().await.expect("fill started");
+        assert!(done.send(answer).is_ok());
+        assert_eq!(next(&mut self.outgoing).await["ok"], true);
+    }
+
+    fn seen(&self) -> Vec<Option<vk_vault::model::ItemId>> {
+        self.fills.seen.lock().expect("seen").clone()
+    }
+
+    async fn close(self) {
+        drop(self.incoming);
+        self.task.await.expect("serve ends");
+    }
+}
+
+fn item_id(item: &str) -> vk_vault::model::ItemId {
+    vk_vault::model::ItemId(item.into())
+}
+
+fn second_browser(pairing: &Arc<tokio::sync::Mutex<PairingStore>>) -> SigningKey {
+    let key = SigningKey::from_bytes((&[9_u8; 32]).into()).expect("key");
+    let encoded = STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
+    let bytes = super::pairing::public_key(&encoded).expect("public key");
+    pairing
+        .try_lock()
+        .expect("store is idle")
+        .approve(
+            &bytes,
+            vk_ipc::browser::protocol::KnownBrowser::Firefox,
+            "extension",
+            2,
+        )
+        .expect("approve");
+    key
+}
+
+#[tokio::test]
+async fn a_new_connection_of_the_same_browser_starts_with_the_picked_login() {
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let mut first = Session::open(&host, &pairing.0, &pairing.1).await;
+    first.fill(1, "https://example.com", filled(true)).await;
+    first.close().await;
+    let mut second = Session::open(&host, &pairing.0, &pairing.1).await;
+    second.fill(2, "https://example.com", filled(false)).await;
+    second.fill(3, "https://other.test", filled(false)).await;
+    assert_eq!(second.seen(), vec![Some(item_id("item")), None]);
+    second.close().await;
+}
+
+#[tokio::test]
+async fn another_paired_browser_does_not_get_the_picked_login() {
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let other = second_browser(&pairing.0);
+    let mut first = Session::open(&host, &pairing.0, &pairing.1).await;
+    first.fill(1, "https://example.com", filled(true)).await;
+    first.close().await;
+    let mut second = Session::open(&host, &pairing.0, &other).await;
+    second.fill(2, "https://example.com", filled(false)).await;
+    assert_eq!(second.seen(), vec![None]);
+    second.close().await;
+}
+
+#[tokio::test]
+async fn a_lock_keeps_the_picked_login_and_clearing_the_store_forgets_it() {
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let mut session = Session::open(&host, &pairing.0, &pairing.1).await;
+    session.fill(1, "https://example.com", filled(true)).await;
+    host.epoch.fetch_add(1, Ordering::SeqCst);
+    session.fill(2, "https://example.com", filled(false)).await;
+    host.choices
+        .lock()
+        .expect("choices")
+        .clear()
+        .expect("clear");
+    session.fill(3, "https://example.com", filled(false)).await;
+    assert_eq!(session.seen(), vec![None, Some(item_id("item")), None]);
+    session.close().await;
+}
+
+#[tokio::test]
+async fn a_fill_that_may_not_be_remembered_leaves_nothing_behind() {
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let mut first = Session::open(&host, &pairing.0, &pairing.1).await;
+    first.fill(1, "https://example.com", filled(false)).await;
+    first.close().await;
+    let mut second = Session::open(&host, &pairing.0, &pairing.1).await;
+    second.fill(2, "https://example.com", filled(false)).await;
+    assert_eq!(second.seen(), vec![None]);
+    second.close().await;
+}
+
+#[tokio::test]
+async fn the_picked_login_is_offered_to_a_fill_after_the_vault_was_locked() {
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let mut session = Session::open(&host, &pairing.0, &pairing.1).await;
+    session.fill(1, "https://example.com", filled(true)).await;
+    host.locked.store(true, Ordering::SeqCst);
+    session.fill(2, "https://example.com", filled(false)).await;
+    assert_eq!(session.seen(), vec![None, Some(item_id("item"))]);
+    session.close().await;
 }
 
 #[tokio::test]
@@ -939,3 +1116,5 @@ async fn a_picker_the_user_walked_away_from_does_not_count_toward_the_cooldown()
     drop(incoming_tx);
     task.await.expect("serve ends");
 }
+
+mod auto;

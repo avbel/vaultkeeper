@@ -141,12 +141,14 @@ function body(current: PopupStatus | null): HTMLElement[] {
         message("danger", "warning", text),
         el("p", { class: "hint", text: hint }),
         button("Try again", () => void refresh()),
+        ...resetPairingControls(),
       ];
     }
     case "denied":
       return [
         message("danger", "warning", "Vaultkeeper did not approve this browser."),
         button("Try again", () => void refresh()),
+        ...resetPairingControls(),
       ];
     case "error":
       return [
@@ -156,6 +158,7 @@ function body(current: PopupStatus | null): HTMLElement[] {
           `Vaultkeeper returned an error (${current.reason ?? "unknown"}).`,
         ),
         button("Try again", () => void refresh()),
+        ...resetPairingControls(),
       ];
     case "pairing":
       return [
@@ -165,6 +168,16 @@ function body(current: PopupStatus | null): HTMLElement[] {
     default:
       return readyBody(current);
   }
+}
+
+function resetPairingControls(): HTMLElement[] {
+  return [
+    el("p", {
+      class: "hint",
+      text: "Still not connecting? Forget this browser's pairing and pair it again.",
+    }),
+    button("Reset pairing", () => void runBusy({ kind: "popup_reset_pairing" }, false)),
+  ];
 }
 
 function readyBody(current: PopupStatus): HTMLElement[] {

@@ -16,7 +16,8 @@ export interface FillDeps {
 }
 
 export interface Filler {
-  request: (form: LoginForm, choose: boolean) => boolean;
+  /** `auto`: started by the page opening; it fills only fields that are visible and still empty. */
+  request: (form: LoginForm, choose: boolean, auto?: boolean) => boolean;
   applyResult: (message: FillResultMessage) => FillOutcome;
   applyError: (message: FillErrorMessage) => boolean;
   cancel: () => void;
@@ -26,12 +27,15 @@ export interface Filler {
 export interface FillOutcome {
   claimed: boolean;
   filled: number;
+  /** The request was an automatic one: a result that fills nothing is not worth a message. */
+  auto: boolean;
 }
 
 interface Pending {
   nonce: string;
   origin: string;
   createdAt: number;
+  auto: boolean;
   username?: HTMLInputElement;
   password?: HTMLInputElement;
   // Detection already accepted a sign-in field tagged new-password; only a token added later
@@ -69,6 +73,8 @@ export function createFiller(deps: FillDeps): Filler {
   let pending: Pending | null = null;
 
   const live = (p: Pending): boolean => now() - p.createdAt < NONCE_TTL_MS;
+  const blank = (el: HTMLInputElement | undefined): el is HTMLInputElement =>
+    el !== undefined && visible(el) && el.value === "";
 
   const claim = (nonce: string): Pending | null => {
     const current = pending;
@@ -82,8 +88,9 @@ export function createFiller(deps: FillDeps): Filler {
     return current;
   };
 
-  const write = (el: HTMLInputElement | undefined, value: string | null): number => {
-    if (!el || value === null || !visible(el)) {
+  // An automatic fill never overwrites: the user may have started typing since the request.
+  const write = (p: Pending, el: HTMLInputElement | undefined, value: string | null): number => {
+    if (!el || value === null || !visible(el) || (p.auto && el.value !== "")) {
       return 0;
     }
     setNativeValue(el, value);
@@ -92,38 +99,39 @@ export function createFiller(deps: FillDeps): Filler {
   };
 
   return {
-    request(form, choose) {
-      if (pending && live(pending)) {
+    request(form, choose, auto = false) {
+      // A click supersedes an automatic request still waiting for its answer.
+      if (pending && live(pending) && !pending.auto) {
         return false;
       }
-      const fields = {
-        username: form.username !== undefined,
-        password: form.password !== undefined,
-      };
-      if (!fields.username && !fields.password) {
+      const fields = auto
+        ? { username: blank(form.username), password: blank(form.password) }
+        : { username: form.username !== undefined, password: form.password !== undefined };
+      if (auto ? !fields.password : !fields.username && !fields.password) {
         return false;
       }
       const created: Pending = {
         nonce: randomNonce(),
         origin: origin(),
         createdAt: now(),
+        auto,
         passwordWasNew: form.password ? isNewPassword(form.password) : false,
       };
-      if (form.username) {
+      if (form.username && fields.username) {
         created.username = form.username;
       }
-      if (form.password) {
+      if (form.password && fields.password) {
         created.password = form.password;
       }
       pending = created;
-      deps.send({ kind: "fill_request", nonce: created.nonce, choose, fields, path: path() });
+      deps.send({ kind: "fill_request", nonce: created.nonce, choose, auto, fields, path: path() });
       return true;
     },
 
     applyResult(message) {
       const p = claim(message.nonce);
       if (!p) {
-        return { claimed: false, filled: 0 };
+        return { claimed: false, filled: 0, auto: false };
       }
       const username = p.username && !isPasswordField(p.username) ? p.username : undefined;
       const password =
@@ -132,8 +140,8 @@ export function createFiller(deps: FillDeps): Filler {
         (p.passwordWasNew || !isNewPassword(p.password))
           ? p.password
           : undefined;
-      const filled = write(username, message.username) + write(password, message.password);
-      return { claimed: true, filled };
+      const filled = write(p, username, message.username) + write(p, password, message.password);
+      return { claimed: true, filled, auto: p.auto };
     },
 
     applyError(message) {
@@ -145,7 +153,7 @@ export function createFiller(deps: FillDeps): Filler {
     },
 
     isPending() {
-      return pending !== null && live(pending);
+      return pending !== null && live(pending) && !pending.auto;
     },
   };
 }

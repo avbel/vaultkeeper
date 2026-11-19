@@ -109,7 +109,7 @@ async fn disconnect_withdraws_pairing_prompt() {
         },
         || (State::Locked, Theme::Dark),
     ));
-    let hello = serde_json::json!({"type":"hello","id":1,"protocol":1,"extension_version":"1","public_key":STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes())});
+    let hello = serde_json::json!({"type":"hello","id":1,"protocol":2,"extension_version":"1","public_key":STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes())});
     tx.send(Zeroizing::new(serde_json::to_vec(&hello).expect("hello")))
         .await
         .expect("send");
@@ -164,7 +164,7 @@ async fn invalid_signature_never_prompts_or_persists() {
         |_| async { panic!("invalid signature prompted") },
         || (State::Locked, Theme::Dark),
     ));
-    let hello = serde_json::json!({"type":"hello","id":1,"protocol":1,"extension_version":"1","public_key":STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes())});
+    let hello = serde_json::json!({"type":"hello","id":1,"protocol":2,"extension_version":"1","public_key":STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes())});
     tx.send(Zeroizing::new(serde_json::to_vec(&hello).expect("hello")))
         .await
         .expect("send");
@@ -219,7 +219,7 @@ async fn authenticates_new_then_known_key() {
             },
             || (State::Unlocked, Theme::Dark),
         ));
-        let hello = serde_json::json!({"type":"hello","id":1,"protocol":1,"extension_version":"1","public_key":public_key});
+        let hello = serde_json::json!({"type":"hello","id":1,"protocol":2,"extension_version":"1","public_key":public_key});
         tx.send(Zeroizing::new(serde_json::to_vec(&hello).expect("hello")))
             .await
             .expect("send");

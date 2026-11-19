@@ -7,6 +7,11 @@ use std::{
 
 const WINDOW: Duration = Duration::from_secs(60);
 const MAX_ORIGINS: usize = 20;
+/// Page loads ask on their own, so the budget is far below what a user clicking can reach.
+const AUTO_PER_ORIGIN: usize = 3;
+const AUTO_TOTAL: u32 = 10;
+/// A separate table: a page cannot fill the fill limiter's origins by loading many sites.
+const MAX_AUTO_ORIGINS: usize = 64;
 
 struct Bucket {
     tokens: f64,
@@ -46,7 +51,9 @@ pub struct Limits {
     fills: Bucket,
     saves: Bucket,
     app_opens: Bucket,
+    autos: Bucket,
     origins: HashMap<String, Origin>,
+    auto_origins: HashMap<String, VecDeque<Instant>>,
 }
 
 impl Limits {
@@ -56,7 +63,9 @@ impl Limits {
             fills: Bucket::new(20, now),
             saves: Bucket::new(10, now),
             app_opens: Bucket::new(6, now),
+            autos: Bucket::new(AUTO_TOTAL, now),
             origins: HashMap::new(),
+            auto_origins: HashMap::new(),
         }
     }
 
@@ -79,6 +88,34 @@ impl Limits {
             return false;
         }
         self.fills.take(now)
+    }
+
+    /// An automatic fill on page load. Counted apart from user fills: a few per origin and
+    /// minute, a small total, and none while a cancelled picker has the origin cooling down.
+    pub fn auto_fill(&mut self, origin: &str, now: Instant) -> bool {
+        if self
+            .origins
+            .get(origin)
+            .is_some_and(|state| state.blocked_until.is_some_and(|deadline| now < deadline))
+        {
+            return false;
+        }
+        self.auto_origins.retain(|_, times| {
+            times.retain(|time| now.saturating_duration_since(*time) < WINDOW);
+            !times.is_empty()
+        });
+        if self.auto_origins.len() >= MAX_AUTO_ORIGINS && !self.auto_origins.contains_key(origin) {
+            return false;
+        }
+        let used = self.auto_origins.get(origin).map_or(0, VecDeque::len);
+        if used >= AUTO_PER_ORIGIN || !self.autos.take(now) {
+            return false;
+        }
+        self.auto_origins
+            .entry(origin.to_owned())
+            .or_default()
+            .push_back(now);
+        true
     }
 
     /// Covers `open_app` and `unlock`: both put one of our windows in front of the user.
@@ -146,5 +183,36 @@ mod tests {
         limits.cancelled("https://example.com", now + WINDOW);
         limits.cancelled("https://example.com", now + WINDOW);
         assert!(limits.fill("https://example.com", now + WINDOW));
+    }
+
+    #[test]
+    fn auto_fills_are_three_per_origin_a_minute_and_leave_user_fills_alone() {
+        let now = Instant::now();
+        let mut limits = Limits::new(now);
+        for _ in 0..3 {
+            assert!(limits.auto_fill("https://example.com", now));
+        }
+        assert!(!limits.auto_fill("https://example.com", now + Duration::from_secs(59)));
+        assert!(limits.auto_fill("https://other.example", now));
+        assert!(limits.auto_fill("https://example.com", now + WINDOW));
+        for _ in 0..20 {
+            assert!(limits.fill("https://example.com", now));
+        }
+    }
+
+    #[test]
+    fn auto_fills_wait_out_a_cancel_cooldown_and_share_a_small_total() {
+        let now = Instant::now();
+        let mut limits = Limits::new(now);
+        for _ in 0..3 {
+            limits.cancelled("https://example.com", now);
+        }
+        assert!(!limits.auto_fill("https://example.com", now));
+        assert!(limits.auto_fill("https://example.com", now + WINDOW));
+        let mut limits = Limits::new(now);
+        let allowed = (0..30)
+            .filter(|index| limits.auto_fill(&format!("https://{index}.example"), now))
+            .count();
+        assert_eq!(allowed, 10);
     }
 }

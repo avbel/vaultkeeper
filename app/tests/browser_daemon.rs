@@ -15,6 +15,8 @@
     clippy::format_collect
 )]
 
+#[path = "browser_daemon/autofill.rs"]
+mod autofill;
 #[path = "browser_daemon/harness.rs"]
 mod harness;
 
@@ -276,7 +278,7 @@ fn an_item_of_another_site_without_the_confirmation_is_denied() {
 }
 
 #[test]
-fn a_remembered_approval_belongs_to_one_connection_and_origin() {
+fn a_remembered_pick_belongs_to_one_paired_browser_and_origin() {
     run(async {
         let mut rig = Rig::start().await;
         let extension = Extension::chrome(8);
@@ -298,24 +300,32 @@ fn a_remembered_approval_belongs_to_one_connection_and_origin() {
             .await;
         assert_eq!(credentials(&reply), (Some("carol"), Some("carol-pw")));
 
+        // The same paired key on a new connection keeps the pick; another key does not.
         let mut second = rig.open(&extension).await;
         let id = second.submit_fill(GITHUB, false).await;
+        let reply = second.response(id).await;
+        assert_eq!(credentials(&reply), (Some("alice"), Some("alice-pw")));
+        rig.ui.no_prompt().await;
+
+        let mut other = rig.open(&Extension::chrome(18)).await;
+        let id = other.submit_fill(GITHUB, false).await;
         let asked = rig.ui.prompt().await;
         assert!(matches!(asked.prompt, BrowserPrompt::Fill { .. }));
         asked.fill_with(ALICE, false);
-        assert_eq!(second.response(id).await["ok"], true);
+        assert_eq!(other.response(id).await["ok"], true);
         rig.shutdown().await;
     });
 }
 
 #[test]
-fn locking_forgets_remembered_approvals() {
+fn locking_keeps_the_pick_and_the_fill_after_the_unlock_needs_no_picker() {
     run(async {
         let mut rig = Rig::start().await;
         let mut host = rig.open(&Extension::chrome(9)).await;
         host.picked_fill(&mut rig.ui, GITHUB, ALICE).await;
 
-        // The daemon clears its copy when it sees the lock, in the same step that forgets approvals.
+        // The daemon clears its copy when it sees the lock, in the same step that forgets the
+        // connection's approvals; the persisted pick stays.
         rig.ui.remote.copy_to_clipboard("marker", None).unwrap();
         eventually(|| rig.clipboard.content().is_some()).await;
         rig.daemon.vault().lock();
@@ -330,13 +340,9 @@ fn locking_forgets_remembered_approvals() {
             .command(|command| matches!(command, UiCommand::UnlockInTray))
             .await;
         rig.unlock().await;
-        let asked = rig.ui.prompt().await;
-        assert!(
-            matches!(asked.prompt, BrowserPrompt::Fill { .. }),
-            "the first fill after an unlock asks again"
-        );
-        asked.fill_with(ALICE, false);
-        assert_eq!(host.response(id).await["ok"], true);
+        let reply = host.response(id).await;
+        assert_eq!(credentials(&reply), (Some("alice"), Some("alice-pw")));
+        rig.ui.no_prompt().await;
         rig.shutdown().await;
     });
 }

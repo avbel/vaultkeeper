@@ -257,6 +257,7 @@ impl Daemon {
             None
         };
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
+        let browser = browser_glue::BrowserState::new(&data_dir);
         let daemon = Arc::new(Self {
             ssh: SshControl::new(layout::ssh_endpoint(&data_dir), approvals),
             unlocked_once: AtomicBool::new(false),
@@ -281,7 +282,7 @@ impl Daemon {
             tasks: Mutex::new(Vec::new()),
             setup_issues: Mutex::new(SetupIssues::default()),
             tray_sync: watch::Sender::new(TraySync::default()),
-            browser: browser_glue::BrowserState::new(),
+            browser,
             cli_access: cli_access::CliAccessState::default(),
             site_icons,
             updater,
@@ -712,8 +713,13 @@ impl Daemon {
     }
 
     fn on_state(self: &Arc<Self>) {
-        let identity = match self.vault.state() {
-            SessionState::Unlocked { server, email } => Some(Identity { server, email }),
+        let state = self.vault.state();
+        self.forget_browser_choices_on_account_change(&state);
+        let identity = match &state {
+            SessionState::Unlocked { server, email } => Some(Identity {
+                server: server.clone(),
+                email: email.clone(),
+            }),
             SessionState::Locked { .. } | SessionState::LoggedOut => None,
         };
         let unlocked = identity.is_some();
@@ -725,7 +731,7 @@ impl Daemon {
             self.forget_browser_approvals();
             self.site_icons.clear();
         }
-        if matches!(self.vault.state(), SessionState::LoggedOut) {
+        if matches!(state, SessionState::LoggedOut) {
             self.clear_browser_saves();
         }
         let was = self.was_unlocked.swap(unlocked, Ordering::SeqCst);
@@ -1095,5 +1101,21 @@ mod tests {
         assert!(!left_session(None, Some(&alice)), "unlock");
         assert!(!left_session(Some(&alice), Some(&alice)), "same session");
         assert!(!left_session(None, None), "stays locked");
+    }
+
+    #[test]
+    fn remembered_browser_logins_end_on_logout_or_switch_but_not_on_lock_or_start() {
+        use super::browser_glue::forgets_choices;
+
+        let alice = who("alice@example.com");
+        let bob = who("bob@example.com");
+        assert!(forgets_choices(Some(&alice), None), "logout");
+        assert!(forgets_choices(None, None), "logged out at start");
+        assert!(forgets_choices(Some(&alice), Some(&bob)), "switch");
+        assert!(
+            !forgets_choices(Some(&alice), Some(&alice)),
+            "lock or unlock"
+        );
+        assert!(!forgets_choices(None, Some(&alice)), "first account seen");
     }
 }

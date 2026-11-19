@@ -6,13 +6,14 @@ use std::path::{Path, PathBuf};
 
 use vk_platform::fs::{self, Refusal, Repair};
 
-use crate::os::layout::{BROWSER_PAIRINGS_FILE, DEVICE_FILE, SETTINGS_FILE};
+use crate::os::layout::{BROWSER_CHOICES_FILE, BROWSER_PAIRINGS_FILE, DEVICE_FILE, SETTINGS_FILE};
 
 const ACCOUNTS_FILE: &str = "accounts.json";
 const ACCOUNTS_DIR: &str = "accounts";
-const DATA_DIR_FILES: [&str; 4] = [
+const DATA_DIR_FILES: [&str; 5] = [
     ACCOUNTS_FILE,
     BROWSER_PAIRINGS_FILE,
+    BROWSER_CHOICES_FILE,
     SETTINGS_FILE,
     DEVICE_FILE,
 ];

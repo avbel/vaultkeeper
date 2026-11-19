@@ -51,7 +51,7 @@ describe("fill", () => {
       input("#p").addEventListener(type, () => events.push(`${type}:${input("#p").value}`));
     }
     const outcome = filler.applyResult(result(nonceOf(sent), "alice", "s3cret"));
-    expect(outcome).toEqual({ claimed: true, filled: 2 });
+    expect(outcome).toEqual({ claimed: true, filled: 2, auto: false });
     expect(input("#u").value).toBe("alice");
     expect(input("#p").value).toBe("s3cret");
     expect(events).toEqual(["input:s3cret", "change:s3cret"]);
@@ -70,6 +70,7 @@ describe("fill", () => {
     expect(filler.applyResult(result("0".repeat(32), "alice", "pw"))).toEqual({
       claimed: false,
       filled: 0,
+      auto: false,
     });
     expect(input("#u").value).toBe("");
     expect(filler.applyResult(result(nonceOf(sent), "alice", "pw")).claimed).toBe(true);
@@ -116,6 +117,7 @@ describe("fill", () => {
     expect(filler.applyResult(result(nonceOf(sent), "alice", "pw"))).toEqual({
       claimed: true,
       filled: 0,
+      auto: false,
     });
     expect(input("#p").value).toBe("");
   });
@@ -174,5 +176,59 @@ describe("fill", () => {
     const filler = createFiller({ send, isVisible: visible });
     expect(filler.request(detect()[0]!, false)).toBe(false);
     expect(send).not.toHaveBeenCalled();
+  });
+
+  describe("automatic requests", () => {
+    test("ask only for fields that are visible and empty, and say they are automatic", () => {
+      const { filler, form, sent } = setup();
+      input("#u").value = "typed";
+      expect(filler.request(form, false, true)).toBe(true);
+      expect(sent[0]).toMatchObject({
+        kind: "fill_request",
+        choose: false,
+        auto: true,
+        fields: { username: false, password: true },
+      });
+    });
+
+    test("do not start when the password field is filled or hidden", () => {
+      const filledPassword = setup();
+      input("#p").value = "typed";
+      expect(filledPassword.filler.request(filledPassword.form, false, true)).toBe(false);
+      const hidden = setup();
+      input("#p").setAttribute("style", "display: none");
+      expect(hidden.filler.request(hidden.form, false, true)).toBe(false);
+      expect(filledPassword.sent).toEqual([]);
+      expect(hidden.sent).toEqual([]);
+    });
+
+    test("never overwrite what the user typed while the request was out", () => {
+      const { filler, form, sent } = setup();
+      filler.request(form, false, true);
+      input("#u").value = "typing";
+      const outcome = filler.applyResult(result(nonceOf(sent), "alice", "s3cret"));
+      expect(outcome).toEqual({ claimed: true, filled: 1, auto: true });
+      expect(input("#u").value).toBe("typing");
+      expect(input("#p").value).toBe("s3cret");
+    });
+
+    test("a click replaces a pending automatic request, and its late answer is dropped", () => {
+      const { filler, form, sent } = setup();
+      filler.request(form, false, true);
+      expect(filler.isPending()).toBe(false);
+      expect(filler.request(form, false)).toBe(true);
+      const [auto, click] = sent;
+      expect(auto).toMatchObject({ auto: true });
+      expect(click).toMatchObject({ auto: false });
+      const late = result((auto as { nonce: string }).nonce, "alice", "pw");
+      expect(filler.applyResult(late).claimed).toBe(false);
+      expect(input("#p").value).toBe("");
+    });
+
+    test("a manual request still blocks a second manual one", () => {
+      const { filler, form } = setup();
+      expect(filler.request(form, false)).toBe(true);
+      expect(filler.request(form, false, true)).toBe(false);
+    });
   });
 });

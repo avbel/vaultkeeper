@@ -90,6 +90,7 @@ describe("NativeClient", () => {
       origin: "https://a.example",
       path: "/",
       choose: false,
+      auto: false,
       fields: { username: true, password: true },
     });
     const assertion = expect(pending).rejects.toMatchObject({ code: "timeout" });
@@ -143,7 +144,7 @@ describe("NativeClient", () => {
     const events: NativeEvent[] = [];
     native.onEvent((e) => events.push(e));
     const pending = native.request("hello", {
-      protocol: 1,
+      protocol: 2,
       extension_version: "0.1.0",
       public_key: "x",
     });

@@ -5,6 +5,11 @@ use zeroize::Zeroizing;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The version of the extension requests (`hello.protocol`), which is not the host hop's
+/// [`PROTOCOL_VERSION`]. 2 added `fill.auto`: an older daemon would ignore the flag and show the
+/// picker on page load, so the two sides must not talk across versions.
+pub const EXTENSION_PROTOCOL_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostHello {
     pub protocol: u32,
@@ -93,6 +98,10 @@ pub enum Request {
         path: String,
         choose: bool,
         fields: FillFields,
+        /// A fill the extension started on page load. The daemon answers it only from what is
+        /// already remembered, without any window, and says `no_auto` otherwise.
+        #[serde(default)]
+        auto: bool,
     },
     SaveCandidate {
         id: u64,
@@ -190,6 +199,8 @@ pub enum ErrorCode {
     NotAllowed,
     /// WebAuthn `InvalidStateError`: the vault already holds a passkey the site excluded.
     InvalidState,
+    /// An automatic fill that is not allowed or has nothing to fill. Not a failure to show.
+    NoAuto,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

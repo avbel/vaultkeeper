@@ -41,6 +41,7 @@ fn the_browsers_section_writes_every_setting() {
     click(&window, "Offer to save logins");
     click(&window, "Copy TOTP code after filling");
     click(&window, "Fill at once when only one login matches");
+    click(&window, "Fill remembered logins when a page opens");
     click(&window, "Save and use passkeys");
     window.invoke_browser_match_selected(1);
     let settings = saved(&h);
@@ -51,6 +52,7 @@ fn the_browsers_section_writes_every_setting() {
     assert!(!settings.browser_save_prompts);
     assert!(!settings.browser_copy_totp);
     assert!(!settings.browser_fill_single);
+    assert!(settings.browser_autofill);
     assert!(!settings.browser_passkeys);
     assert_eq!(settings.browser_default_match, BrowserMatch::Host);
 }

@@ -241,6 +241,9 @@ decision and every prompt are in Vaultkeeper's own windows.
    suggestion list (conditional mediation) are left to the browser too. Turn off *Save and use
    passkeys* in Settings → Browsers to leave every site to the browser's own passkeys.
 7. **Settings:** *Require Touch ID to fill* (asked for every fill, including remembered ones and single matches), *Fill at once when only one login matches* (on by default: with exactly one saved login for an encrypted page, no picker is shown; sites with several matches, `http` pages and re-prompt items still show it),
+   *Fill remembered logins when a page opens* (off by default: a login you picked before is filled as an encrypted
+   page loads, with no click, only while the vault is unlocked and Touch ID is not required; the trade-off is that
+   scripts on that page can read what was filled without you asking for it),
    *Offer to save logins*, *Copy TOTP code after filling*
    (the code goes to the clipboard and is cleared like other copies) and *Match sites by* (*Domain*
    or *Exact host*, for saved addresses without their own rule; a saved address's own match
@@ -248,18 +251,25 @@ decision and every prompt are in Vaultkeeper's own windows.
    fingerprint and a *Remove* button; removing it closes that browser's live connection.
 
 The activity log is `~/Library/Logs/vaultkeeper/browser.log`: time, browser, host and item id of
-every fill, never a secret.
+every fill and how it was released (`picker`, `remembered`, `single` or `auto`), never a secret.
+
+The login you pick for a site is remembered for that paired browser until you log out, so the next fill on the
+same site skips the picker, also after restarting the browser or the app and after the vault was locked. Logging
+out, switching accounts and removing the browser under *Paired browsers* forget it. Touch ID, if required, is still
+asked for.
 
 Known limits:
 
 - Malware running as your macOS user can drive a real browser with a copied profile, so pairing and
   the browser signature check are barriers, not guarantees. Nothing is released without a click in a
-  Vaultkeeper window, and remembered approvals belong to one live connection.
+  Vaultkeeper window, and a remembered login belongs to one paired browser and ends at log out.
 - A filled password can be read by scripts of the page it was filled into (for example after XSS).
 - JavaScript strings cannot be wiped; the extension keeps a credential only for one message hand-off.
 - The parent-process check can be bypassed by starting the host and then replacing its parent.
-- Equivalent-domain lists and filling on page load are not supported; autofill needs a click or the
-  shortcut on purpose.
+- Equivalent-domain lists are not supported. Filling on page load is off unless you turn on *Fill remembered logins when
+  a page opens*; it covers only remembered picks on encrypted pages, never asks to unlock, and never starts the app on a
+  page load. The extension connects when the browser starts (only once it has been paired before; this starts the app
+  if it is closed, as a click on the extension does), and a fill on a restored tab waits up to 3 s for that connection.
 
 To remove a browser, turn off *Install for …* (the connection file is deleted), remove the pairing,
 and remove the extension in the browser.

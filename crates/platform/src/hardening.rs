@@ -26,6 +26,15 @@ pub fn harden_process(role: Role) {
     }
 }
 
+/// Whether `harden_process` replaced this process's DACL. The Windows stand-in for the macOS
+/// hardened runtime: other same-user processes can no longer open it to write memory or start
+/// threads. The process that created it keeps its handle, so this is weaker than CS_RUNTIME.
+#[cfg(windows)]
+#[must_use]
+pub fn process_dacl_applied() -> bool {
+    windows::DACL_APPLIED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(unix)]
 fn disable_core_dumps() {
     let limit = libc::rlimit {

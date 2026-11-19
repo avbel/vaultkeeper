@@ -299,6 +299,27 @@ pub(crate) fn existing_state(target: &Path, wanted: &[u8]) -> io::Result<Existin
     })
 }
 
+/// Whether the manifest at `target` names a host executable that no longer exists: the app was
+/// moved or an older copy deleted, which is not tampering. A planted host exists on disk.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows installer asks")
+)]
+pub(crate) fn names_missing_host(target: &Path) -> bool {
+    let Ok(bytes) = fs::read(target) else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|manifest| {
+            manifest
+                .get("path")?
+                .as_str()
+                .map(|path| !Path::new(path).exists())
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn write_atomic(dir: &Path, target: &Path, data: &[u8]) -> io::Result<()> {
     let temp = dir.join(format!(
         ".{MANIFEST_FILE}.{}.{:016x}.tmp",
@@ -340,6 +361,20 @@ mod tests {
 
     fn exe() -> &'static Path {
         Path::new(EXE)
+    }
+
+    #[test]
+    fn only_a_manifest_whose_host_is_gone_counts_as_relocated() {
+        let dir = tempfile::tempdir().expect("directory");
+        let manifest = dir.path().join("m.json");
+        let host = dir.path().join("host");
+        fs::write(&manifest, render(ManifestBrowser::Chrome, &host, &IDS)).expect("manifest");
+        assert!(names_missing_host(&manifest));
+        fs::write(&host, b"").expect("host");
+        assert!(!names_missing_host(&manifest));
+        fs::write(&manifest, b"x").expect("garbage");
+        assert!(!names_missing_host(&manifest));
+        assert!(!names_missing_host(&dir.path().join("absent.json")));
     }
 
     #[cfg(not(windows))]

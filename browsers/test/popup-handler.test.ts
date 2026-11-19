@@ -20,6 +20,7 @@ function setup(options: { tabId?: number | undefined; fill?: BeginFillResult } =
   const request = vi.fn(async () => ({}));
   const ensureReady = vi.fn(async () => undefined);
   const refresh = vi.fn(async () => undefined);
+  const resetPairing = vi.fn(async () => undefined);
   const deps: PopupDeps = {
     runtimeId: "ext-id",
     popupUrl: POPUP_URL,
@@ -29,10 +30,18 @@ function setup(options: { tabId?: number | undefined; fill?: BeginFillResult } =
       status: STATUS,
       ensureReady,
       refresh,
+      resetPairing,
       request: request as unknown as PopupDeps["session"]["request"],
     },
   };
-  return { handle: createPopupHandler(deps), beginFill, request, ensureReady, refresh };
+  return {
+    handle: createPopupHandler(deps),
+    beginFill,
+    request,
+    ensureReady,
+    refresh,
+    resetPairing,
+  };
 }
 
 const FROM_POPUP = { id: "ext-id", url: POPUP_URL };
@@ -89,8 +98,14 @@ describe("popup handler", () => {
     expect(request).toHaveBeenNthCalledWith(2, "open_app", { view: "settings" });
   });
 
+  it("resets the pairing on request", async () => {
+    const { handle, resetPairing } = setup();
+    expect(await handle({ kind: "popup_reset_pairing" }, FROM_POPUP)).toEqual({ ok: true });
+    expect(resetPairing).toHaveBeenCalledOnce();
+  });
+
   it("refuses senders that are not the popup page", async () => {
-    const { handle, beginFill, request } = setup();
+    const { handle, beginFill, request, resetPairing } = setup();
     const message = { kind: "popup_fill", choose: false } as const;
     for (const sender of [
       { id: "other", url: POPUP_URL },
@@ -98,7 +113,9 @@ describe("popup handler", () => {
       { id: "ext-id", url: POPUP_URL, tab: { id: 1 } },
     ]) {
       expect(await handle(message, sender)).toEqual({ ok: false });
+      expect(await handle({ kind: "popup_reset_pairing" }, sender)).toEqual({ ok: false });
     }
+    expect(resetPairing).not.toHaveBeenCalled();
     expect(beginFill).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   });

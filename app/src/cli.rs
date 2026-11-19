@@ -22,7 +22,7 @@ pub fn browser_host_caller(args: &[String]) -> Option<HostCaller> {
         }
     }
     if args.len() == 2
-        && first.ends_with("/org.vaultkeeper.browser.json")
+        && is_firefox_manifest(first, cfg!(windows))
         && args[1] == FIREFOX_EXTENSION_ID
     {
         return Some(HostCaller::Firefox {
@@ -30,6 +30,16 @@ pub fn browser_host_caller(args: &[String]) -> Option<HostCaller> {
         });
     }
     None
+}
+
+/// Firefox passes the path of the manifest it read; on Windows that is the per-browser file the
+/// registry points at (`ManifestBrowser::windows_manifest_path`).
+fn is_firefox_manifest(path: &str, windows: bool) -> bool {
+    if windows {
+        path.ends_with(r"\org.vaultkeeper.browser.firefox.json")
+    } else {
+        path.ends_with("/org.vaultkeeper.browser.json")
+    }
 }
 
 pub const USAGE: &str = r#"Usage: vaultkeeper list
@@ -208,6 +218,25 @@ mod tests {
     }
 
     #[test]
+    fn firefox_manifest_argument_follows_the_platform_layout() {
+        let windows = r"C:\Users\a\AppData\Local\Vaultkeeper\native-messaging\org.vaultkeeper.browser.firefox.json";
+        assert!(is_firefox_manifest(windows, true));
+        assert!(!is_firefox_manifest(windows, false));
+        assert!(is_firefox_manifest(
+            "/tmp/org.vaultkeeper.browser.json",
+            false
+        ));
+        assert!(!is_firefox_manifest(
+            "/tmp/org.vaultkeeper.browser.json",
+            true
+        ));
+        assert!(!is_firefox_manifest(
+            r"C:\x\org.vaultkeeper.browser.chrome.json",
+            true
+        ));
+    }
+
+    #[test]
     fn the_detached_marker_is_accepted() {
         assert!(args(&["--tray", "--detached"]).expect("args").detached);
         assert!(!args(&["--tray"]).expect("args").detached);
@@ -224,19 +253,18 @@ mod tests {
             })
         );
         assert!(browser_host_caller(&["chrome-extension://invalid/".into()]).is_none());
+        let manifest = if cfg!(windows) {
+            r"C:\x\native-messaging\org.vaultkeeper.browser.firefox.json"
+        } else {
+            "/tmp/org.vaultkeeper.browser.json"
+        };
         assert_eq!(
-            browser_host_caller(&[
-                "/tmp/org.vaultkeeper.browser.json".into(),
-                FIREFOX_EXTENSION_ID.into()
-            ]),
+            browser_host_caller(&[manifest.into(), FIREFOX_EXTENSION_ID.into()]),
             Some(HostCaller::Firefox {
                 extension_id: FIREFOX_EXTENSION_ID.into()
             })
         );
-        assert!(
-            browser_host_caller(&["/tmp/org.vaultkeeper.browser.json".into(), "other".into()])
-                .is_none()
-        );
+        assert!(browser_host_caller(&[manifest.into(), "other".into()]).is_none());
     }
 
     #[test]

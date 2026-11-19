@@ -33,6 +33,9 @@ real HTTPS sites beyond the ones tried, a normally installed (signed) Firefox ad
 - Reviewed again by Fable (medium) after the manual run; fixed: silent fills retry after a snapshot conflict, `unlock`
   runs beside the request loop instead of blocking the connection, and a picker closed by focus loss is not counted
   as a cancel (`BrowserReply::Abandoned`, protocol 12).
+- Added after that: opt-in fill on page load (setting `browser_autofill`, default off; D10, section 8.3). The extension
+  protocol (`hello.protocol`) is now 2: `fill` carries `auto`, and the daemon and the extension refuse each other at
+  another version because an older daemon would ignore the flag and show the picker on every page load.
 - Known gaps, none blocking:
   - The popup, shortcut and context menu start a fill in the top frame only; a login form inside an iframe works from
     the in-page icon but not from the popup (a fix needs the `webNavigation` permission).
@@ -73,7 +76,8 @@ thin client.
 - The tray app (daemon) must be running; the extension can start it.
 - Every native window follows the app style and the app's light/dark theme. The small extension UI uses the same tokens.
 
-Non-goals for this plan: Safari, filling cards and identities, autofill on page load, cross-origin
+Non-goals for this plan: Safari, filling cards and identities, autofill on page load unless the user turns on
+`browser_autofill` (D10), cross-origin
 iframes, Linux and Windows.
 
 ## 2. Architecture
@@ -102,10 +106,10 @@ vaultkeeper --ui      → picker, pair prompt, save prompt (Slint)   app/ui/brow
 | D4 | A credential is released for **one item, one origin, one request**. There is no "list", "search" or "get by id" request. | Limits what a compromised browser can take. |
 | D5 | **Pairing** per browser profile with a P-256 key generated in the extension. The app stores only public keys. | The user consents to each browser once and can revoke it. Nothing secret is added on the app side. |
 | D6 | The host **verifies its parent process** is a known browser by code signature and tells the daemon. | Stops scripts and a fake host placed in front of the real one. |
-| D7 | Approvals are **remembered per connection, origin and item until lock**. | Second fill on the same site is instant; a new connection (possible attacker) starts with nothing. |
+| D7 | The login picked for a site is **remembered per paired browser key and canonical origin until log out** (`browser-choices.json`, item ids only). It survives browser and app restarts, reconnects and vault locks; log out, an account switch and removing the browser's pairing forget it. | Second fill on the same site is instant, also after a restart. The key is proven on every connection, so only the paired browser profile gets it; the remembered item must still match the page and not be a re-prompt item, and `browser_touch_id` still applies. A stolen pairing key therefore fills remembered logins without the picker (Touch ID aside), which the old per-connection rule did not allow. |
 | D8 | Save/update prompts are native. The extension gets **no result** for a save candidate. | No password oracle. |
 | D9 | Wire format on both hops is **JSON**. The host relays bytes and does not parse requests. | One parser and one validator, in the daemon. |
-| D10 | No autofill on page load. Fill needs a user gesture. | A filled password is readable by page script. |
+| D10 | No autofill on page load unless the user turned on `browser_autofill` (off by default). Then only the pick remembered for this paired browser and origin is filled: top frame, https, vault unlocked, `browser_touch_id` off, no window of any kind, at most 3 per origin and minute. Every other fill needs a user gesture. | A filled password is readable by page script, so the user opts in and the envelope stays as narrow as a silent fill can be. |
 
 ## 3. Wire protocols
 
@@ -149,14 +153,15 @@ Requests carry a numeric `id` chosen by the extension; the response echoes it. E
 ```
 
 Error codes (a closed list, serialized snake_case): `bad_request`, `unknown_type`, `unpaired`, `denied`, `cancelled`,
-`timeout`, `locked`, `logged_out`, `no_login`, `busy`, `rate_limited`, `insecure_page`, `offline`, `internal`.
+`timeout`, `locked`, `logged_out`, `no_login`, `busy`, `rate_limited`, `insecure_page`, `offline`, `internal`, plus `fallback`, `not_allowed`, `invalid_state` (passkeys) and
+`no_auto` (an automatic fill that is not allowed or has nothing to fill; the extension shows nothing for it).
 
 | Request `type` | Fields | Result | Notes |
 |---|---|---|---|
-| `hello` | `protocol: 1`, `extension_version`, `public_key` (base64, 65-byte uncompressed SEC1 P-256) | `challenge` (base64, 32 random bytes), `known: bool` | Must be the first request. |
+| `hello` | `protocol: 2`, `extension_version`, `public_key` (base64, 65-byte uncompressed SEC1 P-256) | `challenge` (base64, 32 random bytes), `known: bool` | Must be the first request. |
 | `prove` | `signature` (base64, 64 bytes, IEEE P1363 `r‖s`) | `state`, `theme`, `fingerprint` | Must be the second request. Unknown key → native pair prompt before the answer. |
 | `status` | — | `state`, `theme` | |
-| `fill` | `origin`, `path`, `choose: bool`, `fields: { username: bool, password: bool }` | `username`, `password` (either may be `null`) | Native picker unless remembered. `choose: true` always shows the picker. |
+| `fill` | `origin`, `path`, `choose: bool`, `auto: bool` (optional, default `false`), `fields: { username: bool, password: bool }` | `username`, `password` (either may be `null`) | Native picker unless remembered. `choose: true` always shows the picker. `auto: true` is a fill on page load: answered only from a remembered pick, never with a window, otherwise error `no_auto`; `auto` with `choose` is `bad_request`. |
 | `save_candidate` | `origin`, `path`, `username` (may be `""`), `password`, `kind: "login" \| "change"` | `{}` always, at once | The daemon decides alone whether to prompt. |
 | `unlock` | — | `state` | Shows the lock screen; answers after unlock, cancel or 120 s. |
 | `open_app` | `view: "manager" \| "settings"` | `{}` | |
@@ -179,7 +184,9 @@ Validation in the daemon (reject with `bad_request`):
 
 Limits per connection: at most 4 connections in total (the fifth gets `HostRefused busy`); one `fill` in flight (a second
 gets `busy`); 20 `fill` and 10 `save_candidate` per minute (token bucket, over → `rate_limited`); after 3 `fill` requests
-for one origin end in `cancelled`/`timeout` within 60 s, that origin gets `rate_limited` for 60 s.
+for one origin end in `cancelled`/`timeout` within 60 s, that origin gets `rate_limited` for 60 s. `fill` with `auto: true`
+has its own budget on the same per-key limiter: 3 per origin per minute and 10 per minute in all, and none while the
+origin cools down; over the budget it answers `no_auto`, not `rate_limited`.
 
 ## 4. Security model
 
@@ -189,7 +196,8 @@ is not. The extension is semi-trusted: it is the user's browser, but it may be c
 | Threat | Defence |
 |---|---|
 | Page script reads the vault | Impossible: the page talks to nobody. Only a filled value is visible to the page it was filled in. |
-| Page triggers a fill without the user | Content script accepts only `event.isTrusted` clicks. The first release per origin needs a click in a native window, except the lone-match shortcut below (`browser_fill_single`). |
+| Page triggers a fill without the user | Content script accepts only `event.isTrusted` clicks. The first release per origin needs a click in a native window, except the lone-match shortcut below (`browser_fill_single`) and the opt-in fill on page load (`browser_autofill`, off by default; see the next row). |
+| Fill on page load (`browser_autofill`, opt-in) | The password is readable by the page's scripts without a click, so the envelope is narrow. Extension: top frame, `https:` page, the first form the detector finds with a visible, empty password field (a typed username is kept), once per page load, only over a connection that is already up and unlocked (it never starts the host or the app), never in a background tab. Daemon: setting on, vault `Unlocked` (never opens the lock screen), `browser_touch_id` off (never a biometric prompt on page load), https page, a remembered or persisted pick for this paired key and canonical origin that still matches the page and is not a re-prompt item, within the auto budget. It never falls back to the picker, the single-match release or the other-site confirmation, shows no window, does not offer an address, copies no TOTP code and does not count as activity for the auto-lock. Every refusal is `no_auto`. |
 | Phishing site with a similar name | Matching is done in the daemon on the URL the *browser* reports, by Bitwarden URI rules. The picker shows the ASCII (punycode) host. Picking a login saved for another site needs an explicit second confirmation. |
 | Clickjacking the in-page icon | A click only opens the native picker. |
 | Compromised extension or renderer asks for other sites | It can only make the native picker appear for that origin, with the browser name and host shown. No list, no search, no release for another site. Rate limits and a cooldown stop prompt bombing. **Relaxation (user's choice, setting `browser_fill_single`, default on):** when exactly one login's saved address matches the page by the Domain rule on an https page, it is released on a trusted in-page click with no window and no host shown, and Touch ID still applies when enabled. That includes user-content subdomains outside the private suffix list (a login saved for `example.com` fills on `attacker.example.com`), as Domain matching does for every fill. Turn the setting off to restore the picker. |
@@ -205,7 +213,7 @@ Known limits (state them in `docs/USAGE.md`):
 
 - **Malware running as the same macOS user** can drive a real browser with a copied profile, so pairing and the parent
   check are barriers, not guarantees. What still holds: nothing is released without a click in a native window, and
-  remembered approvals belong to one live connection.
+  remembered logins belong to one paired browser key and end at log out.
 - A filled password can be read by scripts of the page it was filled into (XSS on that site).
 - JavaScript strings cannot be wiped. The extension keeps a credential only for the duration of one message hand-off.
 - The parent check has a known bypass (start the host, then `exec` a browser in the parent). It is kept because it still
@@ -444,6 +452,7 @@ shows `printf` of a framed `{"type":"status","id":1}` into the binary started fr
 | `browser_save_prompts: bool` | `true` | Offer to save and update. |
 | `browser_copy_totp: bool` | `true` | After a fill, copy the item's current TOTP code. |
 | `browser_default_match: BrowserMatch` | `Domain` | `Domain` or `Host`, for URIs without their own rule. |
+| `browser_autofill: bool` | `false` | Fill the remembered login as the page opens (D10, section 8.3). |
 
 Add them to `Default`, to the Settings window (section 8.5) and to `apply_settings` in `daemon/core.rs`: when
 `browser_integration` flips, start or stop the listener and install or remove manifests.
@@ -497,7 +506,7 @@ the code-identity helpers). Without the hardened runtime another process could i
 Settings.
 
 **Session state** (in memory, per connection): `caller`, `browser`, `paired_key: Option<[u8; 65]>`, `challenge`,
-`remembered: HashMap<String /*origin*/, ItemId>`, the token buckets, `fill_in_flight: bool`.
+`remembered: HashMap<String /*origin*/, ItemId>` (ends with the approvals epoch; the persisted choice below backs it), the token buckets, `fill_in_flight: bool`.
 
 **Pairing store** `browsers.json` (0600, atomic write like `settings_file.rs`):
 
@@ -517,8 +526,10 @@ close. Known key and same `caller` → paired. Unknown key → send `BrowserProm
 1. Validate. `PageUrl::new`. An `http` page whose host is not `localhost`, a loopback or private-range IP, or a
    single-label/`.local` name → `insecure_page`.
 2. State: `LoggedOut` → `logged_out`. `Locked` → continue; the UI shows the lock screen first (step 5).
-3. If unlocked, not `choose`, and `remembered[origin]` exists, the item still matches and is not a re-prompt item →
-   go to step 8 with it. No prompt.
+3. If unlocked, not `choose`, and this connection's `remembered[origin]` or else the persisted choice for (paired key,
+   canonical origin) exists, the item still matches and is not a re-prompt item → go to step 8 with it. No prompt. A
+   stale or foreign item id fails that check and falls through to the picker. A vault that was locked when the fill
+   arrived drops only the connection's approval: the persisted choice is offered again after the unlock.
 4. `return_to = typing_target_off_main()` (the browser gets focus back afterwards).
 5. If locked: send `UiCommand::UnlockInTray` and wait for `Unlocked` the way `wait_unlocked` does, at most 120 s, ending
    early when the connection closes → `locked` on timeout.
@@ -529,13 +540,39 @@ close. Known key and same `caller` → paired. Unknown key → send `BrowserProm
    Touch ID itself; generalise `confirm_presence` to take the reason text ("fill a login in Google Chrome") and a
    "requester gone" future. Refused → `denied`.
 8. Re-check `Unlocked`. `vault.reveal(id, CopyField::Username)` and `Password`; a missing field becomes `null`. Remember
-   `origin → id` for this connection, unless the item is a re-prompt item. `note_activity()`. If `browser_copy_totp` and
+   `origin → id` for this connection and in the choice store (write-through, a failed write is logged and does not fail the
+   fill), unless the item is a re-prompt item or the vault locked during the fill. `note_activity()`. If `browser_copy_totp` and
    the item has TOTP: copy the current code through the daemon's `ClipboardKeeper` with the normal auto-clear.
-9. Answer. Append one line to the browser activity log (section 10): time, browser, host, item id, "picker" or
-   "remembered". Never a secret.
+9. Answer. Append one line to the browser activity log (section 10): time, browser, host, item id, and `via=` `picker`,
+   `remembered`, `single` or `auto`. Never a secret.
+
+**Automatic fill** (`fill` with `auto: true`, setting `browser_autofill`, default off). It skips steps 2 to 7 and answers
+only from step 3, with every refusal as `no_auto` and no side effect:
+
+1. Refuse with `no_auto` unless `browser_autofill` is on, no other fill is in flight, the state is `Unlocked`
+   (a locked vault is never unlocked for it), `browser_touch_id` is off (`presence` is never called) and the origin is
+   `https`. `auto` together with `choose` is `bad_request`.
+2. Take this connection's approval or else the persisted choice for (paired key, canonical origin); none → `no_auto`.
+3. Charge the auto budget (3 per origin per minute, 10 per minute in all, none during a cancel cooldown); over it →
+   `no_auto`. Only requests that have a remembered login are charged.
+4. Under a snapshot, the item must still match the page and not be a re-prompt item, and the integration and setting
+   must still hold right before the reveal; the reveal must match the page without the other-site confirmation.
+   Anything else → `no_auto`.
+5. Answer with the same fields as a normal fill, log `via=auto`. It is not remembered again, does not call
+   `note_activity`, copies no TOTP code and offers no address. The UI prompt hook of an automatic fill is inert, so no
+   code path can show a picker, a lock screen or a Touch ID sheet.
 
 Clear every session's `remembered` in `on_state` where `left_session` is true and where the vault locks (beside
-`ssh.forget_approvals()`), and on `PowerEvent::WillSleep` / `ScreenLocked` regardless of `lock_on_sleep`.
+`ssh.forget_approvals()`), and on `PowerEvent::WillSleep` / `ScreenLocked` regardless of `lock_on_sleep`. That
+per-connection map is the only thing a lock forgets.
+
+**Choice store** `browser-choices.json` (`daemon/browser/choices.rs`, 0600, atomic write, next to `browsers.json`): paired
+public key (base64) → canonical origin → item id, at most 64 keys with 256 origins each and 1 MiB. A new site beyond the
+limit is not remembered; the stored ones stay. A corrupt or oversized file is logged and treated as empty. It is shared
+by every session through `BrowserHost::choices`. It is cleared in `on_state` when the vault is `LoggedOut` or the
+Locked/Unlocked account differs from the last one seen (an account switch, also lock, other account, unlock), never on
+a plain lock, sleep or screen lock. Keys that are no longer in `browsers.json` are dropped when the listener starts and
+whenever the daemon reloads the pairing store after the Settings window removed one.
 
 **`save_candidate`** (`save.rs`): answer `{}` first, then continue in a spawned task that owns the candidate
 (`Zeroizing`).
@@ -665,8 +702,8 @@ prompt; pair prompt does not approve on Return.
 Daemon tests in `app/tests/browser_daemon.rs` following `app/tests/daemon_ipc.rs` (the test process plays both the UI and
 the host, `Peers::AnyOfThisUser`, parent check off): unpaired request refused; pairing with a real P-256 key made in the
 test; bad signature refused; fill released only for the approved item; `login_matches` false without
-`confirmed_other_site` → `denied`; remembered fill needs no prompt on the same connection and does need one on a new
-connection; lock clears remembered; rate limit; `save_candidate` with an equal password produces no prompt; with a
+`confirmed_other_site` → `denied`; remembered fill needs no prompt on the same connection and on a new connection of the same paired
+key, and does need one for another key; lock keeps the remembered login, log out and account switch clear it; rate limit; `save_candidate` with an equal password produces no prompt; with a
 different one produces `Save { update_of }` and the vault item changes after `Save`.
 
 ### 8.5 Settings window (`app/ui/settings.slint`, `app/src/app/settings_ctl.rs`)
@@ -912,7 +949,7 @@ Holes found while reviewing, and where the plan closes them:
 | 3 | Anyone can run the host binary and speak for "the browser". | D6, D5, and D3 as the real boundary. |
 | 4 | A fake host in the manifest could sit between browser and real host. | Parent check (the real host's parent would not be a browser) and manifest restore, section 9. |
 | 5 | An in-page dropdown would give a compromised extension the list of logins, and the page a clickjacking target. | D3, D4. |
-| 6 | Remembered approvals keyed by pairing key would let a process that stole the key fill silently. | D7: keyed by live connection. |
+| 6 | Remembered logins keyed by pairing key let a process that stole the key fill them without the picker. | Accepted in D7 (user decision: remembered until log out). Still bound to a proven key, an item that matches the page and is not re-prompt, and Touch ID when on; removing the pairing or logging out forgets them. |
 | 7 | Save detection as a password oracle. | D8. |
 | 8 | Save prompts for every repeated submit, or prompt bombing. | Dedupe HMAC, rate limits, cooldown, "Never for this site". |
 | 9 | Tab navigates, or the frame is replaced, between request and fill. | Background and content re-checks, nonce. |
@@ -920,12 +957,12 @@ Holes found while reviewing, and where the plan closes them:
 | 11 | `http` pages and scheme downgrade. | 6 (downgrade rule), 8.3 step 1. |
 | 12 | Lookalike and IDN hosts. | ASCII host in prompts; other-site confirmation with a safe default. |
 | 13 | Domain matching across tenants of a shared suffix (`*.github.io`). | `psl` with the private section; `browser_default_match: Host` for stricter users. |
-| 14 | Lock, logout or account switch while a prompt is open. | `deny_all_browser`, re-check before `reveal`, remembered cleared. |
+| 14 | Lock, logout or account switch while a prompt is open. | `deny_all_browser`, re-check before `reveal`, remembered cleared (the picked-login choices stay unless it was a log out or switch). |
 | 15 | Re-prompt items are enforced only in the UI process today. | Picker asks for the master password; remembered never applies to them. See improvement 2 below. |
 | 16 | Requests keep the vault unlocked forever. | Only an approved fill counts as activity. |
 | 17 | Development builds are not hardened, so the host could be injected. | 8.3 start condition. |
 | 18 | The extension's JS strings cannot be wiped. | Stated as a limit; lifetime kept to one hand-off. |
-| 19 | Browser service worker restarts drop the connection. | Lazy reconnect; pairing is silent for a known key; only remembered approvals are lost. |
+| 19 | Browser service worker restarts drop the connection. | Lazy reconnect; pairing is silent for a known key; remembered logins survive the reconnect. |
 | 20 | Private windows. | Save detection skipped in incognito. |
 
 Still open, to decide with the user before or during implementation:
@@ -958,7 +995,7 @@ Not required for the feature; ordered by value.
    by team id would then also let the host check be expressed without cdhash pinning, and Gatekeeper would cover the
    bundle the manifests point to.
 8. **Warn on reused or weak passwords at save time** in the save prompt (the daemon already has both values in hand).
-9. **Honour `autofillOnPageLoad` never.** Keep D10 even if asked for convenience; offer the shortcut instead.
+9. **Autofill on page load is opt-in only** (`browser_autofill`, off by default, D10). Never make it the default, never extend it past remembered picks, and keep `no_auto` silent. An automatic fill never starts the app or the host itself; the extension connects at browser start (`runtime.onStartup`, only when a pairing key already exists) and an automatic fill on a restored tab waits up to 3 s for that handshake. That connection starts the app when it is closed, like any click does.
 
 ## 14. Verified facts (Phase 0)
 
@@ -1028,4 +1065,7 @@ Facts learned:
   the real toolbar popup instead and reads it through a frame script.
 - A daemon whose data directory was deleted while it runs does not exit on SIGTERM (the single-instance listener thread
   cannot be woken); harmless in practice.
+- Fill on page load (`browser_autofill`) is covered by `app/src/daemon/browser/dispatch_tests/auto.rs`,
+  `app/tests/browser_daemon/autofill.rs` and `browsers/test/content-autofill.test.ts`. Not tried by hand on real sites:
+  sites that build the form late or in a shadow root, and the first fill right after a browser restart (the wait for the start-up handshake is covered by `browsers/test/router.test.ts`).
 - Not logged in `browser.log`: pairings, removals and refused connections (only fills and restored manifests are).

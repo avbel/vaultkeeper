@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 
 use crate::daemon::browser::manifests::{
     Existing, ExtensionIds, ManifestBrowser, Outcome, WINDOWS_MANIFESTS_DIR, existing_state,
-    render, write_atomic,
+    names_missing_host, render, write_atomic,
 };
 
 /// Owns a registry key so every early return still closes it exactly once.
@@ -69,9 +69,14 @@ fn install_under(
             Outcome::Written
         }
         Existing::Differs => {
+            let relocated = names_missing_host(&target);
             fs::create_dir_all(&dir)?;
             write_atomic(&dir, &target, &wanted)?;
-            Outcome::Restored
+            if relocated {
+                Outcome::Written
+            } else {
+                Outcome::Restored
+            }
         }
     };
     // The registry value is written every time so a manually moved pointer is corrected silently.
