@@ -21,12 +21,17 @@ use zeroize::Zeroizing;
 use super::{
     choices::ChoiceStore,
     dispatch::{BrowserHost, Candidate, FillFlow, serve},
-    fill::{FillRequest, Filled},
+    fill::{FillRequest, Filled, Via},
     pairing::PairingStore,
 };
 
 struct StubHost {
     enabled: AtomicBool,
+    autofill: AtomicBool,
+    touch_id: AtomicBool,
+    prompts: AtomicUsize,
+    unlocks: AtomicUsize,
+    presences: AtomicUsize,
     replies: Mutex<Vec<BrowserReply>>,
     unlocked: Mutex<Vec<oneshot::Sender<()>>>,
     activity: AtomicUsize,
@@ -47,6 +52,11 @@ impl StubHost {
         let choices_dir = tempfile::tempdir().expect("directory");
         let host = Arc::new(Self {
             enabled: AtomicBool::new(true),
+            autofill: AtomicBool::new(false),
+            touch_id: AtomicBool::new(false),
+            prompts: AtomicUsize::new(0),
+            unlocks: AtomicUsize::new(0),
+            presences: AtomicUsize::new(0),
             replies: Mutex::new(Vec::new()),
             unlocked: Mutex::new(Vec::new()),
             activity: AtomicUsize::new(0),
@@ -74,6 +84,7 @@ impl StubHost {
 
 impl BrowserHost for StubHost {
     fn prompt(&self, _prompt: BrowserPrompt) -> impl Future<Output = BrowserReply> + Send {
+        self.prompts.fetch_add(1, Ordering::SeqCst);
         let reply = self
             .replies
             .lock()
@@ -83,9 +94,11 @@ impl BrowserHost for StubHost {
         std::future::ready(reply)
     }
     fn presence(&self, _reason: &str) -> impl Future<Output = bool> + Send {
+        self.presences.fetch_add(1, Ordering::SeqCst);
         std::future::ready(true)
     }
     fn unlock(&self) -> impl Future<Output = ()> + Send {
+        self.unlocks.fetch_add(1, Ordering::SeqCst);
         if let Some(done) = self.unlocked.lock().expect("waiters").pop() {
             let _ = done.send(());
         }
@@ -128,11 +141,14 @@ impl BrowserHost for StubHost {
     fn browser_fill_single(&self) -> bool {
         false
     }
+    fn browser_autofill(&self) -> bool {
+        self.autofill.load(Ordering::SeqCst)
+    }
     fn browser_passkeys(&self) -> bool {
         true
     }
     fn browser_touch_id(&self) -> bool {
-        false
+        self.touch_id.load(Ordering::SeqCst)
     }
     fn enabled(&self, _browser: vk_ipc::browser::protocol::KnownBrowser) -> bool {
         self.enabled.load(Ordering::SeqCst)
@@ -151,6 +167,7 @@ impl BrowserHost for StubHost {
 struct GatedFills {
     gate: mpsc::Sender<oneshot::Sender<Result<Filled, ErrorCode>>>,
     seen: Mutex<Vec<Option<vk_vault::model::ItemId>>>,
+    auto_requests: AtomicUsize,
 }
 
 impl GatedFills {
@@ -158,6 +175,7 @@ impl GatedFills {
         Self {
             gate,
             seen: Mutex::new(Vec::new()),
+            auto_requests: AtomicUsize::new(0),
         }
     }
 }
@@ -178,6 +196,9 @@ impl FillFlow for GatedFills {
         A: FnOnce() -> AFut + Send,
         AFut: Future<Output = bool> + Send,
     {
+        if request.auto {
+            self.auto_requests.fetch_add(1, Ordering::SeqCst);
+        }
         self.seen.lock().expect("seen").push(request.remembered);
         let (done, answer) = oneshot::channel();
         self.gate.send(done).await.expect("gate open");
@@ -273,7 +294,7 @@ async fn authenticate(
     key: &SigningKey,
 ) {
     let encoded = STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
-    let hello = serde_json::json!({"type":"hello","id":1,"protocol":1,"extension_version":"test","public_key":encoded});
+    let hello = serde_json::json!({"type":"hello","id":1,"protocol":2,"extension_version":"test","public_key":encoded});
     incoming_tx
         .send(Zeroizing::new(serde_json::to_vec(&hello).expect("hello")))
         .await
@@ -316,7 +337,7 @@ async fn answers_status_and_rejects_reauthentication() {
     let reply = next(&mut outgoing_rx).await;
     assert_eq!(reply["id"], 5);
     assert_eq!(reply["result"]["state"], "unlocked");
-    let hello = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"type":"hello","id":6,"protocol":1,"extension_version":"1","public_key":"x"})).expect("hello"));
+    let hello = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"type":"hello","id":6,"protocol":2,"extension_version":"1","public_key":"x"})).expect("hello"));
     incoming_tx.send(hello).await.expect("send");
     let reply = next(&mut outgoing_rx).await;
     assert_eq!(reply["error"], "unpaired");
@@ -1095,3 +1116,5 @@ async fn a_picker_the_user_walked_away_from_does_not_count_toward_the_cooldown()
     drop(incoming_tx);
     task.await.expect("serve ends");
 }
+
+mod auto;

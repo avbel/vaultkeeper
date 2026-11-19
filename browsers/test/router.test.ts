@@ -21,6 +21,7 @@ function setup(
     request?: RouterDeps["session"]["request"];
     tabUrl?: string;
     phase?: string;
+    state?: string | null;
     sendToTab?: RouterDeps["sendToTab"];
   } = {},
 ) {
@@ -42,7 +43,10 @@ function setup(
     session: {
       request: request as unknown as RouterDeps["session"]["request"],
       theme: "dark",
-      status: { phase: options.phase ?? "ready" },
+      status: {
+        phase: options.phase ?? "ready",
+        state: options.state === undefined ? "unlocked" : options.state,
+      },
     },
   };
   return { router: createRouter(deps), request, sent, injectContent };
@@ -55,6 +59,7 @@ const FILL = {
   fields: { username: true, password: true },
   path: "/ignored",
 };
+const AUTO = { ...FILL, auto: true };
 
 describe("router sender checks", () => {
   it("computes origin and path from the sender, ignoring body fields", async () => {
@@ -66,6 +71,7 @@ describe("router sender checks", () => {
       origin: "https://shop.example",
       path: "/login",
       choose: false,
+      auto: false,
       fields: { username: true, password: true },
     });
   });
@@ -171,6 +177,79 @@ describe("fill flow", () => {
     await router.handleContentMessage(FILL, sender());
     await router.idle();
     expect(sent[0]?.message).toMatchObject({ kind: "fill_error", code: "unavailable" });
+  });
+});
+
+describe("automatic fill", () => {
+  const QUIET = { kind: "fill_error", nonce: "n1", code: "no_auto", theme: "dark" };
+
+  it("asks the app with auto set and delivers the result like a normal fill", async () => {
+    const { router, request, sent } = setup();
+    await router.handleContentMessage(AUTO, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledWith("fill", {
+      origin: "https://shop.example",
+      path: "/login",
+      choose: false,
+      auto: true,
+      fields: { username: true, password: true },
+    });
+    expect(sent[0]?.message).toMatchObject({ kind: "fill_result", username: "alice" });
+  });
+
+  it("maps every failure, including no_auto, to a silent drop of the pending request", async () => {
+    for (const code of ["no_auto", "locked", "rate_limited", "unavailable"] as const) {
+      const { router, sent } = setup({
+        request: async () => {
+          throw new NativeError(code);
+        },
+      });
+      await router.handleContentMessage(AUTO, sender());
+      await router.idle();
+      expect(sent.map((s) => s.message)).toEqual([QUIET]);
+    }
+  });
+
+  it("does not touch the connection unless it is ready and unlocked", async () => {
+    for (const options of [
+      { phase: "idle" },
+      { phase: "unavailable" },
+      { phase: "denied" },
+      { state: "locked" },
+      { state: "logged_out" },
+      { state: null },
+    ]) {
+      const { router, request, sent } = setup(options);
+      await router.handleContentMessage(AUTO, sender());
+      await router.idle();
+      expect(request).not.toHaveBeenCalled();
+      expect(sent.map((s) => s.message)).toEqual([QUIET]);
+    }
+  });
+
+  it("refuses frames, http pages and a request that also asks for the picker", async () => {
+    const http = "http://localhost:3000/login";
+    const cases = [
+      { message: AUTO, from: sender({ frameId: 3 }) },
+      { message: AUTO, from: sender({ url: http, tab: { id: 5, url: http } }) },
+      { message: { ...AUTO, choose: true }, from: sender() },
+    ];
+    for (const { message, from } of cases) {
+      const { router, request, sent } = setup();
+      await router.handleContentMessage(message, from);
+      await router.idle();
+      expect(request).not.toHaveBeenCalled();
+      expect(sent.map((s) => s.message)).toEqual([QUIET]);
+    }
+  });
+
+  it("a normal fill never carries auto, whatever the page claims", async () => {
+    const { router, request } = setup();
+    await router.handleContentMessage({ ...FILL, auto: "yes" }, sender());
+    await router.handleContentMessage(FILL, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("fill", expect.objectContaining({ auto: false }));
   });
 });
 

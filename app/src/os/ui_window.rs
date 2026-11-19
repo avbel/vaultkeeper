@@ -77,9 +77,8 @@ mod windows {
             System::Threading::{AttachThreadInput, GetCurrentThreadId},
             UI::WindowsAndMessaging::{
                 AllowSetForegroundWindow, BringWindowToTop, EnumThreadWindows, EnumWindows,
-                GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-                SW_RESTORE, SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow,
-                WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+                GetForegroundWindow, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
+                SetForegroundWindow, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
             },
         },
         core::BOOL,
@@ -127,13 +126,14 @@ mod windows {
             return false;
         };
         let hwnd = ptr::with_exposed_provenance_mut::<c_void>(hwnd);
-        // SAFETY: the handle belongs to this process's live window; a stale one only fails.
-        if unsafe { IsIconic(hwnd) } != 0 {
-            // SetForegroundWindow leaves a minimized window minimized.
-            // SAFETY: as above.
-            unsafe { ShowWindow(hwnd, SW_RESTORE) };
+        if window.is_minimized() {
+            // SetForegroundWindow leaves a minimized window minimized. Restoring through the
+            // toolkit keeps its own view of the window state in step, which a raw ShowWindow
+            // does not, and the repaint request covers a surface that was released meanwhile.
+            window.set_minimized(false);
+            window.request_redraw();
         }
-        // SAFETY: as above.
+        // SAFETY: the handle belongs to this process's live window; a stale one only fails.
         unsafe { SetForegroundWindow(hwnd) };
         // The return value is not trusted: a refused request can still report success while the
         // keyboard stays with the previous app, so the foreground window itself is checked.

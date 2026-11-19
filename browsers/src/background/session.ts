@@ -103,7 +103,7 @@ export class Session {
       const print = await fingerprint(publicKey);
       this.#set({ fingerprint: print });
       const hello = await native.request("hello", {
-        protocol: 1,
+        protocol: 2,
         extension_version: this.#deps.extensionVersion,
         public_key: toBase64(publicKey),
       });

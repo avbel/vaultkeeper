@@ -194,6 +194,9 @@ pub struct Settings {
     pub browser_copy_totp: bool,
     /// Fill without the picker when exactly one login matches the site (Touch ID still applies).
     pub browser_fill_single: bool,
+    /// Fill a remembered login as soon as its page opens, with no click. Off by default: the
+    /// password is then readable by the page's scripts without the user having asked for it.
+    pub browser_autofill: bool,
     /// Save and sign in with vault passkeys; off leaves every site to the browser's own.
     pub browser_passkeys: bool,
     pub browser_default_match: BrowserMatch,
@@ -238,6 +241,7 @@ impl Default for Settings {
             browser_save_prompts: true,
             browser_copy_totp: true,
             browser_fill_single: true,
+            browser_autofill: false,
             browser_passkeys: true,
             browser_default_match: BrowserMatch::Domain,
             hotkey: DEFAULT_HOTKEY.to_owned(),
@@ -608,6 +612,7 @@ mod tests {
         assert!(old.browser_save_prompts);
         assert!(old.browser_copy_totp);
         assert!(old.browser_fill_single);
+        assert!(!old.browser_autofill);
         assert!(old.browser_passkeys);
         assert_eq!(old.browser_default_match, BrowserMatch::Domain);
         let settings = Settings {
@@ -615,6 +620,7 @@ mod tests {
             browser_chrome: false,
             browser_edge: false,
             browser_firefox: false,
+            browser_autofill: true,
             browser_default_match: BrowserMatch::Host,
             ..old
         };
@@ -773,6 +779,7 @@ mod tests {
             browser_save_prompts: false,
             browser_copy_totp: false,
             browser_fill_single: false,
+            browser_autofill: true,
             browser_passkeys: false,
             browser_default_match: BrowserMatch::Host,
             hotkey: "Cmd+Alt+K".to_owned(),

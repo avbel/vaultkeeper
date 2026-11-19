@@ -484,8 +484,12 @@ impl Daemon {
                 Via::Picker => "picker",
                 Via::Remembered => "remembered",
                 Via::Single => "single",
+                Via::Auto => "auto",
             },
         ));
+        if record.via == Via::Auto {
+            return;
+        }
         self.offer_address(record);
         let settings = self.settings();
         if !record.has_totp || !settings.browser_copy_totp {
@@ -591,6 +595,10 @@ impl BrowserHost for DaemonBrowser {
 
     fn browser_fill_single(&self) -> bool {
         self.0.settings().browser_fill_single
+    }
+
+    fn browser_autofill(&self) -> bool {
+        self.0.settings().browser_autofill
     }
 
     fn browser_passkeys(&self) -> bool {

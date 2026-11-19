@@ -64,7 +64,7 @@ describe("Session handshake", () => {
     const ready = session.ensureReady();
     await flush();
     const hello = port.sent[0]!;
-    expect(hello).toMatchObject({ id: 1, type: "hello", protocol: 1, extension_version: "0.1.0" });
+    expect(hello).toMatchObject({ id: 1, type: "hello", protocol: 2, extension_version: "0.1.0" });
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     port.emit({
       id: 1,

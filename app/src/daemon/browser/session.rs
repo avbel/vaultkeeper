@@ -1,7 +1,7 @@
 //! Per-connection challenge and pairing state.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use vk_ipc::browser::protocol::ErrorCode;
+use vk_ipc::browser::protocol::{EXTENSION_PROTOCOL_VERSION, ErrorCode};
 
 use super::pairing::{PairingStore, fingerprint, public_key, verify};
 
@@ -54,7 +54,7 @@ impl PairingSession {
         if !matches!(self.state, State::New) {
             return Err(ErrorCode::Denied);
         }
-        if protocol != 1 {
+        if protocol != EXTENSION_PROTOCOL_VERSION {
             return Err(ErrorCode::BadRequest);
         }
         let key = public_key(encoded_key).map_err(|_| ErrorCode::BadRequest)?;
@@ -154,7 +154,7 @@ mod tests {
             Err(ErrorCode::Unpaired)
         ));
         assert!(session.paired_key().is_none());
-        let challenge = session.hello(1, &encoded, &store).expect("hello");
+        let challenge = session.hello(2, &encoded, &store).expect("hello");
         assert!(!challenge.known);
         assert!(matches!(
             session.prove(&sign(&key, &challenge.challenge, caller), &store),
@@ -169,7 +169,7 @@ mod tests {
         session.finish_pairing(true).expect("approve");
         assert!(session.paired_key().is_some());
         let mut next = PairingSession::new(caller.into());
-        let challenge = next.hello(1, &encoded, &store).expect("hello");
+        let challenge = next.hello(2, &encoded, &store).expect("hello");
         assert!(challenge.known);
         assert!(matches!(
             next.prove(&sign(&key, &challenge.challenge, caller), &store),
@@ -188,7 +188,7 @@ mod tests {
             .approve(&bytes, KnownBrowser::Firefox, "extension", 1)
             .expect("approve");
         let mut session = PairingSession::new("extension".into());
-        let challenge = session.hello(1, &encoded, &store).expect("hello");
+        let challenge = session.hello(2, &encoded, &store).expect("hello");
         assert!(challenge.known);
         store.paired.clear();
         assert!(matches!(
@@ -205,15 +205,36 @@ mod tests {
         let key = SigningKey::from_bytes((&[7_u8; 32]).into()).expect("key");
         let encoded = STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
         let mut session = PairingSession::new("extension".into());
-        session.hello(1, &encoded, &store).expect("hello");
+        session.hello(2, &encoded, &store).expect("hello");
         assert!(matches!(
             session.prove("invalid", &store),
             Err(ErrorCode::Denied)
         ));
         assert!(matches!(
-            session.hello(1, &encoded, &store),
+            session.hello(2, &encoded, &store),
             Err(ErrorCode::Denied)
         ));
         assert!(session.paired_key().is_none());
+    }
+
+    #[test]
+    fn only_the_current_extension_protocol_is_accepted() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = PairingStore::load(&dir.path().join("browsers.json")).expect("store");
+        let key = SigningKey::from_bytes((&[7_u8; 32]).into()).expect("key");
+        let encoded = STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
+        for version in [0, 1, 3] {
+            let mut session = PairingSession::new("extension".into());
+            assert!(
+                matches!(
+                    session.hello(version, &encoded, &store),
+                    Err(ErrorCode::BadRequest)
+                ),
+                "protocol {version}"
+            );
+        }
+        assert_eq!(EXTENSION_PROTOCOL_VERSION, 2);
+        let mut session = PairingSession::new("extension".into());
+        assert!(session.hello(2, &encoded, &store).is_ok());
     }
 }

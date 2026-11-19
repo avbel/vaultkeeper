@@ -153,6 +153,8 @@ pub trait BrowserHost: Send + Sync {
     fn default_match(&self) -> DefaultMatch;
     fn browser_touch_id(&self) -> bool;
     fn browser_fill_single(&self) -> bool;
+    /// Off by default: fills the remembered login as a page opens, with no click.
+    fn browser_autofill(&self) -> bool;
     fn browser_passkeys(&self) -> bool;
     /// Passkeys always ask for Touch ID; without it they are left to the browser.
     fn touch_id_available(&self) -> bool {
@@ -333,8 +335,9 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
                 path,
                 choose,
                 fields,
+                auto,
                 ..
-            } => self.fill(id, origin, path, choose, fields).await,
+            } => self.fill(id, origin, path, (choose, auto), fields).await,
             Request::SaveCandidate { .. } => self.save(id, &request).await,
             Request::PasskeyCreate {
                 origin, options, ..
@@ -393,9 +396,16 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
         id: u64,
         origin: String,
         path: String,
-        choose: bool,
+        (choose, auto): (bool, bool),
         fields: FillFields,
     ) -> Result<(), Closed> {
+        if auto {
+            return if choose {
+                self.respond::<()>(id, Err(ErrorCode::BadRequest)).await
+            } else {
+                self.auto_fill(id, origin, path, fields).await
+            };
+        }
         if self.inflight.is_some() {
             return self.respond::<()>(id, Err(ErrorCode::Busy)).await;
         }
@@ -412,10 +422,55 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             origin,
             path,
             choose,
+            auto: false,
             fields,
             epoch,
             remembered,
             persisted,
+            browser: self.browser,
+            kind: self.kind,
+            completions: self.completions.clone(),
+        };
+        self.inflight = Some(spawn_fill(&self.fills, &self.host, task));
+        Ok(())
+    }
+
+    /// A page-load fill. Every refusal is the quiet `no_auto`, answered before anything is
+    /// spawned: the vault is not unlocked, no window is shown and no presence check is asked.
+    /// The budget is charged only for a request that has a remembered login to release.
+    async fn auto_fill(
+        &mut self,
+        id: u64,
+        origin: String,
+        path: String,
+        fields: FillFields,
+    ) -> Result<(), Closed> {
+        let key = canonical_origin(&origin);
+        let epoch = self.host.approvals_epoch();
+        let allowed = self.inflight.is_none()
+            && self.host.browser_autofill()
+            && !self.host.browser_touch_id()
+            && self.host.status().0 == State::Unlocked
+            && key.starts_with("https://");
+        let remembered = if allowed {
+            self.remembered.get(epoch, &key)
+        } else {
+            None
+        };
+        if remembered.is_none() || !self.limit(|limits| limits.auto_fill(&key, Instant::now())) {
+            return self.respond::<()>(id, Err(ErrorCode::NoAuto)).await;
+        }
+        let task = FillTask {
+            id,
+            key,
+            origin,
+            path,
+            choose: false,
+            auto: true,
+            fields,
+            epoch,
+            remembered,
+            persisted: None,
             browser: self.browser,
             kind: self.kind,
             completions: self.completions.clone(),
@@ -568,7 +623,10 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             self.remembered
                 .insert(epoch, origin.to_owned(), filled.item.clone());
         }
-        self.host.note_activity();
+        // A page opening is not the user using the vault: it must not postpone the auto-lock.
+        if filled.via != Via::Auto {
+            self.host.note_activity();
+        }
         self.host.filled(FillRecord {
             browser: self.browser.to_owned(),
             host: filled.host.clone(),
@@ -678,6 +736,7 @@ struct FillTask {
     origin: String,
     path: String,
     choose: bool,
+    auto: bool,
     fields: FillFields,
     epoch: u64,
     remembered: Option<ItemId>,
@@ -698,6 +757,7 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
         origin,
         path,
         choose,
+        auto,
         fields,
         epoch,
         remembered,
@@ -711,7 +771,7 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
     let host = Arc::clone(host);
     let task = tokio::spawn(async move {
         let (answer, abandoned) = tokio::select! {
-            done = run_fill(&*fills, &host, FillInput { browser, kind, origin, path, choose, fields, remembered, persisted }) => done,
+            done = run_fill(&*fills, &host, FillInput { browser, kind, origin, path, choose, auto, fields, remembered, persisted }) => done,
             _ = cancelled => return,
         };
         let _ = completions
@@ -833,6 +893,7 @@ struct FillInput {
     origin: String,
     path: String,
     choose: bool,
+    auto: bool,
     fields: FillFields,
     remembered: Option<ItemId>,
     /// The choice that outlives a lock, unlike the connection's approval in `remembered`.
@@ -856,6 +917,9 @@ async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
     input: FillInput,
     abandoned: &Arc<AtomicBool>,
 ) -> Result<Filled, ErrorCode> {
+    if input.auto {
+        return run_auto(fills, host, input).await;
+    }
     let return_to = host.return_to().await;
     let mut input = input;
     if host.status().0 == State::Locked {
@@ -885,6 +949,7 @@ async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
             FillRequest {
                 browser: browser.to_owned(),
                 choose,
+                auto: false,
                 fill_single,
                 remembered,
                 origin,
@@ -907,6 +972,49 @@ async fn run_fill_inner<H: BrowserHost, F: FillFlow>(
             || async { host.enabled(kind) },
         )
         .await
+}
+
+/// The vault is read only if it is unlocked right now. The prompt, presence and return-to hooks
+/// are inert, so no flow can show a window, ask Touch ID or wait for an unlock from here; any
+/// failure is the quiet `no_auto`.
+async fn run_auto<H: BrowserHost, F: FillFlow>(
+    fills: &F,
+    host: &Arc<H>,
+    input: FillInput,
+) -> Result<Filled, ErrorCode> {
+    if host.status().0 != State::Unlocked {
+        return Err(ErrorCode::NoAuto);
+    }
+    let FillInput {
+        browser,
+        kind,
+        origin,
+        path,
+        fields,
+        remembered,
+        ..
+    } = input;
+    fills
+        .run(
+            FillRequest {
+                browser: browser.to_owned(),
+                choose: false,
+                auto: true,
+                fill_single: false,
+                remembered,
+                origin,
+                path,
+                fields,
+                default_match: host.default_match(),
+                touch_id: host.browser_touch_id(),
+                return_to: None,
+            },
+            |_| async { BrowserReply::Dismissed },
+            || async { false },
+            || async { host.enabled(kind) && host.browser_autofill() },
+        )
+        .await
+        .map_err(|_| ErrorCode::NoAuto)
 }
 
 const fn id_of(request: &Request) -> u64 {

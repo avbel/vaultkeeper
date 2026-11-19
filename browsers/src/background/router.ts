@@ -24,7 +24,7 @@ export interface RouterDeps {
       fields: RequestMap[T]["fields"],
     ): Promise<RequestMap[T]["result"]>;
     readonly theme: Theme;
-    readonly status: { phase: string };
+    readonly status: { phase: string; state?: string | null };
   };
 }
 
@@ -87,11 +87,15 @@ export function createRouter(deps: RouterDeps) {
     message: Extract<ToBackground, { kind: "fill_request" }>,
   ): Promise<ToContent | null> {
     const { nonce } = message;
+    if (message.auto && (message.choose || !autoAllowed(from))) {
+      return autoRefused(nonce);
+    }
     try {
       const result = await deps.session.request("fill", {
         origin: from.origin,
         path: from.path,
         choose: message.choose,
+        auto: message.auto,
         fields: message.fields,
       });
       const tab = await deps.getTab(from.tabId);
@@ -106,9 +110,29 @@ export function createRouter(deps: RouterDeps) {
         theme: deps.session.theme,
       };
     } catch (error) {
+      if (message.auto) {
+        return autoRefused(nonce);
+      }
       const code = error instanceof NativeError ? error.code : "internal";
       return { kind: "fill_error", nonce, code, theme: deps.session.theme };
     }
+  }
+
+  // A fill nobody asked for must not start the app or the native host: it goes only over a
+  // connection that is already up and unlocked, from the top frame of an encrypted page.
+  function autoAllowed(from: VerifiedSender): boolean {
+    const { phase, state } = deps.session.status;
+    return (
+      from.frameId === 0 &&
+      from.origin.startsWith("https://") &&
+      phase === "ready" &&
+      state === "unlocked"
+    );
+  }
+
+  // The content script only needs to drop its pending request; whatever the reason, no toast.
+  function autoRefused(nonce: string): ToContent {
+    return { kind: "fill_error", nonce, code: "no_auto", theme: deps.session.theme };
   }
 
   async function runSave(
@@ -266,6 +290,7 @@ export function parseToBackground(message: unknown): ToBackground | null {
       m.nonce.length === 0 ||
       m.nonce.length > MAX_NONCE ||
       typeof m.choose !== "boolean" ||
+      (m.auto !== undefined && typeof m.auto !== "boolean") ||
       !isFillFields(m.fields)
     ) {
       return null;
@@ -274,6 +299,7 @@ export function parseToBackground(message: unknown): ToBackground | null {
       kind: "fill_request",
       nonce: m.nonce,
       choose: m.choose,
+      auto: m.auto === true,
       fields: { username: m.fields.username, password: m.fields.password },
       path: "",
     };

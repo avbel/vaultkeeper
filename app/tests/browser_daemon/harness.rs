@@ -788,7 +788,7 @@ impl Host {
 
     pub async fn hello(&mut self, extension: &Extension) -> Value {
         self.request(json!({
-            "type": "hello", "protocol": 1, "extension_version": "1.0.0",
+            "type": "hello", "protocol": 2, "extension_version": "1.0.0",
             "public_key": extension.public_key_b64(),
         }))
         .await
@@ -806,6 +806,15 @@ impl Host {
     pub async fn submit_fill(&mut self, origin: &str, choose: bool) -> u64 {
         self.submit(json!({
             "type": "fill", "origin": origin, "path": "/login", "choose": choose,
+            "fields": { "username": true, "password": true },
+        }))
+        .await
+    }
+
+    /// A fill the page asked for on load.
+    pub async fn submit_auto_fill(&mut self, origin: &str) -> u64 {
+        self.submit(json!({
+            "type": "fill", "origin": origin, "path": "/login", "choose": false, "auto": true,
             "fields": { "username": true, "password": true },
         }))
         .await

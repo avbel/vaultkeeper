@@ -1,5 +1,6 @@
 import { api } from "../shared/api.ts";
 import type { Theme, ToBackground, ToContent } from "../shared/messages.ts";
+import { createAutofill } from "./autofill.ts";
 import { beginFill } from "./begin.ts";
 import { createCapture } from "./capture.ts";
 import { findLoginForms, type LoginForm } from "./detect.ts";
@@ -32,7 +33,9 @@ function main(): void {
   const send = (message: ToBackground): void => {
     Promise.resolve(api.runtime.sendMessage(message)).catch(() => {
       filler.cancel();
-      icon.toast(TOAST.generic);
+      if (message.kind !== "fill_request" || !message.auto) {
+        icon.toast(TOAST.generic);
+      }
     });
   };
 
@@ -50,6 +53,8 @@ function main(): void {
       send({ kind: "save_candidate", ...candidate });
     },
   });
+
+  const autofill = createAutofill({ filler });
 
   function rescan(): LoginForm[] {
     forms = findLoginForms(document);
@@ -123,14 +128,15 @@ function main(): void {
         case "fill_result": {
           applyTheme(message.theme);
           const outcome = filler.applyResult(message);
-          if (outcome.claimed && outcome.filled === 0) {
+          if (outcome.claimed && outcome.filled === 0 && !outcome.auto) {
             icon.toast(TOAST.generic);
           }
           break;
         }
         case "fill_error":
           applyTheme(message.theme);
-          if (filler.applyError(message)) {
+          // `no_auto` is the answer to a fill the user never asked for: nothing to report.
+          if (filler.applyError(message) && message.code !== "no_auto") {
             icon.toast(toastForError(message.code));
           }
           break;
@@ -145,7 +151,7 @@ function main(): void {
   new MutationObserver(() => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      rescan();
+      autofill.attempt(rescan());
       icon.reposition();
     }, RESCAN_DEBOUNCE_MS);
   }).observe(document.documentElement, {
@@ -155,7 +161,11 @@ function main(): void {
     attributeFilter: ["style", "class", "hidden", "disabled", "readonly", "type"],
   });
 
-  rescan();
+  document.addEventListener("visibilitychange", () => {
+    autofill.attempt(rescan());
+  });
+
+  autofill.attempt(rescan());
   document.documentElement.append(icon.host);
 }
 
