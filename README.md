@@ -4,11 +4,12 @@
   <img src="docs/vaultkeeper-logo.png" alt="An orange Rust crab holding Vaultkeeper’s blue keyhole shield" width="220">
 </p>
 
-Vaultkeeper is a lightweight native macOS (Apple silicon) desktop client for self-hosted
+Vaultkeeper is a lightweight native desktop client for self-hosted
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden) servers, which speak the Bitwarden API. It is written in Rust with a
-[Slint](https://slint.dev) UI, lives in the menu bar, and opens a window only when you need one.
+[Slint](https://slint.dev) UI, runs in the system tray, and opens a window only when you need one.
 
-**Windows and Linux are coming soon** (see the [roadmap](#roadmap-cross-platform)).
+**Supported platforms:** macOS 13+ on Apple silicon and Windows 11 24H2+ on x64 and ARM64.
+Linux support is planned (see the [roadmap](#roadmap-cross-platform)).
 
 Vaultkeeper is an independent project. It is **not affiliated with, endorsed by or supported by Bitwarden Inc. or the
 Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/compose.yaml`).
@@ -17,7 +18,7 @@ Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/c
 
 - **No Electron.** Electron apps ship a full Chromium and Node.js runtime. Vaultkeeper is a single Rust binary.
 - **No JavaScript.** The UI is written in Slint and drawn by its software renderer, with no web view.
-- **Small memory footprint.** A background daemon owns the tray icon, the vault, sync and the SSH agent. Windows run in a
+- **Small memory footprint.** A background daemon owns the tray icon, the vault, sync and the SSH agent. App windows run in a
   separate UI process of the same binary, which exits about 120 s after the last window closes. When no window is open, memory
   stays at the tray-only level.
 - **Fast, native Rust.** Crypto, networking and the vault logic are plain Rust, and the Quick Panel stays warm for 120 s
@@ -43,10 +44,10 @@ spike's window was dropped). See the "Step 0 result" section of
 - TOTP codes with a countdown
 - Password and passphrase generator, from the tray or its own hotkey
 - Auto-type of username and password into the previous app (key presses, no clipboard)
-- SSH agent for the vault's SSH keys, with approval prompts and optional Touch ID
+- SSH agent for the vault's SSH keys, with approval prompts and optional biometric verification
 - Read-only [CLI access](#cli-access) for individual logins you choose to share
 - Chrome, Edge and Firefox extension that fills and saves logins through native Vaultkeeper windows (see `docs/USAGE.md`)
-- Touch ID unlock (key wrapped to the Secure Enclave)
+- Quick unlock with Touch ID on macOS or Windows Hello on Windows
 - Multiple accounts
 - Offline mode from an encrypted local cache
 - Live sync over the server websocket
@@ -55,12 +56,12 @@ spike's window was dropped). See the "Step 0 result" section of
 
 ## Requirements
 
-- macOS 13 or newer on Apple silicon (Windows and Linux are coming soon)
-- Rust toolchain: the version is pinned in `rust-toolchain.toml` and installed automatically by `rustup`
-- Xcode Command Line Tools (`xcode-select --install`), needed to build the Swift shim in `crates/platform/swift`
-- A Vaultwarden server (or try the demo vault below)
+- macOS 13 or newer on Apple silicon, or Windows 11 version 24H2 or newer on x64 or ARM64
+- A Vaultwarden server, or use `--mock` to try the demo vault
 
 ## Install
+
+### macOS
 
 1. Download `Vaultkeeper-<version>-arm64.dmg` from [Releases](https://github.com/avbel/vaultkeeper/releases), open it and
    drag Vaultkeeper to Applications. Do this before the first launch: an app started from Downloads runs from a temporary
@@ -69,13 +70,28 @@ spike's window was dropped). See the "Step 0 result" section of
    "Apple could not verify…". Open it once, then choose **Open Anyway** in System Settings → Privacy & Security, or run
    `xattr -dr com.apple.quarantine /Applications/Vaultkeeper.app`. From version 0.1.7 on, only the first install
    needs this: later versions install from the tray or automatically (see "Updates" in [docs/USAGE.md](docs/USAGE.md)).
-3. For the browser extension, install Vaultkeeper from the Chrome Web Store (Chrome and Edge) or
-   [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/) and turn on browser integration in the
-   app's settings.
 
-Each release lists SHA-256 checksums in `SHA256SUMS`. Windows and Linux builds are coming soon.
+### Windows
+
+Download `Vaultkeeper-v<version>-x64-setup.exe` or `Vaultkeeper-v<version>-arm64-setup.exe` for your PC from
+[Releases](https://github.com/avbel/vaultkeeper/releases), run the installer, and open Vaultkeeper from the Start menu.
+For portable use, extract the matching ZIP and run `vaultkeeper.exe`.
+
+### Browser extension
+
+Install the Vaultkeeper extension from the Chrome Web Store (Chrome and Edge) or
+[Firefox Add-ons](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/) and turn on browser integration in the
+app's settings.
+
+Each release lists SHA-256 checksums in `SHA256SUMS`.
 
 ## Build from source
+
+`rustup` installs the Rust toolchain pinned in `rust-toolchain.toml`.
+
+### Build on macOS
+
+Install the Xcode Command Line Tools (`xcode-select --install`) to build the Swift shim in `crates/platform/swift`.
 
 ```sh
 git clone https://github.com/avbel/vaultkeeper.git
@@ -89,21 +105,28 @@ open /Applications/Vaultkeeper.app
 The certificate step is optional but recommended: a stable code identity keeps keychain access and the Accessibility
 permission across rebuilds. Details, including the signing prompt, are in [docs/USAGE.md](docs/USAGE.md).
 
-To look around without a server, run the built-in demo vault. It touches no real data:
+To open the demo vault from a standard macOS installation, run
+`/Applications/Vaultkeeper.app/Contents/MacOS/vaultkeeper --mock`.
 
-```sh
-/Applications/Vaultkeeper.app/Contents/MacOS/vaultkeeper --mock   # master password: mock
+### Build on Windows
+
+From the repository root, use PowerShell with the Rust MSVC toolchain and Visual Studio C++ Build Tools installed.
+
+```powershell
+.\scripts\bundle-windows.ps1 -Build -Arch x64   # use arm64 for Windows on ARM
+.\out\stage\vaultkeeper.exe
 ```
 
 ## Usage
 
-Log in with your server URL, email and master password, then use the tray icon or the Quick Panel hotkey. The user guide
+Log in with your server URL, email and master password, then use the tray icon or the Quick Panel hotkey. To try the demo
+vault without a server, run `vaultkeeper --mock` and use `mock` as the master password. The user guide
 [docs/USAGE.md](docs/USAGE.md) covers first login, the Quick Panel keys, auto-type and the Accessibility permission, Touch ID,
 the SSH agent setup, start at login, settings, files and uninstalling.
 
 ```
 vaultkeeper            start (or ask the running instance) and open the vault window
-vaultkeeper --tray     menu bar only
+vaultkeeper --tray     system tray only
 vaultkeeper --quick    open the Quick Panel
 vaultkeeper --mock     demo vault
 ```
@@ -112,8 +135,9 @@ vaultkeeper --mock     demo vault
 
 1. Keep Vaultkeeper running and turn on **Enable CLI access** in Settings.
 2. Edit each login you want to share, check **Allow CLI access**, and save. Both controls are off by default.
-3. Copy the terminal setup command from Settings. For the standard installation, run this in sh, Bash, or Zsh, or add it to
-   your shell startup file. If an AI agent uses a separate shell, add the same directory to that shell's `PATH`.
+3. The Windows installer adds Vaultkeeper to the user `PATH` for new terminals. On macOS, copy the terminal setup command
+   from Settings or run the following for a standard installation. If an AI agent uses a separate shell, add Vaultkeeper
+   to that shell's `PATH`.
 
    ```sh
    export PATH="/Applications/Vaultkeeper.app/Contents/MacOS:$PATH"
@@ -170,62 +194,41 @@ app's own, which start a real daemon process and drive it over IPC. Docker is re
 
 - Secrets are decrypted on demand and handed out as zeroizing values; only names and other list data are decrypted at
   unlock.
-- The vault cache on disk is encrypted. Refresh tokens are kept in the macOS login keychain.
-- The daemon and UI process talk over a Unix socket with mode 0600. The daemon checks the peer's uid and code signature
-  (audit token plus `SecCode`) and accepts only a UI process with its own signature.
-- Release bundles are signed with the hardened runtime, so other processes cannot inject code into them.
-- Updates install only when signed with the same certificate as the running app. That self-signed certificate is the
+- The vault cache on disk is encrypted. macOS keeps refresh tokens in the login keychain. Windows seals them with a key
+  derived from the vault's user key and wraps them with DPAPI.
+- On macOS, the daemon and UI process talk over a Unix socket with mode 0600. The daemon checks the peer's uid and code
+  signature (audit token plus `SecCode`) and accepts only a UI process with its own signature. On Windows, the daemon
+  creates a named pipe and passes the connected client handle to the UI process at launch.
+- macOS release bundles are signed with the hardened runtime, so other processes cannot inject code into them.
+- macOS updates install only when signed with the same certificate as the running app. That self-signed certificate is the
   maintainer's: its key is in the maintainer's keychain (local builds use it too) and in the release workflow's secrets,
   so either of those controls updates. Installed copies trust that one certificate: a new key would mean installing
   the next version by hand.
 
-Design and threat model: [docs/solutions/vaultkeeper-architecture.md](docs/solutions/vaultkeeper-architecture.md).
+See the [architecture and threat model](docs/solutions/vaultkeeper-architecture.md) and the
+[Windows security design](docs/solutions/windows-support.md).
 Vaultkeeper has not had an independent security audit.
 
 ## Roadmap: cross-platform
 
-This is a plan. Nothing here is implemented yet; today Vaultkeeper runs on macOS only.
+Linux support is planned for Wayland desktops including GNOME, KDE Plasma, Sway and Hyprland. See the
+[Linux design and support matrix](docs/solutions/linux-support.md).
 
-Already portable: Slint, `reqwest` with rustls, and the `crypto`, `api`, `gen` and `vault` crates. `crates/platform` already
-compiles on other targets and returns `Unsupported` errors there.
-
-macOS-specific code, found with `grep -rn 'target_os = "macos"' --include=*.rs`:
-
-| Area | Where |
-|---|---|
-| Swift shim for Secure Enclave / Touch ID, power and network events | `crates/platform` (`biometric`, `power`, `network`, `build.rs`, `swift/`) |
-| Keychain (`security-framework`), clipboard concealment, LaunchAgent autostart, paths, hardening | `crates/platform` |
-| AppKit activation policy, auto-type via CGEvent, biometrics glue | `app/src/os` |
-| IPC peer check (audit token + `SecCode`) | `crates/ipc/src/peer.rs` |
-| SSH agent peer info | `vendor/ssh_agent/src/server/peer_info.rs` |
-
-Phases:
-
-1. **Platform traits.** Put each platform service (secret storage, biometrics, autostart, clipboard, hotkeys, auto-type,
-   IPC peer check, power and network events) behind a trait, with the macOS implementation first and no behavior change.
-2. **Linux**, Wayland only: GNOME, KDE Plasma, Sway and Hyprland. Research, support matrix and open decisions:
-   [docs/solutions/linux-support.md](docs/solutions/linux-support.md).
-   - No keyring daemon: the refresh token is sealed under a key derived from the vault's user key, in an owner-only file.
-   - Tray through StatusNotifierItem, with a symbolic icon the panel recolours and a blue fallback. GNOME needs the
-     AppIndicator extension; without a tray host, `--tray` opens the window instead.
-   - Global hotkeys through the GlobalShortcuts portal, or `vaultkeeper --quick` bound in the compositor (Sway).
-   - Clipboard and auto-clear through Wayland data-control. Auto-type through the RemoteDesktop portal (GNOME, KDE) or
-     the virtual-keyboard protocol (Sway, Hyprland).
-   - Quick unlock through polkit, so PAM picks the method: fingerprint, Howdy, a security key or the login password.
-     Shown only when Vaultkeeper's polkit action is installed (the packages ship it). The user key stays in non-dumpable
-     `memfd_secret` memory after a master-password unlock, so every restart needs the master password.
-   - Lock on screen lock and sleep through the ScreenSaver interfaces and logind.
-   - Autostart through XDG autostart or the Background portal; Sway and Hyprland start it from their config.
-   - IPC peer check with `SO_PEERCRED`/`SO_PEERPIDFD` and the peer executable's device and inode, plus startup checks of
-     file ownership, modes and symlinks.
-   - The Unix-socket SSH agent already works.
-3. **Windows.**
-   - Credential Manager or DPAPI for tokens, Windows Hello for biometrics.
-   - IPC over named pipes with a client process check.
-   - The Windows OpenSSH agent named pipe.
-   - Autostart through the registry Run key, auto-type through `SendInput`.
-4. **CI and packaging.** A CI matrix for macOS, Linux and Windows, then packages: dmg, AppImage, .deb/.rpm, MSI.
-   Flatpak does not fit: the SSH agent socket, the browser host and auto-type all conflict with its sandbox.
+- No keyring daemon: the refresh token is sealed under a key derived from the vault's user key, in an owner-only file.
+- Tray through StatusNotifierItem, with a symbolic icon the panel recolours and a blue fallback. GNOME needs the
+  AppIndicator extension; without a tray host, `--tray` opens the window instead.
+- Global hotkeys through the GlobalShortcuts portal, or `vaultkeeper --quick` bound in the compositor (Sway).
+- Clipboard and auto-clear through Wayland data-control. Auto-type through the RemoteDesktop portal (GNOME, KDE) or
+  the virtual-keyboard protocol (Sway, Hyprland).
+- Quick unlock through polkit, so PAM picks the method: fingerprint, Howdy, a security key or the login password.
+  Shown only when Vaultkeeper's polkit action is installed (the packages ship it). The user key stays in non-dumpable
+  `memfd_secret` memory after a master-password unlock, so every restart needs the master password.
+- Lock on screen lock and sleep through the ScreenSaver interfaces and logind.
+- Autostart through XDG autostart or the Background portal; Sway and Hyprland start it from their config.
+- IPC peer check with `SO_PEERCRED`/`SO_PEERPIDFD` and the peer executable's device and inode, plus startup checks of
+  file ownership, modes and symlinks.
+- The Unix-socket SSH agent already works.
+- Linux CI and AppImage, Debian and RPM packages.
 
 ## License
 
