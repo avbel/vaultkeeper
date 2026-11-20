@@ -45,6 +45,7 @@ pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow
     let data_dir = crate::os::layout::data_dir().context("locate the data directory")?;
     step("data directory located");
     crate::os::startup_check::enforce(&data_dir)?;
+    crate::os::security_gate::enforce(crate::os::security_gate::Role::Ui, &data_dir)?;
     step("start-up check passed");
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()

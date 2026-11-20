@@ -46,6 +46,7 @@ pub const USAGE: &str = r#"Usage: vaultkeeper list
        vaultkeeper get_fields <key>
        vaultkeeper get <key> <field> [--allow-private]
        vaultkeeper --help | --version
+       vaultkeeper security status | accept
        vaultkeeper [--daemon | --tray | --search | --generator]
        vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
                [--size WxH] [--select QUERY] [--search | --generator]
@@ -60,6 +61,12 @@ CLI access
                           Use it only in a shell pipeline to the intended command.
   --help                  Show this help.
   --version               Show the installed version.
+
+Security (Linux)
+  security status         Print each protection, its status and the mechanism in use.
+  security accept         Start despite the protections refused right now; a new
+                          issue refuses again.
+  --skip-security-issues  Start once despite refused protections.
 
 Keep Vaultkeeper running. In Settings, turn on "Enable CLI access", then check
 "Allow CLI access" on each login to share. Programs running as you can read these

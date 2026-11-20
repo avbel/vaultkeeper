@@ -79,6 +79,10 @@ zeroize.workspace = true
 # on Windows (libc vs winapi c_void); there the webauthn.dll backend takes over (step 5c).
 authenticator = { version = "0.5.0", default-features = false, features = ["crypto_rust"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+secure_memory.workspace = true
+vk-linux.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 # Native open/save panels for attachments; IFileDialog, no portal or Wayland backends.
 rfd = { version = "0.18.0", default-features = false }

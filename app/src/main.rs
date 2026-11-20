@@ -3,6 +3,7 @@ use std::{io::Write, sync::Arc, time::Duration};
 use anyhow::Context;
 use tokio::sync::{mpsc, oneshot};
 use vaultkeeper::os::log_file::{BoundedLog, LOG_CAP, log_dir};
+use vaultkeeper::os::security_gate;
 use vaultkeeper::{
     SshApprovalRequest, UiCommand,
     cli::{self, Mode},
@@ -12,7 +13,11 @@ use vaultkeeper::{
 };
 
 fn main() -> anyhow::Result<()> {
-    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let mut raw_args: Vec<String> = std::env::args().skip(1).collect();
+    // Taken out before any parser sees it, so it works with every role and subcommand.
+    let skip = raw_args.iter().any(|arg| arg == security_gate::SKIP_FLAG);
+    raw_args.retain(|arg| arg != security_gate::SKIP_FLAG);
+    security_gate::set_skip(skip);
     let role = if raw_args.iter().any(|arg| arg == "--ui") {
         vk_platform::hardening::Role::Ui
     } else {
@@ -31,7 +36,12 @@ fn main() -> anyhow::Result<()> {
         Some("list" | "get_fields" | "get")
     ) {
         vaultkeeper::os::console::attach_parent_console();
+        refuse_cli_if_unsafe()?;
         return vaultkeeper::cli_access::run(&raw_args);
+    }
+    if raw_args.first().map(String::as_str) == Some("security") {
+        vaultkeeper::os::console::attach_parent_console();
+        return security_command(&raw_args[1..]);
     }
     if let Some(caller) = cli::browser_host_caller(&raw_args) {
         init_logging(Some("browser-host"));
@@ -93,6 +103,47 @@ fn main() -> anyhow::Result<()> {
         }
         Mode::Daemon(launch) => vaultkeeper::daemon::run(launch, args.wait_for),
     }
+}
+
+/// The CLI checks only what it needs (kernel, runtime dir) and exits with `EX_CONFIG` on refusal.
+fn refuse_cli_if_unsafe() -> anyhow::Result<()> {
+    let data_dir = vaultkeeper::os::layout::data_dir()?;
+    if let Err(refusal) = security_gate::enforce(security_gate::Role::Cli, &data_dir) {
+        #[allow(clippy::print_stderr)]
+        {
+            eprint!("{refusal}");
+        }
+        std::process::exit(security_gate::REFUSED_EXIT);
+    }
+    Ok(())
+}
+
+/// `vaultkeeper security status | accept`.
+fn security_command(args: &[String]) -> anyhow::Result<()> {
+    let report = security_gate::report(security_gate::Role::Daemon);
+    match args {
+        [command] if command == "status" => {
+            write!(std::io::stdout(), "{}", report.table())?;
+        }
+        [command] if command == "accept" => {
+            let data_dir = vaultkeeper::os::layout::data_dir()?;
+            let path = data_dir.join(vaultkeeper::os::layout::SETTINGS_FILE);
+            let accepted = security_gate::accept(&report);
+            let message = if accepted.issues.is_empty() {
+                "Nothing to accept: no security issue refuses this start.".to_owned()
+            } else {
+                format!("Accepted: {}", accepted.issues.join(", "))
+            };
+            let settings = vaultkeeper::settings::Settings {
+                security_accepted: Some(accepted),
+                ..vaultkeeper::os::settings_file::SettingsFile::read(&path)
+            };
+            vaultkeeper::os::settings_file::SettingsFile::write(&path, &settings)?;
+            writeln!(std::io::stdout(), "{message}")?;
+        }
+        _ => anyhow::bail!("Usage: vaultkeeper security status | accept"),
+    }
+    Ok(())
 }
 
 /// stderr, plus the bounded log file for the daemon and the UI process (stderr goes nowhere when

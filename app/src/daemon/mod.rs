@@ -73,6 +73,7 @@ const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
 fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     crate::os::startup_check::enforce(&data_dir)?;
+    crate::os::security_gate::enforce(crate::os::security_gate::Role::Daemon, &data_dir)?;
     let socket_dir = crate::os::layout::socket_dir(&data_dir);
     vk_platform::fs::ensure_private_dir(&socket_dir).context("create the socket directory")?;
     Ok((data_dir, socket_dir))

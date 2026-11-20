@@ -44,7 +44,15 @@ pub fn restart_after_exit(commands_queued: bool, ran_for: Duration, quitting: bo
 /// daemon started, for "Require master password on app start".
 #[must_use]
 pub fn ui_args(first_unlock: bool, no_activate: bool) -> Vec<&'static str> {
+    ui_args_for(first_unlock, no_activate, crate::os::security_gate::skip())
+}
+
+/// A daemon started with `--skip-security-issues` passes it on, or its own UI would refuse.
+fn ui_args_for(first_unlock: bool, no_activate: bool, skip: bool) -> Vec<&'static str> {
     let mut args = vec!["--ui"];
+    if skip {
+        args.push(crate::os::security_gate::SKIP_FLAG);
+    }
     if first_unlock {
         args.push("--first-unlock");
     }
@@ -374,6 +382,10 @@ mod tests {
     #[test]
     fn the_first_unlock_flag_is_passed_only_when_set() {
         assert_eq!(ui_args(false, false), ["--ui"]);
+        assert_eq!(
+            ui_args_for(true, false, true),
+            ["--ui", "--skip-security-issues", "--first-unlock"]
+        );
         assert_eq!(ui_args(true, false), ["--ui", "--first-unlock"]);
         assert_eq!(ui_args(false, true), ["--ui", "--no-activate"]);
     }

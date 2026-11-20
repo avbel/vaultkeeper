@@ -211,6 +211,9 @@ pub struct Settings {
     /// `None` instead of failing the whole file.
     #[serde(deserialize_with = "lenient_string")]
     pub last_login: Option<String>,
+    /// Linux: the refused security issues the user chose to start with anyway
+    /// (`vaultkeeper security accept`); a start with any other issue refuses again.
+    pub security_accepted: Option<crate::os::security_gate::Accepted>,
 }
 
 impl Default for Settings {
@@ -249,6 +252,7 @@ impl Default for Settings {
             touch_id_right_away: false,
             last_login: None,
             generator: GeneratorPrefs::default(),
+            security_accepted: None,
         }
     }
 }
@@ -814,6 +818,10 @@ mod tests {
             generator_hotkey: "Cmd+Alt+G".to_owned(),
             touch_id_right_away: true,
             last_login: Some("2.sealed".to_owned()),
+            security_accepted: Some(crate::os::security_gate::Accepted {
+                fingerprint: "0011223344556677".to_owned(),
+                issues: vec!["wayland".to_owned()],
+            }),
             generator: GeneratorPrefs {
                 passphrase_mode: true,
                 length: 40,
