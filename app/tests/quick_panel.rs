@@ -253,6 +253,21 @@ fn the_master_password_is_cleared_after_an_inline_unlock() {
 }
 
 #[test]
+fn cmd_e_opens_the_found_item_in_the_manager_editor() {
+    let (h, panel) = open(true);
+    assert!(
+        common::exists(&panel, if cfg!(windows) { "Ctrl+E" } else { "⌘E" }),
+        "the footer hint"
+    );
+    type_into(&panel, "Quick search", "gith");
+    key(&panel, "e", CMD);
+    assert!(h.app.quick_panel().is_none());
+    let manager = h.app.manager_window().expect("manager");
+    assert_eq!(manager.get_detail_header().name, "GitHub");
+    assert_eq!(manager.get_detail_mode(), 2, "the edit form");
+}
+
+#[test]
 fn cmd_e_on_a_reprompt_item_asks_for_the_master_password_first() {
     let (h, panel) = open(true);
     type_into(&panel, "Quick search", "paypal");
