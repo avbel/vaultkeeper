@@ -1,0 +1,66 @@
+name: Submit to Firefox Add-ons
+
+# Submits a published release's Firefox build to AMO by hand, for a release whose AMO job skipped
+# the submission while an earlier version was awaiting review. It uses the `store` artifact of that
+# tag's Release run, so AMO gets the same build as the GitHub release, and it does not check the
+# review queue: the new version takes the queued one's place. The AMO key lives in the `amo`
+# environment, limited to main, so this job cannot read the signing secrets of `release`.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Released tag to submit (e.g. v0.1.14)
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  submit:
+    name: Firefox Add-ons (AMO)
+    runs-on: ubuntu-latest
+    environment: amo
+    steps:
+      - id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "$TAG" \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::no successful Release run for $TAG"
+            exit 1
+          fi
+          echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: store
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Submit
+        env:
+          TAG: ${{ inputs.tag }}
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "::error::AMO_JWT_ISSUER / AMO_JWT_SECRET are not set in the amo environment"
+            exit 1
+          fi
+          VERSION=$(jq -r .version browsers/dist/firefox/manifest.json)
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::the artifact holds version $VERSION, not $TAG"
+            exit 1
+          fi
+          npx -y web-ext@10.8.0 sign --channel listed --approval-timeout 0 \
+            --source-dir browsers/dist/firefox \
+            --upload-source-code store/firefox-source.zip \
+            --amo-metadata browsers/store/amo-metadata.json

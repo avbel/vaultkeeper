@@ -628,7 +628,7 @@ jobs:
           const latest = (await res.json()).results?.[0];
           const pending = latest?.file?.status === "unreviewed";
           if (pending) {
-            console.log(`::warning::AMO version ${latest.version} is still awaiting review: skipped submitting ${process.env.TAG}`);
+            console.log(`::warning::AMO version ${latest.version} is still awaiting review: skipped submitting ${process.env.TAG} (the "Submit to Firefox Add-ons" workflow submits it by hand)`);
           }
           appendFileSync(process.env.GITHUB_OUTPUT, `go=${!pending}\n`);
           EOF
