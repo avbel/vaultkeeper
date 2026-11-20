@@ -67,7 +67,7 @@ sha1 = "0.11.0"
 sha2 = "0.11.1"
 # Off here, not only in app/Cargo.toml: cargo-chef drops a member's `default-features = false` on
 # workspace dependencies, which re-enables femtovg and breaks `cook --locked` in cargo-cache.yml.
-slint = { version = "1.18.1", default-features = false }
+slint = { version = "1.19.0", default-features = false }
 subtle = "2.6.1"
 swift-rs = "1.0.9"
 thiserror = "2.0.21"

@@ -627,13 +627,6 @@ fn show<C: ComponentHandle + 'static>(component: &C, what: &str) {
         return;
     }
     crate::os::ui_window::exclude_from_capture(component.window());
-    // The picker and the prompts install their own window-event handler, which this would replace.
-    if matches!(
-        what,
-        "manager" | "settings" | "lock" | "login" | "generator"
-    ) {
-        crate::os::ui_window::watch_restore(component.window());
-    }
     if !crate::os::ui_window::bring_to_front(component.window()) {
         retry_bring_to_front(component.as_weak(), what.to_owned(), FRONT_ATTEMPTS);
     }
