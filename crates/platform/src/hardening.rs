@@ -1,5 +1,6 @@
 //! Startup hardening: no core dumps and no debugger attach on macOS, and the process DACL,
-//! loader search path and mitigation policies on Windows (docs/solutions/windows-support.md §5.1).
+//! loader search path and mitigation policies on Windows (docs/solutions/windows-support.md §5.1),
+//! and umask, MDWE and non-dumpable processes on Linux (linux-plan.md 1d).
 
 /// Which Vaultkeeper process is hardening. Windows applies a slightly different policy set to the
 /// two; macOS ignores the role.
@@ -20,6 +21,8 @@ pub fn harden_process(role: Role) {
         // macOS has the same posture in both processes, so there is nothing to vary.
         let _ = role;
         disable_core_dumps();
+        #[cfg(target_os = "linux")]
+        linux::harden();
         // Debug builds stay attachable so debuggers and profilers keep working.
         #[cfg(all(target_os = "macos", not(debug_assertions)))]
         deny_debugger_attach();
@@ -57,6 +60,11 @@ fn deny_debugger_attach() {
 
 #[cfg(windows)]
 mod windows;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{drop_dumpable, is_hardened};
 
 #[cfg(test)]
 mod tests {

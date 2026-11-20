@@ -9,6 +9,8 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(windows)]
 mod windows;
 
@@ -22,7 +24,8 @@ const FILE_MODE: u32 = 0o600;
 pub enum Repair {
     #[default]
     None,
-    /// Each flag records which part differed and was rewritten.
+    /// Each flag records which part differed and was rewritten. On Linux `dacl` stands for the
+    /// mode bits, the POSIX counterpart of the access list.
     Rewritten {
         dacl: bool,
         label: bool,
@@ -66,18 +69,27 @@ pub enum Refusal {
     Owner { path: PathBuf, owner: String },
     #[error("{} grants access to {sid}", path.display())]
     ForeignAce { path: PathBuf, sid: String },
+    #[error("{} is a symbolic link", path.display())]
+    Symlink { path: PathBuf },
+    #[error("{} is owned by uid {uid}, not by this user", path.display())]
+    ForeignOwner { path: PathBuf, uid: u32 },
     #[error("cannot check {}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
 }
 
 /// Checks ownership, DACL, mandatory label and index attribute of the data directory, repairing
-/// them when the owner is right. On Unix this is a no-op until the Linux permission checks use it.
+/// them when the owner is right. Linux checks owner, symlink and mode the same way; macOS keeps
+/// the explicit no-op.
 pub fn verify_private_dir(path: &Path) -> Result<Repair, Refusal> {
     #[cfg(windows)]
     {
         windows::verify_private_dir(path)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::verify(path, linux::Kind::Dir)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = path;
         Ok(Repair::None)
@@ -91,7 +103,11 @@ pub fn verify_private_files<P: AsRef<Path>>(paths: &[P]) -> Result<Repair, Refus
     {
         windows::verify_private_files(paths)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::verify_files(paths)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = paths;
         Ok(Repair::None)
@@ -329,9 +345,9 @@ mod tests {
         assert_eq!(mode(&nested), 0o700);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     #[test]
-    fn startup_checks_are_a_noop_off_windows() {
+    fn startup_checks_are_a_noop_on_macos() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_eq!(verify_private_dir(dir.path()).expect("dir"), Repair::None);
         let missing = dir.path().join("missing");

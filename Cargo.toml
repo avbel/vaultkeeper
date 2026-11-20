@@ -28,6 +28,7 @@ vk-api = { path = "crates/api" }
 vk-crypto = { path = "crates/crypto" }
 vk-gen = { path = "crates/gen" }
 vk-ipc = { path = "crates/ipc" }
+vk-linux = { path = "crates/linux" }
 vk-platform = { path = "crates/platform" }
 vk-ssh = { path = "crates/ssh" }
 vk-vault = { path = "crates/vault" }

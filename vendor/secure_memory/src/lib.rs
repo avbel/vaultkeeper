@@ -7,6 +7,7 @@ pub(crate) mod encrypted_memory_store;
 mod secure_key;
 
 pub use encrypted_memory_store::EncryptedMemoryStore;
+pub use secure_key::{backend, Backend};
 
 use crate::secure_key::DecryptionError;
 

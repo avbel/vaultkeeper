@@ -37,11 +37,13 @@ fi
 # where the two hosts would keep evicting each other's artifacts.
 # Docker's default seccomp profile blocks keyctl, memfd_secret and landlock, which the probes and
 # the secure_memory tests exercise; a desktop session has them.
-# Two jobs by default: parallel test links run the Docker VM out of memory.
+# Two jobs by default: parallel test links run the Docker VM out of memory. No debug info: with
+# it the target volume grew past 50 GB.
 exec docker run --rm --security-opt seccomp=unconfined \
     -v "$PWD":/src -w /src \
     -v vaultkeeper-linux-cargo:/usr/local/cargo/registry \
     -v vaultkeeper-linux-target:/target -e CARGO_TARGET_DIR=/target \
+    -e CARGO_PROFILE_DEV_DEBUG=0 -e CARGO_PROFILE_TEST_DEBUG=0 \
     -e CARGO_BUILD_JOBS="${VK_LINUX_JOBS:-2}" \
     "$IMAGE" sh -c '
         mode=$1; shift

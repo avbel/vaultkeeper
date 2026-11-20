@@ -1,6 +1,6 @@
 //! Start-up permission checks on the data directory and the files that hold account secrets
-//! (windows-support.md §4.4). The checks live in vk-platform and do nothing outside Windows, so
-//! macOS starts exactly as before.
+//! (windows-support.md §4.4, linux-plan.md 2a). The checks live in vk-platform; on macOS they do
+//! nothing, so it starts exactly as before.
 
 use std::path::{Path, PathBuf};
 

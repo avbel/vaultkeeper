@@ -51,12 +51,18 @@ fn user_pipe(kind: &str) -> Endpoint {
     Endpoint::pipe(pipe_name(&sid, kind))
 }
 
+/// The directory of every socket endpoint below (`vk_platform::paths::socket_dir`).
+#[must_use]
+pub fn socket_dir(data_dir: &Path) -> PathBuf {
+    vk_platform::paths::socket_dir(data_dir)
+}
+
 /// Daemon to UI process channel.
 // Windows: the UI channel has no name; the daemon hands it to the UI process it spawns
 // (plan step 2e), so this stays the Unix path until then.
 #[must_use]
 pub fn ui_endpoint(data_dir: &Path) -> Endpoint {
-    Endpoint::path(data_dir.join(UI_SOCKET))
+    Endpoint::path(socket_dir(data_dir).join(UI_SOCKET))
 }
 
 #[must_use]
@@ -68,7 +74,7 @@ pub fn cli_endpoint(data_dir: &Path) -> Endpoint {
     }
     #[cfg(not(windows))]
     {
-        Endpoint::path(data_dir.join(CLI_SOCKET))
+        Endpoint::path(socket_dir(data_dir).join(CLI_SOCKET))
     }
 }
 
@@ -81,7 +87,7 @@ pub fn browser_endpoint(data_dir: &Path) -> Endpoint {
     }
     #[cfg(not(windows))]
     {
-        Endpoint::path(data_dir.join(BROWSER_SOCKET))
+        Endpoint::path(socket_dir(data_dir).join(BROWSER_SOCKET))
     }
 }
 
@@ -102,7 +108,7 @@ pub fn ssh_endpoint(data_dir: &Path) -> Endpoint {
     }
     #[cfg(not(windows))]
     {
-        Endpoint::path(data_dir.join(SSH_SOCKET))
+        Endpoint::path(socket_dir(data_dir).join(SSH_SOCKET))
     }
 }
 

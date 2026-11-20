@@ -19,7 +19,7 @@ pub mod tray_sync;
 pub mod update;
 
 #[cfg(not(windows))]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
@@ -68,6 +68,15 @@ const RESTART_EXIT: i32 = 75;
 #[cfg(unix)]
 const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
 
+/// The data dir after its startup check, and the socket dir (the runtime dir on Linux).
+fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
+    let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
+    crate::os::startup_check::enforce(&data_dir)?;
+    let socket_dir = crate::os::layout::socket_dir(&data_dir);
+    vk_platform::fs::ensure_private_dir(&socket_dir).context("create the socket directory")?;
+    Ok((data_dir, socket_dir))
+}
+
 pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     let overrides = TestOverrides::from_env();
     // Windows: step 3b - the restart hand-off waits on the old process handle.
@@ -82,10 +91,9 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     if launch == Launch::Tray {
         refresh_login_agent();
     }
-    let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
-    crate::os::startup_check::enforce(&data_dir)?;
+    let (data_dir, socket_dir) = prepare_dirs()?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
-    let instance = match single_instance::acquire_in(&data_dir, routing::forwarded(launch), {
+    let instance = match single_instance::acquire_in(&socket_dir, routing::forwarded(launch), {
         move |command| {
             let _ = forward_tx.send(command);
         }

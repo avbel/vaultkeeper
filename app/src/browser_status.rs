@@ -33,7 +33,11 @@ fn runtime_hardened() -> bool {
     {
         vk_platform::hardening::process_dacl_applied()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        vk_platform::hardening::is_hardened()
+    }
+    #[cfg(target_os = "macos")]
     {
         vk_ipc::has_hardened_runtime()
     }

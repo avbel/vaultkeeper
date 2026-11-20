@@ -24,6 +24,9 @@ zeroize.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+vk-linux.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 vk-win.workspace = true
 # WinRT only, for the Hello presence check (biometric/consent.rs); Win32 goes through windows-sys.

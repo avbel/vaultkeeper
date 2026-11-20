@@ -53,6 +53,46 @@ impl SecureMemoryEncryptionKey {
     }
 }
 
+/// Which mechanism protects the key, for the security status (vaultkeeper linux-plan.md 1e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Dpapi,
+    Keyctl,
+    MemfdSecret,
+    Mlock,
+}
+
+impl Backend {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Backend::Dpapi => "DPAPI",
+            Backend::Keyctl => "keyctl",
+            Backend::MemfdSecret => "memfd_secret",
+            Backend::Mlock => "mlock",
+        }
+    }
+}
+
+/// The backend a new key gets on this system, found the only reliable way: by creating one, so
+/// the environment override and every support probe are taken into account.
+pub fn backend() -> Backend {
+    SecureMemoryEncryptionKey::new().0.backend()
+}
+
+impl CrossPlatformSecureKeyContainer {
+    fn backend(&self) -> Backend {
+        match self {
+            #[cfg(target_os = "windows")]
+            CrossPlatformSecureKeyContainer::Dpapi(_) => Backend::Dpapi,
+            #[cfg(target_os = "linux")]
+            CrossPlatformSecureKeyContainer::Keyctl(_) => Backend::Keyctl,
+            #[cfg(target_os = "linux")]
+            CrossPlatformSecureKeyContainer::MemfdSecret(_) => Backend::MemfdSecret,
+            CrossPlatformSecureKeyContainer::Mlock(_) => Backend::Mlock,
+        }
+    }
+}
+
 /// A platform specific implementation of a key container that protects a single encryption key
 /// from memory attacks.
 #[allow(unused)]
@@ -201,6 +241,18 @@ fn get_env_forced_container() -> Option<CrossPlatformSecureKeyContainer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_names_the_platform_mechanism() {
+        let backend = backend();
+        #[cfg(target_os = "macos")]
+        assert_eq!(backend, Backend::Mlock);
+        #[cfg(target_os = "windows")]
+        assert_eq!(backend, Backend::Dpapi);
+        #[cfg(target_os = "linux")]
+        assert_ne!(backend, Backend::Dpapi);
+        assert!(!backend.name().is_empty());
+    }
 
     #[test]
     fn test_multiple_keys() {

@@ -2,7 +2,7 @@
 //!
 //! An exclusive `flock` on `instance.lock` (Unix) or a SID-scoped named mutex (Windows) decides who
 //! is first. The kernel drops it when a process dies, so a crash never blocks the next launch; the
-//! winner then serves one command per later launch. Unix uses a socket in the data dir; Windows a
+//! winner then serves one command per later launch. Unix uses a socket in the socket dir; Windows a
 //! machine-wide pipe named with the user's SID.
 
 use std::path::Path;
@@ -105,7 +105,10 @@ pub fn wait_for_exit(pid: i32, timeout: std::time::Duration) -> bool {
 pub fn quit_running(timeout: std::time::Duration) -> Result<()> {
     #[cfg(unix)]
     {
-        unix::quit_running(&crate::paths::data_dir()?, timeout)
+        unix::quit_running(
+            &crate::paths::socket_dir(&crate::paths::data_dir()?),
+            timeout,
+        )
     }
     #[cfg(windows)]
     {
@@ -120,7 +123,9 @@ pub fn acquire(
     command: Command,
     on_command: impl Fn(Command) + Send + 'static,
 ) -> Result<InstanceGuard> {
-    acquire_in(&crate::paths::data_dir()?, command, on_command)
+    let dir = crate::paths::socket_dir(&crate::paths::data_dir()?);
+    crate::fs::ensure_private_dir(&dir)?;
+    acquire_in(&dir, command, on_command)
 }
 
 /// [`acquire`] with the lock and socket in `dir` instead of the data dir. `dir` must exist and
