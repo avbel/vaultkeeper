@@ -20,7 +20,7 @@ fn accept_window(
 #[cfg(windows)]
 pub use windows::{
     allow_foreground, bring_to_front, clear_ui_pid, exclude_from_capture, prompt_window,
-    set_capture_exclusion, set_ui_pid, trusted_parent_window, watch_restore, window_handle,
+    set_capture_exclusion, set_ui_pid, trusted_parent_window, window_handle,
 };
 
 #[cfg(not(windows))]
@@ -31,9 +31,6 @@ pub const fn allow_foreground(_pid: u32) {}
 pub const fn bring_to_front(_window: &slint::Window) -> bool {
     true
 }
-
-#[cfg(not(windows))]
-pub const fn watch_restore(_window: &slint::Window) {}
 
 #[cfg(not(windows))]
 pub const fn exclude_from_capture(_window: &slint::Window) {}
@@ -68,25 +65,21 @@ mod windows {
         ffi::c_void,
         ptr,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
-        time::Duration,
     };
 
     use slint::winit_030::{
-        EventResult, WinitWindowAccessor,
-        winit::{
-            event::WindowEvent,
-            raw_window_handle::{HasWindowHandle, RawWindowHandle},
-        },
+        WinitWindowAccessor,
+        winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
     };
     use windows_sys::{
         Win32::{
-            Foundation::{HWND, LPARAM, RECT},
+            Foundation::{HWND, LPARAM},
             System::Threading::{AttachThreadInput, GetCurrentThreadId},
             UI::WindowsAndMessaging::{
                 AllowSetForegroundWindow, BringWindowToTop, EnumThreadWindows, EnumWindows,
-                GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow,
-                IsWindowVisible, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow,
-                SetWindowDisplayAffinity, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+                GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
+                PostMessageW, SC_RESTORE, SetForegroundWindow, SetWindowDisplayAffinity,
+                WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_SYSCOMMAND,
             },
         },
         core::BOOL,
@@ -134,14 +127,7 @@ mod windows {
             return false;
         };
         let hwnd = ptr::with_exposed_provenance_mut::<c_void>(hwnd);
-        if window.is_minimized() {
-            // SetForegroundWindow leaves a minimized window minimized. Restoring through the
-            // toolkit keeps its own view of the window state in step, which a raw ShowWindow
-            // does not, and the repaint request covers a surface that was released meanwhile.
-            window.set_minimized(false);
-            window.request_redraw();
-            repaint_after_restore(hwnd);
-        }
+        restore_if_minimized(hwnd);
         // SAFETY: the handle belongs to this process's live window; a stale one only fails.
         unsafe { SetForegroundWindow(hwnd) };
         // The return value is not trusted: a refused request can still report success while the
@@ -153,83 +139,21 @@ mod windows {
         false
     }
 
-    /// Time for the restore to finish before the window is resized; sooner and the size is the
-    /// minimized one.
-    const RESTORE_SETTLE: Duration = Duration::from_millis(120);
-    const RESIZE_BACK: Duration = Duration::from_millis(40);
-
-    /// Repaints a window that comes back from the taskbar or the title bar. Those restores do
-    /// not pass through `bring_to_front`, and a minimized window reports a zero size, so the
-    /// first real size after one is the restore.
-    pub fn watch_restore(window: &slint::Window) {
-        let mut minimized = false;
-        window.on_winit_window_event(move |window, event| {
-            if let WindowEvent::Resized(size) = event {
-                if size.width == 0 || size.height == 0 {
-                    minimized = true;
-                } else if minimized {
-                    minimized = false;
-                    if let Some(hwnd) = window_handle(window)
-                        .and_then(|hwnd| usize::try_from(hwnd).ok())
-                        .map(ptr::with_exposed_provenance_mut::<c_void>)
-                    {
-                        repaint_after_restore(hwnd);
-                    }
-                }
-            }
-            EventResult::Propagate
-        });
-    }
-
-    /// A window restored from the taskbar repaints only the regions that changed and shows the
-    /// desktop through the rest, because its back buffer was dropped while it was minimized. A
-    /// resize repaints everything, so the window is made one pixel wider and put back, which is
-    /// what the user's own resize does.
-    fn repaint_after_restore(hwnd: HWND) {
-        let hwnd = hwnd.expose_provenance();
-        slint::Timer::single_shot(RESTORE_SETTLE, move || {
-            let hwnd = ptr::with_exposed_provenance_mut::<c_void>(hwnd);
-            let Some((width, height)) = window_size(hwnd) else {
-                return;
-            };
-            set_size(hwnd, width + 1, height);
-            let hwnd = hwnd.expose_provenance();
-            slint::Timer::single_shot(RESIZE_BACK, move || {
-                set_size(
-                    ptr::with_exposed_provenance_mut::<c_void>(hwnd),
-                    width,
-                    height,
-                );
-            });
-        });
-    }
-
-    fn window_size(hwnd: HWND) -> Option<(i32, i32)> {
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        // SAFETY: `rect` is a live out pointer; a stale handle only makes the call fail.
-        if unsafe { GetWindowRect(hwnd, &raw mut rect) } == 0 {
-            return None;
+    /// SetForegroundWindow leaves a minimized window minimized. The restore is posted, the way
+    /// the taskbar does it, rather than run inside this call: winit buffers a `WM_PAINT` that
+    /// arrives while one of its handlers is running and drops the region Windows invalidated,
+    /// so a restore started from a Slint callback came back see-through. winit and Slint both
+    /// pick up the new state from the posted `SC_RESTORE`. `IsIconic` rather than the toolkit's
+    /// view, which lags until the message is handled, so a retry does not post a second restore
+    /// that would also un-maximize the window.
+    fn restore_if_minimized(hwnd: HWND) {
+        // SAFETY: only inspects the handle value.
+        if unsafe { IsIconic(hwnd) } == 0 {
+            return;
         }
-        Some((rect.right - rect.left, rect.bottom - rect.top))
-    }
-
-    fn set_size(hwnd: HWND, width: i32, height: i32) {
-        // SAFETY: a stale handle only makes the call fail; no memory is passed.
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                ptr::null_mut(),
-                0,
-                0,
-                width,
-                height,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+        // SAFETY: posts to this process's own window; a stale handle only makes the call fail.
+        if unsafe { PostMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE as usize, 0) } == 0 {
+            tracing::debug!("cannot post the restore of a minimized window");
         }
     }
 
