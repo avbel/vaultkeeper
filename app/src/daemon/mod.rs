@@ -19,7 +19,8 @@ pub mod tray_sync;
 pub mod update;
 
 #[cfg(not(windows))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
