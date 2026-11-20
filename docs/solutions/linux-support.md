@@ -3,6 +3,8 @@
 Scope: GNOME, KDE Plasma 6, Sway, Hyprland. No X11. Date: 2026-11-13.
 Marks: **[v]** = checked in a primary source or in code during this research; **[i]** = inferred or from memory, check on a real machine; **[f]** = from the Fable second opinion (2026-11-14) with a cited source, not re-checked.
 
+Current state, build check, new holes and corrections (2026-11-20): [linux-gaps.md](linux-gaps.md).
+
 ## 0. Short answers
 
 | Question | Answer |
@@ -35,14 +37,14 @@ Marks: **[v]** = checked in a primary source or in code during this research; **
 |---|---|---|---|---|---|
 | Tray (SNI) | Only with the AppIndicator extension; Ubuntu enables it [i] | Same [i] | Native [v] | swaybar: icon, **no menu** (dbusmenu PRs #6249, #8920 still open) [v]; Waybar: menu works | Waybar tray [v] |
 | Global hotkey | No portal [v: Hex docs]. Fallback: write a GNOME custom shortcut running `vaultkeeper --search` | GlobalShortcuts portal [v: ArchWiki table]; first GNOME version 48 [i] | Portal, with a "Global Shortcuts Requested" dialog [v] | No portal [v]. `bindsym … exec vaultkeeper --search` | Portal registers the name; the user binds the key in config (`global, <appid>:quick`) [v] |
-| Daemon clipboard set + auto-clear (data-control) | No data-control [v] | ext-data-control from GNOME 49 [i: secondary source citing wayland.app] | Yes [v] | Yes [v] | Yes [v] |
+| Daemon clipboard set + auto-clear (data-control) | No data-control [v] | No data-control: none in Mutter main as of 2026-11-19 [v: linux-gaps.md §4.2] | Yes [v] | Yes [v] | Yes [v] |
 | Hide from clipboard history (`x-kde-passwordManagerHint: secret`) | Unknown | Unknown | Klipper honours it [v] | cliphist honours it (via `wl-paste --watch`) [v] | Same [v] |
 | Auto-type | RemoteDesktop portal [v] | Same [v] | Same [v] | `zwp_virtual_keyboard_v1` [v] | Same [v] |
 | Quick unlock via polkit (PAM) | Agent built in | Same | Agent built in | User must run an agent | `hyprpolkitagent` (usually installed) [i] |
 | Screen-lock signal | `org.gnome.ScreenSaver.ActiveChanged` [v: Bitwarden code] | Same | `org.freedesktop.ScreenSaver.ActiveChanged` [v] | logind `Session.Lock` when the locker is started through `loginctl lock-session` [i] | Same (hypridle's usual config does this) [i] |
 | `systemd-creds --user` | No, systemd 255 [i] | Distro-dependent | Distro-dependent | Distro-dependent | Distro-dependent |
 
-Support floor to decide: Ubuntu 24.04 (GNOME 46) lacks the shortcuts portal, data-control and `systemd-creds --user` at once, and it is the largest install base. Either support it with fallbacks (custom-keybinding writer, copy from the focused UI process, no guaranteed auto-clear) or set the floor at GNOME 48/49.
+Support floor to decide: Ubuntu 24.04 (GNOME 46) lacks the shortcuts portal, data-control and `systemd-creds --user` at once, and it is the largest install base. Either support it with fallbacks (custom-keybinding writer, copy from the focused UI process, no guaranteed auto-clear) or set the floor at GNOME 48. No GNOME version has data-control, so the clipboard fallback is needed on every GNOME release (linux-gaps.md §4.2).
 
 ## 3. Fingerprint unlock ("Touch ID" on Linux)
 
@@ -210,7 +212,7 @@ Subscribe to `org.gnome.ScreenSaver` and `org.freedesktop.ScreenSaver` `ActiveCh
 
 ### 7.3 Clipboard
 
-The daemon owns the clipboard (`crates/ipc/src/clipboard.rs`: it outlives every UI process and runs the auto-clear). A windowless Wayland client can set or clear the selection only with data-control (`ext-data-control-v1` or `wlr-data-control`). `wl-clipboard-rs` 0.9.5 (already pulled by arboard) supports both [v]. Offer `text/plain;charset=utf-8` plus `x-kde-passwordManagerHint: secret`; arboard does not set the hint on Linux [v], so use `wl-clipboard-rs` directly. Without data-control (GNOME ≤ 48): copy from the focused UI process instead, and auto-clear is not guaranteed. Bitwarden's workaround is the RemoteDesktop portal clipboard (consent dialog plus a remote-control indicator).
+The daemon owns the clipboard (`crates/ipc/src/clipboard.rs`: it outlives every UI process and runs the auto-clear). A windowless Wayland client can set or clear the selection only with data-control (`ext-data-control-v1` or `wlr-data-control`). `wl-clipboard-rs` 0.9.5 (already pulled by arboard) supports both [v]. Offer `text/plain;charset=utf-8` plus `x-kde-passwordManagerHint: secret`; arboard does not set the hint on Linux [v], so use `wl-clipboard-rs` directly. Without data-control (every GNOME version, linux-gaps.md §4.2): copy from the focused UI process instead, and auto-clear is not guaranteed. Bitwarden's workaround is the RemoteDesktop portal clipboard (consent dialog plus a remote-control indicator).
 
 ### 7.4 Auto-type
 
@@ -276,7 +278,7 @@ Both: Waybar instead of swaybar if you want the tray menu; `SSH_AUTH_SOCK` point
 
 Open decisions:
 
-1. Support floor: include GNOME 46 / Ubuntu 24.04 (with fallbacks and no guaranteed clipboard clear), or start at GNOME 48/49.
+1. Support floor: include GNOME 46 / Ubuntu 24.04 (with fallbacks), or start at GNOME 48 for the shortcuts portal. The clipboard fallback is needed on every GNOME version either way.
 2. The app id.
 3. The 2FA-remember token on Linux: plain 0600 file, `systemd-creds --user` where available, or not stored.
 4. Default tray icon on Linux: Auto (symbolic name, blue pixmap fallback) or Blue.
