@@ -6,6 +6,12 @@
 //! `cdhash` requirement taken from the daemon's own signature, so only the very same signed
 //! binary gets in (ad-hoc, linker-signed and certificate-signed builds alike), and only while
 //! its signature is still dynamically valid.
+//!
+//! On Linux the peer's executable is identified by the device and inode of `/proc/<pid>/exe`,
+//! read while a pidfd from `SO_PEERPIDFD` pins the connecting process: if it exited and its pid
+//! was reused before the read, the pidfd reports the exit and the identity is dropped
+//! (linux-plan.md 2c). Path strings are never compared, so a Homebrew Cellar path change does not
+//! matter and a copy elsewhere does.
 
 use std::{
     io,
@@ -28,6 +34,29 @@ pub struct PeerCredentials {
     /// same user is refused.
     #[cfg(windows)]
     pub session_id: u32,
+    /// The peer's executable file, read while the peer was known to be alive (Linux).
+    #[cfg(target_os = "linux")]
+    pub(crate) exe_identity: Option<FileIdentity>,
+}
+
+/// One file on one filesystem: what `stat` reports as `st_dev` and `st_ino`.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl FileIdentity {
+    pub(crate) fn of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path)?;
+        Ok(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
 }
 
 /// Decides whether a connecting process may talk to the daemon. The server already rejects
@@ -48,7 +77,7 @@ where
 /// Accepts peers running the same code as a given binary: by default our own, so only another
 /// `vaultkeeper` process (or, in tests, the test binary itself) gets in.
 ///
-/// macOS compares code signatures (cdhash) through the audit token, Windows compares the
+/// macOS compares code signatures (cdhash) through the audit token, Windows and Linux compare the
 /// executable's file identity, and other unix targets compare the executable path.
 #[derive(Debug, Clone)]
 pub struct SameExecutable {
@@ -56,7 +85,9 @@ pub struct SameExecutable {
     requirement: String,
     #[cfg(windows)]
     identity: vk_win::ImageIdentity,
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    identity: FileIdentity,
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
     executable: PathBuf,
 }
 
@@ -77,7 +108,13 @@ impl SameExecutable {
                 identity: vk_win::ImageIdentity::of_current_exe()?,
             })
         }
-        #[cfg(all(unix, not(target_os = "macos")))]
+        // `/proc/self/exe` resolves to the image the kernel loaded, even after an upgrade
+        // replaced or deleted the file at the install path.
+        #[cfg(target_os = "linux")]
+        {
+            Self::new(Path::new("/proc/self/exe"))
+        }
+        #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
         {
             Self::new(&std::env::current_exe()?)
         }
@@ -96,7 +133,13 @@ impl SameExecutable {
                 identity: vk_win::ImageIdentity::of_path(executable)?,
             })
         }
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Self {
+                identity: FileIdentity::of(executable)?,
+            })
+        }
+        #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
         {
             Ok(Self {
                 executable: executable.canonicalize()?,
@@ -146,7 +189,12 @@ impl PeerVerifier for SameExecutable {
         }
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    fn verify(&self, peer: &PeerCredentials) -> bool {
+        peer.exe_identity == Some(self.identity)
+    }
+
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
     fn verify(&self, peer: &PeerCredentials) -> bool {
         peer.executable == self.executable
     }
@@ -411,6 +459,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A same-uid client running another binary: perl, present on the CI image and in Docker.
+    #[cfg(target_os = "linux")]
+    fn perl_client(socket: &Path, then: &str) -> std::process::Child {
+        std::process::Command::new("perl")
+            .arg("-MIO::Socket::UNIX")
+            .arg("-e")
+            .arg(format!(
+                "my $s = IO::Socket::UNIX->new(Peer => $ARGV[0]) or die $!; {then}"
+            ))
+            .arg(socket)
+            .spawn()
+            .expect("perl")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn another_binary_is_refused_by_file_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("peer.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let mut perl = perl_client(&socket, "sleep 5");
+        let (stream, _) = listener.accept().await.expect("accept");
+        let peer = crate::transport::unix::credentials(&stream).expect("credentials");
+        assert_eq!(peer.pid, i32::try_from(perl.id()).expect("pid fits"));
+        assert!(peer.exe_identity.is_some(), "a live peer is identified");
+        assert!(!SameExecutable::current().expect("verifier").verify(&peer));
+        let perl_path = executable_of(peer.pid).expect("perl path");
+        assert!(
+            SameExecutable::new(&perl_path)
+                .expect("verifier")
+                .verify(&peer)
+        );
+        let _ = perl.kill();
+        let _ = perl.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_peer_that_exited_before_the_check_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("peer.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let mut perl = perl_client(&socket, "exit 0");
+        let (stream, _) = listener.accept().await.expect("accept");
+        perl.wait().expect("perl exits");
+        let peer = crate::transport::unix::credentials(&stream).expect("credentials");
+        assert_eq!(peer.exe_identity, None);
+        let any_binary = SameExecutable::new(Path::new("/proc/self/exe")).expect("verifier");
+        assert!(!any_binary.verify(&peer));
+    }
+
     #[cfg(target_os = "macos")]
     fn tempfile_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("vk-peer-{}", std::process::id()));
@@ -475,6 +574,8 @@ mod tests {
             audit_token: None,
             #[cfg(windows)]
             session_id: 0,
+            #[cfg(target_os = "linux")]
+            exe_identity: None,
         };
         assert!(!deny_all.verify(&peer));
     }

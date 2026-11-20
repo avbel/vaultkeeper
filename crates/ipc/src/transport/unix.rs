@@ -126,7 +126,76 @@ pub(crate) fn credentials(stream: &UnixStream) -> io::Result<PeerCredentials> {
         pid,
         executable,
         audit_token,
+        #[cfg(target_os = "linux")]
+        exe_identity: linux::exe_identity(stream, pid),
     })
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    use tokio::net::UnixStream;
+
+    use crate::peer::FileIdentity;
+
+    /// The identity of the peer's executable, or `None` when the peer exited before it was read
+    /// (its pid may already name another process).
+    pub(super) fn exe_identity(stream: &UnixStream, pid: i32) -> Option<FileIdentity> {
+        let pidfd = match peer_pidfd(stream) {
+            Ok(pidfd) => Some(pidfd),
+            Err(error) => {
+                // Kernels before 6.5; the security gate refuses those, so this is only a log line.
+                tracing::warn!(%error, "no SO_PEERPIDFD; the peer identity is not pinned");
+                None
+            }
+        };
+        let identity = FileIdentity::of(std::path::Path::new(&format!("/proc/{pid}/exe")))
+            .inspect_err(|error| tracing::warn!(%error, pid, "cannot identify the IPC peer"))
+            .ok()?;
+        match pidfd {
+            Some(pidfd) if exited(&pidfd) => {
+                tracing::warn!(pid, "the IPC peer exited while it was identified");
+                None
+            }
+            _ => Some(identity),
+        }
+    }
+
+    fn peer_pidfd(stream: &UnixStream) -> std::io::Result<OwnedFd> {
+        let mut fd: libc::c_int = -1;
+        let mut len = libc::socklen_t::try_from(size_of::<libc::c_int>())
+            .map_err(|_| std::io::Error::other("c_int size does not fit socklen_t"))?;
+        // SAFETY: the socket fd is borrowed from `stream` for the call; `fd` and `len` are live,
+        // writable locals of the sizes passed.
+        let status = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                vk_linux::consts::SO_PEERPIDFD,
+                (&raw mut fd).cast(),
+                &raw mut len,
+            )
+        };
+        if status != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the kernel returned a new pidfd that nothing else owns.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    /// A pidfd polls readable once its process has exited; a poll error counts as exited too,
+    /// so the check fails closed.
+    fn exited(pidfd: &OwnedFd) -> bool {
+        let mut poll = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live pollfd, zero timeout.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+        ready != 0
+    }
 }
 
 fn socket_path(endpoint: &Endpoint) -> io::Result<&Path> {
