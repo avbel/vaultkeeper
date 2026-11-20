@@ -184,13 +184,14 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
         .settings
         .save(&settings)
         .context("apply command-line settings")?;
-    let initial = match (args.select, args.quick) {
-        (Some(query), _) => Some(UiCommand::ShowItem { query }),
+    let initial = match (args.select, args.search, args.generator) {
+        (Some(query), _, _) => Some(UiCommand::ShowItem { query }),
         // Read before the event loop starts; launching brings this process to the front.
-        (None, true) => Some(UiCommand::ShowQuickPanel {
+        (None, true, _) => Some(UiCommand::ShowQuickPanel {
             target: hooks.autotype.frontmost(),
         }),
-        (None, false) => None,
+        (None, false, true) => Some(UiCommand::ShowGenerator),
+        (None, false, false) => None,
     };
     let (commands, receiver) = mpsc::unbounded_channel();
     if args.demo_ssh {

@@ -46,9 +46,9 @@ pub const USAGE: &str = r#"Usage: vaultkeeper list
        vaultkeeper get_fields <key>
        vaultkeeper get <key> <field> [--allow-private]
        vaultkeeper --help | --version
-       vaultkeeper [--daemon | --tray | --quick]
+       vaultkeeper [--daemon | --tray | --search | --generator]
        vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
-               [--size WxH] [--select QUERY] [--quick]
+               [--size WxH] [--select QUERY] [--search | --generator]
 
 CLI access
   list                    Print eligible logins as a JSON array with key and title.
@@ -85,7 +85,9 @@ Desktop options
   (no flag)    start vaultkeeper (or ask the running one) and open the vault window
   --daemon     run in the menu bar only; windows open on demand
   --tray       same as --daemon (what start at login uses)
-  --quick      open the Quick Panel
+  --search     open the Quick Panel, as its hotkey does: no vault window, and auto-type goes
+               to the app in front (bind it to a launcher or desktop shortcut)
+  --generator  open the password generator, as its hotkey does, without the vault window
   --quit       stop the running vaultkeeper
   --mock       run on the built-in mock vault (master password: mock)
   --offline    mock: start with the server unreachable
@@ -93,8 +95,7 @@ Desktop options
   --theme      override the theme setting for this run
   --demo-ssh   mock: show an SSH sign request a few seconds after start
   --size       Manager window size in logical pixels, e.g. 760x480
-  --select     open the Manager on the first item matching QUERY
-  --quick      open the Quick Panel at start"#;
+  --select     open the Manager on the first item matching QUERY"#;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -117,7 +118,10 @@ pub struct Args {
     pub demo_browser_save: bool,
     pub size: Option<(u32, u32)>,
     pub select: Option<String>,
-    pub quick: bool,
+    /// `--search`; `--quick`, its earlier name, still works so existing shortcut bindings keep
+    /// opening the panel.
+    pub search: bool,
+    pub generator: bool,
     /// Ask a running daemon to quit (the installer, uninstaller and updater use it).
     pub quit: bool,
     pub help: bool,
@@ -172,7 +176,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             "--demo-browser-fill" => parsed.demo_browser_fill = true,
             "--demo-browser-pair" => parsed.demo_browser_pair = true,
             "--demo-browser-save" => parsed.demo_browser_save = true,
-            "--quick" => parsed.quick = true,
+            "--search" | "--quick" => parsed.search = true,
+            "--generator" => parsed.generator = true,
             "--quit" => parsed.quit = true,
             "--detached" => parsed.detached = true,
             "--size" => parsed.size = Some(parse_size(args.next().as_deref())?),
@@ -279,10 +284,10 @@ mod tests {
     #[test]
     fn parses_screenshot_flags() {
         let parsed =
-            args(&["--size", "760x480", "--select", "tailscale", "--quick"]).expect("args");
+            args(&["--size", "760x480", "--select", "tailscale", "--search"]).expect("args");
         assert_eq!(parsed.size, Some((760, 480)));
         assert_eq!(parsed.select.as_deref(), Some("tailscale"));
-        assert!(parsed.quick);
+        assert!(parsed.search);
         assert_eq!(args(&["--size", "760"]), Err(CliError::Size));
         assert_eq!(args(&["--size", "ax480"]), Err(CliError::Size));
         assert_eq!(args(&["--select"]), Err(CliError::Select));
@@ -359,8 +364,10 @@ impl Args {
             }
         } else if self.daemon || self.tray {
             Mode::Daemon(Launch::Tray)
-        } else if self.quick {
+        } else if self.search {
             Mode::Daemon(Launch::QuickPanel)
+        } else if self.generator {
+            Mode::Daemon(Launch::Generator)
         } else {
             Mode::Daemon(Launch::Manager)
         }
@@ -402,7 +409,13 @@ mod mode_tests {
         assert_eq!(mode(&[]), Mode::Daemon(Launch::Manager));
         assert_eq!(mode(&["--tray"]), Mode::Daemon(Launch::Tray), "autostart");
         assert_eq!(mode(&["--daemon"]), Mode::Daemon(Launch::Tray));
-        assert_eq!(mode(&["--quick"]), Mode::Daemon(Launch::QuickPanel));
+        assert_eq!(mode(&["--search"]), Mode::Daemon(Launch::QuickPanel));
+        assert_eq!(
+            mode(&["--quick"]),
+            Mode::Daemon(Launch::QuickPanel),
+            "the earlier name, kept for existing shortcut bindings"
+        );
+        assert_eq!(mode(&["--generator"]), Mode::Daemon(Launch::Generator));
         assert_eq!(
             mode(&["--ui"]),
             Mode::Ui {

@@ -22,6 +22,7 @@ pub struct InstanceGuard {
 pub enum Command {
     ShowManager,
     ShowQuickPanel,
+    ShowGenerator,
     /// Stop the running daemon; used by the installer, uninstaller and updater.
     Quit,
 }
@@ -32,6 +33,7 @@ impl Command {
             Self::ShowManager => 1,
             Self::ShowQuickPanel => 2,
             Self::Quit => 3,
+            Self::ShowGenerator => 4,
         }
     }
 
@@ -40,6 +42,7 @@ impl Command {
             1 => Some(Self::ShowManager),
             2 => Some(Self::ShowQuickPanel),
             3 => Some(Self::Quit),
+            4 => Some(Self::ShowGenerator),
             _ => None,
         }
     }
@@ -354,11 +357,16 @@ mod tests {
 
     #[test]
     fn command_codes_round_trip() {
-        for command in [Command::ShowManager, Command::ShowQuickPanel, Command::Quit] {
+        for command in [
+            Command::ShowManager,
+            Command::ShowQuickPanel,
+            Command::Quit,
+            Command::ShowGenerator,
+        ] {
             assert_eq!(Command::from_code(command.code()), Some(command));
         }
         assert_eq!(Command::from_code(0), None);
-        assert_eq!(Command::from_code(4), None);
+        assert_eq!(Command::from_code(5), None);
     }
 
     #[test]

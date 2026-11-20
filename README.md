@@ -125,10 +125,11 @@ vault without a server, run `vaultkeeper --mock` and use `mock` as the master pa
 the SSH agent setup, start at login, settings, files and uninstalling.
 
 ```
-vaultkeeper            start (or ask the running instance) and open the vault window
-vaultkeeper --tray     system tray only
-vaultkeeper --quick    open the Quick Panel
-vaultkeeper --mock     demo vault
+vaultkeeper              start (or ask the running instance) and open the vault window
+vaultkeeper --tray       system tray only
+vaultkeeper --search     open the Quick Panel, as its hotkey does (no vault window)
+vaultkeeper --generator  open the password generator, as its hotkey does
+vaultkeeper --mock       demo vault
 ```
 
 ### CLI access
@@ -217,7 +218,7 @@ Linux support is planned for Wayland desktops including GNOME, KDE Plasma, Sway 
 - No keyring daemon: the refresh token is sealed under a key derived from the vault's user key, in an owner-only file.
 - Tray through StatusNotifierItem, with a symbolic icon the panel recolours and a blue fallback. GNOME needs the
   AppIndicator extension; without a tray host, `--tray` opens the window instead.
-- Global hotkeys through the GlobalShortcuts portal, or `vaultkeeper --quick` bound in the compositor (Sway).
+- Global hotkeys through the GlobalShortcuts portal, or `vaultkeeper --search` bound in the compositor (Sway).
 - Clipboard and auto-clear through Wayland data-control. Auto-type through the RemoteDesktop portal (GNOME, KDE) or
   the virtual-keyboard protocol (Sway, Hyprland).
 - Quick unlock through polkit, so PAM picks the method: fingerprint, Howdy, a security key or the login password.

@@ -24,7 +24,7 @@ Marks: **[v]** = checked in a primary source or in code during this research; **
 | Refresh tokens in Secret Service (libsecret) | Drop it. Seal the refresh token under a key derived from the user key, in a 0600 file; the 2FA-remember token needs a separate choice (§5). Verified safe: tokens are used only while unlocked (`crates/vault/src/vault/background.rs` aborts sync, websocket and probe on lock; `sync.rs` refreshes only in an unlocked ctx). |
 | Autostart through a freedesktop `.desktop` file | GNOME/KDE: XDG autostart or the Background portal. Sway/Hyprland do not run XDG autostart by default (except under uwsm). Document `exec`/`exec-once`. |
 | IPC peer check with `SO_PEERCRED` plus an executable check | Keep it, but compare `/proc/<pid>/exe` by (st_dev, st_ino) rather than by path (today's non-macOS path compares the canonical path), use `SO_PEERPIDFD` on kernel 6.5+, and treat it as a mistake guard, not a security boundary (§7.6). |
-| Clipboard and global hotkeys for X11 and Wayland | X11 dropped. `global-hotkey` is X11-only on Linux [v: its Linux deps are x11rb/xkeysym], so it goes. Hotkeys come from the GlobalShortcuts portal, or `vaultkeeper --quick` bound in the compositor. The clipboard needs Wayland data-control, because the daemon (windowless) owns it (§7.3). |
+| Clipboard and global hotkeys for X11 and Wayland | X11 dropped. `global-hotkey` is X11-only on Linux [v: its Linux deps are x11rb/xkeysym], so it goes. Hotkeys come from the GlobalShortcuts portal, or `vaultkeeper --search` bound in the compositor. The clipboard needs Wayland data-control, because the daemon (windowless) owns it (§7.3). |
 | Biometrics through polkit/fprintd, or none | Concrete design: polkit check (PAM: fingerprint, Howdy, security key or login password), key kept in non-dumpable `memfd_secret` memory, master password after every daemon restart (§3), unless the setgid daemon's persistent mode is installed (§5.5). |
 | The Unix-socket SSH agent already works | True. Default socket should move to `$XDG_RUNTIME_DIR/vaultkeeper/ssh-agent.sock`. On GNOME, `gcr-ssh-agent` already claims `SSH_AUTH_SOCK`, so document the override. |
 | (missing) | Tray via `ksni` directly with symbolic icon and colour choice; Quick Panel focus needs xdg-activation tokens; auto-type through the RemoteDesktop portal (GNOME/KDE) and virtual-keyboard protocol (Sway/Hyprland); lock detection through logind; startup permission checks; Linux updater signature. |
@@ -34,7 +34,7 @@ Marks: **[v]** = checked in a primary source or in code during this research; **
 | Feature | GNOME 46 (Ubuntu 24.04) | GNOME 48/49+ | KDE Plasma 6 | Sway | Hyprland |
 |---|---|---|---|---|---|
 | Tray (SNI) | Only with the AppIndicator extension; Ubuntu enables it [i] | Same [i] | Native [v] | swaybar: icon, **no menu** (dbusmenu PRs #6249, #8920 still open) [v]; Waybar: menu works | Waybar tray [v] |
-| Global hotkey | No portal [v: Hex docs]. Fallback: write a GNOME custom shortcut running `vaultkeeper --quick` | GlobalShortcuts portal [v: ArchWiki table]; first GNOME version 48 [i] | Portal, with a "Global Shortcuts Requested" dialog [v] | No portal [v]. `bindsym … exec vaultkeeper --quick` | Portal registers the name; the user binds the key in config (`global, <appid>:quick`) [v] |
+| Global hotkey | No portal [v: Hex docs]. Fallback: write a GNOME custom shortcut running `vaultkeeper --search` | GlobalShortcuts portal [v: ArchWiki table]; first GNOME version 48 [i] | Portal, with a "Global Shortcuts Requested" dialog [v] | No portal [v]. `bindsym … exec vaultkeeper --search` | Portal registers the name; the user binds the key in config (`global, <appid>:quick`) [v] |
 | Daemon clipboard set + auto-clear (data-control) | No data-control [v] | ext-data-control from GNOME 49 [i: secondary source citing wayland.app] | Yes [v] | Yes [v] | Yes [v] |
 | Hide from clipboard history (`x-kde-passwordManagerHint: secret`) | Unknown | Unknown | Klipper honours it [v] | cliphist honours it (via `wl-paste --watch`) [v] | Same [v] |
 | Auto-type | RemoteDesktop portal [v] | Same [v] | Same [v] | `zwp_virtual_keyboard_v1` [v] | Same [v] |
@@ -202,7 +202,7 @@ Adds over §5.5: identity by content, signal denial, and protection of the whole
 
 ### 7.1 Global shortcuts
 
-GlobalShortcuts portal via `ashpd` (GNOME 48+, KDE, Hyprland). The portal identifies an unsandboxed app by its `.desktop` file/app id [i: Hex writes a minimal `.desktop` for this reason]. Fallbacks: GNOME 46 → write a custom keybinding (`org.gnome.settings-daemon.plugins.media-keys`) running `vaultkeeper --quick`; Sway → document `bindsym`. Settings should show what the desktop actually granted.
+GlobalShortcuts portal via `ashpd` (GNOME 48+, KDE, Hyprland). The portal identifies an unsandboxed app by its `.desktop` file/app id [i: Hex writes a minimal `.desktop` for this reason]. Fallbacks: GNOME 46 → write a custom keybinding (`org.gnome.settings-daemon.plugins.media-keys`) running `vaultkeeper --search`; Sway → document `bindsym`. Settings should show what the desktop actually granted.
 
 ### 7.2 Lock, sleep, network
 
@@ -240,7 +240,7 @@ Sway:
 
 ```
 exec vaultkeeper --tray
-bindsym $mod+Shift+space exec vaultkeeper --quick
+bindsym $mod+Shift+space exec vaultkeeper --search
 for_window [app_id="io.github.avbel.Vaultkeeper"] floating enable
 exec swayidle -w timeout 300 'loginctl lock-session' lock 'swaylock -f' before-sleep 'loginctl lock-session'
 exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1   # any polkit agent; quick unlock needs one
@@ -250,7 +250,7 @@ Hyprland (syntax changes between releases; 0.56+ also has Lua-style `hl.bind(...
 
 ```
 exec-once = vaultkeeper --tray
-bind = SUPER SHIFT, space, global, io.github.avbel.Vaultkeeper:quick   # or: exec, vaultkeeper --quick
+bind = SUPER SHIFT, space, global, io.github.avbel.Vaultkeeper:quick   # or: exec, vaultkeeper --search
 windowrule = float, class:^(io\.github\.avbel\.Vaultkeeper)$
 # hypridle.conf: lock_cmd = pidof hyprlock || hyprlock ; before_sleep_cmd = loginctl lock-session
 ```

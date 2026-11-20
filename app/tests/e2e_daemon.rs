@@ -796,7 +796,7 @@ async fn a_second_launch_forwards_to_the_running_daemon() {
     let daemon = sandbox.daemon();
     let (_vault, mut events) = sandbox.connect().await;
     let second = sandbox
-        .command(Path::new(env!("CARGO_BIN_EXE_vaultkeeper")), &["--quick"])
+        .command(Path::new(env!("CARGO_BIN_EXE_vaultkeeper")), &["--search"])
         .status()
         .await
         .unwrap();

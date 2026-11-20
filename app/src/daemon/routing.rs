@@ -31,12 +31,14 @@ pub enum Effect {
     Quit,
 }
 
-/// How the process was launched: autostart (`--tray`/`--daemon`), a plain launch or `--quick`.
+/// How the process was launched: autostart (`--tray`/`--daemon`), a plain launch, `--search`
+/// or `--generator`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Launch {
     Tray,
     Manager,
     QuickPanel,
+    Generator,
 }
 
 /// `frontmost` reads the app in front (vaultkeeper excluded); only "Quick search" asks for it.
@@ -105,15 +107,23 @@ pub fn hotkey(slot: HotkeySlot, frontmost: impl FnOnce() -> Option<TypingTarget>
     }
 }
 
-/// A second launch of the app forwards what it was asked to show to the running daemon. It
-/// arrives off the main thread, where the frontmost app cannot be read, so a panel opened this
-/// way has no auto-type target.
+/// A second launch of the app forwards what it was asked to show to the running daemon. A Quick
+/// Panel opened this way carries the app in front for auto-type, as the hotkey's does, so
+/// `vaultkeeper --search` bound to a launcher or compositor shortcut stands in for the hotkey.
 #[must_use]
-pub const fn second_launch(command: vk_platform::single_instance::Command) -> Effect {
+pub fn second_launch(
+    command: vk_platform::single_instance::Command,
+    frontmost: impl FnOnce() -> Option<TypingTarget>,
+) -> Effect {
     match command {
         vk_platform::single_instance::Command::ShowManager => Effect::Show(UiCommand::ShowManager),
         vk_platform::single_instance::Command::ShowQuickPanel => {
-            Effect::Show(UiCommand::ShowQuickPanel { target: None })
+            Effect::Show(UiCommand::ShowQuickPanel {
+                target: frontmost(),
+            })
+        }
+        vk_platform::single_instance::Command::ShowGenerator => {
+            Effect::Show(UiCommand::ShowGenerator)
         }
         vk_platform::single_instance::Command::Quit => Effect::Quit,
     }
@@ -123,10 +133,11 @@ pub const fn second_launch(command: vk_platform::single_instance::Command) -> Ef
 /// (`quit`), everything else goes through `apply`.
 pub fn dispatch_second_launch(
     command: vk_platform::single_instance::Command,
+    frontmost: impl FnOnce() -> Option<TypingTarget>,
     apply: impl FnOnce(Effect),
     quit: impl FnOnce(),
 ) {
-    match second_launch(command) {
+    match second_launch(command, frontmost) {
         Effect::Quit => quit(),
         effect => apply(effect),
     }
@@ -135,17 +146,22 @@ pub fn dispatch_second_launch(
 /// What to show right after start. "Ask to unlock on start" applies to autostart only; a plain
 /// launch opens the Manager, which shows the lock or login screen itself. An autostart with no
 /// saved account at all (first run) asks to add one, since a bare tray icon gives nothing to do;
-/// a logged-out account that is still saved stays quiet.
+/// a logged-out account that is still saved stays quiet. `--search` reads the app in front for
+/// auto-type (`frontmost`), as a forwarded one does.
 #[must_use]
 pub fn startup(
     launch: Launch,
     state: &SessionState,
     has_accounts: bool,
     ask_unlock_on_start: bool,
+    frontmost: impl FnOnce() -> Option<TypingTarget>,
 ) -> Option<Effect> {
     match launch {
         Launch::Manager => Some(Effect::Show(UiCommand::ShowManager)),
-        Launch::QuickPanel => Some(Effect::Show(UiCommand::ShowQuickPanel { target: None })),
+        Launch::QuickPanel => Some(Effect::Show(UiCommand::ShowQuickPanel {
+            target: frontmost(),
+        })),
+        Launch::Generator => Some(Effect::Show(UiCommand::ShowGenerator)),
         Launch::Tray if !has_accounts => Some(Effect::Show(UiCommand::ShowLogin)),
         Launch::Tray => (ask_unlock_on_start && matches!(state, SessionState::Locked { .. }))
             .then_some(Effect::Show(UiCommand::UnlockInTray)),
@@ -157,6 +173,7 @@ pub fn startup(
 pub const fn forwarded(launch: Launch) -> vk_platform::single_instance::Command {
     match launch {
         Launch::QuickPanel => vk_platform::single_instance::Command::ShowQuickPanel,
+        Launch::Generator => vk_platform::single_instance::Command::ShowGenerator,
         Launch::Tray | Launch::Manager => vk_platform::single_instance::Command::ShowManager,
     }
 }
@@ -308,16 +325,28 @@ mod tests {
             Effect::Show(UiCommand::ShowGenerator)
         );
         assert_eq!(
-            second_launch(Command::ShowManager),
+            second_launch(Command::ShowManager, no_read),
             Effect::Show(UiCommand::ShowManager)
         );
         assert_eq!(
-            second_launch(Command::ShowQuickPanel),
+            second_launch(Command::ShowQuickPanel, || Some(safari())),
+            Effect::Show(UiCommand::ShowQuickPanel {
+                target: Some(safari())
+            }),
+            "`--search` from a launcher types into the app in front, like the hotkey"
+        );
+        assert_eq!(
+            second_launch(Command::ShowQuickPanel, || None),
             Effect::Show(UiCommand::ShowQuickPanel { target: None })
         );
+        assert_eq!(
+            second_launch(Command::ShowGenerator, no_read),
+            Effect::Show(UiCommand::ShowGenerator)
+        );
         assert_eq!(forwarded(Launch::QuickPanel), Command::ShowQuickPanel);
+        assert_eq!(forwarded(Launch::Generator), Command::ShowGenerator);
         assert_eq!(forwarded(Launch::Tray), Command::ShowManager);
-        assert_eq!(second_launch(Command::Quit), Effect::Quit);
+        assert_eq!(second_launch(Command::Quit, no_read), Effect::Quit);
     }
 
     #[test]
@@ -328,6 +357,7 @@ mod tests {
         let quits = Cell::new(0);
         dispatch_second_launch(
             Command::Quit,
+            no_read,
             |_| applied.set(applied.get() + 1),
             || quits.set(quits.get() + 1),
         );
@@ -335,6 +365,7 @@ mod tests {
 
         dispatch_second_launch(
             Command::ShowManager,
+            no_read,
             |effect| {
                 assert_eq!(effect, Effect::Show(UiCommand::ShowManager));
                 applied.set(applied.get() + 1);
@@ -347,23 +378,39 @@ mod tests {
     #[test]
     fn startup_asks_to_unlock_only_for_a_locked_autostart() {
         assert_eq!(
-            startup(Launch::Tray, &locked(), true, true),
+            startup(Launch::Tray, &locked(), true, true, no_read),
             Some(Effect::Show(UiCommand::UnlockInTray))
         );
-        assert_eq!(startup(Launch::Tray, &locked(), true, false), None);
+        assert_eq!(startup(Launch::Tray, &locked(), true, false, no_read), None);
         assert_eq!(
-            startup(Launch::Tray, &SessionState::LoggedOut, true, true),
+            startup(Launch::Tray, &SessionState::LoggedOut, true, true, no_read),
             None,
             "a saved, logged-out account is not a first run"
         );
-        assert_eq!(startup(Launch::Tray, &unlocked(), true, true), None);
         assert_eq!(
-            startup(Launch::Manager, &locked(), true, false),
+            startup(Launch::Tray, &unlocked(), true, true, no_read),
+            None
+        );
+        assert_eq!(
+            startup(Launch::Manager, &locked(), true, false, no_read),
             Some(Effect::Show(UiCommand::ShowManager))
         );
         assert_eq!(
-            startup(Launch::QuickPanel, &SessionState::LoggedOut, true, false),
-            Some(Effect::Show(UiCommand::ShowQuickPanel { target: None }))
+            startup(
+                Launch::QuickPanel,
+                &SessionState::LoggedOut,
+                true,
+                false,
+                || { Some(safari()) }
+            ),
+            Some(Effect::Show(UiCommand::ShowQuickPanel {
+                target: Some(safari())
+            }))
+        );
+        assert_eq!(
+            startup(Launch::Generator, &locked(), true, true, no_read),
+            Some(Effect::Show(UiCommand::ShowGenerator)),
+            "the Generator opens whether or not the vault is unlocked, as from its hotkey"
         );
     }
 
@@ -371,12 +418,24 @@ mod tests {
     fn first_run_autostart_asks_to_add_an_account() {
         for ask_unlock in [true, false] {
             assert_eq!(
-                startup(Launch::Tray, &SessionState::LoggedOut, false, ask_unlock),
+                startup(
+                    Launch::Tray,
+                    &SessionState::LoggedOut,
+                    false,
+                    ask_unlock,
+                    no_read
+                ),
                 Some(Effect::Show(UiCommand::ShowLogin))
             );
         }
         assert_eq!(
-            startup(Launch::Manager, &SessionState::LoggedOut, false, false),
+            startup(
+                Launch::Manager,
+                &SessionState::LoggedOut,
+                false,
+                false,
+                no_read
+            ),
             Some(Effect::Show(UiCommand::ShowManager))
         );
     }

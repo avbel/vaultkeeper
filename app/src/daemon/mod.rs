@@ -126,6 +126,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
                 for command in forward_rx {
                     routing::dispatch_second_launch(
                         command,
+                        || daemon.typing_target(),
                         |effect| daemon.apply(effect),
                         quit_event_loop,
                     );
@@ -144,6 +145,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
         &vk_vault::VaultService::state(daemon.vault().as_ref()),
         !vk_vault::VaultService::accounts(daemon.vault().as_ref()).is_empty(),
         daemon.settings().ask_unlock_on_start,
+        || daemon.typing_target(),
     ) {
         daemon.apply(effect);
     }

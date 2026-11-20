@@ -55,7 +55,8 @@ clipboard if it holds a copied secret.
 
 ## Daily use
 
-- **Quick Panel:** ⌘⇧Space (Settings → Shortcuts) or the tray icon → *Quick search*. Type, then:
+- **Quick Panel:** ⌘⇧Space (Settings → Shortcuts), the tray icon → *Quick search*, or
+  `vaultkeeper --search` (bind it to a launcher shortcut). Type, then:
   - Enter copies the password;
   - ⇧Enter copies the username;
   - ⌘Enter copies the TOTP code;
@@ -345,10 +346,11 @@ To uninstall:
 ## Command line
 
 ```
-vaultkeeper            start (or ask the running instance) and open the vault window
-vaultkeeper --tray     menu bar only
-vaultkeeper --quick    open the Quick Panel
-vaultkeeper --mock     run on a built-in demo vault (master password: mock), touches no real data
+vaultkeeper              start (or ask the running instance) and open the vault window
+vaultkeeper --tray       menu bar only
+vaultkeeper --search     open the Quick Panel, as its hotkey does (no vault window)
+vaultkeeper --generator  open the password generator, as its hotkey does
+vaultkeeper --mock       run on a built-in demo vault (master password: mock), touches no real data
 ```
 
 ## Development
