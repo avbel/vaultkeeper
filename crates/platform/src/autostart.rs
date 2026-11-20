@@ -12,6 +12,7 @@
 
 use crate::Result;
 
+#[cfg(any(target_os = "macos", windows, test))]
 const TRAY_ARG: &str = "--tray";
 
 /// The Run key command: the exe quoted because its path may contain spaces, then `--tray`.

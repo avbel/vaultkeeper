@@ -40,6 +40,10 @@ impl Installer {
         match self.0 {}
     }
 
+    pub fn zip_path(&self) -> PathBuf {
+        match self.0 {}
+    }
+
     pub fn stage(&self, _zip: &Path, _version: Version) -> anyhow::Result<PathBuf> {
         match self.0 {}
     }

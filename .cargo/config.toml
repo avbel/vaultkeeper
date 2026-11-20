@@ -29,3 +29,11 @@ rustflags = [
     "-C",
     "link-arg=/DEPENDENTLOADFLAG:0x800",
 ]
+
+# Full RELRO and no executable stack: a GOT overwrite or a stack shellcode
+# needs a writable/executable page these flags take away.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "relro-level=full", "-C", "link-arg=-Wl,-z,now", "-C", "link-arg=-Wl,-z,noexecstack"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "relro-level=full", "-C", "link-arg=-Wl,-z,now", "-C", "link-arg=-Wl,-z,noexecstack"]

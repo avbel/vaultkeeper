@@ -15,6 +15,7 @@ hkdf.workspace = true
 interprocess.workspace = true
 p256 = { workspace = true, features = ["ecdh"] }
 rand.workspace = true
+serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -39,6 +40,7 @@ security-framework.workspace = true
 swift-rs = { workspace = true, features = ["build"] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 

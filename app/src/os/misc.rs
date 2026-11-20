@@ -133,6 +133,8 @@ pub struct FilePanels {
     pub notify: Notifier,
 }
 
+// Linux gets portal dialogs in step 3h of linux-plan.md.
+#[cfg(any(target_os = "macos", windows))]
 impl FilePanels {
     fn modal<T>(&self, show: impl FnOnce() -> T) -> T {
         (self.notify)(UiNotice::Modal(true));

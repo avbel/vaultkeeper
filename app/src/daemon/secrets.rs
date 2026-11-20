@@ -1,5 +1,6 @@
 //! The daemon's token store. On macOS this is the login keychain (service `vaultkeeper`); on
-//! Windows, sealed files under the data directory wrapped in DPAPI (windows-support.md §4.1).
+//! Windows, sealed files under the data directory wrapped in DPAPI (windows-support.md §4.1); on
+//! Linux, the same sealed files without a wrapper until systemd-creds arrives (linux-plan.md 2f).
 //! The vault's key names start with the user id, so `delete_all_for(user_id)` removes every item
 //! of that account on log out.
 
@@ -9,7 +10,9 @@ use vk_vault::{SecretStore, SecretStoreError};
 use zeroize::Zeroizing;
 
 #[cfg(windows)]
-use vk_vault::{BlobWrapper, SealedFileStore};
+use vk_vault::BlobWrapper;
+#[cfg(any(windows, target_os = "linux", test))]
+use vk_vault::SealedFileStore;
 
 /// `prefix` namespaces the item names; production uses none, tests a unique one per run.
 pub struct KeychainStore {
@@ -63,11 +66,12 @@ impl SecretStore for KeychainStore {
     }
 }
 
-/// Builds the token store the daemon injects. macOS keeps the login keychain; Windows keeps sealed
-/// files under `data_dir`, DPAPI-wrapped and written with the platform's atomic write.
+/// Builds the token store the daemon injects. macOS keeps the login keychain; Windows and Linux
+/// keep sealed files under `data_dir` written with the platform's atomic write, DPAPI-wrapped on
+/// Windows.
 #[must_use]
 pub fn open(data_dir: &Path, keychain_prefix: Option<&str>) -> Arc<dyn SecretStore> {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         let _ = data_dir;
         match keychain_prefix {
@@ -78,11 +82,19 @@ pub fn open(data_dir: &Path, keychain_prefix: Option<&str>) -> Arc<dyn SecretSto
     #[cfg(windows)]
     {
         let _ = keychain_prefix;
-        Arc::new(
-            SealedFileStore::new(data_dir, vk_platform::fs::write_private_atomic)
-                .with_wrapper(Arc::new(DpapiWrapper)),
-        )
+        Arc::new(sealed_store(data_dir).with_wrapper(Arc::new(DpapiWrapper)))
     }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = keychain_prefix;
+        Arc::new(sealed_store(data_dir))
+    }
+}
+
+/// Portable, so the macOS tests exercise the Linux store as it is configured in production.
+#[cfg(any(windows, target_os = "linux", test))]
+fn sealed_store(data_dir: &Path) -> SealedFileStore {
+    SealedFileStore::new(data_dir, vk_platform::fs::write_private_atomic)
 }
 
 #[cfg(windows)]
@@ -228,5 +240,51 @@ mod tests {
 
         let wrong = wrapper.unwrap(OTHER, &blob).expect_err("another account");
         assert!(wrong.is_undecryptable(), "{wrong:?}");
+    }
+}
+
+#[cfg(test)]
+mod sealed_tests {
+    use super::*;
+
+    #[test]
+    fn unwrapped_sealed_store_round_trips_and_wipes_one_account() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = sealed_store(dir.path());
+        let user = "3bef05d6-9070-48b4-b320-a5d425eec9fd";
+        let other = "9d1c3e2a-0000-4000-8000-000000000001";
+        // The daemon creates account dirs with its layout; the store only writes into them.
+        for id in [user, other] {
+            std::fs::create_dir_all(dir.path().join("accounts").join(id)).expect("account dir");
+        }
+        store.provide_key(user, &[7; 64]).expect("key");
+        store.provide_key(other, &[9; 64]).expect("key");
+        store
+            .set(&format!("{user}.refresh_token"), b"refresh")
+            .expect("set");
+        store
+            .set(&format!("{other}.refresh_token"), b"keep")
+            .expect("set");
+        assert_eq!(
+            store
+                .get(&format!("{user}.refresh_token"))
+                .expect("get")
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(&b"refresh"[..])
+        );
+        store.delete_all_for(user).expect("wipe");
+        assert!(
+            store
+                .get(&format!("{user}.refresh_token"))
+                .expect("get")
+                .is_none()
+        );
+        assert!(
+            store
+                .get(&format!("{other}.refresh_token"))
+                .expect("get")
+                .is_some()
+        );
     }
 }

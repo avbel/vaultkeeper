@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, windows-support]
+    branches: [main, windows-support, linux-support]
   pull_request:
   workflow_dispatch:
 
@@ -15,6 +15,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The runner kernel (6.8) is older than the 7.x floor: tests that need newer kernel features
+  # skip at run time with a logged reason, tests that need a desktop session are #[ignore]d.
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: ubuntu-latest, test: true}
+          # Clippy only: catches aarch64 cfg mistakes without a second full test run.
+          - {arch: arm64, runner: ubuntu-24.04-arm, test: false}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+            libdbus-1-dev libudev-dev clang libelf-dev zlib1g-dev
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: linux-ci-${{ matrix.arch }}
+
+      - name: Checks
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        if: matrix.test
+        run: cargo test --workspace --locked --no-fail-fast
+
   macos:
     name: macOS
     runs-on: macos-latest

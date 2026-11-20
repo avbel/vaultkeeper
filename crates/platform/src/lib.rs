@@ -13,6 +13,7 @@ pub mod keychain;
 pub mod network;
 pub mod paths;
 pub mod power;
+pub mod security;
 pub mod single_instance;
 
 pub use error::{Error, Result};

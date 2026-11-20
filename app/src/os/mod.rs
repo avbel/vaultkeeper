@@ -11,6 +11,8 @@ pub mod detached;
 pub mod early_log;
 pub mod fs;
 pub mod layout;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod log_file;
 mod misc;
 mod security_key;
@@ -74,6 +76,10 @@ impl Hooks {
                 {
                     Arc::new(windows_shell::WindowsDock)
                 }
+                #[cfg(target_os = "linux")]
+                {
+                    Arc::new(linux::shell::LinuxDock)
+                }
             },
             browsers: Arc::new(browser::BrowserFiles {
                 app_support: data_dir.parent().unwrap_or(data_dir).to_owned(),
@@ -92,6 +98,10 @@ impl Hooks {
                 #[cfg(windows)]
                 {
                     Arc::new(windows_shell::WindowsPlacement)
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    Arc::new(linux::shell::CompositorPlacement)
                 }
             },
             clock: Arc::new(SystemClock),

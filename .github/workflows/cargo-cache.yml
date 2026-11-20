@@ -88,3 +88,40 @@ jobs:
           cargo chef prepare --recipe-path "$RUNNER_TEMP/recipe.json"
           cargo chef cook --release --locked --target ${{ matrix.target }} -p vaultkeeper \
             --recipe-path "$RUNNER_TEMP/recipe.json"
+
+  linux-deps:
+    name: Linux ${{ matrix.arch }} release dependencies (cache only)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu}
+          - {arch: arm64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+            libdbus-1-dev libudev-dev clang libelf-dev zlib1g-dev
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      # Same key as the linux-build job the release workflow gains in step 6a of linux-plan.md.
+      - id: cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: linux-release-${{ matrix.arch }}
+
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          command -v cargo-chef || cargo install cargo-chef --locked --version 0.1.78
+          cargo chef prepare --recipe-path "$RUNNER_TEMP/recipe.json"
+          cargo chef cook --release --locked --target ${{ matrix.target }} -p vaultkeeper \
+            --recipe-path "$RUNNER_TEMP/recipe.json"

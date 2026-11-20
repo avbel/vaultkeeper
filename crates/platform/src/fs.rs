@@ -308,7 +308,11 @@ mod tests {
         assert!(is_writable_dir(dir.path()));
         assert!(!is_writable_dir(&dir.path().join("missing")));
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).expect("chmod");
-        assert!(!is_writable_dir(dir.path()));
+        // SAFETY: geteuid has no preconditions. Root bypasses mode bits (the Docker check runs
+        // as root), so the read-only case only means something for a normal user.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!is_writable_dir(dir.path()));
+        }
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).expect("chmod");
         assert!(!is_on_read_only_volume(dir.path()).expect("statvfs"));
     }
