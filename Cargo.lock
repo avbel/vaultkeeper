@@ -7664,6 +7664,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vk-linux"
+version = "0.1.15"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "vk-platform"
 version = "0.1.15"
 dependencies = [
@@ -7677,6 +7685,8 @@ dependencies = [
  "p256 0.14.0",
  "rand 0.10.3",
  "security-framework",
+ "serde",
+ "serde_json",
  "sha2 0.11.1",
  "swift-rs",
  "tempfile",

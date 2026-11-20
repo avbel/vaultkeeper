@@ -1,0 +1,17 @@
+[package]
+name = "vk-linux"
+description = "Linux kernel and desktop probes shared by vk-platform, vk-ipc and the app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.191"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

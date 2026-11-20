@@ -6,6 +6,7 @@ members = [
     "crates/crypto",
     "crates/gen",
     "crates/ipc",
+    "crates/linux",
     "crates/platform",
     "crates/ssh",
     "crates/vault",
