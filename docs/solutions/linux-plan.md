@@ -1,5 +1,5 @@
-# Linux support (Ubuntu 26.10 + Fedora 45, Wayland only; GNOME 51, KDE Plasma 6.7/6.8, Sway 1.12, Hyprland 0.56)
-Design sources: docs/solutions/linux-support.md (design §), docs/solutions/linux-gaps.md (gaps §, and its "Decisions" of 2026-11-20), docs/solutions/linux-ideas.md (ideas §; §1 floor, §7 Homebrew, §8 updates, §9 baseline, §10 hotkeys, §11 chains, §12 BPF). User decisions: latest Ubuntu and Fedora only, Wayland only, four desktops at the versions those two ship; Homebrew tap first, deb/rpm later, no AppImage; auto-update hidden under a package manager; every protection a fallback chain, strongest first; BPF LSM now as the first link, identity by a release-signed fs-verity digest, one-time privileged helper; refuse to start when a required chain has no link unless `--skip-security-issues`; hotkeys and labels as on Windows.
+# Linux support (Ubuntu 26.10, Fedora 45, Arch as Omarchy 4.5; Wayland only; GNOME 51, KDE Plasma 6.7/6.8, Sway 1.12, Hyprland 0.56/0.57)
+Design sources: docs/solutions/linux-support.md (design §), docs/solutions/linux-gaps.md (gaps §, and its "Decisions" of 2026-11-20), docs/solutions/linux-ideas.md (ideas §; §1 floor, §7 Homebrew, §8 updates, §9 baseline, §10 hotkeys, §11 chains, §12 BPF). User decisions: latest Ubuntu and Fedora, plus Arch **only as the Omarchy build** (its defaults are the supported Arch configuration; plain Arch runs only when the security probes pass), Wayland only, four desktops at the versions those ship; Homebrew tap first, deb/rpm later, no AppImage; auto-update hidden under a package manager; every protection a fallback chain, strongest first; BPF LSM now as the first link, identity by a release-signed fs-verity digest, one-time privileged helper; refuse to start when a required chain has no link unless `--skip-security-issues`; hotkeys and labels as on Windows.
 Conventions for every step:
 - No behaviour change on macOS or Windows. Every step that touches shared code runs the macOS checks of the crates it touched; Windows code paths stay under `cfg(windows)`.
 - Linux code lives in `#[cfg(target_os = "linux")]` modules (`linux.rs` or a `linux/` dir). Portable parts (chain model, desktop-file and unit templates, trigger conversion, install-kind logic, manifest JSON, refusal tables) are plain functions over injected inputs and unit-tested on macOS.
@@ -11,6 +11,8 @@ Conventions for every step:
 - Every `unsafe` block gets a `// SAFETY:` comment; comments explain why. Workspace clippy is pedantic with `-D warnings`; `unwrap` is denied.
 - Phase gate (orchestrator, before every phase commit): `scripts/check.sh && CARGO_TARGET_DIR=target/lean cargo test --workspace` on macOS, `scripts/check-linux.sh --workspace --all-targets`, and a green `linux` CI job. From phase 3 on, the phase's section of docs/solutions/linux-test-checklist.md (7a) is run by the user in the VMs; a step marked `gate:` must not be built on until the user reports the result.
 - README.md changes only with the user's approval (7b proposes the text). Vendored changes are recorded in vendor/PATCHES.md. No new git branch and no commit without the user's word (repo rules); the orchestrator proposes a `linux-support` branch from main when the user says so.
+- No distribution default is assumed anywhere in code: the chain probes (1a/1b) decide on every distribution, refusal and warning texts name the missing item and the fix for the detected distribution (`/etc/os-release` `ID`, Omarchy marked by the `omarchy` package), and docs/solutions/linux-requirements.md (7d) documents what the probes need. On Arch this is the whole support story.
+- Verification VMs (each driven through its MCP): `vm-fedora-gnome` = Fedora 45 Workstation, GNOME 51, UEFI with Secure Boot; `vm-kubuntu` = Kubuntu 26.10, Plasma 6.7.5, plus an optional `apt install sway` session; `vm-fedora-sway` = Fedora 45 Sway Spin (sway-config-fedora: Waybar, swaylock/swayidle, lxqt-policykit, SDDM); `vm-omarchy` = Omarchy v4.5.0 (Arch, `linux-omarchy` 7.2.15, Hyprland 0.57.2, Omarchy shell as tray + polkit agent, UWSM, Limine UKI, btrfs + LUKS, Secure Boot off, Chrome). A `verify: vm` line names the VMs; the appendix maps every manual check to them. Untested under this set: Ubuntu GNOME and Fedora KDE; a GNOME session on `vm-kubuntu` (`sudo apt install ubuntu-desktop-minimal`, log in to "Ubuntu") covers Ubuntu GNOME (AppIndicator on by default, snap Firefox) cheaply [i]; Fedora KDE stays untested. Hyprland: `vm-omarchy` is the reference; Ubuntu 26.10 Hyprland (universe) stays supported without a VM; Fedora Hyprland is unsupported.
 - Status conventions as in .plan/windows-support.md: `done-when`, `needs`, `difficulty`, `kind`, plus `effort` in person-days and `verify` (how: `unit` = cargo test on macOS, `docker` = scripts/check-linux.sh, `ci` = linux job, `vm` = manual on Ubuntu 26.10 / Fedora 45 per desktop).
 
 ## Phases at a glance
@@ -23,7 +25,7 @@ Conventions for every step:
 | 4 BPF LSM | 4a–4d | VM spike, root helper + D-Bus service, chain links and enrol flow, signed fs-verity digest in releases | 9.5 |
 | 5 Browser | 5a–5d | manifests + proxy, parent identity, status/socket/tests, passkeys | 4.5 |
 | 6 Packaging | 6a–6c | Linux tarballs, Homebrew formula + tap bump, install-kind and updater hiding | 3 |
-| 7–8 Docs, review, PR | 7a–7c, 8a | checklist, docs, review, PR | 2.5 |
+| 7–8 Docs, review, PR | 7a–7d, 8a | checklist, docs, requirements list, review, PR | 3.5 |
 | 9 later | 9a | .deb and .rpm | 2 |
 
 ## 0a Fix the three Linux compile errors
@@ -85,8 +87,9 @@ kind: change
 files: crates/linux/, Cargo.toml
 do: - New workspace member `crates/linux`, package `vk-linux`, "Linux kernel and desktop probes shared by vk-platform, vk-ipc and the app". Compiles everywhere; real code under `cfg(target_os = "linux")`, portable parsers (kernel version, `/proc/sys` values, `lsm` list, `XDG_*` env) tested on macOS.
   - Constants missing from libc 0.2.191: `SO_PEERPIDFD`, `SO_PASSPIDFD`, `PIDFD_GET_INFO`, `struct pidfd_info` (v7.3 layout with `mask`, `cgroupid`, pid/tgid/ppid, uids/gids, `exit_code`, coredump fields, `supported_mask`), `PIDFD_INFO_*` masks, `PR_SET_MDWE`, `PR_MDWE_REFUSE_EXEC_GAIN`, `PR_MDWE_NO_INHERIT`, `MFD_*`/`memfd_secret` syscall numbers per arch, `mseal`, `landlock_*` syscall numbers, `LANDLOCK_CREATE_RULESET_VERSION`.
+  - `distro::detect() -> Distro { Ubuntu, Fedora, Omarchy, OtherArch, Other }` from `/etc/os-release` (`ID`, `ID_LIKE`) plus the Omarchy marker (`/usr/share/omarchy` or `pacman -Q omarchy`), used only to pick the fix text of a failed probe, never to skip a probe.
   - Probes (each returns `Probe` from 1a): kernel version ≥ 6.5/6.13; `SO_PEERPIDFD` on a `socketpair`; `memfd_secret` create+close; `mseal` on a private page; MDWE set+query; dumpable get/set; Landlock ABI; Yama scope; `/sys/kernel/security/lsm` contains `bpf`; Wayland (`WAYLAND_DISPLAY` and a connect to `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`); runtime dir (`statx` owner/mode, `statfs` `TMPFS_MAGIC`); data dir and files (owner, symlink, modes); systemd user manager (`$XDG_RUNTIME_DIR/systemd/notify` exists); D-Bus names (`org.freedesktop.portal.Desktop`, `org.freedesktop.Notifications`, `org.kde.StatusNotifierWatcher`, `org.freedesktop.login1` on the system bus) through zbus `NameHasOwner` with a 2 s timeout, run once and cached.
-done-when: `cargo test -p vk-linux` (parsers on macOS); `scripts/check-linux.sh -p vk-linux --all-targets --test` (probe tests run in Docker: kernel and socket probes pass, desktop probes report Unavailable with a reason, never panic)
+done-when: `cargo test -p vk-linux` (parsers on macOS; os-release fixtures for Ubuntu, Fedora, Omarchy, plain Arch); `scripts/check-linux.sh -p vk-linux --all-targets --test` (probe tests run in Docker: kernel and socket probes pass, desktop probes report Unavailable with a reason, never panic)
 deps: rustix@1.1 (present), zbus (present)
 needs: 1a
 difficulty: medium
@@ -96,7 +99,8 @@ kind: change
 
 ## 1c Baseline gate, `--skip-security-issues`, `vaultkeeper security …`
 files: app/src/cli.rs, app/src/daemon/mod.rs, app/src/ui_process/mod.rs, app/src/os/security_gate.rs, app/src/daemon/launcher.rs, app/src/settings.rs, app/ui/refusal.slint
-do: - `cli.rs` parses `--skip-security-issues` for every role and the subcommand `security` with `status | accept [ids…] | install | enroll | verify | uninstall` (install/enroll/verify/uninstall forward to the helper, 4c).
+do: - `cli.rs` parses `--skip-security-issues` for every role and the subcommand `security` with `status | requirements | accept [ids…] | install | enroll | verify | uninstall` (install/enroll/verify/uninstall forward to the helper, 4c; `requirements` prints the table of ideas §9.1 with the fix column for the detected distribution).
+  - Every refusal/warning line is `<item>: <what the probe saw> — <fix>`; the fix comes from a per-item table keyed by `Distro` (apt / dnf / pacman and Omarchy commands such as `omarchy-refresh-limine`) with a generic fallback for `Other`. Portable, unit-tested text.
   - `security_gate::enforce(role, skip) -> anyhow::Result<Report>` runs after `startup_check::enforce` in `daemon::run` (mod.rs:86) and `ui_process::run` (mod.rs:47) and before the CLI connects; the CLI role probes only kernel, runtime dir and data dir. A refusal with `skip` or with an accepted set covering it continues with the warning badge; otherwise: CLI prints `Report::table()` and exits 78; the daemon spawns `vaultkeeper --ui --refusal <path>` (the UI renders the table with "Quit" and "Start anyway (not recommended)", which re-launches the daemon with the flag) and posts an `org.freedesktop.Notifications` notification; if the UI cannot start, the report goes to `$XDG_STATE_HOME/vaultkeeper/last-refusal.txt`.
   - The daemon appends `--skip-security-issues` to the UI child's argv when it was started with it (launcher.rs); autostart entries, the user unit and the desktop file never carry it.
   - `security accept` stores `security_accepted: Option<{ fingerprint, issues }>` in settings.json; a later start whose refusal ids ⊆ accepted proceeds; new ids refuse again. `security status` prints the table (from the running daemon over IPC when it runs, else recomputed).
@@ -105,7 +109,7 @@ done-when: `cargo test -p vaultkeeper security_gate` covers: refusal table, acce
 needs: 1a, 1b
 difficulty: hard
 effort: 2
-verify: unit, docker, vm (the refusal window on each desktop: checklist §1)
+verify: unit, docker, vm (the refusal window and the per-distro fix text: `vm-kubuntu`, `vm-fedora-gnome`, `vm-fedora-sway`, `vm-omarchy`; checklist §1)
 kind: change
 
 ## 1d Process hardening on Linux
@@ -117,7 +121,7 @@ done-when: `cargo test -p vk-platform hardening`; `scripts/check-linux.sh -p vk-
 needs: 1b
 difficulty: medium
 effort: 1
-verify: unit, docker
+verify: unit, docker, vm (MDWE under Slint/Mesa on all four VMs)
 kind: change
 
 ## 1e secure_memory chain exposure and mseal
@@ -139,7 +143,7 @@ deps: landlock@0.4
 needs: 1b, 1d
 difficulty: hard
 effort: 2
-verify: docker, vm (daemon and UI run with the ruleset on all four desktops: checklist §2)
+verify: docker, vm (daemon and UI run with the ruleset: all four VMs; checklist §2)
 kind: change
 
 ## 2a Startup permission checks on Linux (refuse or repair)
@@ -163,16 +167,21 @@ verify: unit, docker
 kind: change
 
 ## 2c Peer identity chain on the Unix transport
-files: crates/ipc/src/transport/unix.rs, crates/ipc/src/peer.rs, crates/ipc/src/cli_access.rs, crates/ipc/tests/linux_peers.rs
+files: crates/ipc/src/transport/unix.rs, crates/ipc/src/peer.rs, crates/ipc/src/cli_access.rs, crates/ipc/src/browser/, app/src/daemon/browser/control.rs, app/src/browser_host/mod.rs, crates/ipc/tests/linux_peers.rs
 do: - `identify()` on Linux: `SO_PEERPIDFD` → `OwnedFd`; `PIDFD_GET_INFO` → pid, uid, cgroupid (fallback `SO_PEERCRED` when the kernel lacks it; recorded as link 3). `PeerCredentials` gains `pidfd: Option<OwnedFd>` on Linux.
   - `SameExecutable::verify` on Linux: read `/proc/<pid>/exe` (the client is still dumpable at this point, 1d), compare **file identity** — `statx` `(stx_dev, stx_ino, stx_mnt_id)` of the target against our own `/proc/self/exe`, or equal fs-verity digests when both have verity (`FS_IOC_MEASURE_VERITY`) — then `poll(pidfd)` must not report exit. Path strings are never compared (Cellar paths change, ideas §7.5). When the BPF connect gate is active (4c) the check is a mistake guard, as on Windows; a mismatch whose path equals the `opt` path but whose identity differs yields "Vaultkeeper was updated; restart it".
   - `cli_access.rs:84` builds the verifier once: make it re-read our own identity if `/proc/self/exe` ends in ` (deleted)` (the daemon was upgraded) and surface the `Updated` state (2e).
+  - **Clients verify the daemon without its `/proc/<pid>/exe`** (ideas §4, §11 C5). The daemon is non-dumpable from `Start` (1d), so the kernel hides its exe link from same-uid readers and today's `verify(&stream.peer_credentials()?, &SameExecutable::current()?)` at `cli_access.rs:212` would fail on every call; the browser host's connect in `app/src/browser_host/mod.rs` (`connect`, `transport::connect` at :144/:153) has the same shape. New `peer::DaemonVerifier` (Linux; macOS wraps today's check unchanged, Windows keeps 2b of the Windows plan) used by `cli_access::exchange` and by the host before its first frame:
+    1. before `connect`: open `$XDG_RUNTIME_DIR/vaultkeeper` with `O_PATH | O_NOFOLLOW | O_DIRECTORY`, `statx` → owner = euid, mode 0700, not a symlink; `statx` the socket inode through that dir fd → `S_IFSOCK`, owner = euid;
+    2. after `connect`: `SO_PEERPIDFD` (fallback `SO_PEERCRED`) → peer uid = euid; `PIDFD_GET_INFO` → `cgroupid`; read `/proc/<pid>/cgroup` (world-readable even for a non-dumpable task) → path; `statx("/sys/fs/cgroup/<path>")` inode must equal `cgroupid` (binds the name to the pidfd); the name must be a Vaultkeeper unit or app scope (`io.github.avbel.Vaultkeeper.service` from 3g, `app-*io.github.avbel.Vaultkeeper*.{scope,service}` from desktop launches on GNOME/KDE/UWSM); a daemon started outside systemd (terminal, stock Sway) is **Reduced**, not refused; `poll(pidfd)` must not report exit;
+    3. the shared BPF probe (4c) reporting `enforcing` upgrades the result to Full: with the `socket_bind` gate only enrolled builds can own a socket under the prefix. Without it, 1–2 are mistake guards (a same-uid process can name its own unit), stated as such in the chain status.
+    The daemon's first frame (the TLS certificate frame on the CLI path, the hello on the browser path) gains a small identity record (version, `statx` exe identity, `deleted` flag) so the client can still say "Vaultkeeper was updated; restart it" (2e) without reading the daemon's exe; both ends ship in one build. `control.rs:32` stays server-side (`SameExecutable` for the dumpable host). A mismatch names the failed item.
   - Clients call `harden_process(_, AfterHandshake)` when the server's hello arrives.
-  - `#[cfg(target_os = "linux")]` integration tests: pidfd round trip over `UnixStream::pair`; same-exe accepted; a child `/bin/true` rejected; pid reuse simulated by exiting the peer before `verify` → rejected.
-done-when: `scripts/check-linux.sh -p vk-ipc --all-targets --test`; `cargo test -p vk-ipc` (macOS unchanged); the `linux` CI job runs `linux_peers`
+  - `#[cfg(target_os = "linux")]` integration tests (`crates/ipc/tests/linux_peers.rs`): pidfd round trip over `UnixStream::pair`; same-exe client accepted; a child `/bin/true` rejected; pid reuse simulated by exiting the peer before `verify` → rejected; **client → non-dumpable daemon**: a child server that calls `PR_SET_DUMPABLE(0)` before `accept` is accepted by `DaemonVerifier` (the regression this bullet exists for); socket in a 0755 directory → rejected naming the mode; socket owned by another uid (simulated through an injected `statx`) → rejected; cgroup binding: `statx` of the child's `/proc/<pid>/cgroup` path equals its `PIDFD_GET_INFO.cgroupid` (cgroup2 on the runner and in Docker); a non-Vaultkeeper cgroup name → Reduced, accepted, status recorded; the identity record round-trips and a `deleted` daemon yields the "updated" error.
+done-when: `scripts/check-linux.sh -p vk-ipc --all-targets --test`; `cargo test -p vk-ipc` (macOS unchanged); the `linux` CI job runs `linux_peers`; `cargo test -p vaultkeeper browser_host`
 needs: 1d, 2b
 difficulty: hard
-effort: 2
+effort: 2.5
 verify: docker, ci
 kind: change
 
@@ -193,7 +202,7 @@ done-when: `cargo test -p vaultkeeper update` (state machine with fake identitie
 needs: 2c, 6c
 difficulty: medium
 effort: 1
-verify: unit, vm (checklist §12 brew upgrade)
+verify: unit, vm (`vm-kubuntu`, `vm-omarchy`: checklist §12 brew upgrade)
 kind: change
 
 ## 2f systemd-creds wrapper for the 2FA-remember token
@@ -203,7 +212,7 @@ done-when: `cargo test -p vk-platform creds`; `scripts/check-linux.sh -p vk-plat
 needs: 0d, 1a
 difficulty: medium
 effort: 1
-verify: unit, docker, vm (TPM VM and no-TPM VM)
+verify: unit, docker, vm (`vm-fedora-gnome` with a vTPM; `vm-omarchy` without)
 kind: change
 
 ## 3a App id, desktop file, icons, portal registration
@@ -216,18 +225,18 @@ deps: ashpd@0.14
 needs: 1f, 2b
 difficulty: medium
 effort: 1.5
-verify: unit, docker, vm (launcher entry and app name in portal dialogs on all four desktops: checklist §3)
+verify: unit, docker, vm (launcher entry and app name in portal dialogs: all four VMs; checklist §3)
 kind: change
 
 ## 3b Hotkeys: Windows defaults, GlobalShortcuts portal, compositor bindings
 files: app/src/settings.rs, app/src/hotkey_recorder.rs, app/src/app/settings_hotkeys.rs, app/src/daemon/hotkey.rs, app/src/daemon/hotkey/linux.rs, app/ui/settings.slint, app/tests/hotkey_recorder.rs, app/tests/generator_settings.rs, app/tests/shortcut_hints.rs, app/tests/shortcut_labels.rs
 do: - The cfg table of ideas §10: `DEFAULT_HOTKEY` (`settings.rs:371-375`), `hotkey_display` (:441), `MODIFIER_HINT`/`UNAVAILABLE_NOTICE` (three-way), AltGr warning and `slint_mods` (`settings_hotkeys.rs:55, :82, :301`); test expectations keyed on `target_os = "macos"` vs the rest.
-  - Linux backend behind the existing hotkey seam: GlobalShortcuts portal via ashpd (`CreateSession`, `BindShortcuts` with ids `quick-panel`/`generator`, descriptions, `preferred_trigger` from a portable accelerator→trigger converter: `CTRL+SHIFT+space`), `Activated` → the daemon's existing hotkey event plus the `activation_token` when present (GNOME) handed to the UI as `XDG_ACTIVATION_TOKEN`; `ListShortcuts` → `trigger_description` shown in Settings; `ConfigureShortcuts` behind "Change in system settings…". When the portal has no GlobalShortcuts backend (Sway), Settings shows the `bindsym`/`bind =` lines for the detected desktop (`XDG_CURRENT_DESKTOP`) with a copy button; `--search`/`--generator` invocations already act as the hotkey (d20f31b). `global-hotkey` stays macOS/Windows only. Chain C9.
+  - Linux backend behind the existing hotkey seam: GlobalShortcuts portal via ashpd (`CreateSession`, `BindShortcuts` with ids `quick-panel`/`generator`, descriptions, `preferred_trigger` from a portable accelerator→trigger converter: `CTRL+SHIFT+space`), `Activated` → the daemon's existing hotkey event plus the `activation_token` when present (GNOME) handed to the UI as `XDG_ACTIVATION_TOKEN`; `ListShortcuts` → `trigger_description` shown in Settings; `ConfigureShortcuts` behind "Change in system settings…". When the portal has no GlobalShortcuts backend (Sway), Settings shows the `bindsym`/`bind =` lines for the detected desktop (`XDG_CURRENT_DESKTOP`) with a copy button; on Omarchy the line is the Lua form for `~/.config/hypr/bindings.lua`: `o.bind("CTRL + SHIFT + SPACE", "Vaultkeeper", "vaultkeeper --search")` [v: Omarchy `o.bind` signature], chosen through the Omarchy marker; `--search`/`--generator` invocations already act as the hotkey (d20f31b). `global-hotkey` stays macOS/Windows only. Chain C9.
 done-when: `cargo test -p vaultkeeper hotkey` (converter, three-way strings); `scripts/check-linux.sh -p vaultkeeper --all-targets`; app tests pass on macOS unchanged
 needs: 3a
 difficulty: hard
 effort: 2.5
-verify: unit, vm (checklist §4 per desktop)
+verify: unit, vm (checklist §4: `vm-fedora-gnome`, `vm-kubuntu` + its Sway session, `vm-fedora-sway`, `vm-omarchy`)
 kind: change
 
 ## 3c Quick Panel focus and placement
@@ -237,29 +246,29 @@ done-when: `scripts/check-linux.sh -p vaultkeeper --all-targets`; `cargo test -p
 needs: 3b, 2d
 difficulty: medium
 effort: 1
-verify: vm (checklist §5)
+verify: vm (checklist §5: `vm-kubuntu` first, then `vm-omarchy`, `vm-fedora-sway`, `vm-fedora-gnome`)
 kind: change
 
 ## 3d Clipboard chain
 files: crates/platform/src/clipboard.rs, crates/platform/src/clipboard/linux/, crates/platform/Cargo.toml
-do: Chain C8 behind the existing `ClipboardBackend`: `ext-data-control-v1` through wl-clipboard-rs with `text/plain;charset=utf-8` and `x-kde-passwordManagerHint=secret`, timed clear with the SHA-256 rule (KDE, Sway, Hyprland) → RemoteDesktop + Clipboard portal (GNOME): `CreateSession`, `RequestClipboard` before `Start`, `persist_mode` 2 and `restore_token` in the data dir, `SetSelection`/`SelectionWrite` on request, ported from Bitwarden `portal_backend.rs` → `arboard` plain set with the clear timer (Reduced). The probe picks the first link that works on this compositor at startup (`ext_data_control_manager_v1` advertised? portal `RemoteDesktop` available?). Clipboard clear still runs on lock and on timer.
+do: Chain C8 behind the existing `ClipboardBackend`: `ext-data-control-v1` through wl-clipboard-rs with `text/plain;charset=utf-8` and `x-kde-passwordManagerHint=secret`, timed clear with the SHA-256 rule (KDE, Sway, Hyprland; Omarchy's clipboard history skips exactly this hint [v: `shell/plugins/clipboard/capture.sh`], Klipper too) → RemoteDesktop + Clipboard portal (GNOME): `CreateSession`, `RequestClipboard` before `Start`, `persist_mode` 2 and `restore_token` in the data dir, `SetSelection`/`SelectionWrite` on request, ported from Bitwarden `portal_backend.rs` → `arboard` plain set with the clear timer (Reduced). The probe picks the first link that works on this compositor at startup (`ext_data_control_manager_v1` advertised? portal `RemoteDesktop` available?). Clipboard clear still runs on lock and on timer.
 done-when: `cargo test -p vk-platform clipboard` (link selection with fake capabilities); `scripts/check-linux.sh -p vk-platform --all-targets`
 deps: wl-clipboard-rs@0.9
 needs: 3a
 difficulty: hard
 effort: 2.5
-verify: vm (checklist §6: GNOME portal prompt once, KDE/Sway/Hyprland data-control, history managers)
+verify: vm (checklist §6: `vm-fedora-gnome` portal prompt once; `vm-kubuntu` Klipper; `vm-omarchy` Omarchy history skips the entry; `vm-fedora-sway`)
 kind: change
 
 ## 3e Tray through ksni
 files: app/src/daemon/tray.rs, app/src/daemon/tray/linux.rs, app/Cargo.toml
-do: Slint's built-in Linux tray hard-codes the id `slint-tray` and pixmaps only [v: i-slint-core 1.19 `ksni.rs`]; use ksni 0.3.7 directly on Linux: `id = APP_ID`, `icon_name` = installed hicolor icon with `icon_pixmap` fallback, the existing menu, `activate` opens the Quick Panel. `Auto` icon theme reads the Settings portal `org.freedesktop.appearance color-scheme` (Blue stays the Windows default; Linux default `Auto`). Watcher absent (GNOME without the AppIndicator extension) → chain C13 "no tray" notice in Settings and the tray-less mode (hotkey and launcher still work).
+do: Slint's built-in Linux tray hard-codes the id `slint-tray` and pixmaps only [v: i-slint-core 1.19 `ksni.rs`]; use ksni 0.3.7 directly on Linux: `id = APP_ID`, `icon_name` = installed hicolor icon with `icon_pixmap` fallback, the existing menu, `activate` opens the Quick Panel. `Auto` icon theme reads the Settings portal `org.freedesktop.appearance color-scheme` (Blue stays the Windows default; Linux default `Auto`). Watcher absent (GNOME without the AppIndicator extension) → chain C13 "no tray" notice in Settings and the tray-less mode (hotkey and launcher still work). Hosts in the matrix: Plasma, Waybar (Fedora Sway Spin), the Omarchy shell (`Quickshell.Services.SystemTray`), GNOME only with the extension.
 done-when: `cargo test -p vaultkeeper tray`; `scripts/check-linux.sh -p vaultkeeper --all-targets`
 deps: ksni@0.3
 needs: 3a
 difficulty: medium
 effort: 1.5
-verify: vm (checklist §7: KDE, waybar on Sway/Hyprland, GNOME with/without extension)
+verify: vm (checklist §7: `vm-kubuntu`, `vm-fedora-sway` Waybar, `vm-omarchy` shell bar, `vm-fedora-gnome` with/without the extension)
 kind: change
 
 ## 3f Lock, sleep and session end events
@@ -269,22 +278,22 @@ done-when: `scripts/check-linux.sh -p vk-platform --all-targets`; `cargo test -p
 needs: 1b
 difficulty: medium
 effort: 1
-verify: vm (checklist §8)
+verify: vm (checklist §8: all four; Omarchy locks through its shell + logind inhibit, Sway spin through swayidle/swaylock)
 kind: change
 
 ## 3g Autostart chain
 files: crates/platform/src/autostart.rs, crates/platform/src/autostart/linux.rs, crates/platform/tests/autostart.rs
-do: Chain C11 behind the existing autostart API: Background portal `RequestBackground { autostart: true, commandline: [install path, "--tray"], dbus-activatable: false }` (GNOME, KDE) → own user unit `~/.config/systemd/user/io.github.avbel.Vaultkeeper.service` (`PartOf/After/WantedBy=graphical-session.target`, `ExecStart=<install path> --tray`, the hardening options of ideas §11 C6 link 2, `Restart=on-failure`) enabled with `systemctl --user enable` (Sway/Hyprland with uwsm or sway-systemd) → `~/.config/autostart/io.github.avbel.Vaultkeeper.desktop` → instructions (`exec vaultkeeper --tray` / `exec-once = vaultkeeper --tray`). `is_enabled` reads back whichever link is active; `started_by_login_agent` checks `--tray` (`TRAY_ARG` from 0a returns to use); `refresh` rewrites paths when the install path moved. Templates portable and tested.
+do: Chain C11 behind the existing autostart API: Background portal `RequestBackground { autostart: true, commandline: [install path, "--tray"], dbus-activatable: false }` (GNOME, KDE) → own user unit `~/.config/systemd/user/io.github.avbel.Vaultkeeper.service` (`PartOf/After/WantedBy=graphical-session.target`, `ExecStart=<install path> --tray`, the hardening options of ideas §11 C6 link 2, `Restart=on-failure`) enabled with `systemctl --user enable` (Omarchy runs UWSM, so this is its link [v]; Sway only with uwsm/sway-systemd) → `~/.config/autostart/io.github.avbel.Vaultkeeper.desktop` → instructions (`exec vaultkeeper --tray` / `exec-once = vaultkeeper --tray`). `is_enabled` reads back whichever link is active; `started_by_login_agent` checks `--tray` (`TRAY_ARG` from 0a returns to use); `refresh` rewrites paths when the install path moved. Templates portable and tested.
 done-when: `cargo test -p vk-platform autostart`; `scripts/check-linux.sh -p vk-platform --all-targets`
 needs: 3a
 difficulty: medium
 effort: 1.5
-verify: unit, vm (checklist §9 per desktop)
+verify: unit, vm (checklist §9: all four VMs; `vm-omarchy` proves the unit route, `vm-fedora-sway` the instructions route)
 kind: change
 
 ## 3h Open links, file dialogs, network changes
 files: app/src/os/misc.rs, app/src/os/linux/open.rs, crates/platform/src/network.rs, crates/platform/src/network/linux.rs, app/Cargo.toml
-do: Links open through the OpenURI portal (ashpd). There is no `xdg-open` fallback: links are opened at any time, long after Landlock (`no_new_privs`) applies, so without the portal the app shows "no portal: open <url> yourself" with a copy button. File dialogs: `rfd` 0.18 with the `xdg-portal` + `tokio` features (no GTK). Network: NetworkManager `StateChanged`/`PrimaryConnectionChanged` over the system bus (both distros ship NM) → the existing `/alive` probe; NM absent → periodic probe only.
+do: Links open through the OpenURI portal (ashpd). An `xdg-open` fallback is impossible once Landlock applies, so without a portal the UI shows the URL with a copy button ("no portal: open <url> yourself"). File dialogs: `rfd` 0.18 with the `xdg-portal` + `tokio` features (no GTK). Network: NetworkManager `StateChanged`/`PrimaryConnectionChanged` over the system bus (both distros ship NM) → the existing `/alive` probe; NM absent → periodic probe only.
 done-when: `scripts/check-linux.sh -p vaultkeeper -p vk-platform --all-targets`; `cargo test -p vk-platform network`
 needs: 3a
 difficulty: easy
@@ -299,7 +308,7 @@ done-when: `scripts/check-linux.sh -p vaultkeeper --all-targets`; `cargo test -p
 needs: 3d
 difficulty: hard
 effort: 2
-verify: vm (checklist §10)
+verify: vm (checklist §10: `vm-fedora-gnome`, `vm-kubuntu` portal; `vm-omarchy`, `vm-fedora-sway` virtual keyboard)
 kind: change
 
 ## 3j Quick unlock chain: FIDO2 hmac-secret and presence check
@@ -310,7 +319,7 @@ done-when: `cargo test -p vk-platform envelope biometric` (id 6 round trip, rese
 needs: 1e, 2a
 difficulty: hard
 effort: 3
-verify: vm (checklist §11, the user's FIDO2 key; fprintd on a laptop or `fprintd` with the virtual device)
+verify: vm (checklist §11, the user's FIDO2 key passed through to `vm-kubuntu` and `vm-omarchy`; fprintd on a laptop or the virtual device; Omarchy: `omarchy setup security fingerprint`)
 gate: hardware result from checklist §11 before 5d builds on it
 kind: change
 
@@ -326,7 +335,7 @@ kind: change
 
 ## 3l Settings → Security section
 files: app/ui/settings.slint, app/ui/security.slint, app/src/app/settings_ctl.rs, app/src/app/security_ctl.rs, crates/ipc/src/protocol.rs
-do: New Settings section listing every chain (name, status chip Full/Standard/Reduced/Off, active link, note, fix) from the daemon's `Report` over IPC, a "Re-check" button, the BPF row with its action button (Install… prints the sudo command and copies it; Enroll… calls the helper over D-Bus, 4c), and the accepted-issues list with "Forget". Hidden on macOS/Windows except the rows that already have content (no behaviour change).
+do: User requirement (2026-11-20): the Settings dialog shows which security solution is in use. A one-line summary at the top of Settings names the overall status and the active mechanisms (for example "Security: Full · BPF LSM · memfd_secret · pidfd · Landlock 11") and opens the section on click. Below it, a new Settings section lists every chain (name, status chip Full/Standard/Reduced/Off, the active link by its mechanism name, the next weaker link that would take over, note, fix) from the daemon's `Report` over IPC, a "Re-check" button, the BPF row with its action button (Install… prints the sudo command and copies it; Enroll… calls the helper over D-Bus, 4c), and the accepted-issues list with "Forget". Hidden on macOS/Windows except the rows that already have content (no behaviour change).
 done-when: `cargo test -p vaultkeeper security_ctl` (rendering from fake reports with the Slint testing backend); `scripts/check-linux.sh -p vaultkeeper --all-targets`
 needs: 1c, 4c
 difficulty: medium
@@ -336,19 +345,19 @@ kind: change
 
 ## 4a BPF LSM spike in the VMs (hardware gate)
 files: crates/bpf-helper/bpf/vaultkeeper.bpf.c, crates/bpf-helper/examples/spike.rs, docs/solutions/linux-bpf-spike.md
-do: The six programs of ideas §12.3 (`file_open` + `path_*` prefix gate, `ptrace_access_check`, `task_kill`, `unix_stream_connect`, `socket_bind`, `bprm_committed_creds` task storage) with identity = `bpf_get_task_exe_file` → `bpf_get_fsverity_digest` → `enrolled` hash map; a libbpf-rs loader example that pins links and maps under `/sys/fs/bpf/vaultkeeper/`, enrols a digest given on the command line, and enables fs-verity on a path (`FS_IOC_ENABLE_VERITY`). Run on Fedora 45 (btrfs) and Ubuntu 26.10 (ext4: expect `EOPNOTSUPP` until `tune2fs -O verity` + reboot), Secure Boot on and off; record: load/attach result under lockdown integrity, `openat` latency with and without the programs (1 M opens of `/etc/passwd`, and of a file in the protected dir), which paths Slint/winit open at start (for 1f's ruleset), `pkill` denied, `systemctl --user stop` allowed. Write the numbers and the verdicts into docs/solutions/linux-bpf-spike.md.
+do: The six programs of ideas §12.3 (`file_open` + `path_*` prefix gate, `ptrace_access_check`, `task_kill`, `unix_stream_connect`, `socket_bind`, `bprm_committed_creds` task storage) with identity = `bpf_get_task_exe_file` → `bpf_get_fsverity_digest` → `enrolled` hash map; a libbpf-rs loader example that pins links and maps under `/sys/fs/bpf/vaultkeeper/`, enrols a digest given on the command line, and enables fs-verity on a path (`FS_IOC_ENABLE_VERITY`). Run on `vm-fedora-gnome` (btrfs; Secure Boot on and off → lockdown integrity/none), `vm-kubuntu` (ext4: expect `EOPNOTSUPP` until `tune2fs -O verity` + reboot) and `vm-omarchy` (btrfs under LUKS, lockdown none, kernel 7.2; then `pacman -S linux-lts` / `linux-hardened` + `omarchy kernel set` to see which kfuncs or LSM entries disappear); record: load/attach result under lockdown integrity, `openat` latency with and without the programs (1 M opens of `/etc/passwd`, and of a file in the protected dir), which paths Slint/winit open at start (for 1f's ruleset), `pkill` denied, `systemctl --user stop` allowed. Write the numbers and the verdicts into docs/solutions/linux-bpf-spike.md.
 done-when: `scripts/check-linux.sh -p vaultkeeper-bpf --examples` (the C object compiles with clang in Docker; CO-RE against the vendored `vmlinux.h`); the spike doc exists with the VM results
 deps: libbpf-rs@0.27, libbpf-cargo@0.27
 needs: 0c
 difficulty: hard
 effort: 3
-verify: docker, vm (both distros, SB on/off)
-gate: the user runs the spike in the four VMs; 4b/4c follow its findings
+verify: docker, vm (`vm-fedora-gnome` SB on/off, `vm-kubuntu`, `vm-omarchy` incl. kernel swap)
+gate: the user runs the spike in those VMs; 4b/4c follow its findings
 kind: change
 
 ## 4b `vaultkeeper-bpf` root helper and system service
 files: crates/bpf-helper/, crates/bpf-helper/bpf/, packaging/linux/{vaultkeeper-bpf.service, io.github.avbel.VaultkeeperBpf.conf, io.github.avbel.VaultkeeperBpf.service, io.github.avbel.vaultkeeper.policy}, Cargo.toml
-do: - Workspace member `crates/bpf-helper`, binary `vaultkeeper-bpf`, static musl (`libbpf-sys` vendored), no GUI deps; subcommands `install | update | enroll <path> | verify | uninstall | load | unload | status` (ideas §12.5). `install`: copy to `/usr/local/libexec/vaultkeeper/`, write the unit, D-Bus system service files and the polkit policy (actions `…bpf.enroll` auth_admin_keep, `…bpf.register` yes for active sessions, `…quick-unlock` auth_self for C7), `systemctl enable --now`, enable verity on the calling binary (`<opt>/bin/vaultkeeper` resolved to its Cellar realpath), verify `vaultkeeper.verity.minisig` from `share/vaultkeeper/` with the embedded release public key (the updater's key; `minisign-verify` crate or the existing Ed25519 code lifted into a tiny shared crate), `FS_IOC_MEASURE_VERITY`, insert into `enrolled`, `register` the caller's uid with data and runtime dirs into `prefixes`; ext4 without the `verity` feature → print the `tune2fs -O verity <dev>` command and "reboot, then run install again"; exit codes for each failure.
+do: - Workspace member `crates/bpf-helper`, binary `vaultkeeper-bpf`, static musl (`libbpf-sys` vendored), no GUI deps; subcommands `install | update | enroll <path> | verify | uninstall | load | unload | status` (ideas §12.5). `install`: copy to `/usr/local/libexec/vaultkeeper/`, write the unit, D-Bus system service files and the polkit policy (actions `…bpf.enroll` auth_admin_keep, `…bpf.register` yes for active sessions, `…quick-unlock` auth_self for C7), `systemctl enable --now`, enable verity on the calling binary (`<opt>/bin/vaultkeeper` resolved to its Cellar realpath), verify `vaultkeeper.verity.minisig` from `share/vaultkeeper/` with the embedded release public key (the updater's key; `minisign-verify` crate or the existing Ed25519 code lifted into a tiny shared crate), `FS_IOC_MEASURE_VERITY`, insert into `enrolled`, `register` the caller's uid with data and runtime dirs into `prefixes`; ext4 without the `verity` feature → print the `tune2fs -O verity <dev>` command and "reboot, then run install again" (btrfs on Fedora and Omarchy, LUKS or not, needs nothing); `bpf` missing from `/sys/kernel/security/lsm` → stop and print the command-line change for the detected system: Omarchy → drop-in `/etc/limine-entry-tool.d/90-vaultkeeper.conf` with `KERNEL_CMDLINE[default]+=" lsm=landlock,lockdown,yama,integrity,bpf"` + `sudo omarchy-refresh-limine` + reboot [i: refresh command]; Ubuntu (26.04) → `GRUB_CMDLINE_LINUX_DEFAULT` + `update-grub`; Fedora → `grubby --update-kernel=ALL --args="lsm=…"`; other → generic text (stock Omarchy, Ubuntu 26.10 and Fedora 45 never hit this); Secure Boot state is only reported (`/sys/kernel/security/lockdown`; Omarchy: off/none); exit codes for each failure. The `Enroll` prompt needs a polkit agent in the session (GNOME Shell, polkit-kde-agent, lxqt-policykit on the Fedora Sway Spin, the Omarchy shell); without one (Kubuntu's optional Sway session) Settings says so and `sudo vaultkeeper-bpf enroll <path>` from a terminal does the same.
   - D-Bus service `io.github.avbel.VaultkeeperBpf` on the system bus (zbus): `Enroll(path) -> digest`, `Register(data_dir, runtime_dir)`, `Status() -> {version, enforcing, enrolled: [digest], my_digest_enrolled}`, each method does `CheckAuthorization` on the caller (pidfd subject) before acting; activated on demand, exits idle after 60 s.
   - Maps pinned 0644 (`status`, `enrolled`) and 0600 (`prefixes`); `load` refuses on a kernel missing a kfunc (CO-RE `bpf_core_type_exists`) and logs to the journal; `unload` unpins (fail-open).
   - Unit tests for argument parsing, policy/unit templates, minisign verification against a fixture; integration test under `#[ignore = "needs root and BPF"]` run by hand in the VM.
@@ -357,7 +366,7 @@ deps: libbpf-rs@0.27, libbpf-cargo@0.27, zbus (present), minisign-verify@0.2
 needs: 4a
 difficulty: hard
 effort: 4
-verify: unit, docker, vm (checklist §13)
+verify: unit, docker, vm (checklist §13: `vm-fedora-gnome`, `vm-kubuntu`, `vm-omarchy`)
 kind: change
 
 ## 4c BPF links in the chains, probes and the enrol flow
@@ -369,7 +378,7 @@ done-when: `cargo test -p vk-linux bpf` (status parsing, canary verdicts with fa
 needs: 4b, 1c
 difficulty: medium
 effort: 2
-verify: unit, docker, vm (checklist §13)
+verify: unit, docker, vm (checklist §13 on the same three VMs; `vm-fedora-sway` for the enrol prompt through lxqt-policykit)
 kind: change
 
 ## 4d Release pipeline signs the fs-verity digest
@@ -384,12 +393,12 @@ kind: change
 
 ## 5a Browser manifests and the native-messaging proxy
 files: app/src/daemon/browser/manifests.rs, app/src/daemon/browser/manifests/linux.rs, app/src/app/settings_browsers.rs, app/ui/
-do: Linux manifest directories (ideas §2.6; proxy search list [v: `xnmp-impl.c`]): `~/.mozilla/native-messaging-hosts/`, `$XDG_CONFIG_HOME/{google-chrome,chromium,BraveSoftware/Brave-Browser,microsoft-edge}/NativeMessagingHosts/`; `path` = the install path (opt for Homebrew); manifest name `^\w+(\.\w+)*$`, `type: stdio`. Detect the snap Firefox (Ubuntu, `/snap/firefox`) and Flatpak Firefox (`~/.var/app/org.mozilla.firefox`), detect `xdg-native-messaging-proxy` (`/usr/libexec/xdg-native-messaging-proxy` or the D-Bus name `org.freedesktop.NativeMessagingProxy`), and show in Settings: "Firefox (snap) needs `widget.use-xdg-desktop-portal.native-messaging-proxy = 1` in about:config (Firefox ≥ 157)". Uninstall removes what we wrote. Portable JSON + path logic tested on macOS.
+do: Linux manifest directories (ideas §2.6; proxy search list [v: `xnmp-impl.c`]): `~/.mozilla/native-messaging-hosts/`, `$XDG_CONFIG_HOME/{google-chrome,chromium,BraveSoftware/Brave-Browser,microsoft-edge}/NativeMessagingHosts/`; `path` = the install path (opt for Homebrew); manifest name `^\w+(\.\w+)*$`, `type: stdio`. Google Chrome on Omarchy (default browser; `~/.config/google-chrome/NativeMessagingHosts`, binary `/opt/google/chrome/chrome` [s]) and Omarchy's `omarchy-chromium-bin` (`provides chromium`, `~/.config/chromium/…`) are covered by the Chrome/Chromium entries. Detect the snap Firefox (Ubuntu, `/snap/firefox`) and Flatpak Firefox (`~/.var/app/org.mozilla.firefox`), detect `xdg-native-messaging-proxy` (`/usr/libexec/xdg-native-messaging-proxy` or the D-Bus name `org.freedesktop.NativeMessagingProxy`), and show in Settings: "Firefox (snap) needs `widget.use-xdg-desktop-portal.native-messaging-proxy = 1` in about:config (Firefox ≥ 157)". Uninstall removes what we wrote. Portable JSON + path logic tested on macOS.
 done-when: `cargo test -p vaultkeeper manifests`; `scripts/check-linux.sh -p vaultkeeper --all-targets`
 needs: 3a, 6c
 difficulty: medium
 effort: 1.5
-verify: unit, vm (checklist §14: Firefox snap on Ubuntu, Firefox rpm on Fedora, Chrome .deb/.rpm)
+verify: unit, vm (checklist §14: `vm-kubuntu` Firefox snap + Chrome .deb, `vm-fedora-gnome` Firefox rpm, `vm-omarchy` Chrome default + omarchy-chromium)
 kind: change
 
 ## 5b Browser host parent identification
@@ -399,7 +408,7 @@ done-when: `cargo test -p vaultkeeper parent`; `scripts/check-linux.sh -p vaultk
 needs: 2c
 difficulty: medium
 effort: 1.5
-verify: unit, vm (checklist §14)
+verify: unit, vm (checklist §14 on `vm-kubuntu`, `vm-fedora-gnome`, `vm-omarchy`)
 kind: change
 
 ## 5c Browser status gate, socket and tests on Linux
@@ -437,11 +446,11 @@ kind: change
 files: .github/workflows/release.yml, packaging/homebrew/vaultkeeper.rb.erb, scripts/bump-homebrew.rb; in avbel/homebrew-tap: Formula/vaultkeeper.rb
 do: - `Formula/vaultkeeper.rb` from the template of ideas §7.7: `on_linux { on_intel { url …x86_64-unknown-linux-gnu.tar.gz; sha256 } on_arm { …aarch64… } }`, no `on_macos`, `install` puts `bin/`, `libexec/`, `share/vaultkeeper/` in place, `caveats` (first start writes the launcher entry; `sudo #{opt_libexec}/vaultkeeper-bpf install` for BPF protection; runtime packages for apt and dnf; "Start at login" lives in Settings), `test do assert_match version.to_s, shell_output("#{bin}/vaultkeeper --version")`. No `service do` (ideas §7.4).
   - Job `homebrew` (environment `homebrew`, needs `release`, tags only): checkout `avbel/homebrew-tap` with `HOMEBREW_TAP_TOKEN` (fine-grained PAT, contents: write on that repo), `scripts/bump-homebrew.rb <version> SHA256SUMS` rewrites `version` and both `sha256` lines, `ruby -c`, commit `vaultkeeper <version>` with the workflow bot identity, push. The first formula is committed to the tap by the user (the job only updates).
-done-when: `ruby -c packaging/homebrew/vaultkeeper.rb` (rendered); `ruby -ryaml -e 'YAML.load_file(".github/workflows/release.yml")'`; `brew install avbel/tap/vaultkeeper` in the Ubuntu VM installs and `vaultkeeper --version` runs
+done-when: `ruby -c packaging/homebrew/vaultkeeper.rb` (rendered); `ruby -ryaml -e 'YAML.load_file(".github/workflows/release.yml")'`; `brew install avbel/tap/vaultkeeper` installs and `vaultkeeper --version` runs on `vm-kubuntu`, `vm-fedora-gnome` and `vm-omarchy` (Homebrew on Arch: `base-devel procps-ng curl file git` are present on Omarchy [i])
 needs: 6a
 difficulty: medium
 effort: 1
-verify: ci, vm (checklist §12)
+verify: ci, vm (checklist §12 on `vm-kubuntu`, `vm-fedora-gnome`, `vm-omarchy`)
 kind: change
 
 ## 6c Install-kind detection and the updater under a package manager
@@ -466,7 +475,7 @@ kind: change
 
 ## 7b Docs: Linux status
 files: docs/solutions/linux-support.md, docs/solutions/linux-gaps.md, docs/USAGE.md
-do: "Implementation" header in linux-support.md linking this plan, the checklist and the spike doc; the §1 floor table and the desktop/portal matrices from ideas §1; the decided items (Homebrew first, BPF first link, baseline flag, Ctrl+Shift+Space, D-Bus helper instead of pkexec, no `service do`, Hyprland on Ubuntu only); mark design §5.5 setgid as "deb/rpm tier only, if ever" and §5.6 as implemented by phase 4. Propose a new README Linux section for the user's approval: README.md:215-232 is out of date (it promises Wayland data-control clipboard everywhere, AppImage/Debian/RPM packages and polkit quick unlock); edit README only after approval.
+do: "Implementation" header in linux-support.md linking this plan, the checklist and the spike doc; the §1 floor table and the desktop/portal matrices from ideas §1; the decided items (Homebrew first, BPF first link, baseline flag, Ctrl+Shift+Space, D-Bus helper instead of pkexec, no `service do`, Hyprland on Omarchy and Ubuntu but not Fedora); mark design §5.5 setgid as "deb/rpm tier only, if ever" and §5.6 as implemented by phase 4. Propose a new README Linux section for the user's approval: README.md:215-232 is out of date (it promises Wayland data-control clipboard everywhere, AppImage/Debian/RPM packages and polkit quick unlock); edit README only after approval.
 done-when: `grep -q "Implementation" docs/solutions/linux-support.md`
 needs: 6b, 4c
 difficulty: easy
@@ -484,11 +493,21 @@ effort: 1
 verify: —
 kind: change
 
+## 7d Linux requirements document
+files: docs/solutions/linux-requirements.md, docs/USAGE.md, app/src/os/security_gate.rs
+do: The table of ideas §9.1 as a user-facing document: item, what the probe checks, Refuse/Warn/Status, what a missing item disables or why it blocks startup, and the fix on Ubuntu 26.10, Fedora 45 and Omarchy (pacman/omarchy commands; a note that any other Arch setup is unsupported and runs only if these probes pass). `vaultkeeper security requirements` renders the same table from the same source (a const table in `security_gate.rs`), and a unit test regenerates the Markdown and compares it with the committed file so the doc and the binary cannot drift. USAGE.md links it from the Linux section.
+done-when: `cargo test -p vaultkeeper requirements_doc` (generated Markdown equals docs/solutions/linux-requirements.md); the file exists
+needs: 1c
+difficulty: easy
+effort: 1
+verify: unit
+kind: change
+
 ## 8a Pull request and CI check
 files: .plan/linux-support.md
 do: Done by the orchestrator: open the PR to main after the last phase commit; every `linux*` job in ci.yml passes; the four VM checklists are attached.
 done-when: `gh pr checks --watch` reports all checks passing
-needs: 7c
+needs: 7c, 7d
 difficulty: easy
 effort: 0.5
 verify: ci
@@ -510,8 +529,8 @@ Tracks after 1b (all need 0a–0d first):
 - **T2 desktop**: 3a → {3b → 3c, 3d → 3i, 3e, 3g, 3h}; 3f and 3k any time after 1b/2b; 3j after 1e + 2a; 3l after 1c + 4c.
 - **T3 BPF**: 4a right after 0c (spike code is independent of the app) → 4b → 4c; 4d after 6a.
 - **T4 browser**: 5a after 3a + 6c; 5b after 2c; 5c after 5a, 5b, 1d; 5d after 3j.
-- **T5 packaging**: 6c after 0d; 6a after 0c + 3a; 6b after 6a; 7a any time.
-Critical path (person-days): 0a 0.5 → 0b 0.5 → 0c 0.5 → 1a 1 → 1b 2 → 1d 1 → 2b 0.5 → 2c 2 → 2d 1 → 3a 1.5 → 3b 2.5 → [4a 3 runs in parallel from 0c] → 4b 4 → 4c 2 → 3l 1.5 → 6a 1 → 6b 1 → 7b 0.5 → 7c 1 → 8a 0.5 ≈ **24 days** of dependent work, dominated by 1b → 2c → 3b and 4b → 4c. Total effort of all steps 0a–8a ≈ 58 person-days; with two parallel tracks ≈ 6–7 calendar weeks to the Homebrew release, deb/rpm (9a) after.
+- **T5 packaging**: 6c after 0d; 6a after 0c + 3a; 6b after 6a; 7a any time; 7d after 1c.
+Critical path (person-days): 0a 0.5 → 0b 0.5 → 0c 0.5 → 1a 1 → 1b 2 → 1d 1 → 2b 0.5 → 2c 2 → 2d 1 → 3a 1.5 → 3b 2.5 → [4a 3 runs in parallel from 0c] → 4b 4 → 4c 2 → 3l 1.5 → 6a 1 → 6b 1 → 7b 0.5 → 7c 1 → 8a 0.5 ≈ **24 days** of dependent work, dominated by 1b → 2c → 3b and 4b → 4c. Total effort of all steps 0a–8a ≈ 59.5 person-days; with two parallel tracks ≈ 6–7 calendar weeks to the Homebrew release, deb/rpm (9a) after.
 The two hardware gates (4a spike results; 3j FIDO2/fprintd) are the schedule risks: start 4a in week 1.
 
 ## Open decisions (recommendation first)
@@ -529,83 +548,87 @@ The two hardware gates (4a spike results; 3j FIDO2/fprintd) are the schedule ris
 12. **GNOME tray without the AppIndicator extension**: Settings notice + tray-less mode (recommended); Fedora users `dnf install gnome-shell-extension-appindicator`. Not: shipping our own extension.
 13. **Firefox Flatpak (Fedora)**: supported only through the proxy with the Firefox pref; otherwise "unsupported" in Settings (recommended).
 14. **Hyprland hotkey**: document both `global` (xdph) and `exec vaultkeeper --search` bindings; default instructions use `exec` (works without xdph quirks).
+15a. **Arch = Omarchy only** (user): Omarchy v4.5.0 defaults are the floor for Arch (kernel `linux-omarchy` 7.2, `lsm=landlock,lockdown,yama,integrity,bpf`, Hyprland 0.57.2 + xdph 1.5.0, Omarchy shell as tray and polkit agent, UWSM, Limine UKI, btrfs + LUKS, Secure Boot off, Chrome). Plain Arch, `linux-lts`, `linux-hardened`: unsupported; the probes decide and the refusal names the `pacman`/`omarchy` fix. Recommend stating the kernel floor as "7.2 (Omarchy) / 7.3", features by probe.
+15b. **Kernel floor vs `linux-lts`** (6.18): every kernel feature except Landlock ABI ≥ 8 exists; recommend `Warn` (C6 Reduced), not refuse, so an Omarchy user on linux-lts keeps running with a visible badge.
+15c. **Fedora Sway Spin polkit agent**: sway-config-fedora requires lxqt-policykit [v]; whether it is autostarted is checked in `vm-fedora-sway`; if not, Settings shows the `exec lxqt-policykit-agent` line (Status, never refuse).
 15. **Dynamic link allowlist** (6a): fail the release job on an unexpected `ldd` entry (recommended) so the formula's runtime package list stays true.
 
 ## Appendix: manual test checklist (draft of docs/solutions/linux-test-checklist.md, step 7a)
 
-Manual checks that need a real session, one section per risk; run on **Ubuntu 26.10** and **Fedora 45** VMs (UEFI, Secure Boot on and off for §13), as a normal user, with the release tarball of the commit under test installed through the tap (`brew install avbel/tap/vaultkeeper`). Desktops: GNOME 51 (both), KDE Plasma 6.7.5 (Kubuntu 26.10) and 6.8.1 (Fedora KDE), Sway 1.12 (both, from the repos), Hyprland 0.56.2 (Ubuntu only). Record per run: `uname -r`, `cat /sys/kernel/security/lsm`, `cat /sys/kernel/security/lockdown`, `mokutil --sb-state`, `echo $XDG_SESSION_TYPE $XDG_CURRENT_DESKTOP`, desktop version, `vaultkeeper --version`, `vaultkeeper security status`. Tick a line only after the expected result; paste `security status` tables and the spike numbers into the PR.
+Manual checks that need a real session, one section per risk; run in the four VMs (each driven through its MCP): **`vm-fedora-gnome`** (Fedora 45 Workstation, GNOME 51, UEFI + Secure Boot), **`vm-kubuntu`** (Kubuntu 26.10, Plasma 6.7.5; optional `apt install sway` session), **`vm-fedora-sway`** (Fedora 45 Sway Spin: Waybar, swaylock/swayidle, lxqt-policykit), **`vm-omarchy`** (Omarchy v4.5.0: Arch, Hyprland 0.57.2, Omarchy shell, UWSM, Limine UKI, btrfs + LUKS, Secure Boot off, Chrome). Run as a normal user with the release tarball of the commit under test installed through the tap (`brew install avbel/tap/vaultkeeper`). Each section names its VMs; "all" = the four. Not covered by this set: Ubuntu GNOME (run the GNOME sections once in a GNOME session added to `vm-kubuntu` with `ubuntu-desktop-minimal`) and Fedora KDE (untested; Plasma is covered at 6.7.5 on Kubuntu). Record per run: `uname -r`, `cat /sys/kernel/security/lsm`, `cat /sys/kernel/security/lockdown`, `mokutil --sb-state`, `echo $XDG_SESSION_TYPE $XDG_CURRENT_DESKTOP`, desktop version, `vaultkeeper --version`, `vaultkeeper security status`. Tick a line only after the expected result; paste `security status` tables and the spike numbers into the PR.
 
-### 0. Setup (every VM)
+### 0. Setup (all)
+- [ ] Record the VM: `vm-fedora-gnome` / `vm-kubuntu` / `vm-fedora-sway` / `vm-omarchy`; on Omarchy also `omarchy-version`, `omarchy kernel`, `pacman -Q linux-omarchy hyprland xdg-desktop-portal-hyprland quickshell google-chrome`.
 - [ ] Wayland session (`XDG_SESSION_TYPE=wayland`); `XDG_RUNTIME_DIR` is `/run/user/<uid>` on tmpfs, mode 0700.
 - [ ] Homebrew installed at `/home/linuxbrew/.linuxbrew`; `brew install avbel/tap/vaultkeeper`; caveats list the runtime packages and the BPF command.
 - [ ] First start writes `~/.local/share/applications/io.github.avbel.Vaultkeeper.desktop` and icons; the launcher shows "Vaultkeeper" with its icon.
 - [ ] One login saved, CLI access on, one login allowed for CLI; a FIDO2 key; Firefox (snap on Ubuntu, rpm on Fedora) and Chrome installed.
 
-### 1. Baseline gate (1c)
+### 1. Baseline gate (1c) — all; the per-distro fix text on each
 - [ ] `vaultkeeper security status` shows every chain with a status and the active link; no refusal on a stock install.
 - [ ] Break the data dir (`chmod 755 ~/.local/share/vaultkeeper`): start repairs it and logs a warning. Replace it with a symlink: start refuses with the window (desktop launch) or the table and exit 78 (terminal).
 - [ ] `vaultkeeper --skip-security-issues` starts with the warning badge; `vaultkeeper security accept` then lets autostart proceed; a new issue (e.g. `WAYLAND_DISPLAY` unset in a terminal) refuses again.
 - [ ] Fedora (Yama 0) without BPF: C3 shows "Reduced" with the ptrace_scope/BPF hint; Ubuntu shows "Standard".
 
-### 2. Hardening and sandbox (1d, 1e, 1f)
+### 2. Hardening and sandbox (1d, 1e, 1f) — all
 - [ ] `cat /proc/<daemon pid>/status | grep -i dumpable`-equivalent: `ls -l /proc/<pid>/exe` as the same user fails (EACCES) for daemon, UI, CLI after the handshake.
 - [ ] `gdb -p <daemon pid>` as the user fails; `sudo gdb -p` works (root is out of scope).
 - [ ] C2 shows `memfd_secret`; `grep Secretmem /proc/meminfo` grows after unlock; `/proc/<pid>/maps` shows the sealed mapping.
 - [ ] Landlock active (C6 Full, ABI 11): the daemon cannot read `~/Documents` (check with the `security verify` self-test); fonts, GPU, portals, tray and D-Bus still work on all four desktops; MDWE on: no crash in Slint/Mesa (else record and flip decision 11).
 - [ ] UI runs under the same ruleset; file dialogs (portal) still open and save.
 
-### 3. App id and portals (3a)
+### 3. App id and portals (3a) — `vm-fedora-gnome`, `vm-kubuntu`, `vm-omarchy`
 - [ ] GNOME/KDE GlobalShortcuts dialog and the RemoteDesktop prompt show "Vaultkeeper" with the icon, not the binary name.
 - [ ] After `killall xdg-desktop-portal` the app re-registers and portal calls work again.
 
-### 4. Hotkeys (3b) — per desktop
+### 4. Hotkeys (3b) — all (GNOME: `vm-fedora-gnome`; KDE and Sway: `vm-kubuntu`; Sway: `vm-fedora-sway`; Hyprland: `vm-omarchy`)
 - [ ] GNOME: Ctrl+Shift+Space opens the Quick Panel on first use after the one-time binding dialog; Settings shows the trigger text and "Change in system settings…" opens the GNOME dialog.
 - [ ] KDE 6.7.5 and 6.8.1: same; rebinding in System Settings → Shortcuts is reflected in Vaultkeeper's Settings.
-- [ ] Hyprland: `bind = CTRL SHIFT, space, exec, vaultkeeper --search` works; the `global` form through xdph works too (record which).
+- [ ] Hyprland (`vm-omarchy`): `o.bind("CTRL + SHIFT + SPACE", "Vaultkeeper", "vaultkeeper --search")` in `~/.config/hypr/bindings.lua` works; the xdph GlobalShortcuts route works too (record which); Settings shows the Lua line on Omarchy and the `bind =` line elsewhere.
 - [ ] Sway: `bindsym Ctrl+Shift+space exec vaultkeeper --search`; Settings shows the exact line with a copy button.
 - [ ] Generator hotkey the same; AltGr warning appears for Ctrl+Alt+<key> on Linux; the recorder hint says "Ctrl, Alt or Super".
 
-### 5. Quick Panel focus (3c)
+### 5. Quick Panel focus (3c) — all
 - [ ] GNOME: the panel has keyboard focus immediately (token path).
 - [ ] KDE: focus without a token at the default focus-stealing level; record the level where it fails and whether the live-UI token fallback fixes it.
 - [ ] Sway and Hyprland: new window focused; typing goes to the search field.
 - [ ] Closing the panel returns focus to the previous window.
 
-### 6. Clipboard (3d)
-- [ ] KDE, Sway, Hyprland: copy a password; `wl-paste -l` lists `x-kde-passwordManagerHint`; KDE Klipper does not record it; the clear timer empties it.
+### 6. Clipboard (3d) — all
+- [ ] KDE, Sway, Hyprland: copy a password; `wl-paste -l` lists `x-kde-passwordManagerHint`; KDE Klipper (`vm-kubuntu`) and the Omarchy clipboard panel (`vm-omarchy`, Super+Ctrl+V) do not record it; the clear timer empties it.
 - [ ] GNOME: one RemoteDesktop/Clipboard permission prompt, persisted across restarts (`restore_token`); copy works afterwards without a prompt; GNOME clipboard-history extensions (if installed) behaviour recorded.
 - [ ] Deny the GNOME prompt: C8 shows "Reduced", copying still works through arboard, with the clear timer.
 
-### 7. Tray (3e)
+### 7. Tray (3e) — `vm-kubuntu` (Plasma), `vm-fedora-sway` (Waybar), `vm-omarchy` (Omarchy shell bar), `vm-fedora-gnome` (extension)
 - [ ] KDE: icon in the system tray, menu works, click opens the Quick Panel; theme Auto follows light/dark.
-- [ ] Sway/Hyprland with waybar `tray` module: same.
+- [ ] `vm-fedora-sway` Waybar `tray` module and `vm-omarchy` shell bar: icon shows, menu works, click opens the Quick Panel.
 - [ ] GNOME with the AppIndicator extension (Ubuntu default; Fedora after `dnf install gnome-shell-extension-appindicator`): icon shows; without it: Settings shows the "no tray" notice and the hotkey/launcher still work.
 
-### 8. Lock, sleep, session end (3f)
+### 8. Lock, sleep, session end (3f) — all (Omarchy: its shell lock + `omarchy-sleep-lock.service`; Sway spin: swayidle/swaylock)
 - [ ] Lock the screen (Super+L / `loginctl lock-session`): vault locks when "Lock on sleep or screen lock" is on. GNOME, KDE, swaylock (via swayidle `lock` hook calling `loginctl lock-session`), hyprlock likewise.
 - [ ] Suspend/resume: locked on resume. Log out: the daemon exits cleanly (`PrepareForShutdown`/session end), no stale sockets in `$XDG_RUNTIME_DIR/vaultkeeper`.
 
-### 9. Autostart (3g) — per desktop
+### 9. Autostart (3g) — all
 - [ ] GNOME/KDE: "Start at login" on → Background portal entry (`~/.config/autostart/` file written by the portal); reboot → tray present; off → removed.
-- [ ] Sway/Hyprland with a stock config: Settings shows the `exec` line; with uwsm/sway-systemd: the user unit route works (`systemctl --user status io.github.avbel.Vaultkeeper`).
+- [ ] `vm-fedora-sway` and the Kubuntu Sway session (stock config): Settings shows the `exec` line. `vm-omarchy` (UWSM): the user unit route works (`systemctl --user status io.github.avbel.Vaultkeeper`; starts after `graphical-session.target`, tray appears after login).
 - [ ] The autostart command never contains `--skip-security-issues`.
 
-### 10. Auto-type (3i)
+### 10. Auto-type (3i) — `vm-fedora-gnome`, `vm-kubuntu` (portal); `vm-omarchy`, `vm-fedora-sway` (virtual keyboard)
 - [ ] GNOME and KDE: first use prompts once (RemoteDesktop keyboard); typing into gedit/kate works, including non-ASCII; the session persists across restarts.
 - [ ] Sway/Hyprland: virtual-keyboard route types into foot/kitty; record layout issues.
 
-### 11. Quick unlock (3j) — hardware gate
+### 11. Quick unlock (3j) — hardware gate; `vm-kubuntu` and `vm-omarchy` with the FIDO2 key passed through
 - [ ] FIDO2: enrol with the key (PIN or UV prompt), lock, unlock by touching the key; wrong key → "enrol again"-free `BiometricFailed`; key removed → master password works.
 - [ ] fprintd (laptop or `fprintd` virtual device): "Fingerprint unlock (key stays in memory)" verifies; after a daemon restart the master password is required (as documented).
 - [ ] SSH approval with "requires security key/fingerprint" prompts and signs; cancel denies.
 
-### 12. Homebrew lifecycle (6b, 6c, 2e)
+### 12. Homebrew lifecycle (6b, 6c, 2e) — `vm-kubuntu`, `vm-fedora-gnome`, `vm-omarchy` (first Homebrew-on-Arch run: record the installer output)
 - [ ] `brew install`: `vaultkeeper --version` prints `install: homebrew`; Settings shows "Updates: managed by Homebrew", no "Check for Updates…" in the tray; no request to api.github.com in the log.
 - [ ] `brew upgrade` (publish a test release or `brew reinstall` a different version) while the daemon runs: CLI says "Vaultkeeper was updated"; tray offers "Restart to finish the update"; the daemon restarts itself when locked; the new binary runs; with BPF installed: "this build is not enrolled → Enroll…" appears and enrolment prompts for the admin password once.
 - [ ] `brew uninstall`: daemon stops on next `--quit`; user data stays; `brew install` again finds it.
 
-### 13. BPF protection (4a–4c) — Secure Boot on and off, both distros
-- [ ] `sudo vaultkeeper security install`: Fedora (btrfs) succeeds at once; Ubuntu (ext4 without `verity`): prints the `tune2fs -O verity` command, after reboot `install` succeeds; `cat /sys/kernel/security/lockdown` shows `[integrity]` with SB on, `[none]` off; programs load in both.
+### 13. BPF protection (4a–4c) — `vm-fedora-gnome` (Secure Boot on and off), `vm-kubuntu`, `vm-omarchy` (SB off, lockdown none); `vm-fedora-sway` for the enrol prompt through lxqt-policykit
+- [ ] `sudo vaultkeeper security install`: Fedora and Omarchy (btrfs) succeed at once; Kubuntu (ext4 without `verity`): prints the `tune2fs -O verity` command, after reboot `install` succeeds; `cat /sys/kernel/security/lockdown` shows `[integrity]` with SB on (Fedora), `[none]` otherwise (Omarchy always); programs load in every case.
 - [ ] `vaultkeeper security verify` and Settings show "BPF protection: active · enforcing · this build enrolled"; the canary self-test is denied.
 - [ ] As the user: `cat ~/.local/share/vaultkeeper/accounts/*/refresh_token.enc` → Permission denied; `mv`/`rm` of the data dir denied; `sudo cat` works.
 - [ ] `gdb -p <pid>`, `cat /proc/<pid>/mem`, `process_vm_readv` tool, `pidfd_getfd` tool → denied even with `ptrace_scope=0` (Fedora) and even for a dumpable test build.
@@ -616,12 +639,20 @@ Manual checks that need a real session, one section per risk; run on **Ubuntu 26
 - [ ] `sudo systemctl stop vaultkeeper-bpf`: everything allowed again immediately; `start` re-enforces; survives reboot; `uninstall` removes unit, D-Bus files, policy, pins.
 - [ ] Settings "Enroll…" after an upgrade shows the polkit dialog (not pkexec), works under the Landlock ruleset.
 
-### 14. Browser integration (5a–5d)
+### 14. Browser integration (5a–5d) — `vm-kubuntu` (Firefox snap, Chrome .deb), `vm-fedora-gnome` (Firefox rpm), `vm-omarchy` (Chrome default, omarchy-chromium)
 - [ ] Ubuntu Firefox snap: with `widget.use-xdg-desktop-portal.native-messaging-proxy=1` the extension connects through the proxy; Settings identifies "Firefox"; without the pref the Settings notice explains it.
 - [ ] Fedora Firefox rpm: direct manifest in `~/.mozilla/native-messaging-hosts` works; the host identifies Firefox by path.
-- [ ] Chrome (.deb/.rpm): manifest in `~/.config/google-chrome/NativeMessagingHosts`; fill, save prompt, TOTP copy, passkey create/sign (UV via the FIDO2 chain).
+- [ ] Chrome (.deb on Kubuntu; Omarchy default): manifest in `~/.config/google-chrome/NativeMessagingHosts`; the host identifies `/opt/google/chrome/chrome`; fill, save prompt, TOTP copy, passkey create/sign (UV via the FIDO2 chain). Omarchy `omarchy install browser chromium` (omarchy-chromium-bin): `~/.config/chromium/…` manifest and identification work.
 - [ ] "Hardened runtime" status row is green only when `is_hardened()` holds; with BPF the browser socket refuses a foreign client.
 
-### 15. Memory and startup
+### 15. Omarchy kernel and configuration swaps (`vm-omarchy`) — the probes must decide, never a default
+- [ ] Stock `linux-omarchy` 7.2.15: `security status` shows Landlock ABI 10 (C6 Full), BPF available, memfd_secret, lockdown none; record `cat /sys/kernel/security/lsm` and `zcat /proc/config.gz | grep -E 'CONFIG_LSM=|BPF_LSM|FS_VERITY|SECRETMEM'`.
+- [ ] `sudo pacman -S linux-lts && sudo omarchy kernel set linux-lts`, reboot: kernel 6.18 → C6 "Reduced" (ABI 7) with the exact text; everything else unchanged (PIDFD_GET_INFO, memfd_secret; BPF only if `bpf` is in that kernel's LSM list — record `CONFIG_LSM`).
+- [ ] `sudo pacman -S linux-hardened && sudo omarchy kernel set linux-hardened`, reboot: record `CONFIG_LSM`, Yama scope, `kernel.unprivileged_userns_clone`; the chains degrade or refuse with named items; `--skip-security-issues` starts the app; `security accept` persists for autostart. Switch back to `linux-omarchy`.
+- [ ] Remove `bpf` from `lsm=` through a `/etc/limine-entry-tool.d/` drop-in + `omarchy-refresh-limine`, reboot: the BPF row says "unsupported — lsm list lacks bpf" with the Omarchy fix text; restore.
+- [ ] Kill the Omarchy shell (`pkill quickshell`): tray row → "no tray"; the enrol action reports "no polkit agent in this session"; `omarchy-launch-shell` and "Re-check" recover both rows.
+- [ ] Homebrew on Omarchy: the brew installer runs with the stock packages; `brew install avbel/tap/vaultkeeper` works.
+
+### 16. Memory and startup — all
 - [ ] `scripts/measure-linux.sh`: daemon tray-only, UI with the Quick Panel, UI 10 s after close; compare with macOS (13.9 / 47.3 / 41.8 MB).
 - [ ] Cold start to tray < 1 s; `security status` probes < 50 ms (printed in the log).

@@ -35,6 +35,7 @@ Marks: **[v]** = checked today in code, in a build or in a primary source; **[s]
   - connects to the daemon socket.
 
   The binary is identified by a signed fs-verity digest, which also covers the user-writable Homebrew prefix. A one-time privileged install loads it, since Homebrew has no root.
+- **Show the security solution in use.** The Settings dialog shows which mechanism protects each area, as a summary line plus a Security section listing every chain with its active link (plan step 3l).
 - **Mandatory baseline.** The app refuses to start when no link of a required chain works, unless it is run with `--skip-security-issues`.
 - **Hotkeys as on Windows.** Quick Panel defaults to Ctrl+Shift+Space, and in-app shortcuts and labels are Ctrl-based. Today's `cfg(not(windows))` arms (`app/src/settings.rs:374`, `hotkey_recorder.rs:20-26`, `settings_hotkeys.rs:55-82`) give Linux the macOS values.
 
