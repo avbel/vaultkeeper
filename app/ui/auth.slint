@@ -196,7 +196,9 @@ export component LoginWindow inherits Window {
     title: "Vaultkeeper — log in";
     icon: @image-url("icons/tray-blue.svg");
     width: 440px;
-    height: 580px;
+    // Fits the content: the steps, the server status line, errors and Back/Cancel each change
+    // the height, and a fixed one left a large empty band under the credentials step.
+    height: form.preferred-height;
     background: Theme.bg;
     default-font-size: Theme.font-body;
 
@@ -236,7 +238,7 @@ export component LoginWindow inherits Window {
     callback back();
     callback cancel();
 
-    VerticalLayout {
+    form := VerticalLayout {
         padding: 40px;
         padding-top: 48px;
         spacing: Theme.s2;
