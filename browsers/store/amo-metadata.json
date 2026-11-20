@@ -10,6 +10,6 @@
   "support_url": { "en-US": "https://github.com/avbel/vaultkeeper/issues" },
   "version": {
     "license": "GPL-3.0-only",
-    "approval_notes": "Works only together with the Vaultkeeper desktop app (native messaging host org.vaultkeeper.browser), currently macOS only.\n\nThe uploaded add-on is minified. To rebuild it from the attached source: Node.js 24 and pnpm 12.18.0, then in the browsers/ directory run `pnpm install --frozen-lockfile && pnpm run package`. The add-on is built into dist/firefox."
+    "approval_notes": "Works only together with the Vaultkeeper desktop app (native messaging host org.vaultkeeper.browser), currently macOS only.\n\nThe uploaded add-on is not minified: it is the TypeScript sources bundled with Vite. To rebuild it from the attached source: Node.js 24 and pnpm 12.18.0, then in the browsers/ directory run `pnpm install --frozen-lockfile && pnpm run package`. The add-on is built into dist/firefox."
   }
 }

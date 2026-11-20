@@ -5,8 +5,10 @@ import { build } from "vite-plus";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGETS = ["chrome", "firefox"];
-// RELEASE=1 minifies the bundles for the packages in release/; development builds stay readable.
+// RELEASE=1 minifies the Chrome bundles for the packages in release/. Firefox is never minified:
+// AMO reviewers read the shipped code, and a readable bundle shortens the human review.
 const MINIFY = process.env.RELEASE === "1";
+const MINIFIED_TARGETS = new Set(["chrome"]);
 
 // Content scripts are classic scripts (IIFE); the background and popup are ES modules.
 const ENTRIES = [
@@ -37,7 +39,7 @@ export function mergeManifest(base, target, version) {
   return { ...base, ...target, version };
 }
 
-async function bundle(outDir, spec) {
+async function bundle(outDir, spec, minify) {
   await build({
     root,
     configFile: false,
@@ -46,7 +48,7 @@ async function bundle(outDir, spec) {
     build: {
       outDir,
       emptyOutDir: false,
-      minify: MINIFY,
+      minify,
       sourcemap: false,
       target: "es2023",
       lib: {
@@ -75,7 +77,7 @@ async function buildTarget(target) {
       delete manifest.content_scripts;
       continue;
     }
-    await bundle(outDir, spec);
+    await bundle(outDir, spec, MINIFY && MINIFIED_TARGETS.has(target));
   }
   for (const file of STATIC_FILES) {
     cpSync(resolve(root, "src/ui", file), resolve(outDir, file));

@@ -597,16 +597,49 @@ jobs:
         with:
           node-version: 24
 
+      # A new listed upload replaces the version waiting in the AMO review queue and disables it, so
+      # frequent releases keep handing reviewers a new build. While a listed version is still
+      # unreviewed, this release is not submitted; the next release after approval carries it.
+      - name: Check the AMO review queue
+        id: gate
+        env:
+          AMO_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$AMO_ISSUER" ] || [ -z "$AMO_SECRET" ]; then
+            echo "::warning::AMO_JWT_ISSUER / AMO_JWT_SECRET are not set: skipped Firefox Add-ons"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node --input-type=module <<'EOF'
+          import { createHmac, randomUUID } from "node:crypto";
+          import { appendFileSync } from "node:fs";
+          const b64 = (v) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
+          const now = Math.floor(Date.now() / 1000);
+          const unsigned = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ iss: process.env.AMO_ISSUER, jti: randomUUID(), iat: now, exp: now + 60 })}`;
+          const jwt = `${unsigned}.${createHmac("sha256", process.env.AMO_SECRET).update(unsigned).digest("base64url")}`;
+          const res = await fetch(
+            "https://addons.mozilla.org/api/v5/addons/addon/vaultkeeper-app/versions/?filter=all_without_unlisted&page_size=1",
+            { headers: { Authorization: `JWT ${jwt}` } },
+          );
+          if (!res.ok) {
+            throw new Error(`AMO versions request failed: HTTP ${res.status} ${await res.text()}`);
+          }
+          const latest = (await res.json()).results?.[0];
+          const pending = latest?.file?.status === "unreviewed";
+          if (pending) {
+            console.log(`::warning::AMO version ${latest.version} is still awaiting review: skipped submitting ${process.env.TAG}`);
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `go=${!pending}\n`);
+          EOF
+
       # Listed submissions go to AMO review; the job does not wait for approval.
       - name: Submit
+        if: steps.gate.outputs.go == 'true'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: |
-          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
-            echo "::warning::AMO_JWT_ISSUER / AMO_JWT_SECRET are not set: skipped Firefox Add-ons"
-            exit 0
-          fi
           npx -y web-ext@10.8.0 sign --channel listed --approval-timeout 0 \
             --source-dir browsers/dist/firefox \
             --upload-source-code store/firefox-source.zip \
