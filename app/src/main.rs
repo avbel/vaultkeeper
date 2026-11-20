@@ -225,6 +225,8 @@ fn run_mock(args: cli::Args) -> anyhow::Result<()> {
                 update_of: None,
                 choices: vec![],
                 return_to: None,
+                generated: false,
+                allow_new: false,
             },
         ),
     ] {

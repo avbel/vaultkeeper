@@ -143,6 +143,36 @@ describe("findLoginForms", () => {
     expect(form?.newPasswords).toHaveLength(1);
   });
 
+  test("a lone password field in a form that submits with sign-up wording is new", () => {
+    render(
+      `<form action="/users"><input type="email"><input id="p" type="password"><button>Create account</button></form>`,
+    );
+    const [form] = detect();
+    expect(form?.password).toBeUndefined();
+    expect(form?.newPasswords).toEqual([input("#p")]);
+  });
+
+  test("sign-up wording only in the form's action keeps a lone password current", () => {
+    render(
+      `<form action="/session/create"><input type="email"><input id="p" type="password"><button>Continue</button></form>`,
+    );
+    expect(detect()[0]?.password).toBe(input("#p"));
+  });
+
+  test("a secondary sign-up button beside a login's Continue keeps the password current", () => {
+    render(
+      `<form><input type="email"><input id="p" type="password"><button>Continue</button><button>Create account</button></form>`,
+    );
+    expect(detect()[0]?.password).toBe(input("#p"));
+  });
+
+  test("outside a form only an explicit submit control can mark a sign-up", () => {
+    render(
+      `<div><input type="email"><input id="p" type="password"><button type="button">Join</button></div>`,
+    );
+    expect(detect()[0]?.password).toBe(input("#p"));
+  });
+
   test("placeholder-only identifier step on a login page (Temu)", () => {
     history.replaceState(null, "", "/login.html");
     try {

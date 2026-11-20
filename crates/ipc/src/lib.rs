@@ -37,6 +37,7 @@ mod clipboard;
 pub mod dto;
 mod error;
 pub mod frame;
+mod generated;
 mod peer;
 pub mod protocol;
 mod server;
@@ -47,6 +48,7 @@ pub mod transport;
 pub use client::{BrowserPromptEvent, EventStream, RemoteVault, SshApproval, UiEvent};
 pub use clipboard::ClipboardHost;
 pub use error::{ConvertError, IpcError, ipc_error};
+pub use generated::{GeneratedDto, GeneratedHost, SaveFuture};
 #[cfg(target_os = "macos")]
 pub use peer::check_pid;
 pub use peer::{PeerCredentials, PeerVerifier, SameExecutable, has_hardened_runtime};

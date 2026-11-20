@@ -536,16 +536,14 @@ impl<S: VaultService> App<S> {
                 username,
                 update_of,
                 choices,
+                allow_new,
                 ..
             } => (
                 browser,
                 host,
                 username.chars().take(64).collect::<String>(),
-                update_of.is_some() || !choices.is_empty(),
-                choices
-                    .iter()
-                    .map(|item| item.name.as_ref().into())
-                    .collect(),
+                update_of.is_some() || (!choices.is_empty() && !allow_new),
+                save_choices(choices, *allow_new),
                 None,
             ),
             BrowserPrompt::AddAddress {
@@ -576,6 +574,7 @@ impl<S: VaultService> App<S> {
         window.set_host(host.as_str().into());
         window.set_username(username.into());
         window.set_update(update);
+        set_generated_flags(&window, &queued.request.prompt);
         window.set_address(item_name.is_some());
         window.set_passkey_save(passkey == Some(true));
         window.set_passkey_sign_in(passkey == Some(false));
@@ -618,6 +617,15 @@ impl<S: VaultService> App<S> {
                 return;
             }
             let (update_of, choices) = match prompt {
+                BrowserPrompt::Save {
+                    choices,
+                    allow_new: true,
+                    ..
+                } if usize::try_from(index).ok() == Some(choices.len()) => {
+                    drop(queue);
+                    self.finish_browser(id, BrowserReply::Save { target: None });
+                    return;
+                }
                 BrowserPrompt::Save {
                     update_of, choices, ..
                 } => (update_of, choices),
@@ -821,6 +829,17 @@ fn passkey_default_choice(prompt: &BrowserPrompt) -> Option<i32> {
 }
 
 /// Sign-in lists the passkeys by login and account; saving lists the logins, then a new one.
+fn save_choices(choices: &[vk_ipc::dto::ItemSummaryDto], allow_new: bool) -> Vec<SharedString> {
+    let mut labels: Vec<SharedString> = choices
+        .iter()
+        .map(|item| item.name.as_ref().into())
+        .collect();
+    if allow_new {
+        labels.push("New login".into());
+    }
+    labels
+}
+
 fn passkey_choices(choices: &[vk_ipc::dto::ItemSummaryDto], save: bool) -> Vec<SharedString> {
     let mut labels: Vec<SharedString> = choices
         .iter()
@@ -836,6 +855,18 @@ fn passkey_choices(choices: &[vk_ipc::dto::ItemSummaryDto], save: bool) -> Vec<S
         labels.push("New login".into());
     }
     labels
+}
+
+fn set_generated_flags(window: &BrowserSavePrompt, prompt: &BrowserPrompt) {
+    if let BrowserPrompt::Save {
+        generated,
+        allow_new,
+        ..
+    } = prompt
+    {
+        window.set_generated(*generated);
+        window.set_allow_new(*allow_new);
+    }
 }
 
 #[cfg(test)]

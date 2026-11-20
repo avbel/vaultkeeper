@@ -26,6 +26,7 @@ pub(super) async fn dispatch<S: VaultService>(
         touch_id,
         clipboard,
         site_icons,
+        generated,
     } = backends;
     match call {
         Call::State => Ok(Reply::State(service.state().into())),
@@ -112,6 +113,32 @@ pub(super) async fn dispatch<S: VaultService>(
             Some(site_icons) => site_icons.icon(host).await,
             None => crate::SiteIcon::Missing,
         })),
+        call @ (Call::GeneratedPasswords
+        | Call::RevealGenerated(_)
+        | Call::SaveGenerated(_)
+        | Call::ForgetGenerated(_)) => generated_call(generated, call).await,
+    }
+}
+
+async fn generated_call(
+    host: Option<Arc<dyn crate::GeneratedHost>>,
+    call: Call,
+) -> Result<Reply, WireError> {
+    let Some(host) = host else {
+        return match call {
+            Call::GeneratedPasswords => Ok(Reply::Generated(Vec::new())),
+            _ => Err(WireError::NotFound),
+        };
+    };
+    match call {
+        Call::GeneratedPasswords => Ok(Reply::Generated(host.list())),
+        Call::RevealGenerated(id) => host.reveal(id).map(Reply::Secret),
+        Call::SaveGenerated(id) => host.save(id).await.map(Reply::ItemId),
+        Call::ForgetGenerated(id) => {
+            host.forget(id);
+            Ok(Reply::Unit)
+        }
+        _ => Err(WireError::NotFound),
     }
 }
 

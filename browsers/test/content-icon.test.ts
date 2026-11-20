@@ -92,3 +92,36 @@ test("shadow tokens are the theme.css variables hung on :host", () => {
   expect(SHADOW_TOKENS).toContain(':host(:not([data-theme="light"]))');
   expect(SHADOW_TOKENS).toContain("--accent:");
 });
+
+test("the menu runs its choice once on a trusted click and closes with the icon", () => {
+  let trusted = false;
+  const icon = createIcon({ shadowMode: "open", isTrusted: () => trusted });
+  document.body.append(icon.host);
+  const field = document.createElement("input");
+  document.body.append(field);
+  field.getClientRects = () => [{}] as unknown as DOMRectList;
+  field.getBoundingClientRect = () =>
+    ({ right: 300, top: 100, bottom: 130, height: 30 }) as DOMRect;
+  icon.show(field, () => undefined, "Generate a password with Vaultkeeper");
+  const root = icon.host.shadowRoot!;
+  expect(root.querySelector("button")!.getAttribute("aria-label")).toBe(
+    "Generate a password with Vaultkeeper",
+  );
+  const choose = vi.fn();
+  icon.menu("Use a strong password", choose);
+  const menu = root.querySelector<HTMLElement>(".menu")!;
+  const choice = root.querySelector<HTMLButtonElement>(".menu button")!;
+  expect(menu.hidden).toBe(false);
+  expect(menu.style.top).toBe("134px");
+  expect(choice.textContent).toBe("Use a strong password");
+  choice.click();
+  expect(choose).not.toHaveBeenCalled();
+  trusted = true;
+  choice.click();
+  choice.click();
+  expect(choose).toHaveBeenCalledOnce();
+  expect(menu.hidden).toBe(true);
+  icon.menu("Use a strong password", choose);
+  icon.hide();
+  expect(menu.hidden).toBe(true);
+});

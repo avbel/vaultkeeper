@@ -21,6 +21,7 @@ use uuid::Uuid;
 use vaultkeeper::daemon::browser::{
     dedupe::SaveDedupe,
     dispatch::Candidate,
+    generated::{self, GeneratedStore},
     save::{self, NeverSaveStore, Outcome, SaveError, SaveManager, SaveSettings, Skipped},
 };
 use vk_api::{
@@ -293,6 +294,7 @@ fn candidate(origin: &str, username: &str, password: &str) -> Candidate {
         username: username.into(),
         password: Zeroizing::new(password.into()),
         kind: SaveKind::Login,
+        has_current: false,
     }
 }
 
@@ -315,7 +317,16 @@ async fn run(
     never: &MemoryNeverSave,
     prompt: impl FnOnce(BrowserPrompt) -> Ready<BrowserReply> + Send,
 ) -> Result<Outcome, SaveError> {
-    save::handle(&env.vault, candidate, &settings(), never, dedupe, prompt).await
+    save::handle(
+        &env.vault,
+        candidate,
+        &settings(),
+        never,
+        &Mutex::new(GeneratedStore::default()),
+        dedupe,
+        prompt,
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -428,6 +439,7 @@ async fn dismissed_and_timed_out_prompts_write_nothing() {
         candidate("https://example.com", "alice", "other"),
         &quick,
         &MemoryNeverSave::default(),
+        &Mutex::new(GeneratedStore::default()),
         &mut SaveDedupe::default(),
         |_| std::future::pending::<BrowserReply>(),
     )
@@ -524,6 +536,7 @@ async fn disabled_and_insecure_pages_stop_before_any_prompt() {
         candidate("https://example.com", "alice", "new"),
         &off,
         &MemoryNeverSave::default(),
+        &Mutex::new(GeneratedStore::default()),
         &mut SaveDedupe::default(),
         answer(&log, BrowserReply::Dismissed),
     )
@@ -559,6 +572,7 @@ async fn locked_candidates_wait_for_the_unlock() {
             candidate("https://example.com", "alice", "new"),
             &settings(),
             &never,
+            &Mutex::new(GeneratedStore::default()),
             answer(&log, BrowserReply::Dismissed),
         )
         .await
@@ -576,6 +590,7 @@ async fn locked_candidates_wait_for_the_unlock() {
             &env.vault,
             &settings(),
             &never,
+            &Mutex::new(GeneratedStore::default()),
             answer(&log, save_reply(Some("a"))),
         )
         .await;
@@ -605,6 +620,7 @@ async fn clear_wipes_queued_candidates_and_the_queue_is_bounded() {
                     candidate("https://example.com", "alice", &format!("pw{n}")),
                     &settings(),
                     &never,
+                    &Mutex::new(GeneratedStore::default()),
                     answer(&log, BrowserReply::Dismissed),
                 )
                 .await
@@ -630,6 +646,7 @@ async fn clear_wipes_queued_candidates_and_the_queue_is_bounded() {
             &env.vault,
             &settings(),
             &never,
+            &Mutex::new(GeneratedStore::default()),
             answer(&log, BrowserReply::Dismissed),
         )
         .await;
@@ -721,4 +738,280 @@ async fn a_rejected_write_is_reported_once_and_never_retried() {
     assert!(matches!(result, Err(SaveError::Write(reason)) if !reason.is_empty()));
     assert_eq!(env.writes().await, 1);
     assert_eq!(env.password_of("a"), "old");
+}
+
+fn sign_up(origin: &str, username: &str, password: &str) -> Candidate {
+    Candidate {
+        kind: SaveKind::Change,
+        ..candidate(origin, username, password)
+    }
+}
+
+fn generated_for(env: &Env, store: &Mutex<GeneratedStore>, origin: &str, password: &str) -> u64 {
+    generated::remember(&env.vault, store, origin, password).unwrap()
+}
+
+fn listed(env: &Env, store: &Mutex<GeneratedStore>) -> usize {
+    let account = env.vault.active_account_id().unwrap();
+    store.lock().unwrap().list(&account).len()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_password_without_username_can_become_a_new_login() {
+    let env = Env::start(&[ALICE]).await;
+    env.mount_writes(Echo).await;
+    let log = Log::default();
+    let store = Mutex::new(GeneratedStore::default());
+    generated_for(&env, &store, "https://example.com", "Gen3rated!");
+    // Two equal new fields and no username would otherwise offer to update Alice's login.
+    let outcome = save::handle(
+        &env.vault,
+        sign_up("https://example.com", "", "Gen3rated!"),
+        &settings(),
+        &MemoryNeverSave::default(),
+        &store,
+        &mut SaveDedupe::default(),
+        answer(&log, save_reply(None)),
+    )
+    .await
+    .unwrap();
+    let Outcome::Created(id) = outcome else {
+        panic!("expected a created item: {outcome:?}");
+    };
+    // The page could also be a reset by email link: Alice's login is offered beside "New login".
+    assert!(matches!(
+        log.lock().unwrap().as_slice(),
+        [BrowserPrompt::Save { update_of: None, choices, generated: true, allow_new: true, .. }]
+            if choices.len() == 1
+    ));
+    assert_eq!(
+        env.login_of(&id),
+        (
+            "example.com".to_owned(),
+            String::new(),
+            vec!["https://example.com".to_owned()],
+            "Gen3rated!".to_owned()
+        )
+    );
+    assert_eq!(env.password_of("a"), "old");
+    assert_eq!(listed(&env, &store), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_password_on_a_change_form_updates_the_login_and_a_dismissal_keeps_it() {
+    let env = Env::start(&[ALICE]).await;
+    env.mount_writes(Echo).await;
+    let log = Log::default();
+    let store = Mutex::new(GeneratedStore::default());
+    generated_for(&env, &store, "https://example.com", "Gen3rated!");
+    let change = || Candidate {
+        has_current: true,
+        ..sign_up("https://example.com", "", "Gen3rated!")
+    };
+    let dismissed = save::handle(
+        &env.vault,
+        change(),
+        &settings(),
+        &MemoryNeverSave::default(),
+        &store,
+        &mut SaveDedupe::default(),
+        answer(&log, BrowserReply::Dismissed),
+    )
+    .await
+    .unwrap();
+    assert_eq!(dismissed, Outcome::Dismissed);
+    assert_eq!(listed(&env, &store), 1);
+    let updated = save::handle(
+        &env.vault,
+        change(),
+        &settings(),
+        &MemoryNeverSave::default(),
+        &store,
+        &mut SaveDedupe::default(),
+        answer(&log, save_reply(Some("a"))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated, Outcome::Updated(ItemId("a".into())));
+    assert!(matches!(
+        log.lock().unwrap().as_slice(),
+        [
+            _,
+            BrowserPrompt::Save {
+                update_of: Some(_),
+                generated: true,
+                ..
+            }
+        ]
+    ));
+    assert_eq!(env.password_of("a"), "Gen3rated!");
+    assert_eq!(listed(&env, &store), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_prompts_off_only_a_generated_password_is_held_through_a_lock_and_offered() {
+    let env = Env::start(&[ALICE]).await;
+    env.mount_writes(Echo).await;
+    let (log, never, mut manager) = (
+        Log::default(),
+        MemoryNeverSave::default(),
+        SaveManager::default(),
+    );
+    let store = Mutex::new(GeneratedStore::default());
+    let mut off = settings();
+    off.prompts_enabled = false;
+    generated_for(&env, &store, "https://example.com", "Gen3rated!");
+    env.vault.lock();
+    let typed = manager
+        .submit(
+            &env.vault,
+            candidate("https://other.org", "bob", "typed"),
+            &off,
+            &never,
+            &store,
+            answer(&log, BrowserReply::Dismissed),
+        )
+        .await
+        .unwrap();
+    assert_eq!(typed, Outcome::Skipped(Skipped::Disabled));
+    let queued = manager
+        .submit(
+            &env.vault,
+            sign_up("https://example.com", "new@example.com", "Gen3rated!"),
+            &off,
+            &never,
+            &store,
+            answer(&log, BrowserReply::Dismissed),
+        )
+        .await
+        .unwrap();
+    assert_eq!(queued, Outcome::Queued);
+    let wrong = manager
+        .submit(
+            &env.vault,
+            sign_up("https://example.com", "new@example.com", "edited"),
+            &off,
+            &never,
+            &store,
+            answer(&log, BrowserReply::Dismissed),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong, Outcome::Queued);
+
+    env.vault
+        .unlock_with_password(Zeroizing::new(PASSWORD.into()))
+        .await
+        .unwrap();
+    let results = manager
+        .on_unlocked(
+            &env.vault,
+            &off,
+            &never,
+            &store,
+            answer(&log, save_reply(None)),
+        )
+        .await;
+    assert!(
+        matches!(
+            results.as_slice(),
+            [
+                Ok(Outcome::Created(_)),
+                Ok(Outcome::Skipped(Skipped::Disabled))
+            ]
+        ),
+        "{results:?}"
+    );
+    assert!(matches!(
+        log.lock().unwrap().as_slice(),
+        [BrowserPrompt::Save {
+            generated: true,
+            ..
+        }]
+    ));
+    assert_eq!(listed(&env, &store), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unsaved_generated_password_can_be_saved_from_the_app_after_a_lock() {
+    let env = Env::start(&[ALICE]).await;
+    env.mount_writes(Echo).await;
+    let store = Mutex::new(GeneratedStore::default());
+    let id = generated_for(
+        &env,
+        &store,
+        "https://www.signup.example:8443",
+        "Gen3rated!",
+    );
+    env.vault.lock();
+    assert!(
+        generated::save_as_login(&env.vault, &store, id)
+            .await
+            .is_err()
+    );
+    env.vault
+        .unlock_with_password(Zeroizing::new(PASSWORD.into()))
+        .await
+        .unwrap();
+    let item = generated::save_as_login(&env.vault, &store, id)
+        .await
+        .unwrap();
+    assert_eq!(
+        env.login_of(&item),
+        (
+            "signup.example".to_owned(),
+            String::new(),
+            vec!["https://www.signup.example:8443".to_owned()],
+            "Gen3rated!".to_owned()
+        )
+    );
+    assert_eq!(listed(&env, &store), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_password_on_a_reset_page_can_update_the_existing_login() {
+    let env = Env::start(&[ALICE]).await;
+    env.mount_writes(Echo).await;
+    let log = Log::default();
+    let store = Mutex::new(GeneratedStore::default());
+    generated_for(&env, &store, "https://example.com", "Gen3rated!");
+    let outcome = save::handle(
+        &env.vault,
+        sign_up("https://example.com", "", "Gen3rated!"),
+        &settings(),
+        &MemoryNeverSave::default(),
+        &store,
+        &mut SaveDedupe::default(),
+        answer(&log, save_reply(Some("a"))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, Outcome::Updated(ItemId("a".into())));
+    assert_eq!(env.password_of("a"), "Gen3rated!");
+    assert_eq!(listed(&env, &store), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_password_without_username_on_a_new_site_is_a_new_login() {
+    let env = Env::start(&[ALICE]).await;
+    env.mount_writes(Echo).await;
+    let log = Log::default();
+    let store = Mutex::new(GeneratedStore::default());
+    generated_for(&env, &store, "https://fresh.example", "Gen3rated!");
+    let outcome = save::handle(
+        &env.vault,
+        sign_up("https://fresh.example", "", "Gen3rated!"),
+        &settings(),
+        &MemoryNeverSave::default(),
+        &store,
+        &mut SaveDedupe::default(),
+        answer(&log, save_reply(None)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, Outcome::Created(_)), "{outcome:?}");
+    assert!(matches!(
+        log.lock().unwrap().as_slice(),
+        [BrowserPrompt::Save { choices, allow_new: false, generated: true, .. }] if choices.is_empty()
+    ));
 }

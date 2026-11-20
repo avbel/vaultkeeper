@@ -52,22 +52,8 @@ impl GeneratorCore {
     pub(super) fn from_prefs(prefs: &GeneratorPrefs) -> Self {
         Self {
             passphrase_mode: prefs.passphrase_mode,
-            password: PasswordOptions {
-                length: clamp_u8(i32::from(prefs.length), 5, 128),
-                uppercase: prefs.uppercase,
-                lowercase: prefs.lowercase,
-                numbers: prefs.numbers,
-                special: prefs.special,
-                min_numbers: clamp_u8(i32::from(prefs.min_numbers), 0, 9),
-                min_special: clamp_u8(i32::from(prefs.min_special), 0, 9),
-                avoid_ambiguous: prefs.avoid_ambiguous,
-            },
-            passphrase: PassphraseOptions {
-                words: clamp_u8(i32::from(prefs.words), 3, 20),
-                separator: prefs.separator.clone(),
-                capitalize: prefs.capitalize,
-                include_number: prefs.include_number,
-            },
+            password: prefs.password_options(),
+            passphrase: prefs.passphrase_options(),
             current: Zeroizing::new(String::new()),
         }
     }
@@ -146,6 +132,7 @@ impl<S: VaultService> App<S> {
             let value = Zeroizing::new(app.generator.borrow().current().to_owned());
             app.copy_text("generated password", &value)
         }));
+        self.bind_unsaved(state);
         state.on_use_result(handler!(self, |app| {
             let value = Zeroizing::new(app.generator.borrow().current().to_owned());
             let target = app
@@ -219,7 +206,7 @@ impl<S: VaultService> App<S> {
         self.for_each_generator(|state| write_result(state, &core));
     }
 
-    fn for_each_generator(&self, apply: impl Fn(&GeneratorState<'_>)) {
+    pub(super) fn for_each_generator(&self, apply: impl Fn(&GeneratorState<'_>)) {
         if let Some(manager) = self.manager.borrow().as_ref() {
             apply(&manager.window.global::<GeneratorState>());
         }
@@ -237,6 +224,7 @@ impl<S: VaultService> App<S> {
         if let Some(window) = existing {
             show(&window, "generator");
             self.regenerate();
+            self.refresh_unsaved();
             return;
         }
         let window = match GeneratorWindow::new() {
@@ -263,6 +251,7 @@ impl<S: VaultService> App<S> {
         hide_generator_window_buttons(&window);
         *self.generator_window.borrow_mut() = Some(window);
         self.regenerate();
+        self.refresh_unsaved();
     }
 
     /// The window's size is only laid out once it is shown, so it is moved right after.

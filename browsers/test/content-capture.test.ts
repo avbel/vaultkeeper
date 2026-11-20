@@ -60,7 +60,13 @@ describe("capture", () => {
     submit();
     submit();
     expect(emitted).toEqual([
-      { username: "alice@example.com", password: "hunter2", candidate: "login", path: "/login" },
+      {
+        username: "alice@example.com",
+        password: "hunter2",
+        candidate: "login",
+        has_current: true,
+        path: "/login",
+      },
     ]);
   });
 
@@ -319,5 +325,68 @@ describe("capture", () => {
     typeInto(input("#u"), "alice");
     pressEnter(input("#u"));
     expect(emitted).toEqual([]);
+  });
+
+  test("a generated password counts as typed for sign-up and is saved on submit", () => {
+    start(
+      `<form><input id="u" type="email"><input id="a" type="password"><input id="b" type="password"><button type="submit">Sign up</button></form>`,
+    );
+    const [form] = forms;
+    capture!.markGenerated(form!, [input("#a"), input("#b")], "Gen3rated!");
+    input("#a").value = "Gen3rated!";
+    input("#b").value = "Gen3rated!";
+    submit();
+    expect(emitted).toEqual([
+      {
+        username: "",
+        password: "Gen3rated!",
+        candidate: "change",
+        has_current: false,
+        path: "/login",
+      },
+    ]);
+  });
+
+  test("a generated password is offered on pagehide when the page moves on without a submit", () => {
+    start(
+      `<div><input id="u" type="email"><input id="a" type="password" autocomplete="new-password"></div>`,
+    );
+    const [form] = forms;
+    input("#a").value = "Gen3rated!";
+    capture!.markGenerated(form!, [input("#a")], "Gen3rated!");
+    window.dispatchEvent(new Event("pagehide"));
+    expect(emitted).toMatchObject([{ password: "Gen3rated!", has_current: false }]);
+  });
+
+  test("editing a generated password saves what the user ended with", () => {
+    start(
+      `<form><input id="a" type="password" autocomplete="new-password"><button type="submit">Join</button></form>`,
+    );
+    const [form] = forms;
+    input("#a").value = "Gen3rated!";
+    capture!.markGenerated(form!, [input("#a")], "Gen3rated!");
+    keystroke(input("#a"), "x");
+    submit();
+    expect(emitted).toMatchObject([{ password: "Gen3rated!x" }]);
+  });
+
+  test("a generated password beside a typed one is saved as a change with a current password", () => {
+    start(
+      `<form><input id="a" type="password"><input id="b" type="password"><button type="submit">Save</button></form>`,
+    );
+    const [form] = forms;
+    typeInto(input("#a"), "old-secret");
+    input("#b").value = "Gen3rated!";
+    capture!.markGenerated(form!, [input("#b")], "Gen3rated!");
+    submit();
+    expect(emitted).toEqual([
+      {
+        username: "",
+        password: "Gen3rated!",
+        candidate: "change",
+        has_current: true,
+        path: "/login",
+      },
+    ]);
   });
 });

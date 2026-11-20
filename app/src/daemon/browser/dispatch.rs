@@ -20,8 +20,8 @@ use vk_ipc::{
     browser::{
         BrowserConnection,
         protocol::{
-            AppView, Caller, ErrorCode, Event, FillFields, KnownBrowser, PasskeyResult, Request,
-            SaveKind, State, Theme,
+            AppView, Caller, ErrorCode, Event, FieldLimits, FillFields, GeneratedPassword,
+            KnownBrowser, PasskeyResult, Request, SaveKind, State, Theme,
         },
     },
 };
@@ -167,6 +167,9 @@ pub trait BrowserHost: Send + Sync {
     fn approvals_epoch(&self) -> u64;
     /// Hands a validated candidate to the daemon's bounded, account-bound queue.
     fn candidate(&self, candidate: Candidate);
+    /// A password from the user's generator that fits `limits`, kept sealed for `origin` until
+    /// it is saved. The vault must be unlocked.
+    fn generate(&self, origin: &str, limits: FieldLimits) -> Result<Zeroizing<String>, ErrorCode>;
     fn filled(&self, record: FillRecord);
     fn open_app(&self, view: AppView);
     fn note_activity(&self);
@@ -181,6 +184,7 @@ pub struct Candidate {
     pub username: String,
     pub password: Zeroizing<String>,
     pub kind: SaveKind,
+    pub has_current: bool,
 }
 
 enum Answer {
@@ -226,6 +230,8 @@ struct Dispatcher<H, F> {
     /// `unlock` waits for the user, so it runs beside the request loop; dropping the set on
     /// disconnect cancels the waits.
     unlocks: JoinSet<u64>,
+    /// At most one: it may wait for an unlock, so it runs beside the request loop too.
+    generating: JoinSet<(u64, Result<Zeroizing<String>, ErrorCode>)>,
     completions: mpsc::Sender<Completion>,
     last_status: (State, Theme),
 }
@@ -282,6 +288,7 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
         remembered: Remembered::new(host.approvals_epoch(), host.choices(), STANDARD.encode(key)),
         inflight: None,
         unlocks: JoinSet::new(),
+        generating: JoinSet::new(),
         completions,
         last_status: sent,
         host,
@@ -300,6 +307,13 @@ pub async fn serve<H: BrowserHost + 'static, F: FillFlow + 'static>(
             () = fill_ended(&mut dispatcher.inflight) => dispatcher.fill_lost(&mut completed).await,
             Some(unlocked) = dispatcher.unlocks.join_next() => match unlocked {
                 Ok(id) => dispatcher.answer_state(id).await,
+                Err(_) => Ok(()),
+            },
+            Some(generated) = dispatcher.generating.join_next() => match generated {
+                Ok((id, result)) => {
+                    let answer = result.map(|password| GeneratedPassword { password });
+                    dispatcher.respond(id, answer).await
+                }
                 Err(_) => Ok(()),
             },
             moved = changes.changed() => match moved {
@@ -339,6 +353,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
                 ..
             } => self.fill(id, origin, path, (choose, auto), fields).await,
             Request::SaveCandidate { .. } => self.save(id, &request).await,
+            Request::GeneratePassword { .. } => self.generate(id, &request).await,
             Request::PasskeyCreate {
                 origin, options, ..
             } => {
@@ -540,6 +555,7 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             username,
             password,
             kind,
+            has_current,
             ..
         } = request
         else {
@@ -553,6 +569,42 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             username: username.clone(),
             password: password.clone(),
             kind: kind.clone(),
+            has_current: *has_current,
+        });
+        Ok(())
+    }
+
+    /// Generates once the vault is unlocked, showing the lock screen when it is not.
+    async fn generate(&mut self, id: u64, request: &Request) -> Result<(), Closed> {
+        let Request::GeneratePassword { origin, limits, .. } = request else {
+            return self.respond::<()>(id, Err(ErrorCode::BadRequest)).await;
+        };
+        // Plain http is refused except on the local network, as for fills and saves.
+        if let Err(code) = request::validate(request) {
+            return self.respond::<()>(id, Err(code)).await;
+        }
+        if !self.generating.is_empty() {
+            return self.respond::<()>(id, Err(ErrorCode::Busy)).await;
+        }
+        if !self.limit(|limits| limits.generate(Instant::now())) {
+            return self.respond::<()>(id, Err(ErrorCode::RateLimited)).await;
+        }
+        let host = Arc::clone(&self.host);
+        let (origin, limits) = (origin.clone(), *limits);
+        self.generating.spawn(async move {
+            match host.status().0 {
+                State::LoggedOut => return (id, Err(ErrorCode::LoggedOut)),
+                State::Locked => {
+                    let _ = tokio::time::timeout(UNLOCK_WAIT, host.unlock()).await;
+                }
+                State::Unlocked => {}
+            }
+            let result = match host.status().0 {
+                State::Unlocked => host.generate(&origin, limits),
+                State::Locked => Err(ErrorCode::Locked),
+                State::LoggedOut => Err(ErrorCode::LoggedOut),
+            };
+            (id, result)
         });
         Ok(())
     }
@@ -712,7 +764,7 @@ const RESPONSE_CAPACITY: usize = vk_ipc::browser::BROWSER_MAX_FRAME;
 
 /// Scheme, lower-case ASCII host and non-default port, so `HTTPS://Example.com:443` and
 /// `https://example.com` share one cooldown and one remembered approval.
-fn canonical_origin(origin: &str) -> String {
+pub(super) fn canonical_origin(origin: &str) -> String {
     url::Url::parse(origin).map_or_else(
         |_| origin.to_owned(),
         |url| url.origin().ascii_serialization(),
@@ -1024,6 +1076,7 @@ const fn id_of(request: &Request) -> u64 {
         | Request::Status { id }
         | Request::Fill { id, .. }
         | Request::SaveCandidate { id, .. }
+        | Request::GeneratePassword { id, .. }
         | Request::Unlock { id }
         | Request::OpenApp { id, .. }
         | Request::PasskeyCreate { id, .. }

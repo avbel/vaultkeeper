@@ -162,7 +162,8 @@ Error codes (a closed list, serialized snake_case): `bad_request`, `unknown_type
 | `prove` | `signature` (base64, 64 bytes, IEEE P1363 `r‖s`) | `state`, `theme`, `fingerprint` | Must be the second request. Unknown key → native pair prompt before the answer. |
 | `status` | — | `state`, `theme` | |
 | `fill` | `origin`, `path`, `choose: bool`, `auto: bool` (optional, default `false`), `fields: { username: bool, password: bool }` | `username`, `password` (either may be `null`) | Native picker unless remembered. `choose: true` always shows the picker. `auto: true` is a fill on page load: answered only from a remembered pick, never with a window, otherwise error `no_auto`; `auto` with `choose` is `bad_request`. |
-| `save_candidate` | `origin`, `path`, `username` (may be `""`), `password`, `kind: "login" \| "change"` | `{}` always, at once | The daemon decides alone whether to prompt. |
+| `save_candidate` | `origin`, `path`, `username` (may be `""`), `password`, `kind: "login" \| "change"`, `has_current: bool` (optional, default `false`: the form also had a current-password field) | `{}` always, at once | The daemon decides alone whether to prompt. |
+| `generate_password` | `origin`, `path`, `limits: { min_length, max_length }` (each a number or `null`) | `password` | From the user's Generator settings, fitted to the limits; a locked vault shows the lock screen first. Kept sealed for the account and origin until saved (`app/src/daemon/browser/generated.rs`). `bad_request` when the limits cannot hold a strong password. |
 | `unlock` | — | `state` | Shows the lock screen; answers after unlock, cancel or 120 s. |
 | `open_app` | `view: "manager" \| "settings"` | `{}` | |
 
@@ -183,7 +184,8 @@ Validation in the daemon (reject with `bad_request`):
 - Any request other than `hello` before `hello`, or other than `prove` before a successful `prove` → `unpaired`.
 
 Limits per connection: at most 4 connections in total (the fifth gets `HostRefused busy`); one `fill` in flight (a second
-gets `busy`); 20 `fill` and 10 `save_candidate` per minute (token bucket, over → `rate_limited`); after 3 `fill` requests
+gets `busy`); 20 `fill`, 10 `save_candidate` and 10 `generate_password` per minute (token bucket, over → `rate_limited`), one
+`generate_password` in flight (a second gets `busy`); after 3 `fill` requests
 for one origin end in `cancelled`/`timeout` within 60 s, that origin gets `rate_limited` for 60 s. `fill` with `auto: true`
 has its own budget on the same per-key limiter: 3 per origin per minute and 10 per minute in all, and none while the
 origin cools down; over the budget it answers `no_auto`, not `rate_limited`.
@@ -206,6 +208,7 @@ is not. The extension is semi-trusted: it is the user's browser, but it may be c
 | Another extension talks to ours | No `externally_connectable`, no `onMessageExternal`; `sender.id` is checked. The native manifest allows one extension id. |
 | Tab navigates between request and fill | Background re-reads the tab URL before delivering; content script re-checks `location.origin` and the request nonce. |
 | Password oracle through save detection | `save_candidate` always answers `{}` at once (D8). |
+| Generated passwords | `generate_password` needs a trusted click on the in-page menu and is refused on public `http` pages. A generated password is not a vault secret, so no native window is shown (D3 covers stored credentials). The daemon keeps each one sealed under the user key, bound to the account and canonical origin, at most 20 per account (oldest dropped), 24 h, memory only; log out and account switch drop them, a lock does not, and nothing is listed or opened while locked. A candidate carrying one is offered even with save prompts off (never-save still applies); on a form without a current-password field and without a username (a sign-up or a reset by email link) the prompt lists the site's editable logins plus "New login" (`BrowserPrompt::Save.allow_new`), so it never silently creates a duplicate or overwrites another account. Whether a prompt appears is visible only to the user, so this adds no oracle beyond D8. |
 | Lock while a prompt is open | The UI closes browser prompts on lock; the daemon re-checks `Unlocked` right before `reveal`. |
 | Hostile text in a trusted prompt | Prompts show only: browser name from the verified signature, the ASCII host, and vault item names. Never the tab title or any string from the page or extension, except the username of a save candidate, shown truncated to 64 characters in a monospace field labelled "Username from the page". |
 

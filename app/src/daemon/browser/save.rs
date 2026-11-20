@@ -23,7 +23,8 @@ use zeroize::Zeroizing;
 
 use super::{
     dedupe::SaveDedupe,
-    dispatch::Candidate,
+    dispatch::{Candidate, canonical_origin},
+    generated::{self, GeneratedStore},
     pairing::PairingStore,
     save_queue::SaveQueue,
     save_target::{self, SaveTarget},
@@ -129,14 +130,18 @@ enum Plan {
     Create,
     Update(ItemSummary),
     Choose(Vec<ItemSummary>),
+    /// One of these logins, or a new one.
+    ChooseOrNew(Vec<ItemSummary>),
 }
 
 impl Plan {
     fn permits(&self, target: Option<&str>) -> bool {
         match (self, target) {
-            (Self::Create, None) => true,
+            (Self::Create | Self::ChooseOrNew(_), None) => true,
             (Self::Update(item), Some(id)) => &*item.id.0 == id,
-            (Self::Choose(items), Some(id)) => items.iter().any(|item| &*item.id.0 == id),
+            (Self::Choose(items) | Self::ChooseOrNew(items), Some(id)) => {
+                items.iter().any(|item| &*item.id.0 == id)
+            }
             _ => false,
         }
     }
@@ -145,17 +150,23 @@ impl Plan {
 struct Admitted {
     page: PageUrl,
     snapshot: BrowserSnapshot,
+    /// The entry of the generated password this candidate carries.
+    generated: Option<u64>,
 }
 
 /// Evaluates one candidate against the unlocked vault. Returns `Locked` as a skip rather than
 /// queueing; [`SaveManager`] does the queueing. After a write was started this never retries: a
 /// cancelled or failed request cannot prove the server did not commit, and the dedupe entry
 /// already made the candidate a repeat.
+///
+/// A password Vaultkeeper generated for the page is offered even with save prompts off, and on
+/// a sign-up form even without a username; once saved it leaves `generated`.
 pub async fn handle<P, F>(
     vault: &Vault,
     candidate: Candidate,
     settings: &SaveSettings,
     never_save: &impl NeverSaveStore,
+    generated: &std::sync::Mutex<GeneratedStore>,
     dedupe: &mut SaveDedupe,
     prompt: P,
 ) -> Result<Outcome, SaveError>
@@ -163,7 +174,8 @@ where
     P: FnOnce(BrowserPrompt) -> F + Send,
     F: Future<Output = BrowserReply> + Send,
 {
-    let admitted = match admit(vault, &candidate, settings, never_save, dedupe).await {
+    let entry = generated::find(vault, generated, &candidate.origin, &candidate.password);
+    let admitted = match admit(vault, &candidate, settings, entry, never_save, dedupe).await {
         Ok(admitted) => admitted,
         Err(skipped) => return Ok(Outcome::Skipped(skipped)),
     };
@@ -173,13 +185,14 @@ where
         admitted.snapshot,
         settings,
         &candidate,
+        entry.is_some(),
     ) {
         Ok(plan) => plan,
         Err(skipped) => return Ok(Outcome::Skipped(skipped)),
     };
     let reply = tokio::time::timeout(
         settings.prompt_timeout,
-        prompt(prompt_for(&candidate, &admitted.page, &plan, settings)),
+        prompt(prompt_for(&candidate, &admitted, &plan, settings)),
     )
     .await
     .unwrap_or(BrowserReply::Dismissed);
@@ -195,7 +208,14 @@ where
             Ok(Outcome::NeverSave)
         }
         BrowserReply::Save { target } => {
-            commit(vault, &admitted, settings, &candidate, &plan, target).await
+            let outcome = commit(vault, &admitted, settings, &candidate, &plan, target).await;
+            if let (Ok(Outcome::Created(_) | Outcome::Updated(_)), Some(id)) = (&outcome, entry) {
+                generated
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(id);
+            }
+            outcome
         }
         _ => Ok(Outcome::Dismissed),
     }
@@ -205,10 +225,11 @@ async fn admit(
     vault: &Vault,
     candidate: &Candidate,
     settings: &SaveSettings,
+    generated: Option<u64>,
     never_save: &impl NeverSaveStore,
     dedupe: &mut SaveDedupe,
 ) -> Result<Admitted, Skipped> {
-    if !settings.prompts_enabled {
+    if !settings.prompts_enabled && generated.is_none() {
         return Err(Skipped::Disabled);
     }
     let page =
@@ -234,7 +255,11 @@ async fn admit(
     ) {
         return Err(Skipped::Duplicate);
     }
-    Ok(Admitted { page, snapshot })
+    Ok(Admitted {
+        page,
+        snapshot,
+        generated,
+    })
 }
 
 fn plan(
@@ -243,6 +268,7 @@ fn plan(
     snapshot: BrowserSnapshot,
     settings: &SaveSettings,
     candidate: &Candidate,
+    generated: bool,
 ) -> Result<Plan, Skipped> {
     let matches: Vec<ItemSummary> = vault
         .logins_for(page, settings.default_match)
@@ -250,6 +276,16 @@ fn plan(
         .into_iter()
         .map(|found| found.summary)
         .collect();
+    // A generated password on a form with neither a username nor a current password is a
+    // sign-up or a reset by email link; only the user can tell which.
+    if generated && !candidate.has_current && candidate.username.is_empty() {
+        let editable: Vec<ItemSummary> = matches.into_iter().filter(|item| item.editable).collect();
+        return Ok(if editable.is_empty() {
+            Plan::Create
+        } else {
+            Plan::ChooseOrNew(editable)
+        });
+    }
     match save_target::select(&candidate.username, &candidate.kind, &matches) {
         SaveTarget::Ignore => Err(Skipped::NothingToSave),
         SaveTarget::Create => Ok(Plan::Create),
@@ -299,21 +335,24 @@ fn stored_password_equals(
 
 fn prompt_for(
     candidate: &Candidate,
-    page: &PageUrl,
+    admitted: &Admitted,
     plan: &Plan,
     settings: &SaveSettings,
 ) -> BrowserPrompt {
+    let summaries = |items: &[ItemSummary]| items.iter().map(ItemSummaryDto::from).collect();
     let (update_of, choices) = match plan {
         Plan::Create => (None, Vec::new()),
         Plan::Update(item) => (Some(ItemSummaryDto::from(item)), Vec::new()),
-        Plan::Choose(items) => (None, items.iter().map(ItemSummaryDto::from).collect()),
+        Plan::Choose(items) | Plan::ChooseOrNew(items) => (None, summaries(items)),
     };
     BrowserPrompt::Save {
         browser: candidate.browser.clone(),
-        host: page.host_ascii().to_owned(),
+        host: admitted.page.host_ascii().to_owned(),
         username: shown_username(&candidate.username),
         update_of,
         choices,
+        generated: admitted.generated.is_some(),
+        allow_new: matches!(plan, Plan::ChooseOrNew(_)),
         return_to: settings.return_to.clone(),
     }
 }
@@ -334,7 +373,14 @@ async fn commit(
     if !now.same_session(admitted.snapshot) || !offered.permits(target) {
         return Ok(stale());
     }
-    let Ok(fresh) = plan(vault, &admitted.page, now, settings, candidate) else {
+    let Ok(fresh) = plan(
+        vault,
+        &admitted.page,
+        now,
+        settings,
+        candidate,
+        admitted.generated.is_some(),
+    ) else {
         return Ok(stale());
     };
     if !fresh.permits(target) {
@@ -370,8 +416,22 @@ async fn create(
     page: &PageUrl,
     candidate: &Candidate,
 ) -> Result<Outcome, SaveError> {
-    let host = page.host_ascii();
-    let draft = ItemDraft {
+    let draft = new_login(
+        page.host_ascii(),
+        &candidate.origin,
+        &candidate.username,
+        &candidate.password,
+    );
+    vault
+        .save(None, draft)
+        .await
+        .map(Outcome::Created)
+        .map_err(|error| write_error(&error))
+}
+
+/// A login named after `host`, without `www.`, that matches `origin`.
+pub(super) fn new_login(host: &str, origin: &str, username: &str, password: &str) -> ItemDraft {
+    ItemDraft {
         name: host.strip_prefix("www.").unwrap_or(host).to_owned(),
         notes: Zeroizing::default(),
         folder_id: None,
@@ -381,18 +441,13 @@ async fn create(
         reprompt: false,
         fields: Vec::new(),
         data: ItemData::Login {
-            username: candidate.username.clone(),
-            password: candidate.password.clone(),
+            username: username.to_owned(),
+            password: Zeroizing::new(password.to_owned()),
             totp: Zeroizing::default(),
-            uris: vec![candidate.origin.clone()],
+            uris: vec![origin.to_owned()],
         },
         revision_date: None,
-    };
-    vault
-        .save(None, draft)
-        .await
-        .map(Outcome::Created)
-        .map_err(|error| write_error(&error))
+    }
 }
 
 pub(super) fn write_error(error: &Error) -> SaveError {
@@ -425,6 +480,7 @@ impl SaveManager {
         candidate: Candidate,
         settings: &SaveSettings,
         never_save: &impl NeverSaveStore,
+        generated: &std::sync::Mutex<GeneratedStore>,
         prompt: P,
     ) -> Result<Outcome, SaveError>
     where
@@ -433,13 +489,14 @@ impl SaveManager {
     {
         match vault.state() {
             SessionState::LoggedOut => Ok(Outcome::Skipped(Skipped::LoggedOut)),
-            SessionState::Locked { .. } => Ok(self.enqueue(vault, candidate, settings)),
+            SessionState::Locked { .. } => Ok(self.enqueue(vault, candidate, settings, generated)),
             SessionState::Unlocked { .. } => {
                 handle(
                     vault,
                     candidate,
                     settings,
                     never_save,
+                    generated,
                     &mut self.dedupe,
                     prompt,
                 )
@@ -448,16 +505,29 @@ impl SaveManager {
         }
     }
 
-    fn enqueue(&mut self, vault: &Vault, candidate: Candidate, settings: &SaveSettings) -> Outcome {
-        if !settings.prompts_enabled {
+    /// With prompts off, only a page Vaultkeeper generated a password for is worth holding:
+    /// whether this candidate carries that password can only be told after the unlock.
+    fn enqueue(
+        &mut self,
+        vault: &Vault,
+        candidate: Candidate,
+        settings: &SaveSettings,
+        generated: &std::sync::Mutex<GeneratedStore>,
+    ) -> Outcome {
+        let Some(account) = vault.active_account_id() else {
+            return Outcome::Skipped(Skipped::LoggedOut);
+        };
+        if !settings.prompts_enabled
+            && !generated
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has_origin(&account, &canonical_origin(&candidate.origin))
+        {
             return Outcome::Skipped(Skipped::Disabled);
         }
         if validation::page(&candidate.origin, &candidate.path).is_err() {
             return Outcome::Skipped(Skipped::InvalidPage);
         }
-        let Some(account) = vault.active_account_id() else {
-            return Outcome::Skipped(Skipped::LoggedOut);
-        };
         if self
             .queue
             .as_ref()
@@ -481,6 +551,7 @@ impl SaveManager {
         vault: &Vault,
         settings: &SaveSettings,
         never_save: &impl NeverSaveStore,
+        generated: &std::sync::Mutex<GeneratedStore>,
         mut prompt: P,
     ) -> Vec<Result<Outcome, SaveError>>
     where
@@ -502,6 +573,7 @@ impl SaveManager {
                     candidate,
                     settings,
                     never_save,
+                    generated,
                     &mut self.dedupe,
                     &mut prompt,
                 )

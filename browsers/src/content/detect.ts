@@ -189,18 +189,39 @@ function isSignInForm(container: Element): boolean {
   return labels.some((l) => SIGN_IN.test(l)) && !labels.some((l) => SIGN_UP.test(l));
 }
 
+const EXPLICIT_SUBMIT = "button[type=submit], input[type=submit]";
+
+// Only what the control Enter would press says: ids and actions such as `/session/create`, or a
+// secondary "Create account" button beside a login's "Continue", must not turn a login form's
+// password into a new one. In a <form> that is the first submit control, untyped buttons included.
+function isSignUpSubmit(container: Element): boolean {
+  const submit = container.querySelector(container.localName === "form" ? SUBMIT : EXPLICIT_SUBMIT);
+  if (!submit) {
+    return false;
+  }
+  const text = [
+    submit.getAttribute("value") ?? "",
+    submit.getAttribute("aria-label") ?? "",
+    submit.textContent ?? "",
+  ].join(" ");
+  return SIGN_UP.test(text) && !submitLabels(container).some((l) => SIGN_IN.test(l));
+}
+
 // Several password fields mean a signup or change form, but a lone first field in a
-// three-field form is the current password the user is changing.
+// three-field form is the current password the user is changing. A lone field is new when the
+// form submits with sign-up wording ("Create account").
 function toLoginForm(ctx: Ctx, group: Group): LoginForm {
   const passwords = [...group.passwords].sort((a, b) => position(ctx, a) - position(ctx, b));
   const first = passwords[0] as HTMLInputElement;
   const multiple = passwords.length >= 2;
+  const signUp = !multiple && isSignUpSubmit(group.container);
   const current: HTMLInputElement[] = [];
   const fresh: HTMLInputElement[] = [];
   passwords.forEach((el, index) => {
     const tokens = autocompleteTokens(el);
     const isNew =
       tokens.has("new-password") ||
+      (signUp && !tokens.has("current-password")) ||
       (multiple && !tokens.has("current-password") && !(passwords.length >= 3 && index === 0));
     (isNew ? fresh : current).push(el);
   });

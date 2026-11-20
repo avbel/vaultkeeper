@@ -228,7 +228,22 @@ decision and every prompt are in Vaultkeeper's own windows.
    so answer it with the mouse. It also times out after 30 s (*Not now*). *Never for this site*
    stops the offers for that site. Nothing is offered in private windows, on unencrypted sites other
    than local ones, or when the stored password is already the same.
-6. **Passkeys:** when a site creates a passkey, a *Save passkey?* window offers to keep it in a
+6. **New passwords:** on a sign-up or change-password form, click the shield in the new password
+   field and choose *Use a strong password*. Vaultkeeper generates one with your Generator settings,
+   fitted to the field's length limits (a passphrase that does not fit becomes a password), and fills
+   it into the password and repeat-password fields. A locked vault shows the unlock window first.
+   When you submit the form, *Save new login?* (or *Update password?* on a change form) appears even
+   if *Offer to save logins* is off; *Never for this site* still applies. A form with neither a
+   username nor a current-password field may be a sign-up or a reset by email link, so *Save
+   password?* lets you pick one of the site's logins or *New login* (saved without a username).
+   Only the field you opened the menu on and empty password fields are filled. In a private window
+   the password is filled and listed in the Generator, but no save is offered. Until a login holds it, the password is kept sealed with
+   your vault key for 24 hours, also through a lock, and listed under *Unsaved passwords from
+   websites* in the Generator window, where you can copy it, save it as a login or remove it. Log
+   out, switching accounts and quitting the app drop the list. A page that changes the filled value
+   gets a warning and no save offer. The page's `passwordrules` and `pattern` attributes are not
+   read yet; only `minlength` and `maxlength` are.
+7. **Passkeys:** when a site creates a passkey, a *Save passkey?* window offers to keep it in a
    new login or in one of the site's logins (the one with the same account name is chosen if there
    is one; a login that already holds this site's passkey, or that asks for the master password,
    is not offered). When a site asks for one the vault holds, *Sign in with a passkey?* lists them.
@@ -241,7 +256,7 @@ decision and every prompt are in Vaultkeeper's own windows.
    master password, and requests from a frame of another site. Passkeys in the username field's
    suggestion list (conditional mediation) are left to the browser too. Turn off *Save and use
    passkeys* in Settings → Browsers to leave every site to the browser's own passkeys.
-7. **Settings:** *Require Touch ID to fill* (asked for every fill, including remembered ones and single matches), *Fill at once when only one login matches* (on by default: with exactly one saved login for an encrypted page, no picker is shown; sites with several matches, `http` pages and re-prompt items still show it),
+8. **Settings:** *Require Touch ID to fill* (asked for every fill, including remembered ones and single matches), *Fill at once when only one login matches* (on by default: with exactly one saved login for an encrypted page, no picker is shown; sites with several matches, `http` pages and re-prompt items still show it),
    *Fill remembered logins when a page opens* (off by default: a login you picked before is filled as an encrypted
    page loads, with no click, only while the vault is unlocked and Touch ID is not required; the trade-off is that
    scripts on that page can read what was filled without you asking for it),

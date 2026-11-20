@@ -31,8 +31,8 @@ use vk_vault::VaultService;
 #[cfg(unix)]
 use crate::peer::own_uid;
 use crate::{
-    ClipboardHost, IpcError, PeerCredentials, PeerVerifier, SameExecutable, SiteIconHost,
-    TouchIdBackend,
+    ClipboardHost, GeneratedHost, IpcError, PeerCredentials, PeerVerifier, SameExecutable,
+    SiteIconHost, TouchIdBackend,
     protocol::{BrowserPrompt, BrowserReply, SshDecision, SshPrompt, UiCommand, UiNotice},
     transport::{Endpoint, Listener, Stream},
 };
@@ -91,6 +91,8 @@ pub struct ServeOptions {
     pub clipboard: Option<Arc<dyn ClipboardHost>>,
     /// Serves `SiteIcon`; without it every host has no icon.
     pub site_icons: Option<Arc<dyn SiteIconHost>>,
+    /// Serves the generated-password calls; without it the list is empty.
+    pub generated: Option<Arc<dyn GeneratedHost>>,
 }
 
 /// The daemon-side services a call may need besides the vault.
@@ -99,6 +101,7 @@ pub(crate) struct Backends {
     pub(crate) touch_id: Option<Arc<dyn TouchIdBackend>>,
     pub(crate) clipboard: Option<Arc<dyn ClipboardHost>>,
     pub(crate) site_icons: Option<Arc<dyn SiteIconHost>>,
+    pub(crate) generated: Option<Arc<dyn GeneratedHost>>,
 }
 
 impl ServeOptions {
@@ -116,6 +119,7 @@ impl ServeOptions {
             touch_id: None,
             clipboard: None,
             site_icons: None,
+            generated: None,
         }
     }
 
@@ -139,6 +143,14 @@ impl ServeOptions {
     pub fn with_site_icons(self, site_icons: Arc<dyn SiteIconHost>) -> Self {
         Self {
             site_icons: Some(site_icons),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_generated(self, generated: Arc<dyn GeneratedHost>) -> Self {
+        Self {
+            generated: Some(generated),
             ..self
         }
     }
@@ -322,6 +334,7 @@ fn start<S: VaultService>(
             touch_id: options.touch_id,
             clipboard: options.clipboard,
             site_icons: options.site_icons,
+            generated: options.generated,
         },
         slot: Arc::clone(&slot),
     });

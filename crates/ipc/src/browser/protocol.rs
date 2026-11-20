@@ -110,6 +110,17 @@ pub enum Request {
         username: String,
         password: Zeroizing<String>,
         kind: SaveKind,
+        /// The form also had a field for the current password: a change, not a sign-up.
+        #[serde(default)]
+        has_current: bool,
+    },
+    /// A trusted click on a new-password field asks for a password from the user's generator.
+    GeneratePassword {
+        id: u64,
+        origin: String,
+        path: String,
+        #[serde(default)]
+        limits: FieldLimits,
     },
     Unlock {
         id: u64,
@@ -143,6 +154,13 @@ pub struct FillFields {
     pub password: bool,
 }
 
+/// The `minlength` and `maxlength` of the page's new-password field, when it sets them.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct FieldLimits {
+    pub min_length: Option<u16>,
+    pub max_length: Option<u16>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SaveKind {
@@ -168,6 +186,11 @@ pub enum Response<T> {
 #[derive(Serialize, Deserialize)]
 pub struct PasskeyResult {
     pub credential: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GeneratedPassword {
+    pub password: Zeroizing<String>,
 }
 
 #[derive(Serialize, Deserialize)]

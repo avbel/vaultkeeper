@@ -206,6 +206,8 @@ fn save_prompt_returns_action_without_exposing_a_password() {
             update_of: None,
             choices: vec![],
             return_to: None,
+            generated: false,
+            allow_new: false,
         },
         reply,
     });
@@ -264,6 +266,8 @@ fn save_request() -> (BrowserPromptRequest, oneshot::Receiver<BrowserReply>) {
                 update_of: None,
                 choices: vec![],
                 return_to: None,
+                generated: false,
+                allow_new: false,
             },
             reply,
         },
@@ -616,4 +620,45 @@ fn passkey_sign_in_answers_with_the_chosen_login_or_not_now() {
         "Not now",
     );
     assert_eq!(answer.try_recv(), Ok(BrowserReply::Dismissed));
+}
+
+#[test]
+fn a_generated_password_without_username_can_go_to_a_login_or_a_new_one() {
+    let h = harness(Setup::default());
+    let item = address_item(&h);
+    let ask = || {
+        let (reply, answer) = oneshot::channel();
+        h.app.request_browser_prompt(BrowserPromptRequest {
+            prompt: BrowserPrompt::Save {
+                browser: "Firefox".into(),
+                host: "github.com".into(),
+                username: String::new(),
+                update_of: None,
+                choices: vec![item.clone()],
+                return_to: None,
+                generated: true,
+                allow_new: true,
+            },
+            reply,
+        });
+        answer
+    };
+    let mut answer = ask();
+    let prompt = h.app.browser_save_prompt().expect("save prompt");
+    assert!(prompt.get_allow_new());
+    assert!(!prompt.get_update());
+    assert_eq!(slint::Model::row_count(&prompt.get_choices()), 2);
+    click(&prompt, "Save");
+    assert_eq!(
+        answer.try_recv(),
+        Ok(BrowserReply::Save {
+            target: Some(item.id.clone())
+        })
+    );
+
+    let mut answer = ask();
+    let prompt = h.app.browser_save_prompt().expect("save prompt");
+    prompt.set_choice_index(1);
+    click(&prompt, "Save");
+    assert_eq!(answer.try_recv(), Ok(BrowserReply::Save { target: None }));
 }

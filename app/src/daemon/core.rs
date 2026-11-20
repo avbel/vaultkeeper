@@ -243,6 +243,12 @@ impl Daemon {
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
         .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>)
         .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))));
+        let generated = crate::daemon::browser::generated::SharedGenerated::default();
+        let options =
+            options.with_generated(Arc::new(crate::daemon::browser::generated::GeneratedHost {
+                vault: Arc::clone(&vault),
+                store: Arc::clone(&generated),
+            }));
         let (server, ui_link) = listen_ui(&data_dir, Arc::clone(&vault), queue, options).await?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
         let updater = if self_update {
@@ -257,7 +263,7 @@ impl Daemon {
             None
         };
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
-        let browser = browser_glue::BrowserState::new(&data_dir);
+        let browser = browser_glue::BrowserState::new(&data_dir, generated);
         let daemon = Arc::new(Self {
             ssh: SshControl::new(layout::ssh_endpoint(&data_dir), approvals),
             unlocked_once: AtomicBool::new(false),

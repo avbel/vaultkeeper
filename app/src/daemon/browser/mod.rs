@@ -12,6 +12,7 @@ pub mod dispatch;
 #[cfg(test)]
 mod dispatch_tests;
 pub mod fill;
+pub mod generated;
 pub mod ids;
 pub mod limits;
 pub mod manifests;

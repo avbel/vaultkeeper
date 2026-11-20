@@ -6,8 +6,9 @@ import { createCapture } from "./capture.ts";
 import { findLoginForms, type LoginForm } from "./detect.ts";
 import { composedContains } from "./dom.ts";
 import { createFiller } from "./fill.ts";
+import { createGenerator } from "./generate.ts";
 import { createIcon } from "./icon.ts";
-import { TOAST, toastForError } from "./toast-text.ts";
+import { MENU, TOAST, toastForError, toastForGenerateError } from "./toast-text.ts";
 
 const RESCAN_DEBOUNCE_MS = 200;
 const THEMES: readonly string[] = ["light", "dark", "system"];
@@ -56,6 +57,21 @@ function main(): void {
 
   const autofill = createAutofill({ filler });
 
+  const generator = createGenerator({
+    send,
+    onGenerated: (form, fields, value) => {
+      capture.markGenerated(form, fields, value);
+    },
+  });
+
+  const offerGenerated = (form: LoginForm, anchor: HTMLInputElement): void => {
+    icon.menu(MENU.generate, () => {
+      if (generator.request(form, anchor) === "too_short") {
+        icon.toast(TOAST.fieldTooShort);
+      }
+    });
+  };
+
   function rescan(): LoginForm[] {
     forms = findLoginForms(document);
     capture.refresh(forms);
@@ -88,6 +104,14 @@ function main(): void {
         icon.show(el, () => {
           filler.request(form, false);
         });
+      } else if (form?.newPasswords.includes(el)) {
+        icon.show(
+          el,
+          () => {
+            offerGenerated(form, el);
+          },
+          MENU.generateLabel,
+        );
       } else {
         icon.hide();
       }
@@ -138,6 +162,21 @@ function main(): void {
           // `no_auto` is the answer to a fill the user never asked for: nothing to report.
           if (filler.applyError(message) && message.code !== "no_auto") {
             icon.toast(toastForError(message.code));
+          }
+          break;
+        case "generate_result": {
+          applyTheme(message.theme);
+          const outcome = generator.applyResult(message);
+          if (outcome !== "ignored") {
+            const filled = message.saves ? TOAST.generated : TOAST.generatedPrivate;
+            icon.toast(outcome === "filled" ? filled : TOAST.generatedChanged);
+          }
+          break;
+        }
+        case "generate_error":
+          applyTheme(message.theme);
+          if (generator.applyError(message)) {
+            icon.toast(toastForGenerateError(message.code));
           }
           break;
         case "passkey_result":

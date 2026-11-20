@@ -23,6 +23,7 @@ pub fn decode(body: &[u8]) -> Result<Request, (Option<u64>, ErrorCode)> {
             | "status"
             | "fill"
             | "save_candidate"
+            | "generate_password"
             | "unlock"
             | "open_app"
             | "passkey_create"
@@ -51,6 +52,19 @@ pub fn validate(request: &Request) -> Result<(), ErrorCode> {
                 return Err(ErrorCode::BadRequest);
             }
         }
+        Request::GeneratePassword {
+            origin,
+            path,
+            limits,
+            ..
+        } => {
+            super::validation::page(origin, path)?;
+            if let (Some(min), Some(max)) = (limits.min_length, limits.max_length)
+                && min > max
+            {
+                return Err(ErrorCode::BadRequest);
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -69,6 +83,7 @@ mod tests {
             username: username.into(),
             password: zeroize::Zeroizing::new(password.into()),
             kind: vk_ipc::browser::protocol::SaveKind::Login,
+            has_current: false,
         };
         assert!(validate(&request(&"a".repeat(512), &"p".repeat(4096))).is_ok());
         assert!(matches!(
@@ -102,6 +117,29 @@ mod tests {
         assert!(matches!(
             decode(br#"{"type":"status"}"#),
             Err((None, ErrorCode::BadRequest))
+        ));
+        assert!(matches!(
+            decode(br#"{"id":4,"type":"generate_password","origin":"https://a.com","path":"/"}"#),
+            Ok(Request::GeneratePassword { id: 4, .. })
+        ));
+    }
+
+    #[test]
+    fn generate_requests_need_a_valid_page_and_consistent_limits() {
+        let request = |origin: &str, min, max| Request::GeneratePassword {
+            id: 1,
+            origin: origin.into(),
+            path: "/signup".into(),
+            limits: vk_ipc::browser::protocol::FieldLimits {
+                min_length: min,
+                max_length: max,
+            },
+        };
+        assert!(validate(&request("https://a.com", Some(8), Some(64))).is_ok());
+        assert!(validate(&request("https://a.com/x", None, None)).is_err());
+        assert!(matches!(
+            validate(&request("https://a.com", Some(20), Some(10))),
+            Err(ErrorCode::BadRequest)
         ));
     }
 }

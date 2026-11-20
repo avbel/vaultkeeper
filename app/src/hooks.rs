@@ -10,7 +10,7 @@ use std::{
 };
 
 use vk_gen::generator::{PassphraseOptions, PasswordOptions};
-pub use vk_ipc::SiteIcon;
+pub use vk_ipc::{GeneratedDto, SiteIcon};
 use zeroize::Zeroizing;
 
 use vk_vault::VaultService;
@@ -220,6 +220,17 @@ pub trait SiteIconSource: Send + Sync {
     fn fetch(&self, host: &str) -> IconLookup;
 }
 
+pub type HookFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = HookResult<T>> + Send>>;
+
+/// Passwords the daemon generated for web pages and still keeps because they were not saved.
+pub trait GeneratedPasswords: Send + Sync {
+    fn list(&self) -> HookFuture<Vec<GeneratedDto>>;
+    fn reveal(&self, id: u64) -> HookFuture<Zeroizing<String>>;
+    /// Saves the entry as a new login for its page; the entry is gone afterwards.
+    fn save(&self, id: u64) -> HookFuture<()>;
+    fn forget(&self, id: u64) -> HookFuture<()>;
+}
+
 #[derive(Clone)]
 pub struct Hooks {
     pub clipboard: Arc<dyn Clipboard>,
@@ -239,6 +250,7 @@ pub struct Hooks {
     pub autotype: Arc<dyn AutoType>,
     pub site_icons: Arc<dyn SiteIconSource>,
     pub security_keys: Arc<dyn SecurityKeys>,
+    pub generated: Arc<dyn GeneratedPasswords>,
 }
 
 impl Hooks {
@@ -282,7 +294,45 @@ impl Hooks {
             autotype: Arc::new(LogAutoType),
             site_icons: Arc::new(NoSiteIcons),
             security_keys: Arc::new(crate::mock::MockSecurityKey::default()),
+            generated: Arc::new(MemoryGenerated::default()),
         }
+    }
+}
+
+/// `--mock` and the UI tests: entries live in memory, saving only removes them.
+#[derive(Default)]
+pub struct MemoryGenerated {
+    pub entries: Arc<Mutex<Vec<(GeneratedDto, String)>>>,
+}
+
+impl MemoryGenerated {
+    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<(GeneratedDto, String)>> {
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl GeneratedPasswords for MemoryGenerated {
+    fn list(&self) -> HookFuture<Vec<GeneratedDto>> {
+        let list = self.entries().iter().map(|(dto, _)| dto.clone()).collect();
+        Box::pin(async { Ok(list) })
+    }
+
+    fn reveal(&self, id: u64) -> HookFuture<Zeroizing<String>> {
+        let found = self
+            .entries()
+            .iter()
+            .find(|(dto, _)| dto.id == id)
+            .map(|(_, password)| Zeroizing::new(password.clone()));
+        Box::pin(async move { found.ok_or_else(|| HookError::Failed("not found".into())) })
+    }
+
+    fn save(&self, id: u64) -> HookFuture<()> {
+        self.forget(id)
+    }
+
+    fn forget(&self, id: u64) -> HookFuture<()> {
+        self.entries().retain(|(dto, _)| dto.id != id);
+        Box::pin(async { Ok(()) })
     }
 }
 

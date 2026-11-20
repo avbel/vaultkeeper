@@ -35,7 +35,11 @@ pub use misc::{
 };
 pub use settings_file::SettingsFile;
 
-use crate::hooks::{Hooks, IconLookup, SiteIcon, SiteIconSource, SystemClock};
+use crate::hooks::{
+    GeneratedDto, GeneratedPasswords, HookError, HookFuture, Hooks, IconLookup, SiteIcon,
+    SiteIconSource, SystemClock,
+};
+use zeroize::Zeroizing;
 
 /// Sends a notice to the daemon; failures are only logged (the daemon re-reads on its own start).
 pub type Notifier = Arc<dyn Fn(UiNotice) + Send + Sync>;
@@ -93,8 +97,43 @@ impl Hooks {
             clock: Arc::new(SystemClock),
             autotype: Arc::new(autotype::SystemAutoType),
             site_icons: Arc::new(DaemonSiteIcons(Arc::clone(daemon))),
+            generated: Arc::new(DaemonGenerated(Arc::clone(daemon))),
             security_keys: Arc::new(security_key::UsbSecurityKeys),
         }
+    }
+}
+
+struct DaemonGenerated(Arc<RemoteVault>);
+
+fn failed(error: &vk_vault::Error) -> HookError {
+    HookError::Failed(error.to_string())
+}
+
+impl GeneratedPasswords for DaemonGenerated {
+    fn list(&self) -> HookFuture<Vec<GeneratedDto>> {
+        let daemon = Arc::clone(&self.0);
+        Box::pin(async move { daemon.generated_passwords().await.map_err(|e| failed(&e)) })
+    }
+
+    fn reveal(&self, id: u64) -> HookFuture<Zeroizing<String>> {
+        let daemon = Arc::clone(&self.0);
+        Box::pin(async move { daemon.reveal_generated(id).await.map_err(|e| failed(&e)) })
+    }
+
+    fn save(&self, id: u64) -> HookFuture<()> {
+        let daemon = Arc::clone(&self.0);
+        Box::pin(async move {
+            daemon
+                .save_generated(id)
+                .await
+                .map(|_| ())
+                .map_err(|e| failed(&e))
+        })
+    }
+
+    fn forget(&self, id: u64) -> HookFuture<()> {
+        let daemon = Arc::clone(&self.0);
+        Box::pin(async move { daemon.forget_generated(id).await.map_err(|e| failed(&e)) })
     }
 }
 

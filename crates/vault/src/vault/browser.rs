@@ -130,6 +130,25 @@ impl Vault {
             Ok(found)
         })
     }
+    /// Encrypts `plaintext` under the active account's user key, for data the daemon must keep
+    /// while the vault is locked. Returns the account it is bound to and the encrypted text.
+    pub fn seal_local(&self, plaintext: &[u8]) -> Result<(Arc<str>, String)> {
+        self.inner.read_unlocked(|active, unlocked| {
+            let sealed = vk_crypto::EncString::encrypt(plaintext, unlocked.keys.user())?;
+            Ok((Arc::clone(&active.id), sealed.to_string()))
+        })
+    }
+
+    /// Opens what [`Self::seal_local`] returned. Fails unless `account` is the active, unlocked one.
+    pub fn open_local(&self, account: &str, sealed: &str) -> Result<Zeroizing<Vec<u8>>> {
+        self.inner.read_unlocked(|active, unlocked| {
+            if &*active.id != account {
+                return Err(crate::Error::Locked);
+            }
+            Ok(crate::keys::parse(sealed)?.decrypt(unlocked.keys.user())?)
+        })
+    }
+
     /// Validate a picker selection against the current unlocked index.
     pub fn login_matches(
         &self,
@@ -267,6 +286,24 @@ mod tests {
         ));
     }
 
+    /// Sealed data opens only for its account while unlocked; locks `vault`.
+    fn assert_sealing_then_lock(vault: &Vault) {
+        let (account, sealed) = vault.seal_local(b"generated").unwrap();
+        assert_eq!(&*account, testutil::USER_ID);
+        assert!(!sealed.contains("generated"));
+        assert_eq!(
+            vault.open_local(&account, &sealed).unwrap().as_slice(),
+            b"generated"
+        );
+        assert!(vault.open_local("another-account", &sealed).is_err());
+        vault.lock();
+        assert!(matches!(vault.seal_local(b"x"), Err(Error::Locked)));
+        assert!(matches!(
+            vault.open_local(&account, &sealed),
+            Err(Error::Locked)
+        ));
+    }
+
     #[tokio::test]
     async fn browser_lookup_filters_orders_and_requires_unlock() {
         let dir = std::env::temp_dir().join(format!("vk-browser-{}", uuid::Uuid::new_v4()));
@@ -352,7 +389,7 @@ mod tests {
                 .login_matches(&ItemId("a".into()), &other, DefaultMatch::Domain)
                 .unwrap()
         );
-        vault.lock();
+        assert_sealing_then_lock(&vault);
         assert!(matches!(
             vault.login_matches(&ItemId("a".into()), &page, DefaultMatch::Domain),
             Err(Error::Locked)

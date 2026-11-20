@@ -15,9 +15,10 @@ use tokio::{
 };
 use vk_ipc::{
     BrowserPrompt, BrowserReply, DaemonEvent, TypingTarget, UiCommand,
-    browser::protocol::{AppView, KnownBrowser, State, Theme},
+    browser::protocol::{AppView, ErrorCode, FieldLimits, KnownBrowser, State, Theme},
 };
 use vk_vault::{VaultService, model::SessionState, uri_match::DefaultMatch};
+use zeroize::Zeroizing;
 
 use super::{Daemon, Identity, guard};
 use crate::{
@@ -28,6 +29,7 @@ use crate::{
         control::BrowserControl,
         dispatch::{BrowserHost, Candidate, FillRecord, RealFills, serve},
         fill::Via,
+        generated::{self, SharedGenerated},
         limits::Limits,
         manifests::{self, ExtensionIds, ManifestBrowser, Outcome},
         pairing::PairingStore,
@@ -61,13 +63,15 @@ pub(super) struct BrowserState {
     limits: std::sync::Mutex<HashMap<[u8; 65], Arc<std::sync::Mutex<Limits>>>>,
     /// Owned here rather than by the listener so a log out clears it while integration is off.
     choices: Arc<std::sync::Mutex<ChoiceStore>>,
+    /// Passwords generated for pages and not saved yet; kept while integration is off too.
+    pub(super) generated: SharedGenerated,
     /// The account the vault was last seen locked or unlocked for; `None` once logged out.
     account: std::sync::Mutex<Option<Identity>>,
     pair_prompts: std::sync::Mutex<VecDeque<Instant>>,
 }
 
 impl BrowserState {
-    pub(super) fn new(data_dir: &Path) -> Self {
+    pub(super) fn new(data_dir: &Path, generated: SharedGenerated) -> Self {
         Self {
             run: std::sync::Mutex::new(None),
             store: std::sync::Mutex::new(None),
@@ -83,6 +87,7 @@ impl BrowserState {
             choices: Arc::new(std::sync::Mutex::new(ChoiceStore::load(
                 &data_dir.join(BROWSER_CHOICES_FILE),
             ))),
+            generated,
             account: std::sync::Mutex::new(None),
             pair_prompts: std::sync::Mutex::new(VecDeque::new()),
         }
@@ -282,6 +287,7 @@ impl Daemon {
         if let Err(error) = guard(&self.browser.choices).clear() {
             tracing::warn!(%error, "cannot forget the remembered browser logins");
         }
+        guard(&self.browser.generated).clear();
     }
 
     /// Waits for an open save prompt to finish rather than skipping the wipe.
@@ -323,9 +329,13 @@ impl Daemon {
                 .saves
                 .lock()
                 .await
-                .on_unlocked(&daemon.vault, &settings, &*store, |prompt| {
-                    host.prompt(prompt)
-                })
+                .on_unlocked(
+                    &daemon.vault,
+                    &settings,
+                    &*store,
+                    &daemon.browser.generated,
+                    |prompt| host.prompt(prompt),
+                )
                 .await;
             for result in results {
                 daemon.report_save(result);
@@ -535,6 +545,7 @@ async fn forward_changes(daemon: Arc<Daemon>) {
                 if let Ok(mut saves) = daemon.browser.saves.try_lock() {
                     saves.expire(std::time::Instant::now());
                 }
+                guard(&daemon.browser.generated).expire(SystemTime::now());
                 continue;
             }
         }
@@ -637,9 +648,14 @@ impl BrowserHost for DaemonBrowser {
                 saves
                     .lock()
                     .await
-                    .submit(&daemon.vault, candidate, &settings, &*store, |prompt| {
-                        host.prompt(prompt)
-                    })
+                    .submit(
+                        &daemon.vault,
+                        candidate,
+                        &settings,
+                        &*store,
+                        &daemon.browser.generated,
+                        |prompt| host.prompt(prompt),
+                    )
                     .await
             };
             tokio::select! {
@@ -648,6 +664,19 @@ impl BrowserHost for DaemonBrowser {
                 _ = stopped.changed() => {}
             }
         }));
+    }
+
+    fn generate(&self, origin: &str, limits: FieldLimits) -> Result<Zeroizing<String>, ErrorCode> {
+        let password = generated::generate(&self.0.settings().generator, limits)
+            .map_err(|_| ErrorCode::BadRequest)?;
+        generated::remember(&self.0.vault, &self.0.browser.generated, origin, &password).map_err(
+            |error| match error {
+                vk_vault::Error::LoggedOut => ErrorCode::LoggedOut,
+                _ => ErrorCode::Locked,
+            },
+        )?;
+        self.0.activity.touch();
+        Ok(password)
     }
 
     fn filled(&self, record: FillRecord) {

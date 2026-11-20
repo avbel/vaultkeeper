@@ -252,6 +252,8 @@ mod browser_tests {
                 update_of: None,
                 choices: vec![],
                 return_to: None,
+                generated: false,
+                allow_new: false,
             },
             reply,
         });

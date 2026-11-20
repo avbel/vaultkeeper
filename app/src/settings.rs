@@ -294,6 +294,34 @@ impl Default for GeneratorPrefs {
     }
 }
 
+impl GeneratorPrefs {
+    /// The saved password options, clamped to the generator's valid ranges.
+    #[must_use]
+    pub fn password_options(&self) -> vk_gen::generator::PasswordOptions {
+        vk_gen::generator::PasswordOptions {
+            length: self.length.clamp(5, 128),
+            uppercase: self.uppercase,
+            lowercase: self.lowercase,
+            numbers: self.numbers,
+            special: self.special,
+            min_numbers: self.min_numbers.min(9),
+            min_special: self.min_special.min(9),
+            avoid_ambiguous: self.avoid_ambiguous,
+        }
+    }
+
+    /// The saved passphrase options, clamped to the generator's valid ranges.
+    #[must_use]
+    pub fn passphrase_options(&self) -> vk_gen::generator::PassphraseOptions {
+        vk_gen::generator::PassphraseOptions {
+            words: self.words.clamp(3, 20),
+            separator: self.separator.clone(),
+            capitalize: self.capitalize,
+            include_number: self.include_number,
+        }
+    }
+}
+
 /// A damaged `generator` entry falls back to the defaults instead of failing the whole file.
 const fn legacy_ssh_agent() -> bool {
     true

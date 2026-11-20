@@ -181,6 +181,7 @@ fn id(request: &Request) -> u64 {
         | Request::Status { id }
         | Request::Fill { id, .. }
         | Request::SaveCandidate { id, .. }
+        | Request::GeneratePassword { id, .. }
         | Request::Unlock { id }
         | Request::OpenApp { id, .. }
         | Request::PasskeyCreate { id, .. }

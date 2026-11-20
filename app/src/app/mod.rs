@@ -9,6 +9,7 @@ mod autotype_ctl;
 mod browser;
 mod commands;
 mod copy;
+mod generated_list;
 mod generator;
 mod manager;
 mod manager_assign;
@@ -280,6 +281,9 @@ impl<S: VaultService> App<S> {
         if matches!(*self.phase.borrow(), Phase::Unlocked(_)) {
             self.refresh_manager();
             self.refresh_quick();
+        }
+        if self.generator_window.borrow().is_some() {
+            self.refresh_unsaved();
         }
         self.refresh_lock_window();
     }

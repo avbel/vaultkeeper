@@ -303,8 +303,19 @@ describe("save flow", () => {
       username: "bob",
       password: "pw",
       kind: "change",
+      has_current: false,
     });
     expect(sent).toEqual([]);
+  });
+
+  it("passes on whether the form asked for the current password", async () => {
+    const { router, request } = setup();
+    await router.handleContentMessage({ ...SAVE, has_current: true }, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledWith(
+      "save_candidate",
+      expect.objectContaining({ has_current: true }),
+    );
   });
 
   it("skips incognito tabs", async () => {
@@ -329,6 +340,86 @@ describe("save flow", () => {
     });
     await router.handleContentMessage(SAVE, sender());
     await expect(router.idle()).resolves.toBeUndefined();
+  });
+});
+
+describe("generate flow", () => {
+  const GENERATE = {
+    kind: "generate_request",
+    nonce: "g1",
+    limits: { min_length: 8, max_length: 32 },
+  };
+
+  it("asks the app with the computed origin and delivers the password to the frame", async () => {
+    const { router, request, sent } = setup({
+      request: async () => ({ password: "Gen3rated!" }),
+    });
+    await router.handleContentMessage({ ...GENERATE, origin: "https://evil.example" }, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledWith("generate_password", {
+      origin: "https://shop.example",
+      path: "/login",
+      limits: { min_length: 8, max_length: 32 },
+    });
+    expect(sent).toEqual([
+      {
+        tabId: 5,
+        frameId: 0,
+        message: {
+          kind: "generate_result",
+          nonce: "g1",
+          password: "Gen3rated!",
+          saves: true,
+          theme: "dark",
+        },
+      },
+    ]);
+  });
+
+  it("tells a private window that no save will be offered", async () => {
+    const { router, sent } = setup({ request: async () => ({ password: "x" }) });
+    await router.handleContentMessage(
+      GENERATE,
+      sender({ tab: { id: 5, url: PAGE, incognito: true } }),
+    );
+    await router.idle();
+    expect(sent[0]?.message).toMatchObject({ kind: "generate_result", saves: false });
+  });
+
+  it("drops limits that are not small positive integers", async () => {
+    const { router, request } = setup({ request: async () => ({ password: "x" }) });
+    await router.handleContentMessage(
+      { ...GENERATE, limits: { min_length: -1, max_length: "12" } },
+      sender(),
+    );
+    await router.idle();
+    expect(request).toHaveBeenCalledWith(
+      "generate_password",
+      expect.objectContaining({ limits: { min_length: null, max_length: null } }),
+    );
+    expect(await router.handleContentMessage({ ...GENERATE, limits: null }, sender())).toEqual({
+      accepted: false,
+    });
+  });
+
+  it("reports the app's error, and nothing once the tab moved to another site", async () => {
+    const failing = setup({
+      request: async () => {
+        throw new NativeError("unknown_type");
+      },
+    });
+    await failing.router.handleContentMessage(GENERATE, sender());
+    await failing.router.idle();
+    expect(failing.sent.map((s) => s.message)).toEqual([
+      { kind: "generate_error", nonce: "g1", code: "unknown_type", theme: "dark" },
+    ]);
+    const moved = setup({
+      request: async () => ({ password: "x" }),
+      tabUrl: "https://other.example/",
+    });
+    await moved.router.handleContentMessage(GENERATE, sender());
+    await moved.router.idle();
+    expect(moved.sent).toEqual([]);
   });
 });
 

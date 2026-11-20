@@ -6,6 +6,7 @@ export interface SaveCandidate {
   username: string;
   password: string;
   candidate: "login" | "change";
+  has_current: boolean;
   path: string;
 }
 
@@ -20,11 +21,14 @@ export interface CaptureDeps {
 
 export interface Capture {
   markFilled: (el: HTMLInputElement) => void;
+  /** Vaultkeeper put `value` in `fields`: it counts as typed, so the submit offers to save it. */
+  markGenerated: (form: LoginForm, fields: HTMLInputElement[], value: string) => void;
   refresh: (forms: LoginForm[]) => void;
   dispose: () => void;
 }
 
-const SUBMIT_TEXT = /log ?in|sign ?in|continue|next|submit|change|update|save/i;
+const SUBMIT_TEXT =
+  /log ?in|sign ?in|sign ?up|register|create account|join|continue|next|submit|change|update|save/i;
 const MAX_SUBMIT_TEXT = 40;
 const MAX_USERNAME = 512;
 const MAX_PASSWORD = 4096;
@@ -55,6 +59,7 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
   const interaction = new WeakMap<Element, number>();
   const emitted = new WeakSet<Element>();
   const watched = new WeakSet<Element>();
+  const generated = new WeakMap<Element, { value: string; fields: HTMLInputElement[] }>();
   let known: LoginForm[] = [];
   let lastUsername = "";
 
@@ -68,7 +73,30 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
     return at !== undefined && now() - at < limit;
   };
 
+  // While the generated value is still what the fields hold, it is the password to save. A
+  // new-password field it was not put into but that holds text is the current password of a
+  // form that named neither field.
+  const generatedCandidate = (form: LoginForm): SaveCandidate | null => {
+    const mark = generated.get(form.container);
+    if (!mark || !mark.fields.every((el) => typedBy(el) === mark.value)) {
+      return null;
+    }
+    const kept = form.newPasswords.some((el) => !mark.fields.includes(el) && el.value !== "");
+    const hasCurrent = form.password !== undefined || kept;
+    return {
+      username: form.username?.value || lastUsername,
+      password: mark.value,
+      candidate: mark.fields.length >= 2 || hasCurrent ? "change" : "login",
+      has_current: hasCurrent,
+      path: path(),
+    };
+  };
+
   const candidateFor = (form: LoginForm): SaveCandidate | null => {
+    const fromGenerator = generatedCandidate(form);
+    if (fromGenerator) {
+      return fromGenerator.username.length > MAX_USERNAME ? null : fromGenerator;
+    }
     const username = form.username?.value || lastUsername;
     const values = form.newPasswords.map(typedBy).filter((v): v is string => !!v);
     let password: string | undefined;
@@ -84,7 +112,13 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
     if (!password || password.length > MAX_PASSWORD || username.length > MAX_USERNAME) {
       return null;
     }
-    return { username, password, candidate, path: path() };
+    return {
+      username,
+      password,
+      candidate,
+      has_current: form.password !== undefined,
+      path: path(),
+    };
   };
 
   const emitFor = (form: LoginForm): void => {
@@ -213,6 +247,16 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
   return {
     markFilled(el) {
       model.set(el, null);
+    },
+    // The menu click happened outside the form, so it is counted as interaction here: a page
+    // that moves on without a submit still offers the save on pagehide.
+    markGenerated(form, fields, value) {
+      for (const el of fields) {
+        model.set(el, value);
+      }
+      generated.set(form.container, { value, fields });
+      touch(interaction, form);
+      emitted.delete(form.container);
     },
     refresh,
     dispose() {

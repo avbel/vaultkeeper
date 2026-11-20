@@ -93,6 +93,7 @@ mod tests {
             username: "user".into(),
             password: Zeroizing::new("secret".into()),
             kind: SaveKind::Login,
+            has_current: false,
         }
     }
 

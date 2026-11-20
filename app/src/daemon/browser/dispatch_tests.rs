@@ -154,6 +154,17 @@ impl BrowserHost for StubHost {
         self.enabled.load(Ordering::SeqCst)
     }
     fn candidate(&self, _candidate: Candidate) {}
+    fn generate(
+        &self,
+        origin: &str,
+        limits: vk_ipc::browser::protocol::FieldLimits,
+    ) -> Result<Zeroizing<String>, ErrorCode> {
+        self.records
+            .lock()
+            .expect("records")
+            .push(format!("generated@{origin}:{:?}", limits.max_length));
+        Ok(Zeroizing::new("generated-password".into()))
+    }
     fn open_app(&self, _view: AppView) {}
     fn note_activity(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
@@ -1118,3 +1129,64 @@ async fn a_picker_the_user_walked_away_from_does_not_count_toward_the_cooldown()
 }
 
 mod auto;
+
+fn generate_request(id: u64, origin: &str) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(
+        serde_json::to_vec(&serde_json::json!({
+            "type":"generate_password","id":id,"origin":origin,"path":"/signup",
+            "limits":{"min_length":null,"max_length":32}
+        }))
+        .expect("generate"),
+    )
+}
+
+#[tokio::test]
+async fn generate_unlocks_first_refuses_plain_http_and_is_rate_limited() {
+    let (connection, incoming_tx, mut outgoing_rx) = connection();
+    let (host, _changes) = StubHost::new();
+    host.locked.store(true, Ordering::SeqCst);
+    let pairing = store();
+    let (gate_tx, _gate_rx) = mpsc::channel(1);
+    let task = tokio::spawn(serve(
+        connection,
+        pairing.0,
+        Arc::new(GatedFills::new(gate_tx)),
+        Arc::clone(&host),
+    ));
+    authenticate(&incoming_tx, &mut outgoing_rx, &pairing.1).await;
+    incoming_tx
+        .send(generate_request(3, "http://example.com"))
+        .await
+        .expect("send");
+    let reply = next(&mut outgoing_rx).await;
+    assert_eq!(reply["error"], "insecure_page", "{reply}");
+    assert_eq!(host.unlocks.load(Ordering::SeqCst), 0);
+
+    incoming_tx
+        .send(generate_request(4, "https://example.com"))
+        .await
+        .expect("send");
+    let reply = next(&mut outgoing_rx).await;
+    assert_eq!(reply["id"], 4);
+    assert_eq!(reply["result"]["password"], "generated-password", "{reply}");
+    assert_eq!(host.unlocks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        host.records.lock().expect("records").as_slice(),
+        ["generated@https://example.com:Some(32)"]
+    );
+
+    let mut limited = false;
+    for id in 5..20 {
+        incoming_tx
+            .send(generate_request(id, "https://example.com"))
+            .await
+            .expect("send");
+        if next(&mut outgoing_rx).await["error"] == "rate_limited" {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "generate has a budget");
+    drop(incoming_tx);
+    task.await.expect("serve ends");
+}

@@ -12,6 +12,7 @@ const AUTO_PER_ORIGIN: usize = 3;
 const AUTO_TOTAL: u32 = 10;
 /// A separate table: a page cannot fill the fill limiter's origins by loading many sites.
 const MAX_AUTO_ORIGINS: usize = 64;
+const GENERATES: u32 = 10;
 
 struct Bucket {
     tokens: f64,
@@ -50,6 +51,7 @@ struct Origin {
 pub struct Limits {
     fills: Bucket,
     saves: Bucket,
+    generates: Bucket,
     app_opens: Bucket,
     autos: Bucket,
     origins: HashMap<String, Origin>,
@@ -62,6 +64,8 @@ impl Limits {
         Self {
             fills: Bucket::new(20, now),
             saves: Bucket::new(10, now),
+            // Each one adds to the account's list of generated passwords, which keeps the newest.
+            generates: Bucket::new(GENERATES, now),
             app_opens: Bucket::new(6, now),
             autos: Bucket::new(AUTO_TOTAL, now),
             origins: HashMap::new(),
@@ -127,6 +131,10 @@ impl Limits {
         self.saves.take(now)
     }
 
+    pub fn generate(&mut self, now: Instant) -> bool {
+        self.generates.take(now)
+    }
+
     pub fn cancelled(&mut self, origin: &str, now: Instant) {
         if !self.origins.contains_key(origin) && self.origins.len() >= MAX_ORIGINS {
             return;
@@ -156,6 +164,10 @@ mod tests {
         }
         assert!(!limits.save(now));
         assert!(limits.save(now + Duration::from_secs(6)));
+        for _ in 0..GENERATES {
+            assert!(limits.generate(now));
+        }
+        assert!(!limits.generate(now));
         for _ in 0..3 {
             limits.cancelled("https://example.com", now);
         }

@@ -521,6 +521,8 @@ pub struct Setup {
     pub site_icons: Option<Arc<dyn SiteIconSource>>,
     /// Replaces the mock security key, which signs at once, with [`ScriptedSecurityKey`].
     pub scripted_security_key: bool,
+    /// Replaces the empty list of passwords generated in the browser.
+    pub generated: Option<Arc<dyn vaultkeeper::hooks::GeneratedPasswords>>,
 }
 
 impl Default for Setup {
@@ -533,6 +535,7 @@ impl Default for Setup {
             scripted_touch_id: false,
             site_icons: None,
             scripted_security_key: false,
+            generated: None,
         }
     }
 }
@@ -585,6 +588,9 @@ pub fn harness(setup: Setup) -> Harness {
         site_icons: setup
             .site_icons
             .unwrap_or_else(|| Arc::clone(&defaults.site_icons)),
+        generated: setup
+            .generated
+            .unwrap_or_else(|| Arc::clone(&defaults.generated)),
         security_keys: security_key.as_ref().map_or_else(
             || Arc::new(MockSecurityKey { instant: true }) as Arc<dyn SecurityKeys>,
             |key| Arc::new(ScriptedKeys(Arc::clone(key))) as Arc<dyn SecurityKeys>,

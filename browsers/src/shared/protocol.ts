@@ -1,5 +1,5 @@
 // Wire types of BROWSERS.md section 3.3 (extension <-> daemon, relayed by the native host).
-import type { ErrorCode, Theme } from "./messages.ts";
+import type { ErrorCode, FieldLimits, Theme } from "./messages.ts";
 
 export type { ErrorCode, Theme };
 
@@ -35,8 +35,13 @@ export interface RequestMap {
       username: string;
       password: string;
       kind: "login" | "change";
+      has_current: boolean;
     };
     result: Record<string, never>;
+  };
+  generate_password: {
+    fields: { origin: string; path: string; limits: FieldLimits };
+    result: { password: string };
   };
   unlock: {
     fields: Record<string, never>;

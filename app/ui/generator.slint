@@ -2,6 +2,13 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Btn, BtnKind, Check, CopyBtn, Field, IconBtn, Segmented, SectionLabel, SliderBar, Stepper } from "kit.slint";
 
+// A password generated for a website and not saved yet.
+export struct UnsavedRow {
+    id: int,
+    host: string,
+    age: string,
+}
+
 export global GeneratorState {
     in-out property <int> mode: 0;
     in-out property <int> length: 14;
@@ -26,6 +33,12 @@ export global GeneratorState {
     callback regenerate();
     callback copy-result() -> bool;
     callback use-result();
+    // Passwords generated in the browser that no login holds yet.
+    in property <[UnsavedRow]> unsaved;
+    in property <string> unsaved-status;
+    callback copy-unsaved(int);
+    callback save-unsaved(int);
+    callback forget-unsaved(int);
 }
 
 export component GeneratorView inherits Rectangle {
@@ -33,6 +46,9 @@ export component GeneratorView inherits Rectangle {
     in property <bool> closable: false;
     // The standalone window draws its title in the title bar instead.
     in property <bool> show-title: true;
+    // Only the standalone window lists passwords generated in the browser; an item's editor
+    // would offer to save one as a different login.
+    in property <bool> show-unsaved: false;
     // What the options need, so a window can size itself without an empty gap below them.
     out property <length> content-height: body.preferred-height;
     background: Theme.surface;
@@ -178,6 +194,42 @@ export component GeneratorView inherits Rectangle {
                 Check { text: "Include number"; checked <=> GeneratorState.include-number; toggled => { GeneratorState.options-changed(); } }
             }
             Check { text: "Avoid ambiguous characters"; checked <=> GeneratorState.avoid-ambiguous; toggled => { GeneratorState.options-changed(); } }
+            if root.show-unsaved && GeneratorState.unsaved.length > 0: VerticalLayout {
+                spacing: Theme.gap;
+                padding-top: Theme.gap;
+                SectionLabel { text: "Unsaved passwords from websites"; }
+                for row in GeneratorState.unsaved: HorizontalLayout {
+                    spacing: 4px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text { text: row.host; color: Theme.text; overflow: elide; }
+                        Text { text: row.age; color: Theme.text-muted; font-size: Theme.font-meta; }
+                    }
+                    IconBtn {
+                        icon: @image-url("icons/copy.svg");
+                        label: "Copy the password for " + row.host;
+                        clicked => { GeneratorState.copy-unsaved(row.id); }
+                    }
+                    Btn {
+                        text: "Save as login";
+                        label: "Save as a login for " + row.host;
+                        clicked => { GeneratorState.save-unsaved(row.id); }
+                    }
+                    IconBtn {
+                        icon: @image-url("icons/trash.svg");
+                        label: "Remove the password for " + row.host;
+                        tint: Theme.danger;
+                        clicked => { GeneratorState.forget-unsaved(row.id); }
+                    }
+                }
+                if GeneratorState.unsaved-status != "": Text {
+                    text: GeneratorState.unsaved-status;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-meta;
+                    wrap: word-wrap;
+                }
+            }
             Rectangle { vertical-stretch: 1; }
         }
     }

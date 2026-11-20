@@ -344,3 +344,44 @@ fn generator_options_are_saved_and_the_next_generator_opens_with_them() {
     assert_eq!(value.chars().count(), 32);
     assert!(!value.chars().any(|c| c.is_ascii_digit()), "{value}");
 }
+
+#[test]
+fn unsaved_website_passwords_can_be_copied_and_removed() {
+    use std::sync::{Arc, Mutex};
+    use vaultkeeper::hooks::{GeneratedDto, MemoryGenerated};
+
+    let memory = MemoryGenerated {
+        entries: Arc::new(Mutex::new(vec![(
+            GeneratedDto {
+                id: 7,
+                host: "signup.example".into(),
+                created_unix: common::NOW - 5 * 60,
+            },
+            "Gen3rated!".into(),
+        )])),
+    };
+    let entries = Arc::clone(&memory.entries);
+    let h = harness(Setup {
+        generated: Some(Arc::new(memory)),
+        ..Setup::default()
+    });
+    h.app.open_generator_window();
+    let window = h.app.generator_window().expect("generator");
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(420.0, 1200.0));
+    pump();
+    let state = window.global::<GeneratorState>();
+    let rows: Vec<_> = slint::Model::iter(&state.get_unsaved()).collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].host, "signup.example");
+    assert_eq!(rows[0].age, "5 min ago");
+
+    click(&window, "Copy the password for signup.example");
+    assert_eq!(h.clipboard.last().as_deref(), Some("Gen3rated!"));
+    assert_eq!(state.get_unsaved_status(), "Password copied");
+
+    click(&window, "Remove the password for signup.example");
+    assert_eq!(slint::Model::row_count(&state.get_unsaved()), 0);
+    assert_eq!(entries.lock().expect("entries").len(), 0);
+}

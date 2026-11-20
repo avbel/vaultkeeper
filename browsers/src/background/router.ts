@@ -1,4 +1,10 @@
-import type { FillFields, PasskeyOutcome, ToBackground, ToContent } from "../shared/messages.ts";
+import type {
+  FieldLimits,
+  FillFields,
+  PasskeyOutcome,
+  ToBackground,
+  ToContent,
+} from "../shared/messages.ts";
 import { webOrigin, webPath } from "../shared/origin.ts";
 import type { RequestMap, RequestType, Theme } from "../shared/protocol.ts";
 import { NativeError } from "./native.ts";
@@ -39,6 +45,7 @@ interface VerifiedSender {
 }
 
 const MAX_NONCE = 128;
+const MAX_FIELD_LENGTH = 4096;
 /** How long an automatic fill waits for a handshake that the browser start is still running. */
 const HANDSHAKE_WAIT_MS = 3000;
 const NO_RECEIVER = /receiving end does not exist|could not establish connection/i;
@@ -166,10 +173,41 @@ export function createRouter(deps: RouterDeps) {
         username: message.username,
         password: message.password,
         kind: message.candidate,
+        has_current: message.has_current,
       });
     } catch {
       // D8: the extension gets no outcome for a save candidate.
     }
+  }
+
+  async function runGenerate(
+    from: VerifiedSender,
+    message: Extract<ToBackground, { kind: "generate_request" }>,
+  ): Promise<void> {
+    const { nonce } = message;
+    let reply: ToContent;
+    try {
+      const result = await deps.session.request("generate_password", {
+        origin: from.origin,
+        path: from.path,
+        limits: message.limits,
+      });
+      reply = {
+        kind: "generate_result",
+        nonce,
+        password: result.password,
+        saves: !from.incognito,
+        theme: deps.session.theme,
+      };
+    } catch (error) {
+      const code = error instanceof NativeError ? error.code : "internal";
+      reply = { kind: "generate_error", nonce, code, theme: deps.session.theme };
+    }
+    const tab = await deps.getTab(from.tabId).catch(() => null);
+    if (webOrigin(tab?.url) !== from.origin) {
+      return;
+    }
+    await deps.sendToTab(from.tabId, reply, from.frameId).catch(() => undefined);
   }
 
   async function runPasskey(
@@ -244,6 +282,9 @@ export function createRouter(deps: RouterDeps) {
         case "save_candidate":
           track(runSave(from, parsed));
           break;
+        case "generate_request":
+          track(runGenerate(from, parsed));
+          break;
         case "passkey_request":
           track(runPasskey(from, parsed));
           break;
@@ -288,6 +329,23 @@ function isFillFields(value: unknown): value is FillFields {
   }
   const fields = value as Record<string, unknown>;
   return typeof fields.username === "boolean" && typeof fields.password === "boolean";
+}
+
+function fieldLength(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value > 0 &&
+    value <= MAX_FIELD_LENGTH
+    ? value
+    : null;
+}
+
+function parseLimits(value: unknown): FieldLimits | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const limits = value as Record<string, unknown>;
+  return { min_length: fieldLength(limits.min_length), max_length: fieldLength(limits.max_length) };
 }
 
 function validNonce(nonce: unknown): nonce is string {
@@ -347,8 +405,15 @@ export function parseToBackground(message: unknown): ToBackground | null {
       username: m.username,
       password: m.password,
       candidate: m.candidate,
+      has_current: m.has_current === true,
       path: "",
     };
+  }
+  if (m.kind === "generate_request") {
+    const limits = parseLimits(m.limits);
+    return validNonce(m.nonce) && limits
+      ? { kind: "generate_request", nonce: m.nonce, limits }
+      : null;
   }
   return null;
 }

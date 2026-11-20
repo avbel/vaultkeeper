@@ -410,6 +410,36 @@ impl RemoteVault {
         unit(&self.call_blocking(Call::ClearClipboard)?)
     }
 
+    /// Passwords generated for web pages and not saved yet, newest first.
+    pub async fn generated_passwords(&self) -> Result<Vec<crate::GeneratedDto>> {
+        match self.call(Call::GeneratedPasswords).await? {
+            Reply::Generated(list) => Ok(list),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub async fn reveal_generated(&self, id: u64) -> Result<Zeroizing<String>> {
+        match self.call(Call::RevealGenerated(id)).await? {
+            Reply::Secret(secret) => Ok(secret),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Creates a login for the page the password was generated for; returns its item id.
+    pub async fn save_generated(&self, id: u64) -> Result<Arc<str>> {
+        match self.call(Call::SaveGenerated(id)).await? {
+            Reply::ItemId(id) => Ok(id),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub async fn forget_generated(&self, id: u64) -> Result<()> {
+        match self.call(Call::ForgetGenerated(id)).await? {
+            Reply::Unit => Ok(()),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// The daemon's cached or freshly fetched icon of `host`.
     pub async fn site_icon(&self, host: &str) -> Result<crate::SiteIcon> {
         match self.call(Call::SiteIcon(host.to_owned())).await? {

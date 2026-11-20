@@ -15,7 +15,7 @@ use crate::dto::{
     SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -271,6 +271,10 @@ pub enum BrowserPrompt {
         update_of: Option<ItemSummaryDto>,
         choices: Vec<ItemSummaryDto>,
         return_to: Option<TypingTarget>,
+        /// The password is one Vaultkeeper generated for this page.
+        generated: bool,
+        /// "New login" follows `choices`; the answer `Save { target: None }` picks it.
+        allow_new: bool,
     },
     /// After an other-site fill the user confirmed: offer to add this site's address to the
     /// login, so it matches next time. The answer is `Save { target: Some(item) }` to add it and
@@ -443,6 +447,11 @@ pub enum Call {
         draft: Box<SendDraftDto>,
         source: Vec<u8>,
     },
+    /// Passwords generated for web pages that were not saved yet.
+    GeneratedPasswords,
+    RevealGenerated(u64),
+    SaveGenerated(u64),
+    ForgetGenerated(u64),
 }
 
 impl Call {
@@ -489,6 +498,8 @@ impl Call {
                 | Self::CopyToClipboard { .. }
                 | Self::ClearClipboard
                 | Self::SiteIcon(_)
+                | Self::GeneratedPasswords
+                | Self::RevealGenerated(_)
         )
     }
 }
@@ -519,6 +530,7 @@ pub enum Reply {
     SendDraft(Box<SendDraftDto>),
     ServerProbe { version: Option<String> },
     SiteIcon(crate::SiteIcon),
+    Generated(Vec<crate::GeneratedDto>),
 }
 
 #[cfg(test)]
