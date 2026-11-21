@@ -50,6 +50,8 @@ impl ChainStatus {
     }
 }
 
+const APPLY_FAILED: &str = "failed to apply: ";
+
 type ProbeFn = Box<dyn Fn() -> Probe + Send + Sync>;
 type ActivateFn = Box<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 
@@ -128,11 +130,58 @@ pub struct ChainReport {
     pub fix: Option<String>,
 }
 
+/// Whether links are applied while probing (startup) or only probed (Re-check, which compares
+/// with the startup report when there is one).
+#[derive(Clone, Copy)]
+enum Mode<'a> {
+    Apply,
+    Recheck(Option<&'a ChainReport>),
+}
+
+fn applied_at_startup(link: &Link, startup: Option<&ChainReport>) -> bool {
+    startup.is_some_and(|report| {
+        report.active.as_deref() == Some(link.mechanism)
+            || report
+                .stacked
+                .iter()
+                .any(|stacked| stacked == link.mechanism)
+    })
+}
+
+/// The startup's own reason when the link failed to apply, else a generic one.
+fn not_applied(link: &Link, startup: Option<&ChainReport>) -> Skipped {
+    startup
+        .and_then(|report| {
+            report
+                .skipped
+                .iter()
+                .find(|skipped| skipped.link == link.id)
+        })
+        .cloned()
+        .unwrap_or_else(|| Skipped {
+            link: link.id.to_owned(),
+            why: "not applied at startup".to_owned(),
+        })
+}
+
 impl Chain {
     /// Probes every link, activates the strongest working exclusive link and every working
     /// stacking link.
     #[must_use]
     pub fn evaluate(&self) -> ChainReport {
+        self.run(Mode::Apply)
+    }
+
+    /// Probes again without activating anything: the links were applied once at startup, and
+    /// applying them twice (Landlock, `dumpable`) is not safe. A link with an activation counts
+    /// only if `startup` had it applied, so a re-check never claims a mechanism nothing applied;
+    /// only a restart can apply another.
+    #[must_use]
+    pub fn reevaluate(&self, startup: Option<&ChainReport>) -> ChainReport {
+        self.run(Mode::Recheck(startup))
+    }
+
+    fn run(&self, mode: Mode<'_>) -> ChainReport {
         let mut active: Option<usize> = None;
         let mut strongest: Option<(usize, bool)> = None;
         let mut fallback = None;
@@ -149,6 +198,13 @@ impl Chain {
                 }
                 continue;
             }
+            if let Mode::Recheck(startup) = mode
+                && link.activate.is_some()
+                && !applied_at_startup(link, startup)
+            {
+                skipped.push(not_applied(link, startup));
+                continue;
+            }
             let degraded = match (link.probe)() {
                 Probe::Available => false,
                 Probe::Degraded(why) => {
@@ -163,12 +219,13 @@ impl Chain {
                     continue;
                 }
             };
-            if let Some(activate) = &link.activate
+            if matches!(mode, Mode::Apply)
+                && let Some(activate) = &link.activate
                 && let Err(error) = activate()
             {
                 skipped.push(Skipped {
                     link: link.id.to_owned(),
-                    why: format!("failed to apply: {error}"),
+                    why: format!("{APPLY_FAILED}{error}"),
                 });
                 continue;
             }
@@ -213,6 +270,20 @@ impl Report {
     pub fn evaluate(chains: &[Chain]) -> Self {
         Self {
             chains: chains.iter().map(Chain::evaluate).collect(),
+        }
+    }
+
+    /// The chains probed again without activation, keeping what `startup` could not apply.
+    #[must_use]
+    pub fn reevaluate(chains: &[Chain], startup: &Self) -> Self {
+        Self {
+            chains: chains
+                .iter()
+                .map(|chain| {
+                    let at_startup = startup.chains.iter().find(|report| report.id == chain.id);
+                    chain.reevaluate(at_startup)
+                })
+                .collect(),
         }
     }
 
@@ -393,6 +464,67 @@ mod tests {
         .evaluate();
         assert_eq!(report.active.as_deref(), Some("b"));
         assert!(report.skipped[0].why.contains("EPERM"));
+    }
+
+    #[test]
+    fn reevaluating_never_activates_and_keeps_a_failed_link_failed() {
+        let activations = Arc::new(AtomicUsize::new(0));
+        let counted = |id| {
+            let activations = Arc::clone(&activations);
+            up(id).on_activate(move || {
+                activations.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let build = || {
+            chain(
+                Required::Refuse,
+                1,
+                vec![
+                    up("a").on_activate(|| Err(std::io::Error::other("EPERM"))),
+                    counted("b"),
+                ],
+            )
+        };
+        let startup = build().evaluate();
+        assert_eq!(activations.load(Ordering::SeqCst), 1);
+        let again = build().reevaluate(Some(&startup));
+        assert_eq!(
+            activations.load(Ordering::SeqCst),
+            1,
+            "no second activation"
+        );
+        assert_eq!(again.active.as_deref(), Some("b"));
+        assert!(again.skipped[0].why.contains("EPERM"));
+    }
+
+    #[test]
+    fn reevaluating_does_not_claim_a_link_that_startup_never_applied() {
+        let build = |top_up: bool| {
+            chain(
+                Required::Refuse,
+                1,
+                vec![
+                    Link::new("a", "a", move || {
+                        if top_up {
+                            Probe::Available
+                        } else {
+                            Probe::Unavailable("gone".to_owned())
+                        }
+                    })
+                    .on_activate(|| Ok(())),
+                    up("b").on_activate(|| Ok(())),
+                    up("c"),
+                ],
+            )
+        };
+        let startup = build(true).evaluate();
+        assert_eq!(startup.active.as_deref(), Some("a"));
+        let again = build(false).reevaluate(Some(&startup));
+        assert_eq!(again.active.as_deref(), Some("c"), "b was never applied");
+        assert_eq!(again.skipped.len(), 2);
+        let alone = build(true).reevaluate(None);
+        assert_eq!(alone.active.as_deref(), Some("c"), "nothing was applied");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use vk_ipc::{ChainDto, ChainState, SecurityFuture, SecurityHost, SecurityReportDto};
 use vk_platform::security::{ChainReport, ChainStatus, Report};
 
-use crate::os::security_gate::{self, Role};
+use crate::os::security_gate;
 
 pub struct SecurityReports;
 
@@ -12,13 +12,28 @@ impl SecurityHost for SecurityReports {
     fn report(&self) -> SecurityFuture {
         Box::pin(async {
             // Probes read /proc, /sys and sockets; keep them off the async workers.
-            tokio::task::spawn_blocking(|| to_dto(&security_gate::report(Role::Daemon)))
+            tokio::task::spawn_blocking(|| to_dto(&daemon_report()))
                 .await
                 .unwrap_or_else(|error| {
                     tracing::warn!(%error, "the security probes did not finish");
                     SecurityReportDto::default()
                 })
         })
+    }
+}
+
+/// The chains probed again plus the tray's, which the shell reports once it knows whether a
+/// status notifier watcher exists.
+fn daemon_report() -> Report {
+    #[cfg(target_os = "linux")]
+    {
+        let mut report = security_gate::recheck();
+        report.chains.extend(security_gate::tray_report());
+        report
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        security_gate::recheck()
     }
 }
 

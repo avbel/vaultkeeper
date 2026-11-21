@@ -96,25 +96,43 @@ impl<S: VaultService> App<S> {
 
     /// Asks the daemon to probe again; the window fills when the answer arrives.
     pub(super) fn recheck_security(&self) {
+        let seq = self.security_seq.get() + 1;
+        self.security_seq.set(seq);
         let report = self.hooks.security.report();
         self.exec.spawn(
             report,
-            handler!(self, |app, result| app.security_checked(result)),
+            handler!(self, |app, result| app.security_checked(seq, result)),
         );
     }
 
-    fn security_checked(&self, result: HookResult<SecurityReportDto>) {
+    /// A reply older than the newest request is dropped, so a slow first check cannot overwrite
+    /// the answer to a later Re-check.
+    fn security_checked(&self, seq: u64, result: HookResult<SecurityReportDto>) {
+        if seq != self.security_seq.get() {
+            return;
+        }
         match result {
             Ok(report) => {
                 *self.security.borrow_mut() = report;
                 if let Some(window) = self.settings_window() {
+                    self.clear_security_error(&window);
                     self.fill_security(&window);
                 }
             }
             Err(error) => {
                 tracing::warn!(%error, "cannot read the security status from the daemon");
+                *self.security_error.borrow_mut() = error.to_string();
                 self.report(Err(error));
             }
+        }
+    }
+
+    /// Clears the error text only while it is still the one a failed check set, so a good check
+    /// never wipes an unrelated message such as "Settings not saved".
+    fn clear_security_error(&self, window: &SettingsWindow) {
+        let ours = self.security_error.take();
+        if !ours.is_empty() && window.get_error_text() == ours.as_str() {
+            self.report(Ok(()));
         }
     }
 
@@ -138,7 +156,10 @@ impl<S: VaultService> App<S> {
     }
 
     fn forget_accepted(&self, id: &str) {
+        // `vaultkeeper security accept` may have written the file since this window loaded it.
+        let stored = self.hooks.settings.load().security_accepted;
         self.update_settings(|settings| {
+            settings.security_accepted = stored;
             if let Some(accepted) = settings.security_accepted.as_mut() {
                 accepted.issues.retain(|issue| issue != id);
             }

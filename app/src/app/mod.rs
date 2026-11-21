@@ -172,6 +172,10 @@ pub struct App<S: VaultService> {
     hotkey_issues: Cell<settings_hotkeys::Issues>,
     /// The protection chains the daemon last reported, for the Settings summary and list.
     security: RefCell<crate::hooks::SecurityReportDto>,
+    /// Number of the newest security check, so only its answer is applied.
+    security_seq: Cell<u64>,
+    /// The error text a failed security check put into Settings, to clear only that one.
+    security_error: RefCell<String>,
 }
 
 impl<S: VaultService> App<S> {
@@ -223,6 +227,8 @@ impl<S: VaultService> App<S> {
             ssh_notice: RefCell::new(String::new()),
             hotkey_issues: Cell::new(settings_hotkeys::Issues::default()),
             security: RefCell::default(),
+            security_seq: Cell::new(0),
+            security_error: RefCell::default(),
         })
     }
 

@@ -326,6 +326,24 @@ impl Facts {
     }
 }
 
+/// The daemon's report from startup, whose activations are already applied.
+static STARTUP: std::sync::OnceLock<Report> = std::sync::OnceLock::new();
+
+/// The daemon's chains probed again for Settings' Re-check. Activation is not repeated: the
+/// links were applied at startup, and one that failed to apply then stays failed.
+#[must_use]
+pub fn recheck() -> Report {
+    #[cfg(target_os = "linux")]
+    {
+        let startup = STARTUP.get().cloned().unwrap_or_default();
+        Report::reevaluate(&chains(&Facts::probe(Role::Daemon), Role::Daemon), &startup)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Report::default()
+    }
+}
+
 /// The baseline report for this process, recomputed (`security status` prints it).
 #[must_use]
 pub fn report(role: Role) -> Report {
@@ -360,6 +378,9 @@ pub fn enforce(role: Role, data_dir: &Path) -> anyhow::Result<Report> {
             tracing::error!(%text, "security baseline refused this start");
             anyhow::bail!(text);
         }
+    }
+    if role == Role::Daemon {
+        let _ = STARTUP.set(report.clone());
     }
     Ok(report)
 }

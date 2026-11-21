@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use common::{Harness, Setup, click, harness, pump};
 use slint::ComponentHandle;
 use vaultkeeper::{
-    hooks::{ChainDto, ChainState, HookFuture, SecurityReportDto, SecurityStatus, SettingsStore},
+    hooks::{
+        ChainDto, ChainState, HookError, HookFuture, SecurityReportDto, SecurityStatus,
+        SettingsStore,
+    },
     os::security_gate::Accepted,
     settings::Settings,
     ui::SettingsWindow,
@@ -17,18 +20,24 @@ use vaultkeeper::{
 #[derive(Default)]
 struct FakeDaemon {
     reports: Mutex<Vec<SecurityReportDto>>,
+    /// Answers `Err` while set.
+    failing: std::sync::atomic::AtomicBool,
 }
 
 impl FakeDaemon {
     fn with(reports: Vec<SecurityReportDto>) -> Arc<Self> {
         Arc::new(Self {
             reports: Mutex::new(reports),
+            failing: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
 
 impl SecurityStatus for FakeDaemon {
     fn report(&self) -> HookFuture<SecurityReportDto> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Box::pin(async { Err(HookError::Failed("the daemon is gone".to_owned())) });
+        }
         let mut reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
         let next = if reports.len() > 1 {
             reports.remove(0)
@@ -74,9 +83,13 @@ fn full_report() -> SecurityReportDto {
 }
 
 fn open(report: Vec<SecurityReportDto>, settings: Settings) -> (Harness, SettingsWindow) {
+    open_with(&FakeDaemon::with(report), settings)
+}
+
+fn open_with(daemon: &Arc<FakeDaemon>, settings: Settings) -> (Harness, SettingsWindow) {
     let h = harness(Setup {
         settings,
-        security: Some(FakeDaemon::with(report)),
+        security: Some(Arc::clone(daemon) as Arc<dyn SecurityStatus>),
         ..Setup::default()
     });
     h.app.open_settings();
@@ -194,4 +207,135 @@ fn security_ctl_without_chains_nothing_shows() {
     let (_h, window) = open(vec![SecurityReportDto::default()], Settings::default());
     assert_eq!(window.get_security_summary(), "");
     assert_eq!(slint::Model::row_count(&window.get_security_chains()), 0);
+}
+
+#[test]
+fn security_ctl_a_failed_re_check_shows_the_error_and_a_good_one_clears_it() {
+    let daemon = FakeDaemon::with(vec![full_report()]);
+    let (_h, window) = open_with(&daemon, Settings::default());
+    assert_eq!(window.get_error_text(), "");
+    click(
+        &window,
+        "Security: Full · BPF LSM · memfd_secret · Landlock 11",
+    );
+    daemon
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    click(&window, "Re-check");
+    assert!(window.get_error_text().contains("the daemon is gone"));
+    assert_eq!(
+        window.get_security_summary(),
+        "Security: Full · BPF LSM · memfd_secret · Landlock 11",
+        "the last good report stays"
+    );
+    daemon
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    click(&window, "Re-check");
+    assert_eq!(window.get_error_text(), "");
+}
+
+#[test]
+fn security_ctl_forget_keeps_issues_the_cli_accepted_meanwhile() {
+    let accepted = |issues: &[&str]| Accepted {
+        fingerprint: "f".to_owned(),
+        issues: issues.iter().map(|issue| (*issue).to_owned()).collect(),
+    };
+    let report = SecurityReportDto {
+        chains: vec![chain("wayland", "Wayland session", ChainState::Off, None)],
+    };
+    let (h, window) = open(
+        vec![report],
+        Settings {
+            security_accepted: Some(accepted(&["wayland"])),
+            ..Settings::default()
+        },
+    );
+    click(&window, "Security: Off");
+    h.settings
+        .save(&Settings {
+            security_accepted: Some(accepted(&["wayland", "kernel"])),
+            ..Settings::default()
+        })
+        .expect("save");
+    click(&window, "Forget Wayland session");
+    assert_eq!(
+        h.settings.load().security_accepted,
+        Some(accepted(&["kernel"]))
+    );
+}
+
+type Nested = Box<dyn Fn()>;
+
+thread_local! {
+    /// Starts a second check from inside the first one's request; a Slint callback cannot be
+    /// re-entered, so this goes through the app instead.
+    static NESTED: std::cell::RefCell<Option<Nested>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Answers its first armed request only after a second request was made and answered, as a slow
+/// daemon reply would arrive.
+struct Overtaken {
+    reports: Mutex<Vec<SecurityReportDto>>,
+    armed: std::sync::atomic::AtomicBool,
+}
+
+impl SecurityStatus for Overtaken {
+    fn report(&self) -> HookFuture<SecurityReportDto> {
+        let mut reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
+        let mine = if reports.len() > 1 {
+            reports.remove(0)
+        } else {
+            reports[0].clone()
+        };
+        drop(reports);
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            NESTED.with(|nested| (nested.borrow().as_ref().expect("nested check"))());
+        }
+        Box::pin(async { Ok(mine) })
+    }
+}
+
+fn single(mechanism: &str) -> SecurityReportDto {
+    SecurityReportDto {
+        chains: vec![chain("keys", "Keys", ChainState::Full, Some(mechanism))],
+    }
+}
+
+#[test]
+fn security_ctl_a_stale_reply_does_not_overwrite_a_newer_one() {
+    let daemon = Arc::new(Overtaken {
+        reports: Mutex::new(vec![single("opening"), single("stale"), single("newest")]),
+        armed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let h = harness(Setup {
+        security: Some(Arc::clone(&daemon) as Arc<dyn SecurityStatus>),
+        ..Setup::default()
+    });
+    h.app.open_settings();
+    let window = h.app.settings_window().expect("settings");
+    pump();
+    assert_eq!(window.get_security_summary(), "Security: Full · opening");
+    let app = std::rc::Rc::clone(&h.app);
+    NESTED.with(|slot| *slot.borrow_mut() = Some(Box::new(move || app.open_settings())));
+    daemon
+        .armed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    window.invoke_security_recheck();
+    pump();
+    assert_eq!(window.get_security_summary(), "Security: Full · newest");
+    NESTED.with(|slot| slot.borrow_mut().take());
+}
+
+#[test]
+fn security_ctl_a_good_check_leaves_an_unrelated_error_alone() {
+    let daemon = FakeDaemon::with(vec![full_report()]);
+    let (_h, window) = open_with(&daemon, Settings::default());
+    window.set_error_text("Settings not saved".into());
+    click(
+        &window,
+        "Security: Full · BPF LSM · memfd_secret · Landlock 11",
+    );
+    click(&window, "Re-check");
+    assert_eq!(window.get_error_text(), "Settings not saved");
 }

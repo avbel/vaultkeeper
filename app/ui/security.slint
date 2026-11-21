@@ -42,7 +42,10 @@ component ChainEntry inherits VerticalLayout {
             horizontal-stretch: 1;
             wrap: word-wrap;
         }
-        StateChip { state: root.data.state; y: (parent.height - self.height) / 2; }
+        VerticalLayout {
+            alignment: center;
+            StateChip { state: root.data.state; }
+        }
         if root.data.action != "": Btn {
             text: root.data.action;
             label: root.data.action + " " + root.data.name;
@@ -122,6 +125,11 @@ export component SecurityDetail inherits VerticalLayout {
     if root.accepted.length > 0: VerticalLayout {
         spacing: Theme.s2;
         SectionLabel { text: "ACCEPTED ISSUES"; }
+        Text {
+            text: "Takes effect at the next start";
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+        }
         for issue in root.accepted: HorizontalLayout {
             spacing: Theme.gap;
             min-height: 32px;
