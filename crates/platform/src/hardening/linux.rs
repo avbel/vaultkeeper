@@ -17,15 +17,6 @@ pub(super) fn harden() {
     }
 }
 
-/// Makes this process non-dumpable: no ptrace attach, no `/proc/<pid>/mem` or `exe` for
-/// same-user processes, no core dumps.
-pub fn drop_dumpable() {
-    // SAFETY: PR_SET_DUMPABLE takes the value and no pointers.
-    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0_u64, 0_u64, 0_u64, 0_u64) } != 0 {
-        tracing::warn!(error = %std::io::Error::last_os_error(), "could not drop dumpable");
-    }
-}
-
 /// The Linux stand-in for the macOS hardened runtime: non-dumpable, and Yama stops same-user
 /// attach on top of that. The BPF ptrace gate joins this as an alternative in step 4c.
 #[must_use]
@@ -53,7 +44,7 @@ mod tests {
             let flags = unsafe { libc::prctl(vk_linux::consts::PR_GET_MDWE, 0, 0, 0, 0) };
             assert_eq!(flags & 1, 1, "MDWE refuse-exec-gain is set");
         }
-        drop_dumpable();
+        vk_linux::probes::drop_dumpable();
         assert_eq!(vk_linux::probes::dumpable(), Ok(false));
     }
 }

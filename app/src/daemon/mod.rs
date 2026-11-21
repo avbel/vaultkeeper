@@ -74,6 +74,8 @@ fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     crate::os::startup_check::enforce(&data_dir)?;
     crate::os::security_gate::enforce(crate::os::security_gate::Role::Daemon, &data_dir)?;
+    // Nothing reads the daemon's exe: clients check it through daemon_check instead.
+    vk_platform::hardening::harden_after_handshake();
     let socket_dir = crate::os::layout::socket_dir(&data_dir);
     vk_platform::fs::ensure_private_dir(&socket_dir).context("create the socket directory")?;
     Ok((data_dir, socket_dir))

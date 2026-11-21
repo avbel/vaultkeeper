@@ -200,6 +200,26 @@ async fn respond(
     Ok(())
 }
 
+/// The daemon is non-dumpable on Linux, so its executable cannot be read there: the socket and
+/// the peer's cgroup are checked instead (`daemon_check`).
+#[cfg(target_os = "linux")]
+async fn connect_verified(endpoint: &Endpoint) -> Result<Stream, IpcError> {
+    if let Some(path) = endpoint.as_path() {
+        crate::daemon_check::check_socket(path)?;
+    }
+    let stream = transport::connect(endpoint).await?;
+    let binding = crate::daemon_check::check_peer(stream.as_unix())?;
+    tracing::debug!(?binding, "CLI daemon check passed");
+    Ok(stream)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn connect_verified(endpoint: &Endpoint) -> Result<Stream, IpcError> {
+    let stream = transport::connect(endpoint).await?;
+    verify(&stream.peer_credentials()?, &SameExecutable::current()?)?;
+    Ok(stream)
+}
+
 pub async fn call(endpoint: impl Into<Endpoint>, request: &Request) -> Result<Response, IpcError> {
     let endpoint = endpoint.into();
     timeout(DEADLINE, exchange(&endpoint, request))
@@ -208,11 +228,13 @@ pub async fn call(endpoint: impl Into<Endpoint>, request: &Request) -> Result<Re
 }
 
 async fn exchange(endpoint: &Endpoint, request: &Request) -> Result<Response, IpcError> {
-    let mut stream = transport::connect(endpoint).await?;
-    verify(&stream.peer_credentials()?, &SameExecutable::current()?)?;
+    let mut stream = connect_verified(endpoint).await?;
     let certificate = frame::read_frame_with_limit(&mut stream, MAX_CERTIFICATE)
         .await?
         .ok_or(IpcError::Disconnected)?;
+    // The daemon sends its certificate only after it verified us by our exe.
+    #[cfg(target_os = "linux")]
+    vk_linux::probes::drop_dumpable();
     let mut roots = RootCertStore::empty();
     roots
         .add(CertificateDer::from(certificate.as_slice()))

@@ -58,6 +58,12 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Err(error) = verify_daemon(&endpoint, &stream) {
+        tracing::warn!(%error, "the browser socket is not Vaultkeeper's");
+        unavailable("untrusted_daemon").await?;
+        return Ok(());
+    }
     let hello = HostHello {
         protocol: PROTOCOL_VERSION,
         caller,
@@ -77,6 +83,8 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         unavailable(reason).await?;
         return Ok(());
     }
+    // The welcome means the daemon has verified this host by its exe.
+    vk_platform::hardening::harden_after_handshake();
     #[cfg(unix)]
     let (mut read, mut write) = stream.into_split();
     #[cfg(not(unix))]
@@ -99,6 +107,15 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     };
     tokio::select! { result = upstream => result, result = downstream => result }
+}
+
+/// The daemon is non-dumpable, so it is checked by its socket and cgroup, not its exe.
+#[cfg(target_os = "linux")]
+fn verify_daemon(endpoint: &Endpoint, stream: &UnixStream) -> io::Result<()> {
+    vk_ipc::daemon_check::check_socket(&layout::socket_path(endpoint)?)?;
+    let binding = vk_ipc::daemon_check::check_peer(stream)?;
+    tracing::debug!(?binding, "browser daemon check passed");
+    Ok(())
 }
 
 // Not cancel-safe mid-frame; cancellation closes the socket.

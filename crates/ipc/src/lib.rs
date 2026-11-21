@@ -34,11 +34,15 @@ pub mod browser;
 pub mod cli_access;
 mod client;
 mod clipboard;
+#[cfg(target_os = "linux")]
+pub mod daemon_check;
 pub mod dto;
 mod error;
 pub mod frame;
 mod generated;
 mod peer;
+#[cfg(target_os = "linux")]
+mod pidfd;
 pub mod protocol;
 mod server;
 mod site_icons;

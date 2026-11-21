@@ -29,6 +29,13 @@ pub fn harden_process(role: Role) {
     }
 }
 
+/// Linux: makes the process non-dumpable once the daemon has verified it, which needed its
+/// `/proc/<pid>/exe` (linux-plan.md 1d, 2c). The daemon calls it at start. Elsewhere a no-op.
+pub fn harden_after_handshake() {
+    #[cfg(target_os = "linux")]
+    vk_linux::probes::drop_dumpable();
+}
+
 /// Whether `harden_process` replaced this process's DACL. The Windows stand-in for the macOS
 /// hardened runtime: other same-user processes can no longer open it to write memory or start
 /// threads. The process that created it keeps its handle, so this is weaker than CS_RUNTIME.
@@ -64,7 +71,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{drop_dumpable, is_hardened};
+pub use linux::is_hardened;
 
 #[cfg(test)]
 mod tests {

@@ -161,6 +161,15 @@ pub fn mdwe_supported() -> ProbeResult {
     }
 }
 
+/// Makes this process non-dumpable: no ptrace attach, no `/proc/<pid>/mem` or `exe` for
+/// same-user processes, no core dumps. Not a probe, but it lives with its reader below.
+pub fn drop_dumpable() {
+    // SAFETY: PR_SET_DUMPABLE takes the value and no pointers.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0_u64, 0_u64, 0_u64, 0_u64) } != 0 {
+        tracing::warn!(error = %std::io::Error::last_os_error(), "could not drop dumpable");
+    }
+}
+
 pub fn dumpable() -> Result<bool, String> {
     // SAFETY: PR_GET_DUMPABLE takes no arguments.
     let result = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };

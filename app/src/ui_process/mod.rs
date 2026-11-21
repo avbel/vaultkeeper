@@ -64,6 +64,8 @@ pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow
         Err(error) => return Err(error).context("connect to the Vaultkeeper daemon"),
     };
     step("connected to the daemon");
+    // The daemon has verified this process by its exe; nothing needs it readable any more.
+    vk_platform::hardening::harden_after_handshake();
     let remote = Arc::new(remote);
     let notify = notifier(&remote);
     select_backend(Backend::Ui {
