@@ -2,7 +2,7 @@
 //! decides it, and the glyph rasterised at the pixel size the notification area really uses
 //! (docs/solutions/windows-support.md §7.1).
 
-use slint::Image;
+use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::settings::TrayIconChoice;
 
@@ -45,11 +45,16 @@ impl Glyph {
 /// The glyph as a square bitmap of `px` pixels, ready for `SystemTrayIcon::icon`.
 #[must_use]
 pub fn rasterise(glyph: Glyph, px: u32) -> Option<Image> {
+    rasterise_rgba(glyph, px).map(Image::from_rgba8)
+}
+
+/// The glyph's pixels, for hosts that take raw bitmaps (the Linux StatusNotifierItem pixmap).
+#[must_use]
+pub fn rasterise_rgba(glyph: Glyph, px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let svg = glyph
         .svg()
         .replacen(INTRINSIC_SIZE, &format!(r#"width="{px}" height="{px}""#), 1);
-    let pixels = Image::load_from_svg_data(svg.as_bytes()).ok()?.to_rgba8()?;
-    Some(Image::from_rgba8(pixels))
+    Image::load_from_svg_data(svg.as_bytes()).ok()?.to_rgba8()
 }
 
 /// Whether a `COLORREF` (0x00BBGGRR) is closer to black than to white.

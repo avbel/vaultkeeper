@@ -406,6 +406,14 @@ impl Daemon {
         &self.data_dir
     }
 
+    /// The daemon's runtime, for Linux shell parts (tray, portals) that start from the main
+    /// thread, which is outside it.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub const fn runtime(&self) -> &Handle {
+        &self.runtime
+    }
+
     #[must_use]
     pub fn settings(&self) -> Arc<Settings> {
         Arc::clone(&self.settings.borrow())

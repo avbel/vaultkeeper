@@ -2,13 +2,16 @@
 //! are routed like every other trigger, and it follows the vault and settings through watches on
 //! the Slint event loop.
 
+#[cfg(not(target_os = "linux"))]
+use std::time::{Duration, Instant};
 use std::{
     cell::{Cell, RefCell},
     sync::Arc,
-    time::{Duration, Instant},
 };
 
-use slint::{ModelRc, SharedString, VecModel, language::ColorScheme};
+use slint::language::ColorScheme;
+#[cfg(not(target_os = "linux"))]
+use slint::{ModelRc, SharedString, VecModel};
 use vk_vault::{VaultService, model::SessionState};
 
 use super::{
@@ -22,8 +25,24 @@ use crate::{
     viewmodel::{host, local_time, tray_sync_label},
 };
 
+#[cfg(any(target_os = "linux", test))]
+mod icon;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(any(target_os = "linux", test))]
+mod menu;
+
+/// What the daemon's shell keeps alive: Slint's status item, or the StatusNotifierItem service
+/// on Linux (whose id Slint hard-codes to `slint-tray`).
+#[cfg(not(target_os = "linux"))]
+pub(crate) type Handle = TrayIcon;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{Handle, install};
+
+#[cfg(not(target_os = "linux"))]
 const ATTACH_RETRY: Duration = Duration::from_millis(250);
 
+#[cfg(not(target_os = "linux"))]
 pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     let tray = TrayIcon::new()?;
     let on = |action: TrayAction| {
@@ -51,17 +70,25 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     tray.show()?;
     follow_menu_bar(&tray, daemon);
     follow_taskbar(&tray);
-    watch(&tray, daemon)?;
+    let weak = tray.as_weak();
+    let watched = Arc::clone(daemon);
+    follow_changes(daemon, move || {
+        weak.upgrade()
+            .map(|tray| refresh(&tray, &watched))
+            .is_some()
+    })?;
     Ok(tray)
 }
 
 /// Pairs single clicks into double-clicks. A completed pair is consumed, so a third quick click
 /// starts a new pair instead of opening the vault twice.
+#[cfg(not(target_os = "linux"))]
 #[derive(Default)]
 struct DoubleClick {
     pending: Cell<Option<Instant>>,
 }
 
+#[cfg(not(target_os = "linux"))]
 impl DoubleClick {
     fn click(&self, now: Instant, window: Duration) -> bool {
         let paired = self
@@ -89,42 +116,64 @@ fn run(daemon: &Arc<Daemon>, action: TrayAction) {
     }
 }
 
-fn refresh(tray: &TrayIcon, daemon: &Daemon) {
+/// What the menu shows, read from the daemon. Both the Slint and the Linux menu are built from
+/// this, so the labels cannot drift apart.
+struct Snapshot {
+    locked: bool,
+    logged_in: bool,
+    accounts: Vec<String>,
+    syncing: bool,
+    sync_label: String,
+    update_label: String,
+    update_enabled: bool,
+}
+
+fn snapshot(daemon: &Daemon) -> Snapshot {
     let vault = daemon.vault();
     let state = vault.state();
-    tray.set_locked(!matches!(state, SessionState::Unlocked { .. }));
-    tray.set_logged_in(!matches!(state, SessionState::LoggedOut));
-    let labels: Vec<SharedString> = vault
+    let accounts = vault
         .accounts()
         .iter()
         .map(|account| {
             let mark = if account.active { "✓ " } else { "" };
-            format!("{mark}{} @ {}", account.email, host(&account.server)).into()
+            format!("{mark}{} @ {}", account.email, host(&account.server))
         })
         .collect();
-    tray.set_accounts(ModelRc::new(VecModel::from(labels)));
     let sync = daemon.tray_sync();
     let last_sync = vault.last_sync();
-    tray.set_syncing(sync.running);
-    tray.set_sync_label(
-        tray_sync_label(
-            last_sync.map(local_time),
-            chrono::Local::now().naive_local(),
-            sync.failure(vault.active_account_id().as_deref(), last_sync),
-        )
-        .into(),
+    let sync_label = tray_sync_label(
+        last_sync.map(local_time),
+        chrono::Local::now().naive_local(),
+        sync.failure(vault.active_account_id().as_deref(), last_sync),
     );
     let update = daemon
         .subscribe_update()
         .map(|status| status.borrow().clone());
-    tray.set_update_label(
-        update
+    Snapshot {
+        locked: !matches!(state, SessionState::Unlocked { .. }),
+        logged_in: !matches!(state, SessionState::LoggedOut),
+        accounts,
+        syncing: sync.running,
+        sync_label,
+        update_label: update
             .as_ref()
             .map(super::update::Status::tray_label)
-            .unwrap_or_default()
-            .into(),
-    );
-    tray.set_update_enabled(update.is_none_or(|status| status.tray_enabled()));
+            .unwrap_or_default(),
+        update_enabled: update.is_none_or(|status| status.tray_enabled()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn refresh(tray: &TrayIcon, daemon: &Daemon) {
+    let snapshot = snapshot(daemon);
+    tray.set_locked(snapshot.locked);
+    tray.set_logged_in(snapshot.logged_in);
+    let labels: Vec<SharedString> = snapshot.accounts.into_iter().map(Into::into).collect();
+    tray.set_accounts(ModelRc::new(VecModel::from(labels)));
+    tray.set_syncing(snapshot.syncing);
+    tray.set_sync_label(snapshot.sync_label.into());
+    tray.set_update_label(snapshot.update_label.into());
+    tray.set_update_enabled(snapshot.update_enabled);
     refresh_scheme(tray, daemon);
 }
 
@@ -133,6 +182,7 @@ fn refresh(tray: &TrayIcon, daemon: &Daemon) {
 /// choice overrides both; the icon is the opposite shade of the bar it must read on,
 /// so "White" is the scheme of a dark bar. `Blue` ignores the bar entirely. Windows has no
 /// template images, so there the glyph is rasterised for the taskbar's theme and pixel size.
+#[cfg(not(target_os = "linux"))]
 fn refresh_scheme(tray: &TrayIcon, daemon: &Daemon) {
     apply_choice(tray, daemon.settings().tray_icon);
 }
@@ -191,6 +241,7 @@ pub(crate) fn follow_taskbar(tray: &TrayIcon) {
 
 /// Slint creates the status item on its first event-loop turn, so the window to observe does not
 /// exist yet right after `show()`; a short retry timer bridges that gap and stops once attached.
+#[cfg(not(target_os = "linux"))]
 fn follow_menu_bar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
     let weak = tray.as_weak();
     let daemon = Arc::clone(daemon);
@@ -222,18 +273,23 @@ thread_local! {
     static CHOICE: Cell<TrayIconChoice> = const { Cell::new(TrayIconChoice::Auto) };
     static RENDERED: Cell<Option<(Glyph, u32)>> = const { Cell::new(None) };
     static TASKBAR_WATCH: RefCell<Option<taskbar::ThemeWatch>> = const { RefCell::new(None) };
+    #[cfg(not(target_os = "linux"))]
     static SCHEME_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    #[cfg(not(target_os = "linux"))]
     static MENU_BAR_WATCH: RefCell<Option<crate::os::appkit::MenuBarWatch>> =
         const { RefCell::new(None) };
 }
 
-fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
+/// Runs `refresh` on the event loop whenever the vault, settings, sync or update state changes,
+/// until it returns `false` (the tray is gone).
+fn follow_changes(
+    daemon: &Arc<Daemon>,
+    mut refresh: impl FnMut() -> bool + 'static,
+) -> anyhow::Result<()> {
     let mut changes = daemon.vault().changes();
     let mut settings = daemon.subscribe_settings();
     let mut sync = daemon.subscribe_tray_sync();
     let mut update = daemon.subscribe_update();
-    let weak = tray.as_weak();
-    let daemon = Arc::clone(daemon);
     slint::spawn_local(async move {
         loop {
             tokio::select! {
@@ -248,16 +304,15 @@ fn watch(tray: &TrayIcon, daemon: &Arc<Daemon>) -> anyhow::Result<()> {
                     }
                 } => if status.is_err() { break },
             }
-            match weak.upgrade() {
-                Some(tray) => refresh(&tray, &daemon),
-                None => break,
+            if !refresh() {
+                break;
             }
         }
     })?;
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "linux")))]
 mod tests {
     use super::*;
 

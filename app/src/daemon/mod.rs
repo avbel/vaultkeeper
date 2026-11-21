@@ -319,7 +319,7 @@ fn refresh_login_agent() {
 
 /// The main-thread parts: tray icon and global hotkey.
 struct Shell {
-    _tray: crate::ui::TrayIcon,
+    _tray: tray::Handle,
     _hotkey: Option<std::rc::Rc<hotkey::Hotkey>>,
 }
 

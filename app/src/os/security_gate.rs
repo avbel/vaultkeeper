@@ -164,6 +164,24 @@ enum Item {
     RuntimeDir,
     Wayland,
     SecretMem,
+    Tray,
+}
+
+/// C13: a StatusNotifierWatcher on the session bus, which the tray needs. Never refuses: without
+/// one the shortcut and the launcher entry still work, and Settings shows the fix.
+#[must_use]
+pub fn tray_chain(watcher: &Result<(), String>, distro: Distro) -> Chain {
+    Chain {
+        id: "tray",
+        name: "Tray",
+        required: Required::Status,
+        minimum: 0,
+        links: vec![
+            link("status-notifier", "StatusNotifierItem", watcher),
+            always("none", "No tray"),
+        ],
+        fix: Some(fix(distro, Item::Tray)),
+    }
 }
 
 /// `<fix>` of the `<item>: <what the probe saw> — <fix>` line, for the detected distribution.
@@ -182,6 +200,18 @@ fn fix(distro: Distro, item: Item) -> String {
         (Item::Wayland, Distro::Ubuntu) => "log in to the \"Ubuntu\" (Wayland) session",
         (Item::Wayland, Distro::Omarchy) => "start Hyprland through UWSM (the Omarchy default)",
         (Item::Wayland, _) => "log in to a Wayland session; X11 is not supported",
+        (Item::Tray, Distro::Ubuntu) => {
+            "no tray on this desktop; use the shortcut or the launcher entry, or enable the Ubuntu AppIndicator extension in Extensions"
+        }
+        (Item::Tray, Distro::Fedora) => {
+            "no tray on this desktop; use the shortcut or the launcher entry, or install gnome-shell-extension-appindicator (GNOME) or add Waybar's tray module (Sway)"
+        }
+        (Item::Tray, Distro::Omarchy) => {
+            "no tray on this desktop; use the shortcut or the launcher entry, or restart the Omarchy shell, which hosts the tray"
+        }
+        (Item::Tray, _) => {
+            "no tray on this desktop; use the shortcut or the launcher entry, or run a StatusNotifierItem host (a panel tray module or the GNOME AppIndicator extension)"
+        }
         (Item::SecretMem, Distro::Omarchy | Distro::OtherArch) => {
             "remove secretmem.enable=0 from KERNEL_CMDLINE in /etc/default/limine and run sudo omarchy-refresh-limine"
         }
@@ -227,6 +257,40 @@ pub fn accept(report: &Report) -> Accepted {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn detect_distro() -> Distro {
+    match vk_linux::distro::detect() {
+        vk_linux::distro::Distro::Ubuntu => Distro::Ubuntu,
+        vk_linux::distro::Distro::Fedora => Distro::Fedora,
+        vk_linux::distro::Distro::Omarchy => Distro::Omarchy,
+        vk_linux::distro::Distro::OtherArch => Distro::OtherArch,
+        vk_linux::distro::Distro::Other => Distro::Other,
+    }
+}
+
+/// The tray's C13 report, set by the daemon's shell once it knows whether a watcher exists and
+/// read by the Settings security section (3l) next to [`report`]'s chains.
+#[cfg(target_os = "linux")]
+static TRAY_REPORT: std::sync::Mutex<Option<vk_platform::security::ChainReport>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+pub fn set_tray_report(report: vk_platform::security::ChainReport) {
+    *TRAY_REPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
+}
+
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn tray_report() -> Option<vk_platform::security::ChainReport> {
+    TRAY_REPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 impl Facts {
     #[cfg(target_os = "linux")]
     #[must_use]
@@ -234,13 +298,7 @@ impl Facts {
         use vk_linux::probes;
         let unit = |result: vk_linux::ProbeResult| result.map(drop);
         Self {
-            distro: match vk_linux::distro::detect() {
-                vk_linux::distro::Distro::Ubuntu => Distro::Ubuntu,
-                vk_linux::distro::Distro::Fedora => Distro::Fedora,
-                vk_linux::distro::Distro::Omarchy => Distro::Omarchy,
-                vk_linux::distro::Distro::OtherArch => Distro::OtherArch,
-                vk_linux::distro::Distro::Other => Distro::Other,
-            },
+            distro: detect_distro(),
             peer_pidfd: unit(probes::peer_pidfd()),
             pidfd_get_info: unit(probes::pidfd_get_info()),
             wayland: unit(probes::wayland()),
@@ -328,6 +386,36 @@ mod tests {
 
     fn evaluate(facts: &Facts, role: Role) -> Report {
         Report::evaluate(&chains(facts, role))
+    }
+
+    #[test]
+    fn a_missing_tray_watcher_is_reduced_with_the_notice_and_never_refuses() {
+        let missing = Err("org.kde.StatusNotifierWatcher has no owner".to_owned());
+        let report = Report::evaluate(&[tray_chain(&missing, Distro::Fedora)]);
+        let chain = &report.chains[0];
+        assert_eq!(chain.status, vk_platform::security::ChainStatus::Reduced);
+        assert_eq!(chain.active.as_deref(), Some("No tray"));
+        assert!(
+            chain
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.contains("gnome-shell-extension-appindicator"))
+        );
+        assert_eq!(report.refusals().len(), 0);
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
+    }
+
+    #[test]
+    fn a_tray_watcher_makes_the_tray_chain_full() {
+        let report = Report::evaluate(&[tray_chain(&Ok(()), Distro::Ubuntu)]);
+        assert_eq!(
+            report.chains[0].status,
+            vk_platform::security::ChainStatus::Full
+        );
+        assert!(report.chains[0].fix.is_none());
     }
 
     #[test]
