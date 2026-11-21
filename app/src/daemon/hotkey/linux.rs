@@ -42,6 +42,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const BIND_TIMEOUT: Duration = Duration::from_secs(180);
 /// Before another attempt after the portal was unreachable or its session ended.
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
+/// After a portal restart a hardened process is refused until it restarts too; asking again
+/// cannot change that, so the retries stop after this many refusals in a row.
+const REFUSALS_BEFORE_GIVING_UP: u8 = 3;
 /// A burst of binds (one per slot) is folded into one portal call.
 const COALESCE: Duration = Duration::from_millis(50);
 const ACTIVATION_TOKEN_KEY: &str = "activation_token";
@@ -164,6 +167,8 @@ enum Backend {
     Live(Box<Live>),
     /// The desktop has no GlobalShortcuts portal; trying again cannot help.
     Missing,
+    /// The portal keeps refusing this process; only a restart of Vaultkeeper helps.
+    Refused,
 }
 
 struct Task {
@@ -176,6 +181,7 @@ struct Task {
     retry: bool,
     /// "Change in system settings…" was clicked while no session could take it yet.
     configure_pending: bool,
+    refusals: u8,
 }
 
 async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>) {
@@ -186,12 +192,13 @@ async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>
         backend: Backend::Idle,
         retry: false,
         configure_pending: false,
+        refusals: 0,
     };
     loop {
         let event = async {
             match &mut task.backend {
                 Backend::Live(live) => live.events.recv().await,
-                Backend::Idle | Backend::Missing => std::future::pending().await,
+                Backend::Idle | Backend::Missing | Backend::Refused => std::future::pending().await,
             }
         };
         let reconnect = async {
@@ -298,7 +305,7 @@ impl Task {
     /// Brings the portal in line with the wanted shortcuts. `true` when the portal could not be
     /// reached this time and another attempt is due.
     async fn sync(&mut self) -> bool {
-        if matches!(self.backend, Backend::Missing) {
+        if matches!(self.backend, Backend::Missing | Backend::Refused) {
             return false;
         }
         let desired = desired(&self.wanted);
@@ -318,7 +325,7 @@ impl Task {
             return false;
         }
         if matches!(self.backend, Backend::Idle) && !self.connect_backend().await {
-            return !matches!(self.backend, Backend::Missing);
+            return !matches!(self.backend, Backend::Missing | Backend::Refused);
         }
         let Backend::Live(live) = &mut self.backend else {
             return false;
@@ -342,6 +349,7 @@ impl Task {
         match connect().await {
             Ok(live) => {
                 self.backend = Backend::Live(Box::new(live));
+                self.refusals = 0;
                 true
             }
             Err(PortalError::PortalNotFound(interface)) => {
@@ -356,6 +364,31 @@ impl Task {
                 false
             }
             Err(error) => {
+                if matches!(
+                    &error,
+                    PortalError::Portal(ashpd::PortalError::NotAllowed(_))
+                ) {
+                    self.refusals = self.refusals.saturating_add(1);
+                    if self.refusals >= REFUSALS_BEFORE_GIVING_UP {
+                        self.daemon.report_hotkey_bindings(bindings(
+                            HotkeyMode::Manual,
+                            String::new(),
+                            String::new(),
+                        ));
+                        tracing::warn!(%error, "the portal keeps refusing this process; restart Vaultkeeper to get global shortcuts back");
+                        self.backend = Backend::Refused;
+                        hotkey_status::set(Err(
+                            "the portal refuses this app; restart Vaultkeeper".to_owned()
+                        ));
+                        return false;
+                    }
+                }
+                if !matches!(
+                    &error,
+                    PortalError::Portal(ashpd::PortalError::NotAllowed(_))
+                ) {
+                    self.refusals = 0;
+                }
                 tracing::warn!(%error, "cannot reach the GlobalShortcuts portal");
                 hotkey_status::set(Err(error.to_string()));
                 false
@@ -369,7 +402,12 @@ impl Task {
     reason = "ashpd does not export the session options type"
 )]
 async fn connect() -> Result<Live, PortalError> {
-    portal::ensure_registered().await;
+    if tokio::time::timeout(CALL_TIMEOUT, portal::ensure_registered())
+        .await
+        .is_err()
+    {
+        tracing::warn!("registering with the portal timed out");
+    }
     let portal = within(CALL_TIMEOUT, GlobalShortcuts::new()).await?;
     let session = within(CALL_TIMEOUT, portal.create_session(Default::default())).await?;
     let session = Arc::new(session);

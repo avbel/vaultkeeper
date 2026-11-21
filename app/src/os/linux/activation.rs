@@ -1,5 +1,5 @@
-//! The `xdg-activation` token that lets a new window take keyboard focus under Wayland (linux-plan
-//! 3c, chain C10). One token is pending per process: the daemon holds the one a shortcut press or
+//! The `xdg-activation` token that lets a new window take keyboard focus under Wayland (chain
+//! C10). One token is pending per process: the daemon holds the one a shortcut press or
 //! a compositor binding brought, the UI the one the daemon forwarded. A token works once, so it is
 //! taken, never copied, and `Debug` output never shows it.
 

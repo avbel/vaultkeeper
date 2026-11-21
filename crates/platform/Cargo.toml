@@ -27,11 +27,13 @@ libc = "0.2.191"
 [target.'cfg(target_os = "linux")'.dependencies]
 # Self-sandbox of the daemon and UI (sandbox.rs).
 landlock = "0.4.8"
-# Clipboard through ext-data-control-v1 with the secret hint (3d).
+# Clipboard through ext-data-control-v1 with the secret hint.
 wl-clipboard-rs = "0.9.5"
-# System-bus calls: logind sessions and NetworkManager state (3f, 3h).
+# System-bus calls: logind sessions and NetworkManager state.
 zbus = { version = "6.0.0", default-features = false, features = ["tokio"] }
 vk-linux.workspace = true
+# Async sleep on the shared zbus runtime in the power watcher.
+tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 vk-win.workspace = true

@@ -151,10 +151,11 @@ focus the window that was in front, and then types. If you moved the focus meanw
 new window), the text goes to whatever has the focus, so wait for the panel to close before
 touching anything. Held modifier keys would be applied to the typed keys (Ctrl+Shift turns Tab
 into Ctrl+Tab), so Vaultkeeper keeps the panel open until it sees the keys released and gives up
-after two seconds with "Release the shortcut keys and try again". (This wait watches the panel's own
-modifier state and has not been verified on a live session yet.) If a Vaultkeeper window has the
-focus when you open the panel there is no target and nothing is typed. Typing stops, and the next window says why, when the vault locks. The panel
-cannot know which window will receive the text, so it never says "typing into <app>".
+after two seconds with "Release the shortcut keys and try again". (This wait watches the panel's
+own modifier state and has not been verified on a live session yet.) If a Vaultkeeper window has
+the focus when you open the panel there is no target and nothing is typed. Typing stops, and the
+next window says why, when the vault locks. The panel cannot know which window will receive the
+text, so it never says `typing into <app>`.
 
 ## Touch ID
 
@@ -354,6 +355,26 @@ listener {
     on-timeout = loginctl lock-session
 }
 ```
+
+## Security checks on Linux
+
+Settings shows a one-line summary of the protections Vaultkeeper found on this system; open it to
+see each protection, its status and the mechanism in use. *Re-check* probes again after you fixed
+something. `vaultkeeper security status` prints the same list and `vaultkeeper security
+requirements` says what Vaultkeeper needs from the system and how to fix it.
+
+When a required protection is missing, Vaultkeeper refuses to start and prints why. Two ways to
+start anyway:
+
+- `vaultkeeper --skip-security-issues` starts once.
+- `vaultkeeper security accept` accepts the issues refused right now for every later start (the
+  list shows under *Accepted issues* in Settings and takes effect at the next start). A new issue
+  refuses again.
+
+A window of a process started this way carries the "Security issues skipped" badge.
+
+The Landlock self-sandbox is off unless you set `VAULTKEEPER_LANDLOCK=1`. With it on, file dialogs
+may fail and a picked file outside Vaultkeeper's own directories cannot be opened.
 
 ## Updates
 

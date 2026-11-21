@@ -1,5 +1,5 @@
-//! Whether the desktop services the Linux chains lean on own their well-known D-Bus names
-//! (linux-plan.md 1b): the portal, the notification daemon and the tray watcher on the session
+//! Whether the desktop services the Linux chains lean on own their well-known D-Bus names:
+//! the portal, the notification daemon and the tray watcher on the session
 //! bus, logind on the system bus. Asked once through `NameHasOwner` and cached; a missing bus is
 //! `Unavailable` with the reason, never a panic. vk-linux has no D-Bus client, so this lives here.
 

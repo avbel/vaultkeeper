@@ -74,10 +74,13 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_scheme_is_read_back() {
-        store(SystemScheme::Dark);
-        assert_eq!(current(), SystemScheme::Dark);
-        store(SystemScheme::Unknown);
-        assert_eq!(current(), SystemScheme::Unknown);
+    fn every_scheme_survives_the_atomic_encoding() {
+        for scheme in [
+            SystemScheme::Unknown,
+            SystemScheme::Light,
+            SystemScheme::Dark,
+        ] {
+            assert_eq!(SystemScheme::from_bits(scheme.to_bits()), scheme);
+        }
     }
 }

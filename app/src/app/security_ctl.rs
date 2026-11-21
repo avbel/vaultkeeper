@@ -1,5 +1,5 @@
-//! Settings: the summary line and the protections list (linux-plan.md 3l), filled from the
-//! protection chains the daemon last reported.
+//! Settings: the summary line and the protections list filled from the protection
+//! chains the daemon last reported.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,7 +27,7 @@ pub(super) fn start_overridden() -> bool {
     START_OVERRIDDEN.load(Ordering::Relaxed)
 }
 
-/// The chain whose Install… button prints the privileged helper's command (step 4c).
+/// The chain whose Install… button prints the privileged helper's command.
 const BPF_CHAIN: &str = "bpf";
 
 /// "Security: Full · BPF LSM · memfd_secret": the weakest chain's status, then every mechanism in
@@ -109,7 +109,6 @@ impl<S: VaultService> App<S> {
         ))));
     }
 
-    /// Asks the daemon to probe again; the window fills when the answer arrives.
     pub(super) fn recheck_security(&self) {
         let seq = self.security_seq.get() + 1;
         self.security_seq.set(seq);

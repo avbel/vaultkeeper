@@ -1,5 +1,5 @@
 //! The IPC side of the protection chains: Settings in the UI process shows what the daemon
-//! probed (linux-plan.md 3l).
+//! probed.
 
 use vk_ipc::{ChainDto, ChainState, SecurityFuture, SecurityHost, SecurityReportDto};
 use vk_platform::security::{ChainReport, ChainStatus, Report};

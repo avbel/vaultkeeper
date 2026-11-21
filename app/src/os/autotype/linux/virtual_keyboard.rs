@@ -6,9 +6,12 @@
 use std::{
     fs::File,
     io::Write as _,
-    os::fd::{AsFd as _, FromRawFd as _},
-    sync::atomic::{AtomicBool, Ordering},
-    time::Instant,
+    os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{RecvTimeoutError, channel},
+    },
+    time::{Duration, Instant},
 };
 
 use wayland_client::{
@@ -24,6 +27,8 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 use super::{Failure, PACE};
 use crate::os::autotype::keysym::{self, Chunk};
 
+/// A compositor that takes longer than this to answer a round trip is stuck.
+const ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
 /// `wl_keyboard.keymap_format.xkb_v1`.
 const XKB_V1: u32 = 1;
 const KEY_RELEASED: u32 = 0;
@@ -75,24 +80,60 @@ fn connect() -> Result<Keyboard, Failure> {
     let connection = Connection::connect_to_env().map_err(|error| {
         Failure::Unavailable(format!("no Wayland connection to type through ({error})"))
     })?;
-    let (globals, mut queue) = registry_queue_init::<State>(&connection)
-        .map_err(|error| Failure::Unavailable(format!("the Wayland registry failed ({error})")))?;
+    let (globals, mut queue) = bounded(&connection, || {
+        registry_queue_init::<State>(&connection)
+            .map_err(|error| Failure::Unavailable(format!("the Wayland registry failed ({error})")))
+    })?;
     let qh = queue.handle();
     let manager = bind::<ZwpVirtualKeyboardManagerV1>(&globals, &qh, 1..=1)
         .ok_or_else(|| Failure::Unavailable(NO_COMPOSITOR_SUPPORT.to_owned()))?;
     let seat = bind::<WlSeat>(&globals, &qh, 1..=1)
         .ok_or_else(|| Failure::Unavailable("the compositor offers no seat".to_owned()))?;
     let device = manager.create_virtual_keyboard(&seat, &qh, ());
-    queue.roundtrip(&mut State).map_err(|error| {
-        Failure::Stopped(format!(
-            "the compositor refused the virtual keyboard ({error})"
-        ))
+    bounded(&connection, || {
+        queue.roundtrip(&mut State).map_err(|error| {
+            Failure::Stopped(format!(
+                "the compositor refused the virtual keyboard ({error})"
+            ))
+        })
     })?;
     Ok(Keyboard {
         connection,
         queue,
         device,
     })
+}
+
+/// wayland-client's round trip polls the socket with no limit, so a watchdog shuts the socket down
+/// when `work` outlasts [`ROUNDTRIP_TIMEOUT`]; that wakes the wait with an error and the typing
+/// job ends instead of leaving its thread stuck behind a frozen compositor.
+fn bounded<T>(
+    connection: &Connection,
+    work: impl FnOnce() -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    let fd = connection.backend().poll_fd().as_raw_fd();
+    let (finished, waiting) = channel::<()>();
+    let expired = AtomicBool::new(false);
+    let expired_ref = &expired;
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            if waiting.recv_timeout(ROUNDTRIP_TIMEOUT) == Err(RecvTimeoutError::Timeout) {
+                expired_ref.store(true, Ordering::Release);
+                // SAFETY: the descriptor belongs to `connection`, which outlives this scope;
+                // shutdown only changes the socket's state and does not close it.
+                unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
+            }
+        });
+        let outcome = work();
+        drop(finished);
+        outcome
+    });
+    if expired.load(Ordering::Acquire) {
+        return Err(Failure::Stopped(
+            "the compositor did not answer in time".to_owned(),
+        ));
+    }
+    outcome
 }
 
 fn bind<I>(
@@ -135,10 +176,14 @@ impl Keyboard {
     }
 
     fn roundtrip(&mut self) -> Result<(), Failure> {
-        self.queue
-            .roundtrip(&mut State)
-            .map(drop)
-            .map_err(|error| Failure::Stopped(format!("the compositor connection broke ({error})")))
+        let Self {
+            connection, queue, ..
+        } = self;
+        bounded(connection, || {
+            queue.roundtrip(&mut State).map(drop).map_err(|error| {
+                Failure::Stopped(format!("the compositor connection broke ({error})"))
+            })
+        })
     }
 }
 

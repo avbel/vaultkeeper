@@ -30,6 +30,7 @@ use crate::{
 const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 /// A session bus or portal that does not answer must not hold up the daemon's start.
 const BUS_TIMEOUT: Duration = Duration::from_secs(5);
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Keeps the item registered while the shell lives; dropping it unregisters.
 pub struct Handle {
@@ -257,18 +258,19 @@ async fn follow_color_scheme(item: ItemHandle<Item>) {
 pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<Handle> {
     let runtime = daemon.runtime().clone();
     let distro = detect_distro();
-    let watcher = runtime
-        .block_on(within(watcher_present()))
-        .and_then(|probe| probe);
-    publish(&watcher, distro);
-    let dark = runtime.block_on(within(system_dark())).ok().flatten();
-    let item = Item::new(daemon, distro, dark);
-    // Without this a panel that starts after the daemon (Waybar at login) would be an error.
-    let spawned = runtime.block_on(within(item.assume_sni_available(true).spawn()));
-    let item = match spawned {
+    let started = runtime.block_on(tokio::time::timeout(
+        INSTALL_TIMEOUT,
+        start_item(daemon, distro),
+    ));
+    let item = match started {
         Ok(Ok(item)) => item,
-        Ok(Err(error)) => return Ok(tray_less(&error.to_string(), distro)),
-        Err(why) => return Ok(tray_less(&why, distro)),
+        Ok(Err(why)) => return Ok(tray_less(&why, distro)),
+        Err(_) => {
+            return Ok(tray_less(
+                &format!("no answer within {} s", INSTALL_TIMEOUT.as_secs()),
+                distro,
+            ));
+        }
     };
     let theme = runtime.spawn(follow_color_scheme(item.clone()));
     follow(daemon, &item)?;
@@ -276,6 +278,19 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<Handle> {
         item: Some(item),
         theme: Some(theme),
     })
+}
+
+/// The three bus conversations run on the main thread before the event loop, so they share one
+/// bound instead of each adding its own.
+async fn start_item(daemon: &Arc<Daemon>, distro: Distro) -> Result<ItemHandle<Item>, String> {
+    let watcher = within(watcher_present()).await.and_then(|probe| probe);
+    publish(&watcher, distro);
+    let dark = within(system_dark()).await.ok().flatten();
+    let item = Item::new(daemon, distro, dark);
+    // Without this a panel that starts after the daemon (Waybar at login) would be an error.
+    within(item.assume_sni_available(true).spawn())
+        .await?
+        .map_err(|error| error.to_string())
 }
 
 fn tray_less(why: &str, distro: Distro) -> Handle {

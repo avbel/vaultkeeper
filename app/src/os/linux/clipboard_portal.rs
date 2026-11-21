@@ -12,7 +12,8 @@
 //! blocking-pool copies) only exchange messages with it.
 
 use std::{
-    path::{Path, PathBuf},
+    future::Future,
+    path::Path,
     pin::Pin,
     sync::mpsc,
     time::{Duration, Instant},
@@ -29,12 +30,11 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vk_platform::{
     Error, Result,
     clipboard::{ClipboardBackend, PortalClipboard},
-    fs::write_private_atomic,
     security::Probe,
 };
 use zeroize::Zeroizing;
 
-use super::portal::ensure_registered;
+use super::{portal::ensure_registered, portal_token::TokenStore};
 use crate::os::layout::CLIPBOARD_PORTAL_TOKEN_FILE;
 
 const TEXT_MIME: &str = "text/plain;charset=utf-8";
@@ -43,12 +43,16 @@ const SECRET_HINT_MIME: &str = "x-kde-passwordManagerHint";
 const MIN_PORTAL_VERSION: u32 = 2;
 /// Told apart from other failures: a dismissed dialog must not be followed by a second one.
 const DIALOG_DISMISSED: &str = "the clipboard permission dialog was dismissed";
-const MAX_TOKEN_BYTES: u64 = 4096;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 /// What the secret hint carries; only its presence matters to history managers.
 const SECRET_HINT_VALUE: &[u8] = b"secret";
-/// A first copy waits for the user to answer the permission dialog.
-const SET_TIMEOUT: Duration = Duration::from_secs(180);
+/// A first copy waits for the user to answer the permission dialog, plus the bounded calls
+/// around it.
+const SET_TIMEOUT: Duration = Duration::from_secs(240);
+const DIALOG_TIMEOUT: Duration = Duration::from_secs(180);
+/// Every portal call except `Start`, which waits on the dialog; a stuck portal must not wedge the
+/// single worker.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const QUICK_TIMEOUT: Duration = Duration::from_secs(5);
 /// After a refused or failed grant, copies go to the next link instead of asking again.
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(300);
@@ -81,11 +85,11 @@ pub fn spawn(data_dir: &Path) -> Option<Box<dyn PortalClipboard>> {
         return None;
     };
     let (commands, receiver) = unbounded_channel();
-    let token = TokenStore(data_dir.join(CLIPBOARD_PORTAL_TOKEN_FILE));
+    let token = TokenStore::new(data_dir.join(CLIPBOARD_PORTAL_TOKEN_FILE));
     runtime.spawn(async move {
         // The first portal caller's runtime also hosts ashpd's connection and the registry
         // watcher, so this runs on the daemon's runtime and not on a private one.
-        ensure_registered().await;
+        register().await;
         Worker::new(token).serve(receiver).await;
     });
     Some(Box::new(PortalLink { commands }))
@@ -138,43 +142,26 @@ impl PortalClipboard for PortalLink {
     }
 }
 
-struct TokenStore(PathBuf);
-
-impl TokenStore {
-    fn load(&self) -> Option<String> {
-        use std::{io::Read as _, os::unix::fs::OpenOptionsExt as _};
-
-        // A planted symlink must not redirect the read, and the token is short.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&self.0)
-            .ok()?;
-        let mut token = String::new();
-        file.take(MAX_TOKEN_BYTES).read_to_string(&mut token).ok()?;
-        let token = token.trim();
-        (!token.is_empty()).then(|| token.to_owned())
-    }
-
-    fn save(&self, token: &str) {
-        if let Err(error) = write_private_atomic(&self.0, token.as_bytes()) {
-            tracing::warn!(%error, "could not store the clipboard portal restore token");
-        }
-    }
-
-    fn forget(&self) {
-        match std::fs::remove_file(&self.0) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => tracing::warn!(%error, "could not remove the stale restore token"),
-        }
-    }
-}
-
 /// A started RemoteDesktop session with clipboard access.
 struct Open {
     clipboard: Clipboard,
     session: Session<RemoteDesktop>,
+}
+
+/// What `handle` leaves for the session loop to do next.
+enum Flow {
+    Continue,
+    /// The session ends without a retry.
+    Close,
+    /// The session is closed and this copy should go through a fresh one.
+    Retry(Zeroizing<String>, Reply<std::result::Result<(), String>>),
+}
+
+/// How a session ended.
+enum Ended {
+    Idle,
+    Stopped,
+    Retry(Zeroizing<String>, Reply<std::result::Result<(), String>>),
 }
 
 enum Event {
@@ -202,30 +189,41 @@ impl Worker {
     /// Idle until a copy arrives; the session lives only as long as `serve_session` runs.
     async fn serve(mut self, mut commands: UnboundedReceiver<Command>) {
         while let Some(command) = commands.recv().await {
-            match command {
-                Command::Read(reply) => drop(reply.send(None)),
-                Command::Clear(reply) => drop(reply.send(Ok(()))),
-                Command::Set(text, reply) => {
-                    if !self.serve_session(text, reply, &mut commands).await {
-                        return;
+            let (mut text, mut reply) = match command {
+                Command::Read(reply) => {
+                    drop(reply.send(None));
+                    continue;
+                }
+                Command::Clear(reply) => {
+                    drop(reply.send(Ok(())));
+                    continue;
+                }
+                Command::Set(text, reply) => (text, reply),
+            };
+            loop {
+                match self.serve_session(text, reply, &mut commands).await {
+                    Ended::Idle => break,
+                    Ended::Stopped => return,
+                    Ended::Retry(retry_text, retry_reply) => {
+                        text = retry_text;
+                        reply = retry_reply;
                     }
                 }
             }
         }
     }
 
-    /// Returns false when the command channel closed.
     async fn serve_session(
         &mut self,
         text: Zeroizing<String>,
         reply: Reply<std::result::Result<(), String>>,
         commands: &mut UnboundedReceiver<Command>,
-    ) -> bool {
+    ) -> Ended {
         let open = match self.open_for_copy().await {
             Ok(open) => open,
             Err(error) => {
                 drop(reply.send(Err(error)));
-                return true;
+                return Ended::Idle;
             }
         };
         // Subscribed before the first SetSelection so no transfer request is missed.
@@ -234,34 +232,38 @@ impl Worker {
             Err(error) => {
                 self.fail(&open, &error).await;
                 drop(reply.send(Err(error)));
-                return true;
+                return Ended::Idle;
             }
         };
         if let Err(error) = self.set_selection(&open, text, &mut owners).await {
             self.fail(&open, &error).await;
             drop(reply.send(Err(error)));
-            return true;
+            return Ended::Idle;
         }
         if reply.send(Ok(())).is_err() {
             // The caller gave up while the permission dialog was open and the chain moved on to
             // another link, so nothing would ever clear this selection.
             tracing::info!("clipboard portal copy abandoned by its caller; releasing it");
             self.end_session(&open, true).await;
-            return true;
+            return Ended::Idle;
         }
         let mut open_channel = true;
         let mut usable = true;
+        let mut retry = None;
         while open_channel {
             let event = tokio::select! {
                 command = commands.recv() => {
                     match command {
                         None => open_channel = false,
-                        Some(command) => {
-                            if !self.handle(&open, command, &mut owners).await {
+                        Some(command) => match self.handle(&open, command, &mut owners).await {
+                            Flow::Continue => {}
+                            Flow::Close => break,
+                            Flow::Retry(text, reply) => {
                                 usable = false;
+                                retry = Some((text, reply));
                                 break;
                             }
-                        }
+                        },
                     }
                     continue;
                 }
@@ -279,7 +281,11 @@ impl Worker {
             }
         }
         self.end_session(&open, usable).await;
-        open_channel
+        match retry {
+            Some((text, reply)) => Ended::Retry(text, reply),
+            None if open_channel => Ended::Idle,
+            None => Ended::Stopped,
+        }
     }
 
     /// Drops the text and, while the session is usable, releases the selection if it is still
@@ -296,12 +302,11 @@ impl Worker {
         }
     }
 
-    /// False when the session is no longer usable and must be closed.
-    async fn handle(&mut self, open: &Open, command: Command, owners: &mut Owners<'_>) -> bool {
+    async fn handle(&mut self, open: &Open, command: Command, owners: &mut Owners<'_>) -> Flow {
         match command {
             Command::Read(reply) => {
                 drop(reply.send(self.text.clone().filter(|_| self.owned)));
-                true
+                Flow::Continue
             }
             Command::Clear(reply) => {
                 let owned = self.owned;
@@ -311,16 +316,25 @@ impl Worker {
                     release(open).await;
                 }
                 drop(reply.send(Ok(())));
-                true
+                Flow::Continue
             }
             Command::Set(text, reply) => {
-                let outcome = self.set_selection(open, text, owners).await;
-                let usable = outcome.is_ok();
-                if let Err(error) = &outcome {
-                    self.fail(open, error).await;
-                }
-                drop(reply.send(outcome));
-                usable
+                let Err(error) = self.set_selection(open, text, owners).await else {
+                    drop(reply.send(Ok(())));
+                    return Flow::Continue;
+                };
+                // The portal or compositor may have ended the session (revoked permission, portal
+                // restart) without telling us; one fresh session tells that apart from a real
+                // failure before the chain is told to avoid this link for minutes.
+                let Some(text) = self.text.take() else {
+                    self.fail(open, &error).await;
+                    drop(reply.send(Err(error)));
+                    return Flow::Close;
+                };
+                tracing::info!(%error, "clipboard portal session no longer accepts copies; reopening");
+                self.owned = false;
+                close(open).await;
+                Flow::Retry(text, reply)
             }
         }
     }
@@ -358,13 +372,15 @@ impl Worker {
         while owners.next().now_or_never().flatten().is_some() {}
         // The text is held first: a paste can arrive before SetSelection returns.
         self.text = Some(text);
-        open.clipboard
-            .set_selection(
+        bounded(
+            CALL_TIMEOUT,
+            open.clipboard.set_selection(
                 &open.session,
                 SetSelectionOptions::default().set_mime_types(&[TEXT_MIME, SECRET_HINT_MIME]),
-            )
-            .await
-            .map_err(|error| format!("SetSelection failed: {error}"))?;
+            ),
+            "SetSelection",
+        )
+        .await?;
         self.owned = true;
         self.no_retry_before = None;
         Ok(())
@@ -390,9 +406,10 @@ impl Worker {
     }
 
     async fn open(&self) -> std::result::Result<Open, String> {
-        ensure_registered().await;
-        let remote = RemoteDesktop::new()
+        register().await;
+        let remote = tokio::time::timeout(CALL_TIMEOUT, RemoteDesktop::new())
             .await
+            .map_err(|_| "the RemoteDesktop portal did not answer in time".to_owned())?
             .map_err(|error| format!("no RemoteDesktop portal: {error}"))?;
         if remote.version() < MIN_PORTAL_VERSION {
             return Err(format!(
@@ -400,7 +417,7 @@ impl Worker {
                 remote.version()
             ));
         }
-        let clipboard = Clipboard::new().await.map_err(|error| error.to_string())?;
+        let clipboard = bounded(CALL_TIMEOUT, Clipboard::new(), "Clipboard portal").await?;
         let restored = match self.token.load() {
             Some(token) => match establish(&remote, &clipboard, Some(&token)).await {
                 Ok(established) => Some(established),
@@ -424,6 +441,27 @@ impl Worker {
     }
 }
 
+async fn register() {
+    if tokio::time::timeout(CALL_TIMEOUT, ensure_registered())
+        .await
+        .is_err()
+    {
+        tracing::warn!("registering with the portal timed out");
+    }
+}
+
+async fn bounded<T>(
+    limit: Duration,
+    call: impl Future<Output = std::result::Result<T, ashpd::Error>>,
+    what: &str,
+) -> std::result::Result<T, String> {
+    match tokio::time::timeout(limit, call).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(format!("{what} failed: {error}")),
+        Err(_) => Err(format!("{what} did not answer in time")),
+    }
+}
+
 async fn subscribe(
     clipboard: &Clipboard,
 ) -> std::result::Result<(Transfers<'_>, Owners<'_>), String> {
@@ -440,17 +478,21 @@ async fn subscribe(
 
 /// An empty offer releases the selection; without it the text is still never served.
 async fn release(open: &Open) {
-    if let Err(error) = open
-        .clipboard
-        .set_selection(&open.session, SetSelectionOptions::default())
-        .await
-    {
+    let released = bounded(
+        CALL_TIMEOUT,
+        open.clipboard
+            .set_selection(&open.session, SetSelectionOptions::default()),
+        "SetSelection",
+    )
+    .await;
+    if let Err(error) = released {
         tracing::warn!(%error, "could not release the portal clipboard selection");
     }
 }
 
 async fn close(open: &Open) {
-    if let Err(error) = open.session.close().await {
+    let closed = bounded(CALL_TIMEOUT, open.session.close(), "Close").await;
+    if let Err(error) = closed {
         tracing::debug!(%error, "closing the clipboard portal session failed");
     }
 }
@@ -464,14 +506,17 @@ async fn establish(
     clipboard: &Clipboard,
     restore_token: Option<&str>,
 ) -> std::result::Result<(Session<RemoteDesktop>, Option<String>), String> {
-    let session = remote
-        .create_session(Default::default())
-        .await
-        .map_err(|error| format!("CreateSession failed: {error}"))?;
+    let session = bounded(
+        CALL_TIMEOUT,
+        remote.create_session(Default::default()),
+        "CreateSession",
+    )
+    .await?;
     match start(remote, clipboard, &session, restore_token).await {
         Ok(token) => Ok((session, token)),
         Err(error) => {
-            if let Err(close) = session.close().await {
+            let closed = bounded(CALL_TIMEOUT, session.close(), "Close").await;
+            if let Err(close) = closed {
                 tracing::debug!(error = %close, "closing the failed clipboard session failed");
             }
             Err(error)
@@ -485,30 +530,36 @@ async fn start(
     session: &Session<RemoteDesktop>,
     restore_token: Option<&str>,
 ) -> std::result::Result<Option<String>, String> {
-    remote
-        .select_devices(
+    bounded(
+        CALL_TIMEOUT,
+        remote.select_devices(
             session,
             SelectDevicesOptions::default()
                 .set_devices(DeviceType::KEYBOARD)
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
                 .set_restore_token(restore_token),
-        )
-        .await
-        .map_err(|error| format!("SelectDevices failed: {error}"))?;
+        ),
+        "SelectDevices",
+    )
+    .await?;
     // The portal rejects RequestClipboard once the session has started.
-    clipboard
-        .request(session, RequestClipboardOptions::default())
-        .await
-        .map_err(|error| format!("RequestClipboard failed: {error}"))?;
-    let selected = remote
-        .start(session, None, StartOptions::default())
-        .await
-        .map_err(|error| format!("Start failed: {error}"))?
-        .response()
-        .map_err(|error| match error {
-            ashpd::Error::Response(ResponseError::Cancelled) => DIALOG_DISMISSED.to_owned(),
-            other => format!("the permission was not granted: {other}"),
-        })?;
+    bounded(
+        CALL_TIMEOUT,
+        clipboard.request(session, RequestClipboardOptions::default()),
+        "RequestClipboard",
+    )
+    .await?;
+    let selected = bounded(
+        DIALOG_TIMEOUT,
+        remote.start(session, None, StartOptions::default()),
+        "Start",
+    )
+    .await?
+    .response()
+    .map_err(|error| match error {
+        ashpd::Error::Response(ResponseError::Cancelled) => DIALOG_DISMISSED.to_owned(),
+        other => format!("the permission was not granted: {other}"),
+    })?;
     if !selected.is_clipboard_enabled() {
         return Err("the session was started without clipboard access".to_owned());
     }

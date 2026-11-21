@@ -1,8 +1,8 @@
 //! Linux half of [`super::subscribe`]: NetworkManager's `StateChanged` signal and the `State` and
 //! `PrimaryConnection` property changes on the system bus, read on one thread.
 //!
-//! The thread drives zbus through `zbus::block_on`, which owns a private tokio runtime, so the
-//! caller needs no runtime of its own. Without NetworkManager nothing is sent and the caller's
+//! The thread drives zbus through `zbus::block_on`, which runs on one tokio runtime shared by the
+//! whole process, so the caller needs no runtime of its own. Without NetworkManager nothing is sent and the caller's
 //! periodic probe is the only trigger; the match rule names the service, so a NetworkManager that
 //! starts later is picked up.
 
@@ -14,7 +14,7 @@ use std::{
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Sender, channel},
+        mpsc::{Receiver, RecvTimeoutError, Sender, channel},
     },
     task::{Poll, Waker},
     thread::{self, JoinHandle},
@@ -33,6 +33,8 @@ use super::{
 };
 
 const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct Stop {
@@ -67,26 +69,40 @@ impl Stop {
 pub(super) struct Subscription {
     stop: Arc<Stop>,
     thread: Option<JoinHandle<()>>,
+    finished: Receiver<()>,
 }
 
 impl Subscription {
     pub(super) fn new(tx: Sender<NetworkEvent>) -> io::Result<Self> {
         let stop = Arc::new(Stop::default());
         let (ready_tx, ready_rx) = channel();
+        let (finished_tx, finished) = channel();
         let thread_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("vaultkeeper-network-bus".to_owned())
-            .spawn(move || zbus::block_on(run(tx, &thread_stop, &ready_tx)))?;
-        match ready_rx.recv() {
+            .spawn(move || {
+                zbus::block_on(run(tx, &thread_stop, &ready_tx));
+                let _ = finished_tx.send(());
+            })?;
+        match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 stop,
                 thread: Some(thread),
+                finished,
             }),
             Ok(Err(reason)) => {
                 let _ = thread.join();
                 Err(io::Error::other(reason))
             }
-            Err(_) => Err(io::Error::other(
+            Err(RecvTimeoutError::Timeout) => {
+                // Connecting and authenticating are not covered by the method timeout. The thread
+                // is left to end by itself once the stop flag reaches it.
+                stop.request();
+                Err(io::Error::other(
+                    "the bus did not answer in time; the network watcher is off",
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(io::Error::other(
                 "network watcher thread ended during startup",
             )),
         }
@@ -97,7 +113,12 @@ impl Drop for Subscription {
     fn drop(&mut self) {
         self.stop.request();
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            // A wedged bus call must not hold up the daemon's shutdown.
+            if let Err(RecvTimeoutError::Timeout) = self.finished.recv_timeout(JOIN_TIMEOUT) {
+                warn!("the network watcher thread did not stop in time; leaving it behind");
+            } else {
+                let _ = thread.join();
+            }
         }
     }
 }

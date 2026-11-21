@@ -1,6 +1,6 @@
 //! The daemon's token store. On macOS this is the login keychain (service `vaultkeeper`); on
 //! Windows, sealed files under the data directory wrapped in DPAPI (windows-support.md §4.1); on
-//! Linux, the same sealed files wrapped by `systemd-creds --user` when it works there (2f).
+//! Linux, the same sealed files wrapped by `systemd-creds --user` when it works there.
 //! The vault's key names start with the user id, so `delete_all_for(user_id)` removes every item
 //! of that account on log out.
 

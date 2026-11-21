@@ -27,8 +27,8 @@ use tokio::runtime::Runtime;
 
 use crate::os::autotype::keysym;
 
-use super::{FOCUS_SETTLE, Failure, PACE, token::TokenStore};
-use crate::os::linux::portal::ensure_registered;
+use super::{FOCUS_SETTLE, Failure, PACE};
+use crate::os::linux::{portal::ensure_registered, portal_token::TokenStore};
 
 /// The first use waits for the user to answer the permission dialog.
 const DIALOG_TIMEOUT: Duration = Duration::from_secs(180);

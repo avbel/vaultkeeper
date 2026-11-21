@@ -7,4 +7,5 @@ pub mod file_dialog;
 pub mod hotkey_status;
 pub mod open;
 pub mod portal;
+pub mod portal_token;
 pub mod shell;

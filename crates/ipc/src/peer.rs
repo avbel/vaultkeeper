@@ -9,8 +9,8 @@
 //!
 //! On Linux the peer's executable is identified by the device and inode of `/proc/<pid>/exe`,
 //! read while a pidfd from `SO_PEERPIDFD` pins the connecting process: if it exited and its pid
-//! was reused before the read, the pidfd reports the exit and the identity is dropped
-//! (linux-plan.md 2c). The path never admits a peer: identity alone does, so a Homebrew Cellar path
+//! was reused before the read, the pidfd reports the exit and the identity is dropped.
+//! The path never admits a peer: identity alone does, so a Homebrew Cellar path
 //! change does not matter and a copy elsewhere does not get in. The one use of the path is
 //! [`Verdict::DaemonOutdated`], where it must match the install path in addition to the file's
 //! current on-disk identity.

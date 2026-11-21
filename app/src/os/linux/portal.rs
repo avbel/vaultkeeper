@@ -4,7 +4,7 @@
 //! titles fall back to "unknown". The host Registry binds the id to this process once, and the
 //! binding is lost whenever the portal restarts.
 //!
-//! Non-dumpable processes (linux-plan.md 1d): xdg-desktop-portal 1.22 identifies a caller the
+//! Non-dumpable processes: xdg-desktop-portal 1.22 identifies a caller the
 //! first time a D-Bus connection talks to it by opening `/proc/<pid>/root` (the Flatpak check),
 //! and a non-dumpable process denies that to same-user peers. The answer is cached per unique
 //! name until that name leaves the bus (`xdp_app_info_registry_ensure_for_invocation_sync`), so:

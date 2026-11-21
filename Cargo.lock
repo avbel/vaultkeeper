@@ -7793,6 +7793,7 @@ dependencies = [
  "swift-rs",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "vk-linux",

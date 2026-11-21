@@ -1,8 +1,11 @@
 //! Linux half of [`super::subscribe`]: logind on the system bus (sleep, shutdown, this session's
 //! lock) and the KDE/GNOME screensaver on the session bus, read on one thread.
 //!
-//! The thread drives zbus through `zbus::block_on`, which owns a private tokio runtime, so the
-//! caller needs no runtime of its own. Chain C14: docs/solutions/linux-ideas.md.
+//! The thread drives zbus through `zbus::block_on`, which runs on one tokio runtime shared by the
+//! whole process (single-threaded unless zbus's `tokio-multithread` is on), so the caller needs no
+//! runtime of its own, and nothing here may block the thread: the network watcher's connection
+//! only makes progress while some thread is inside `block_on`. Chain C14:
+//! docs/solutions/linux-ideas.md.
 
 use std::{
     collections::HashMap,
@@ -12,7 +15,7 @@ use std::{
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Sender, channel},
+        mpsc::{Receiver, RecvTimeoutError, Sender, channel},
     },
     task::{Poll, Waker},
     thread::{self, JoinHandle},
@@ -31,6 +34,8 @@ use super::{
 };
 
 const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 const SLEEP_GRACE: Duration = Duration::from_millis(300);
 const LOGIND_NAME: &str = "org.freedesktop.login1";
 const LOGIND_PATH: &str = "/org/freedesktop/login1";
@@ -69,26 +74,40 @@ impl Stop {
 pub(super) struct Subscription {
     stop: Arc<Stop>,
     thread: Option<JoinHandle<()>>,
+    finished: Receiver<()>,
 }
 
 impl Subscription {
     pub(super) fn new(tx: Sender<PowerEvent>) -> io::Result<Self> {
         let stop = Arc::new(Stop::default());
         let (ready_tx, ready_rx) = channel();
+        let (finished_tx, finished) = channel();
         let thread_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("vaultkeeper-power-bus".to_owned())
-            .spawn(move || zbus::block_on(run(tx, &thread_stop, &ready_tx)))?;
-        match ready_rx.recv() {
+            .spawn(move || {
+                zbus::block_on(run(tx, &thread_stop, &ready_tx));
+                let _ = finished_tx.send(());
+            })?;
+        match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 stop,
                 thread: Some(thread),
+                finished,
             }),
             Ok(Err(reason)) => {
                 let _ = thread.join();
                 Err(io::Error::other(reason))
             }
-            Err(_) => Err(io::Error::other(
+            Err(RecvTimeoutError::Timeout) => {
+                // Connecting and authenticating are not covered by the method timeout. The thread
+                // is left to end by itself once the stop flag reaches it.
+                stop.request();
+                Err(io::Error::other(
+                    "the bus did not answer in time; the power watcher is off",
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(io::Error::other(
                 "power watcher thread ended during startup",
             )),
         }
@@ -99,7 +118,12 @@ impl Drop for Subscription {
     fn drop(&mut self) {
         self.stop.request();
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            // A wedged bus call must not hold up the daemon's shutdown.
+            if let Err(RecvTimeoutError::Timeout) = self.finished.recv_timeout(JOIN_TIMEOUT) {
+                warn!("the power watcher thread did not stop in time; leaving it behind");
+            } else {
+                let _ = thread.join();
+            }
         }
     }
 }
@@ -133,7 +157,7 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
             Some(BusSignal::PrepareForSleep(true)) => {
                 // The event API has no acknowledgement, so the consumer only gets this grace
                 // period to lock before logind may suspend.
-                thread::sleep(SLEEP_GRACE);
+                tokio::time::sleep(SLEEP_GRACE).await;
                 inhibitor.release();
             }
             Some(BusSignal::PrepareForSleep(false)) => {

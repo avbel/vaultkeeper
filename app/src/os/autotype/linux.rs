@@ -12,7 +12,6 @@
 //! Typed text is never logged.
 
 mod remote_desktop;
-mod token;
 mod virtual_keyboard;
 
 use std::{
@@ -28,12 +27,12 @@ use std::{
 use zeroize::Zeroizing;
 
 use super::keysym;
+use crate::os::linux::portal_token::TokenStore;
 use crate::{
     autotype::Stroke,
     hooks::{AutoTypeDone, HookError, TypingTarget},
     os::layout,
 };
-use token::TokenStore;
 
 /// Pause between keystrokes. Not measured: the pace of the other platforms, which browsers'
 /// per-key form handlers keep up with.
@@ -196,7 +195,13 @@ fn run(keysyms: &Zeroizing<Vec<u32>>, cancel: &AtomicBool) -> Result<(), Failure
     let data_dir = layout::data_dir()
         .map_err(|error| Failure::Stopped(format!("no data directory ({error})")))?;
     chain(
-        || remote_desktop::type_keysyms(&TokenStore::in_dir(&data_dir), keysyms, cancel),
+        || {
+            remote_desktop::type_keysyms(
+                &TokenStore::new(data_dir.join(layout::AUTOTYPE_PORTAL_TOKEN_FILE)),
+                keysyms,
+                cancel,
+            )
+        },
         || virtual_keyboard::type_keysyms(keysyms, cancel),
     )
 }

@@ -1,4 +1,4 @@
-//! The daemon's protection chains (linux-plan.md 3l), as Settings shows them. The daemon owns the
+//! The daemon's protection chains, as Settings shows them. The daemon owns the
 //! probes, so the UI process asks instead of probing from its own, different process.
 
 use std::{future::Future, pin::Pin};
