@@ -46,7 +46,7 @@ pub const USAGE: &str = r#"Usage: vaultkeeper list
        vaultkeeper get_fields <key>
        vaultkeeper get <key> <field> [--allow-private]
        vaultkeeper --help | --version
-       vaultkeeper security status | accept
+       vaultkeeper security status | requirements | accept
        vaultkeeper [--daemon | --tray | --search | --generator]
        vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
                [--size WxH] [--select QUERY] [--search | --generator]
@@ -64,6 +64,7 @@ CLI access
 
 Security (Linux)
   security status         Print each protection, its status and the mechanism in use.
+  security requirements   Print what Vaultkeeper needs from the system and how to fix it.
   security accept         Start despite the protections refused right now; a new
                           issue refuses again.
   --skip-security-issues  Start once despite refused protections.

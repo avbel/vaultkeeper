@@ -122,12 +122,19 @@ fn refuse_cli_if_unsafe() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `vaultkeeper security status | accept`.
+/// `vaultkeeper security status | requirements | accept`.
 fn security_command(args: &[String]) -> anyhow::Result<()> {
     let report = security_gate::report(security_gate::Role::Daemon);
     match args {
         [command] if command == "status" => {
             write!(std::io::stdout(), "{}", report.table())?;
+        }
+        [command] if command == "requirements" => {
+            write!(
+                std::io::stdout(),
+                "{}",
+                vaultkeeper::os::security_requirements::table()
+            )?;
         }
         [command] if command == "accept" => {
             let data_dir = vaultkeeper::os::layout::data_dir()?;
@@ -145,7 +152,7 @@ fn security_command(args: &[String]) -> anyhow::Result<()> {
             vaultkeeper::os::settings_file::SettingsFile::write(&path, &settings)?;
             writeln!(std::io::stdout(), "{message}")?;
         }
-        _ => anyhow::bail!("Usage: vaultkeeper security status | accept"),
+        _ => anyhow::bail!("Usage: vaultkeeper security status | requirements | accept"),
     }
     Ok(())
 }

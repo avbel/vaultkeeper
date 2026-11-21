@@ -19,6 +19,7 @@ pub mod log_file;
 mod misc;
 pub mod security_gate;
 mod security_key;
+pub mod security_requirements;
 pub mod settings_file;
 pub mod startup_check;
 pub mod taskbar;
