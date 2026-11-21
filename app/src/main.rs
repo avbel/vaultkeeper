@@ -63,6 +63,10 @@ fn main() -> anyhow::Result<()> {
             "vaultkeeper {}",
             env!("CARGO_PKG_VERSION")
         )?;
+        let kind = vk_platform::install_kind::detect();
+        if kind.manager().is_some() {
+            writeln!(std::io::stdout(), "install: {}", kind.label())?;
+        }
         return Ok(());
     }
     if args.quit {

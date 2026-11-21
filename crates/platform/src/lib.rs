@@ -9,6 +9,7 @@ pub mod dpapi;
 mod error;
 pub mod fs;
 pub mod hardening;
+pub mod install_kind;
 pub mod keychain;
 pub mod network;
 pub mod paths;

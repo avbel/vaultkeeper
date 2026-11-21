@@ -109,6 +109,7 @@ impl<S: VaultService> App<S> {
         window.set_clipboard_index(option_index(&CLIPBOARD_OPTIONS, &settings.clipboard_clear));
         window.set_start_at_login(settings.start_at_login);
         window.set_auto_update(settings.auto_update);
+        window.set_updates_managed_note(updates_managed_note().into());
         window.set_ask_unlock_on_start(settings.ask_unlock_on_start);
         window.set_require_master_password(settings.require_master_password_on_start);
         self.fill_biometric(window);
@@ -371,6 +372,15 @@ fn ssh_hint() -> &'static str {
 /// because "Application Support" has a space; ssh expands a leading `~` inside the quotes.
 fn ssh_config_lines(socket: &str) -> String {
     format!("Host *\n    IdentityAgent \"{socket}\"")
+}
+
+/// "Managed by Homebrew — run brew upgrade vaultkeeper" for a package-manager install, else empty.
+fn updates_managed_note() -> String {
+    let kind = vk_platform::install_kind::detect();
+    match (kind.manager(), kind.upgrade_command()) {
+        (Some(manager), Some(command)) => format!("Managed by {manager} — run {command}"),
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]

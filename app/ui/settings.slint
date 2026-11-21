@@ -43,6 +43,8 @@ export component SettingsWindow inherits Window {
     in-out property <int> clipboard-index;
     in-out property <bool> start-at-login;
     in-out property <bool> auto-update;
+    // Set for a package-manager install, whose updates the manager owns.
+    in property <string> updates-managed-note;
     in-out property <bool> ask-unlock-on-start;
     in-out property <bool> lock-on-sleep: true;
     in-out property <bool> require-master-password;
@@ -254,11 +256,20 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 Toggle { text: "Start at login"; checked <=> root.start-at-login; toggled(v) => { root.start-at-login-toggled(v); } }
-                Toggle {
+                if root.updates-managed-note == "": Toggle {
                     text: "Update automatically";
                     description: "Checks GitHub daily and installs once the vault is locked";
                     checked <=> root.auto-update;
                     toggled(v) => { root.auto-update-toggled(v); }
+                }
+                if root.updates-managed-note != "": SettingRow {
+                    text: "Updates";
+                    Text {
+                        text: root.updates-managed-note;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
                 }
                 Toggle { text: "Ask to unlock on start"; checked <=> root.ask-unlock-on-start; toggled(v) => { root.ask-unlock-toggled(v); } }
                 Toggle {
