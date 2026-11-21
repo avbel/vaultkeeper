@@ -170,19 +170,17 @@ pub fn acquire_in(
 mod unix {
     use std::{
         fs::{File, OpenOptions, TryLockError},
-        io::{self, Read, Write},
+        io::{self, PipeReader, PipeWriter, Read, Write},
+        os::fd::{AsFd, AsRawFd},
         os::unix::fs::OpenOptionsExt,
-        path::{Path, PathBuf},
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
+        path::Path,
         thread::JoinHandle,
         time::{Duration, Instant},
     };
 
     use interprocess::local_socket::{
-        GenericFilePath, Listener, ListenerOptions, Stream, ToFsName, prelude::*,
+        GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream, ToFsName,
+        prelude::*,
     };
 
     use super::{Command, MAX_TOKEN_LEN, MESSAGE_TAG, is_valid_activation_token};
@@ -190,8 +188,6 @@ mod unix {
 
     const LOCK_FILE: &str = "instance.lock";
     const SOCKET_FILE: &str = "instance.sock";
-    /// First byte of every message, so stray connections are told apart from commands.
-    const WAKE_CODE: u8 = 0;
     const READ_TIMEOUT: Duration = Duration::from_secs(1);
     /// The first instance may hold the lock but not have bound the socket yet.
     const CONNECT_ATTEMPTS: u32 = 20;
@@ -200,10 +196,9 @@ mod unix {
     const QUIT_POLL: Duration = Duration::from_millis(50);
 
     pub(super) struct Guard {
-        socket: PathBuf,
-        stop: Arc<AtomicBool>,
+        wake: Option<PipeWriter>,
         listener: Option<JoinHandle<()>>,
-        _lock: File,
+        lock: File,
     }
 
     pub(super) fn acquire(
@@ -220,7 +215,7 @@ mod unix {
             .open(dir.join(LOCK_FILE))?;
         let socket = dir.join(SOCKET_FILE);
         match lock.try_lock() {
-            Ok(()) => listen(lock, socket, on_command),
+            Ok(()) => listen(lock, &socket, on_command),
             Err(TryLockError::WouldBlock) => {
                 let _ = forward(&socket, command, token);
                 Err(Error::AlreadyRunning)
@@ -261,46 +256,82 @@ mod unix {
 
     fn listen(
         lock: File,
-        socket: PathBuf,
+        socket: &Path,
         on_command: impl Fn(Command, Option<String>) + Send + 'static,
     ) -> Result<Guard> {
         // Holding the lock proves any existing socket file is stale.
-        match std::fs::remove_file(&socket) {
+        match std::fs::remove_file(socket) {
             Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err.into()),
             _ => {}
         }
         let listener = ListenerOptions::new()
-            .name(socket.as_path().to_fs_name::<GenericFilePath>()?)
+            .name(socket.to_fs_name::<GenericFilePath>()?)
             .create_sync()?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let serve_stop = Arc::clone(&stop);
+        listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
+        let (wake_rx, wake_tx) = std::io::pipe()?;
         let thread = std::thread::Builder::new()
             .name("vk-single-instance".into())
-            .spawn(move || serve(&listener, &serve_stop, &on_command))?;
+            .spawn(move || serve(&listener, &wake_rx, &on_command))?;
         Ok(Guard {
-            socket,
-            stop,
+            wake: Some(wake_tx),
             listener: Some(thread),
-            _lock: lock,
+            lock,
         })
     }
 
+    fn listener_fd(listener: &Listener) -> i32 {
+        let Listener::UdSocket(socket) = listener;
+        socket.as_fd().as_raw_fd()
+    }
+
+    /// Waits on the listener and on `wake`, whose write end closes when the guard drops. A wake
+    /// through the socket itself could fail to connect (seen on macOS under load) and leave the
+    /// thread blocked in `accept`; a pipe cannot.
     fn serve(
         listener: &Listener,
-        stop: &AtomicBool,
+        wake: &PipeReader,
         on_command: &impl Fn(Command, Option<String>),
     ) {
+        let mut fds = [
+            libc::pollfd {
+                fd: listener_fd(listener),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wake.as_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
         loop {
-            let accepted = listener.accept();
-            if stop.load(Ordering::Acquire) {
+            // SAFETY: `fds` is a valid array of two initialized `pollfd`s for the whole call.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if ready < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                tracing::error!(error = %err, "single-instance poll failed, listener stops");
                 return;
             }
-            match accepted {
+            if fds[1].revents != 0 {
+                return;
+            }
+            if fds[0].revents == 0 {
+                continue;
+            }
+            match listener.accept() {
                 Ok(stream) => match read_command(stream) {
                     Ok(Some((command, token))) => on_command(command, token),
                     Ok(None) => tracing::debug!("ignored unknown single-instance message"),
                     Err(err) => tracing::debug!(error = %err, "bad single-instance message"),
                 },
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
                 Err(err) => {
                     tracing::warn!(error = %err, "single-instance accept failed");
                     std::thread::sleep(ACCEPT_ERROR_BACKOFF);
@@ -310,11 +341,19 @@ mod unix {
     }
 
     fn read_command(mut stream: Stream) -> io::Result<Option<(Command, Option<String>)>> {
-        // macOS rejects this with EINVAL once the peer has closed, which a sender does right
-        // after writing; its bytes are still buffered and the read cannot block then.
-        if let Err(err) = stream.set_recv_timeout(Some(READ_TIMEOUT)) {
-            tracing::trace!(error = %err, "could not set single-instance read timeout");
-        }
+        // macOS rejects the timeout with EINVAL once the peer has closed, which a sender does
+        // right after writing; its bytes are still buffered. Without a timeout a blocking read
+        // could wait on a silent peer forever and hang the guard's drop, so the stream stays
+        // nonblocking then (BSD-derived kernels hand an accepted socket the listener's
+        // O_NONBLOCK, Linux does not) and a read that would block ends the message.
+        let nonblocking = match stream.set_recv_timeout(Some(READ_TIMEOUT)) {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::trace!(error = %err, "could not set single-instance read timeout");
+                true
+            }
+        };
+        stream.set_nonblocking(nonblocking)?;
         let mut message = [0_u8; 2];
         stream.read_exact(&mut message)?;
         let [MESSAGE_TAG, code] = message else {
@@ -359,33 +398,20 @@ mod unix {
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            self.stop.store(true, Ordering::Release);
-            let Some(thread) = self.listener.take() else {
-                return;
-            };
-            // accept() only returns on a connection; without one the thread would block forever.
-            // A single refused connect (seen on macOS under load) must not leave the socket file
-            // behind, so the wake is retried.
-            let mut woken = send(&self.socket, WAKE_CODE, None);
-            for _ in 1..CONNECT_ATTEMPTS {
-                if woken.is_ok() {
-                    break;
-                }
-                std::thread::sleep(CONNECT_RETRY_DELAY);
-                woken = send(&self.socket, WAKE_CODE, None);
+            // Closing the write end wakes the listener thread. A concurrent fork can briefly
+            // inherit it (std::io::pipe is pipe() + fcntl(CLOEXEC) on macOS), so the hang-up
+            // arrives at the latest when that child execs.
+            drop(self.wake.take());
+            if let Some(thread) = self.listener.take()
+                && thread.join().is_err()
+            {
+                tracing::error!("single-instance listener panicked");
             }
-            match woken {
-                Ok(()) => {
-                    if thread.join().is_err() {
-                        tracing::error!("single-instance listener panicked");
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "could not wake single-instance listener");
-                    if let Err(err) = std::fs::remove_file(&self.socket) {
-                        tracing::debug!(error = %err, "single-instance socket not removed");
-                    }
-                }
+            // The listener, and with it the socket file, is gone once the thread is joined. flock
+            // belongs to the open file description, which a child forked by a concurrent spawn
+            // still shares until its exec, so closing our fd alone may not release the lock.
+            if let Err(err) = self.lock.unlock() {
+                tracing::warn!(error = %err, "could not release the single-instance lock");
             }
         }
     }
