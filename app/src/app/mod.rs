@@ -18,6 +18,7 @@ mod manager_edit;
 mod manager_send;
 mod quick;
 mod reprompt;
+mod security_ctl;
 mod security_key;
 mod settings_browser;
 mod settings_ctl;
@@ -169,6 +170,8 @@ pub struct App<S: VaultService> {
     ssh_notice: RefCell<String>,
     /// Shortcuts the OS refused (Quick Panel, Generator), as the daemon last reported.
     hotkey_issues: Cell<settings_hotkeys::Issues>,
+    /// The protection chains the daemon last reported, for the Settings summary and list.
+    security: RefCell<crate::hooks::SecurityReportDto>,
 }
 
 impl<S: VaultService> App<S> {
@@ -219,6 +222,7 @@ impl<S: VaultService> App<S> {
             pending_notice: RefCell::new(None),
             ssh_notice: RefCell::new(String::new()),
             hotkey_issues: Cell::new(settings_hotkeys::Issues::default()),
+            security: RefCell::default(),
         })
     }
 

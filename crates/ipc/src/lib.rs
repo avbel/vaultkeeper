@@ -44,6 +44,7 @@ mod peer;
 #[cfg(target_os = "linux")]
 pub mod pidfd;
 pub mod protocol;
+mod security;
 mod server;
 mod site_icons;
 mod touch_id;
@@ -62,6 +63,7 @@ pub use protocol::{
     BrowserPrompt, BrowserReply, PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt,
     TouchIdFailure, TypingTarget, UiCommand, UiNotice,
 };
+pub use security::{ChainDto, ChainState, SecurityFuture, SecurityHost, SecurityReportDto};
 pub use server::{
     DaemonEvent, ServeOptions, ServerHandle, UiSink, serve, serve_inherited, serve_with,
 };

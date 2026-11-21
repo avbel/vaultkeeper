@@ -42,8 +42,8 @@ pub use misc::{
 pub use settings_file::SettingsFile;
 
 use crate::hooks::{
-    GeneratedDto, GeneratedPasswords, HookError, HookFuture, Hooks, IconLookup, SiteIcon,
-    SiteIconSource, SystemClock,
+    GeneratedDto, GeneratedPasswords, HookError, HookFuture, Hooks, IconLookup, SecurityReportDto,
+    SecurityStatus, SiteIcon, SiteIconSource, SystemClock,
 };
 use zeroize::Zeroizing;
 
@@ -112,6 +112,7 @@ impl Hooks {
             autotype: Arc::new(autotype::SystemAutoType),
             site_icons: Arc::new(DaemonSiteIcons(Arc::clone(daemon))),
             generated: Arc::new(DaemonGenerated(Arc::clone(daemon))),
+            security: Arc::new(DaemonSecurity(Arc::clone(daemon))),
             security_keys: Arc::new(security_key::UsbSecurityKeys),
         }
     }
@@ -148,6 +149,15 @@ impl GeneratedPasswords for DaemonGenerated {
     fn forget(&self, id: u64) -> HookFuture<()> {
         let daemon = Arc::clone(&self.0);
         Box::pin(async move { daemon.forget_generated(id).await.map_err(|e| failed(&e)) })
+    }
+}
+
+struct DaemonSecurity(Arc<RemoteVault>);
+
+impl SecurityStatus for DaemonSecurity {
+    fn report(&self) -> HookFuture<SecurityReportDto> {
+        let daemon = Arc::clone(&self.0);
+        Box::pin(async move { daemon.security_status().await.map_err(|e| failed(&e)) })
     }
 }
 

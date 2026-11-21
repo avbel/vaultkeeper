@@ -523,6 +523,8 @@ pub struct Setup {
     pub scripted_security_key: bool,
     /// Replaces the empty list of passwords generated in the browser.
     pub generated: Option<Arc<dyn vaultkeeper::hooks::GeneratedPasswords>>,
+    /// Replaces the source with no protection chains.
+    pub security: Option<Arc<dyn vaultkeeper::hooks::SecurityStatus>>,
 }
 
 impl Default for Setup {
@@ -536,6 +538,7 @@ impl Default for Setup {
             site_icons: None,
             scripted_security_key: false,
             generated: None,
+            security: None,
         }
     }
 }
@@ -591,6 +594,9 @@ pub fn harness(setup: Setup) -> Harness {
         generated: setup
             .generated
             .unwrap_or_else(|| Arc::clone(&defaults.generated)),
+        security: setup
+            .security
+            .unwrap_or_else(|| Arc::clone(&defaults.security)),
         security_keys: security_key.as_ref().map_or_else(
             || Arc::new(MockSecurityKey { instant: true }) as Arc<dyn SecurityKeys>,
             |key| Arc::new(ScriptedKeys(Arc::clone(key))) as Arc<dyn SecurityKeys>,

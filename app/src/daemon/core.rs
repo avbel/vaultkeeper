@@ -300,7 +300,8 @@ impl Daemon {
         .with_notices(notices)
         .with_touch_id(Arc::clone(&touch_id) as Arc<dyn TouchIdBackend>)
         .with_clipboard(Arc::clone(&clipboard) as Arc<dyn ClipboardHost>)
-        .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))));
+        .with_site_icons(Arc::new(IconHost(Arc::clone(&site_icons))))
+        .with_security(Arc::new(super::security::SecurityReports));
         let generated = crate::daemon::browser::generated::SharedGenerated::default();
         let options =
             options.with_generated(Arc::new(crate::daemon::browser::generated::GeneratedHost {

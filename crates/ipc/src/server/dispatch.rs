@@ -27,6 +27,7 @@ pub(super) async fn dispatch<S: VaultService>(
         clipboard,
         site_icons,
         generated,
+        security,
     } = backends;
     match call {
         Call::State => Ok(Reply::State(service.state().into())),
@@ -113,11 +114,19 @@ pub(super) async fn dispatch<S: VaultService>(
             Some(site_icons) => site_icons.icon(host).await,
             None => crate::SiteIcon::Missing,
         })),
+        Call::SecurityStatus => Ok(security_report(security).await),
         call @ (Call::GeneratedPasswords
         | Call::RevealGenerated(_)
         | Call::SaveGenerated(_)
         | Call::ForgetGenerated(_)) => generated_call(generated, call).await,
     }
+}
+
+async fn security_report(host: Option<Arc<dyn crate::SecurityHost>>) -> Reply {
+    Reply::Security(match host {
+        Some(host) => host.report().await,
+        None => crate::SecurityReportDto::default(),
+    })
 }
 
 async fn generated_call(

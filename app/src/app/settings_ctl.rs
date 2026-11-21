@@ -48,6 +48,7 @@ impl<S: VaultService> App<S> {
             .map(ComponentHandle::clone_strong);
         if let Some(window) = existing {
             self.fill_biometric(&window);
+            self.recheck_security();
             show(&window, "settings");
             return;
         }
@@ -63,6 +64,7 @@ impl<S: VaultService> App<S> {
         self.bind_settings(&window);
         show(&window, "settings");
         *self.settings_window.borrow_mut() = Some(window);
+        self.recheck_security();
     }
 
     pub(super) fn close_settings(&self) {
@@ -133,6 +135,7 @@ impl<S: VaultService> App<S> {
         window.set_show_site_icons(settings.show_site_icons);
         super::settings_hotkeys::show_hotkeys(window, &settings, self.hotkey_issues.get());
         self.fill_browser_settings(window, &settings);
+        self.fill_security(window);
     }
 
     /// Availability can change between openings (Hello is off over RDP and on a locked session),
@@ -264,6 +267,7 @@ impl<S: VaultService> App<S> {
         }));
         self.bind_hotkeys(window);
         self.bind_browser_settings(window);
+        self.bind_security(window);
     }
 
     /// Re-reads the store after the daemon changed it and applies what is visible.

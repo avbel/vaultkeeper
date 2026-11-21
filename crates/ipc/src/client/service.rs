@@ -440,6 +440,14 @@ impl RemoteVault {
         }
     }
 
+    /// The daemon's protection chains, probed again.
+    pub async fn security_status(&self) -> Result<crate::SecurityReportDto> {
+        match self.call(Call::SecurityStatus).await? {
+            Reply::Security(report) => Ok(report),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// The daemon's cached or freshly fetched icon of `host`.
     pub async fn site_icon(&self, host: &str) -> Result<crate::SiteIcon> {
         match self.call(Call::SiteIcon(host.to_owned())).await? {

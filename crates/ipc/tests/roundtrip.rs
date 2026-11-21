@@ -638,6 +638,49 @@ async fn site_icons_come_from_the_daemon() {
     );
 }
 
+struct FakeSecurity;
+
+impl vk_ipc::SecurityHost for FakeSecurity {
+    fn report(&self) -> vk_ipc::SecurityFuture {
+        Box::pin(async {
+            vk_ipc::SecurityReportDto {
+                chains: vec![vk_ipc::ChainDto {
+                    id: "key-memory".to_owned(),
+                    name: "Keys in memory".to_owned(),
+                    state: vk_ipc::ChainState::Standard,
+                    active: Some("keyctl".to_owned()),
+                    stacked: vec!["MDWE".to_owned()],
+                    fallback: Some("mlock".to_owned()),
+                    note: None,
+                    fix: Some("remove secretmem.enable=0".to_owned()),
+                }],
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_security_report_comes_from_the_daemon() {
+    let options = ServeOptions::new()
+        .expect("options")
+        .with_security(Arc::new(FakeSecurity));
+    let daemon = Daemon::start_with(FakeVault::new(locked(), 0), options).await;
+    let (vault, _events) = daemon.connect().await;
+    let report = vault.security_status().await.expect("report");
+    assert_eq!(report.chains.len(), 1);
+    assert_eq!(report.chains[0].state, vk_ipc::ChainState::Standard);
+    assert_eq!(report.chains[0].fallback.as_deref(), Some("mlock"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_without_a_security_host_reports_no_chains() {
+    let (_daemon, vault) = unlocked_pair().await;
+    assert_eq!(
+        vault.security_status().await.expect("report").chains,
+        [] as [vk_ipc::ChainDto; 0]
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_daemon_without_site_icons_has_none() {
     let (_daemon, vault) = unlocked_pair().await;

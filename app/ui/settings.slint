@@ -2,6 +2,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Btn, BtnKind, CopyBtn, Divider, Segmented, SectionLabel, Select, ShortcutRecorder, Toggle } from "kit.slint";
 import { GeneratorView, GeneratorState } from "generator.slint";
+import { SecurityChainRow, AcceptedIssueRow, SecuritySummary, SecurityDetail } from "security.slint";
 
 // `key` is the stored public key, which identifies the pairing to remove.
 export struct PairedBrowserRow { name: string, fingerprint: string, key: string }
@@ -102,7 +103,15 @@ export component SettingsWindow inherits Window {
     in-out property <int> browser-match-index;
     in property <[PairedBrowserRow]> paired-browsers;
     in property <string> error-text;
+    // Empty on macOS and Windows, which have no protection chains: nothing of this shows there.
+    in property <string> security-summary;
+    in property <[SecurityChainRow]> security-chains;
+    in property <[AcceptedIssueRow]> security-accepted;
+    in-out property <bool> security-open;
 
+    callback security-recheck();
+    callback security-action(string);
+    callback security-forget(string);
     callback theme-selected(int);
     callback tray-icon-selected(int);
     callback hide-from-capture-toggled(bool);
@@ -174,6 +183,18 @@ export component SettingsWindow inherits Window {
                 padding: Theme.s5;
                 padding-top: Theme.s3;
                 spacing: Theme.s2;
+                if root.security-summary != "": SecuritySummary {
+                    text: root.security-summary;
+                    open: root.security-open;
+                    clicked => { root.security-open = !root.security-open; }
+                }
+                if root.security-summary != "" && root.security-open: SecurityDetail {
+                    chains: root.security-chains;
+                    accepted: root.security-accepted;
+                    recheck => { root.security-recheck(); }
+                    action(id) => { root.security-action(id); }
+                    forget(id) => { root.security-forget(id); }
+                }
                 SectionLabel { text: "ACCOUNT"; }
                 SettingRow {
                     text: "Server";

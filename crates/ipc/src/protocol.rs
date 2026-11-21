@@ -452,6 +452,8 @@ pub enum Call {
     RevealGenerated(u64),
     SaveGenerated(u64),
     ForgetGenerated(u64),
+    /// The daemon's protection chains, probed again.
+    SecurityStatus,
 }
 
 impl Call {
@@ -500,6 +502,7 @@ impl Call {
                 | Self::SiteIcon(_)
                 | Self::GeneratedPasswords
                 | Self::RevealGenerated(_)
+                | Self::SecurityStatus
         )
     }
 }
@@ -531,6 +534,7 @@ pub enum Reply {
     ServerProbe { version: Option<String> },
     SiteIcon(crate::SiteIcon),
     Generated(Vec<crate::GeneratedDto>),
+    Security(crate::SecurityReportDto),
 }
 
 #[cfg(test)]

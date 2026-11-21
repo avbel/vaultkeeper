@@ -10,7 +10,7 @@ use std::{
 };
 
 use vk_gen::generator::{PassphraseOptions, PasswordOptions};
-pub use vk_ipc::{GeneratedDto, SiteIcon};
+pub use vk_ipc::{ChainDto, ChainState, GeneratedDto, SecurityReportDto, SiteIcon};
 use zeroize::Zeroizing;
 
 use vk_vault::VaultService;
@@ -220,6 +220,11 @@ pub trait SiteIconSource: Send + Sync {
     fn fetch(&self, host: &str) -> IconLookup;
 }
 
+/// The daemon's protection chains; the UI process asks the daemon, whose probes are the real ones.
+pub trait SecurityStatus: Send + Sync {
+    fn report(&self) -> HookFuture<SecurityReportDto>;
+}
+
 pub type HookFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = HookResult<T>> + Send>>;
 
 /// Passwords the daemon generated for web pages and still keeps because they were not saved.
@@ -251,6 +256,7 @@ pub struct Hooks {
     pub site_icons: Arc<dyn SiteIconSource>,
     pub security_keys: Arc<dyn SecurityKeys>,
     pub generated: Arc<dyn GeneratedPasswords>,
+    pub security: Arc<dyn SecurityStatus>,
 }
 
 impl Hooks {
@@ -295,6 +301,7 @@ impl Hooks {
             site_icons: Arc::new(NoSiteIcons),
             security_keys: Arc::new(crate::mock::MockSecurityKey::default()),
             generated: Arc::new(MemoryGenerated::default()),
+            security: Arc::new(NoSecurity),
         }
     }
 }
@@ -333,6 +340,15 @@ impl GeneratedPasswords for MemoryGenerated {
     fn forget(&self, id: u64) -> HookFuture<()> {
         self.entries().retain(|(dto, _)| dto.id != id);
         Box::pin(async { Ok(()) })
+    }
+}
+
+/// `--mock` and the UI tests: no chains, so Settings shows no security section.
+pub struct NoSecurity;
+
+impl SecurityStatus for NoSecurity {
+    fn report(&self) -> HookFuture<SecurityReportDto> {
+        Box::pin(async { Ok(SecurityReportDto::default()) })
     }
 }
 

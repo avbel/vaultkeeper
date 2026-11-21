@@ -32,7 +32,7 @@ use vk_vault::VaultService;
 use crate::peer::own_uid;
 use crate::{
     ClipboardHost, GeneratedHost, IpcError, PeerCredentials, PeerVerifier, SameExecutable,
-    SiteIconHost, TouchIdBackend,
+    SecurityHost, SiteIconHost, TouchIdBackend,
     protocol::{BrowserPrompt, BrowserReply, SshDecision, SshPrompt, UiCommand, UiNotice},
     transport::{Endpoint, Listener, Stream},
 };
@@ -93,6 +93,8 @@ pub struct ServeOptions {
     pub site_icons: Option<Arc<dyn SiteIconHost>>,
     /// Serves the generated-password calls; without it the list is empty.
     pub generated: Option<Arc<dyn GeneratedHost>>,
+    /// Serves `SecurityStatus`; without it the report has no chains.
+    pub security: Option<Arc<dyn SecurityHost>>,
 }
 
 /// The daemon-side services a call may need besides the vault.
@@ -102,6 +104,7 @@ pub(crate) struct Backends {
     pub(crate) clipboard: Option<Arc<dyn ClipboardHost>>,
     pub(crate) site_icons: Option<Arc<dyn SiteIconHost>>,
     pub(crate) generated: Option<Arc<dyn GeneratedHost>>,
+    pub(crate) security: Option<Arc<dyn SecurityHost>>,
 }
 
 impl ServeOptions {
@@ -120,6 +123,7 @@ impl ServeOptions {
             clipboard: None,
             site_icons: None,
             generated: None,
+            security: None,
         }
     }
 
@@ -135,6 +139,14 @@ impl ServeOptions {
     pub fn with_clipboard(self, clipboard: Arc<dyn ClipboardHost>) -> Self {
         Self {
             clipboard: Some(clipboard),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_security(self, security: Arc<dyn SecurityHost>) -> Self {
+        Self {
+            security: Some(security),
             ..self
         }
     }
@@ -344,6 +356,7 @@ fn start<S: VaultService>(
             clipboard: options.clipboard,
             site_icons: options.site_icons,
             generated: options.generated,
+            security: options.security,
         },
         slot: Arc::clone(&slot),
     });

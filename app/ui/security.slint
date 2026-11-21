@@ -1,0 +1,143 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Divider, SectionLabel } from "kit.slint";
+
+// `state` is the chip text (Full, Standard, Reduced, Off); `using` and `next` are mechanism
+// names; `action` is the button text of the row, empty for none.
+export struct SecurityChainRow { id: string, name: string, state: string, using: string, next: string, note: string, fix: string, action: string }
+export struct AcceptedIssueRow { id: string, name: string }
+
+component StateChip inherits Rectangle {
+    in property <string> state;
+    property <color> tone: state == "Full" ? Theme.success-text
+        : state == "Standard" ? Theme.accent
+        : state == "Reduced" ? Theme.warn-text
+        : Theme.danger-small;
+    height: 20px * Theme.scale;
+    width: label.preferred-width + 16px;
+    border-radius: self.height / 2;
+    background: tone.with-alpha(0.14);
+    label := Text {
+        text: root.state;
+        color: root.tone;
+        font-size: Theme.font-hint;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component ChainEntry inherits VerticalLayout {
+    in property <SecurityChainRow> data;
+    callback action(string);
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: Theme.gap;
+        min-height: 32px;
+        Text {
+            text: root.data.name;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+        }
+        StateChip { state: root.data.state; y: (parent.height - self.height) / 2; }
+        if root.data.action != "": Btn {
+            text: root.data.action;
+            label: root.data.action + " " + root.data.name;
+            clicked => { root.action(root.data.id); }
+        }
+    }
+    Text {
+        text: root.data.using == "" ? "Not active" : "Using " + root.data.using + (root.data.next == "" ? "" : " · next: " + root.data.next);
+        color: Theme.text-muted;
+        font-size: Theme.font-hint;
+        wrap: word-wrap;
+    }
+    if root.data.note != "": Text {
+        text: root.data.note;
+        color: Theme.text-muted;
+        font-size: Theme.font-hint;
+        wrap: word-wrap;
+    }
+    if root.data.fix != "": Text {
+        text: root.data.fix;
+        color: Theme.warn-text;
+        font-size: Theme.font-hint;
+        wrap: word-wrap;
+    }
+}
+
+// The one-line summary that opens the detail below it.
+export component SecuritySummary inherits Rectangle {
+    in property <string> text;
+    in property <bool> open;
+    callback clicked();
+    height: 36px * Theme.scale;
+    border-radius: Theme.radius-control;
+    background: ta.has-hover ? Theme.hover : Theme.surface-raised;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: Theme.s3;
+        padding-right: Theme.s3;
+        spacing: Theme.gap;
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.open ? "▾" : "▸";
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component SecurityDetail inherits VerticalLayout {
+    in property <[SecurityChainRow]> chains;
+    in property <[AcceptedIssueRow]> accepted;
+    callback recheck();
+    callback action(string);
+    callback forget(string);
+    spacing: Theme.s2;
+    SectionLabel { text: "PROTECTIONS"; }
+    for row in root.chains: ChainEntry {
+        data: row;
+        action(id) => { root.action(id); }
+    }
+    Btn {
+        text: "Re-check";
+        horizontal-stretch: 0;
+        clicked => { root.recheck(); }
+    }
+    if root.accepted.length > 0: VerticalLayout {
+        spacing: Theme.s2;
+        SectionLabel { text: "ACCEPTED ISSUES"; }
+        for issue in root.accepted: HorizontalLayout {
+            spacing: Theme.gap;
+            min-height: 32px;
+            Text {
+                text: issue.name;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Btn {
+                text: "Forget";
+                label: "Forget " + issue.name;
+                clicked => { root.forget(issue.id); }
+            }
+        }
+    }
+    Divider { }
+}
