@@ -120,7 +120,12 @@ pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
+    super::linux::open::open(url)
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
     let _ = url;
     Err(HookError::Unavailable("Opening links"))
@@ -133,11 +138,12 @@ pub struct FilePanels {
     pub notify: Notifier,
 }
 
-// Linux gets portal dialogs in step 3h of linux-plan.md.
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 impl FilePanels {
     fn modal<T>(&self, show: impl FnOnce() -> T) -> T {
         (self.notify)(UiNotice::Modal(true));
+        #[cfg(target_os = "linux")]
+        super::linux::open::register_with_portal();
         let picked = show();
         (self.notify)(UiNotice::Modal(false));
         picked
@@ -146,7 +152,7 @@ impl FilePanels {
 
 impl FileDialogs for FilePanels {
     fn save_file(&self, suggested_name: &str) -> Option<PathBuf> {
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
         {
             self.modal(|| {
                 rfd::FileDialog::new()
@@ -154,7 +160,7 @@ impl FileDialogs for FilePanels {
                     .save_file()
             })
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             let _ = suggested_name;
             None
@@ -162,11 +168,11 @@ impl FileDialogs for FilePanels {
     }
 
     fn open_file(&self) -> Option<PathBuf> {
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
         {
             self.modal(|| rfd::FileDialog::new().pick_file())
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             None
         }

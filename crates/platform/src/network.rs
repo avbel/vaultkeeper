@@ -3,7 +3,8 @@
 //!
 //! macOS observes `NWPathMonitor` on a system dispatch queue, from the first update the monitor
 //! sends right after [`subscribe`] onwards; no run loop is needed. Windows uses the connectivity
-//! hint callback registered with [`subscribe`], which reports the current hint immediately.
+//! hint callback registered with [`subscribe`], which reports the current hint immediately. Linux reads
+//! NetworkManager's signals on the system bus and reports nothing until the state changes.
 
 use std::sync::mpsc::Sender;
 
@@ -47,6 +48,8 @@ pub struct NetworkWatcher {
     _subscription: macos::Subscription,
     #[cfg(windows)]
     _subscription: windows::Subscription,
+    #[cfg(target_os = "linux")]
+    _subscription: linux::Subscription,
 }
 
 /// Sends every path update to `tx` until the returned watcher is dropped. Events sent after the
@@ -64,7 +67,13 @@ pub fn subscribe(tx: Sender<NetworkEvent>) -> Result<NetworkWatcher> {
             _subscription: windows::Subscription::new(tx)?,
         })
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(NetworkWatcher {
+            _subscription: linux::Subscription::new(tx)?,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         drop(tx);
         Err(crate::Error::Unsupported)
@@ -73,6 +82,12 @@ pub fn subscribe(tx: Sender<NetworkEvent>) -> Result<NetworkWatcher> {
 
 #[cfg(windows)]
 mod windows;
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod nm;
 
 #[cfg(target_os = "macos")]
 mod macos {
