@@ -82,11 +82,21 @@ pub fn register_before_hardening(wait: RegistrationWait) {
     }
 }
 
-/// Binds this process to its app id at the portal; file dialogs call it before the first picker.
-pub fn register_with_portal() {
-    if run_bounded(portal::ensure_registered()).is_none() {
-        tracing::warn!("portal registration did not finish in time");
-    }
+/// Runs `work` on the portal runtime and waits for it as long as it takes: a file dialog stays
+/// open for as long as the user needs, so `work` itself must end when the portal goes away. Never
+/// call it from the portal runtime's worker: the wait would block the thread that runs `work`.
+pub(super) fn run_unbounded<T: Send + 'static>(
+    work: impl Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    debug_assert!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "run_unbounded blocks, so it must not run inside a tokio runtime"
+    );
+    let (tx, rx) = mpsc::channel();
+    runtime()?.spawn(async move {
+        let _ = tx.send(work.await);
+    });
+    rx.recv().ok()
 }
 
 fn no_portal_message(url: &url::Url) -> String {

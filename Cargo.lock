@@ -5021,12 +5021,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pollster"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e9b9cf600136f5b976fbc5727d58c26e1ecab8ee23088d44ef1c7af793550ab"
-
-[[package]]
 name = "poly1305"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5720,7 +5714,6 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-uniform-type-identifiers 0.3.2",
  "percent-encoding",
- "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -90,6 +90,8 @@ ashpd = { version = "0.14.1", default-features = false, features = [
     "tokio",
     "background",
     "clipboard",
+    # File dialogs on the shared connection; rfd's portal backend opens its own after hardening.
+    "file_chooser",
     "global_shortcuts",
     "open_uri",
     "remote_desktop",
@@ -105,8 +107,6 @@ ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
 futures-util = { version = "0.3", default-features = false }
 # Same major as ashpd, for session-bus calls outside the portals (notifications, step 3f).
 zbus = { version = "6.0.0", default-features = false, features = ["tokio"] }
-# File dialogs through the FileChooser portal, no GTK (3h).
-rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 # Auto-type on wlroots compositors: zwp_virtual_keyboard_v1 (3i). Already in the tree through
 # Slint's Wayland backend.
 wayland-client = "0.31.15"

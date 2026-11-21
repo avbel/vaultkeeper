@@ -140,9 +140,9 @@ pub fn open_in_browser(url: &url::Url) -> HookResult<()> {
     Err(HookError::Unavailable("Opening links"))
 }
 
-/// Native panels (rfd); they run modally on the main thread, where the UI calls them.
-/// Native open/save panels. They run modally on the main thread, so the daemon is told while one
-/// is open: its hang watchdog must not kill a UI the user is busy with.
+/// Native open/save panels (rfd; the FileChooser portal on Linux). They run modally on the main
+/// thread, so the daemon is told while one is open: its hang watchdog must not kill a UI the user
+/// is busy with.
 pub struct FilePanels {
     pub notify: Notifier,
 }
@@ -151,8 +151,6 @@ pub struct FilePanels {
 impl FilePanels {
     fn modal<T>(&self, show: impl FnOnce() -> T) -> T {
         (self.notify)(UiNotice::Modal(true));
-        #[cfg(target_os = "linux")]
-        super::linux::open::register_with_portal();
         let picked = show();
         (self.notify)(UiNotice::Modal(false));
         picked
@@ -163,11 +161,15 @@ impl FileDialogs for FilePanels {
     fn save_file(&self, suggested_name: &str) -> Option<PathBuf> {
         #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
         {
-            self.modal(|| {
+            #[cfg(target_os = "linux")]
+            let show = || super::linux::file_dialog::save_file(suggested_name);
+            #[cfg(not(target_os = "linux"))]
+            let show = || {
                 rfd::FileDialog::new()
                     .set_file_name(suggested_name)
                     .save_file()
-            })
+            };
+            self.modal(show)
         }
         #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
@@ -179,7 +181,11 @@ impl FileDialogs for FilePanels {
     fn open_file(&self) -> Option<PathBuf> {
         #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
         {
-            self.modal(|| rfd::FileDialog::new().pick_file())
+            #[cfg(target_os = "linux")]
+            let show = super::linux::file_dialog::open_file;
+            #[cfg(not(target_os = "linux"))]
+            let show = || rfd::FileDialog::new().pick_file();
+            self.modal(show)
         }
         #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
