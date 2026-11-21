@@ -22,8 +22,8 @@ use vaultkeeper::{
     autotype::{Stroke, typed_text},
     exec::Exec,
     hooks::{
-        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, DockIcon, FileDialogs, GlobalHotkey,
-        HookError, HookResult, Hooks, KeyCeremony, KeyEvent, KeyEvents, SecurityKeys,
+        AutoType, AutoTypeDone, Biometrics, Clipboard, Clock, CopyStart, DockIcon, FileDialogs,
+        GlobalHotkey, HookError, HookResult, Hooks, KeyCeremony, KeyEvent, KeyEvents, SecurityKeys,
         SettingsStore, SiteIconSource, SshKeyTool, TypingTarget, WindowPlacement,
     },
     mock::{MOCK_KEY_ID, MockConfig, MockSecurityKey, MockVault},
@@ -59,6 +59,8 @@ pub fn init_backend() {
 pub struct RecordingClipboard {
     pub copies: Mutex<Vec<(String, Option<Duration>)>>,
     pub clears: Mutex<usize>,
+    /// When set, the next copy waits on it the way a pending permission dialog makes it wait.
+    pub pending: Mutex<Option<std::sync::mpsc::Receiver<HookResult<()>>>>,
 }
 
 impl RecordingClipboard {
@@ -89,6 +91,19 @@ impl Clipboard for RecordingClipboard {
             .unwrap_or_else(PoisonError::into_inner)
             .push((text.to_owned(), clear_after));
         Ok(())
+    }
+
+    fn begin_copy(&self, text: &str, clear_after: Option<Duration>) -> CopyStart {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let copied = self.copy(text, clear_after);
+        pending.map_or(CopyStart::Done(copied), |outcome| CopyStart::Waiting {
+            outcome,
+            permission_dialog: true,
+        })
     }
 
     fn clear_if_ours(&self) {

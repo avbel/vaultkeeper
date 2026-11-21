@@ -9,8 +9,15 @@ use zeroize::Zeroizing;
 
 use slint::ComponentHandle;
 
-use super::App;
-use crate::viewmodel::{self, copy_label, status_line};
+use super::{App, handler};
+use crate::{
+    hooks::{CopyStart, HookError, HookResult},
+    viewmodel::{self, copy_label, status_line},
+};
+
+const WAITING_FOR_PERMISSION: &str = "Waiting for clipboard permission: in the system dialog \
+                                      switch on Allow Remote Interaction, then Share";
+const WAITING_FOR_CLIPBOARD: &str = "Waiting for the clipboard…";
 
 impl<S: VaultService> App<S> {
     /// Returns whether the value reached the clipboard (the button then shows ✓).
@@ -33,8 +40,55 @@ impl<S: VaultService> App<S> {
             self.toast("Nothing to copy", true);
             return false;
         }
+        // A second click while the dialog is open would queue a second copy behind it and
+        // report twice.
+        if let Some(waiting) = self.copy_waiting.get() {
+            self.toast(waiting, false);
+            return false;
+        }
         let clear_after = self.settings.borrow().clipboard_clear.duration();
-        if let Err(error) = self.hooks.clipboard.copy(value, clear_after) {
+        match self.hooks.clipboard.begin_copy(value, clear_after) {
+            CopyStart::Done(copied) => self.copy_finished(label, clear_after, copied),
+            CopyStart::Waiting {
+                outcome,
+                permission_dialog,
+            } => {
+                tracing::info!(permission_dialog, "copy waits for the clipboard");
+                let waiting = if permission_dialog {
+                    WAITING_FOR_PERMISSION
+                } else {
+                    WAITING_FOR_CLIPBOARD
+                };
+                self.copy_waiting.set(Some(waiting));
+                self.toast(waiting, false);
+                let label = label.to_owned();
+                self.exec.spawn_blocking(
+                    move || {
+                        outcome.recv().unwrap_or_else(|_| {
+                            Err(HookError::Failed("the copy was abandoned".to_owned()))
+                        })
+                    },
+                    handler!(self, |app, copied| {
+                        app.copy_waiting.set(None);
+                        if app.copy_finished(&label, clear_after, copied) {
+                            tracing::info!("copy landed once the permission was given");
+                            app.toast(&format!("Copied {label}"), false);
+                        }
+                    }),
+                );
+                false
+            }
+        }
+    }
+
+    /// The auto-clear countdown starts here, when the value is on the clipboard.
+    fn copy_finished(
+        &self,
+        label: &str,
+        clear_after: Option<std::time::Duration>,
+        copied: HookResult<()>,
+    ) -> bool {
+        if let Err(error) = copied {
             self.toast(&format!("Copy failed: {error}"), true);
             return false;
         }

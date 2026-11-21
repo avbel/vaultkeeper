@@ -11,7 +11,11 @@ use common::{
 };
 use i_slint_backend_testing::{AccessibleRole, ElementHandle};
 use slint::{ComponentHandle, Model, platform::Key};
-use vaultkeeper::{mock::MockCall, ui::ManagerWindow};
+use vaultkeeper::{
+    hooks::{HookError, HookResult},
+    mock::MockCall,
+    ui::ManagerWindow,
+};
 use vk_vault::{
     VaultService,
     model::{CopyField, Filter, ItemData, ItemKind},
@@ -525,6 +529,39 @@ fn attachments_list_save_attach_and_delete_with_confirm() {
     click(&manager, "Confirm delete runbook.pdf");
     assert!(h.vault.calls().iter().any(|call| matches!(call, MockCall::DeleteAttachment { attachment, .. } if attachment == "att-runbook")));
     assert_eq!(manager.get_attachments().row_count(), 1);
+}
+
+/// The headless executor runs the continuation as soon as the outcome is there.
+fn copy_behind_a_permission_dialog(outcome: HookResult<()>) -> (Harness, ManagerWindow) {
+    let (h, manager) = open();
+    let (answer, pending) = std::sync::mpsc::sync_channel(1);
+    answer.send(outcome).expect("send");
+    *h.clipboard.pending.lock().expect("lock") = Some(pending);
+    let github = row_of(&manager, "GitHub");
+    assert!(
+        !manager.invoke_copy_row(github, 0),
+        "no tick before the user answered"
+    );
+    (h, manager)
+}
+
+#[test]
+fn a_copy_that_waited_for_permission_reports_when_it_lands() {
+    let (_h, manager) = copy_behind_a_permission_dialog(Ok(()));
+    assert_eq!(manager.get_toast_text(), "Copied username");
+    assert!(!manager.get_toast_error());
+    assert_eq!(
+        value_of(&manager, "Clipboard"),
+        "Copied username · clears in 30s"
+    );
+}
+
+#[test]
+fn a_refused_permission_is_the_only_failure_a_waiting_copy_reports() {
+    let (_h, manager) =
+        copy_behind_a_permission_dialog(Err(HookError::Failed("permission refused".to_owned())));
+    assert_eq!(manager.get_toast_text(), "Copy failed: permission refused");
+    assert!(manager.get_toast_error());
 }
 
 #[test]

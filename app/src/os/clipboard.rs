@@ -8,7 +8,25 @@ use std::{path::Path, sync::Arc, time::Duration};
 use vk_ipc::{ClipboardHost, RemoteVault};
 use vk_platform::clipboard::{ClipboardBackend, SecretClipboard, SystemClipboard as Pasteboard};
 
+#[cfg(target_os = "linux")]
+use crate::hooks::CopyStart;
 use crate::hooks::{Clipboard, HookError, HookResult};
+
+/// A copy that restores a stored grant answers well within this; past it the desktop is showing
+/// its permission dialog, and the UI thread must not sit behind that.
+#[cfg(target_os = "linux")]
+const DIALOG_PATIENCE: Duration = Duration::from_secs(2);
+
+/// The daemon's active clipboard link is not known in the UI process. Only GNOME lacks the
+/// data-control protocol, so there a copy that waits is waiting on the portal's dialog.
+#[cfg(target_os = "linux")]
+fn on_gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| {
+        desktop
+            .split(':')
+            .any(|name| name.eq_ignore_ascii_case("gnome"))
+    })
+}
 
 /// The UI process's clipboard hook: every call is one round-trip to the daemon.
 pub struct DaemonClipboard {
@@ -27,6 +45,34 @@ impl Clipboard for DaemonClipboard {
         self.daemon
             .copy_to_clipboard(text, clear_after)
             .map_err(|error| HookError::Failed(error.to_string()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn begin_copy(&self, text: &str, clear_after: Option<Duration>) -> CopyStart {
+        let (done, outcome) = std::sync::mpsc::sync_channel(1);
+        let daemon = Arc::clone(&self.daemon);
+        let text = zeroize::Zeroizing::new(text.to_owned());
+        let worker = std::thread::Builder::new()
+            .name("vk-copy".into())
+            .spawn(move || {
+                let copied = daemon
+                    .copy_to_clipboard(&text, clear_after)
+                    .map_err(|error| HookError::Failed(error.to_string()));
+                drop(done.send(copied));
+            });
+        if let Err(error) = worker {
+            return CopyStart::Done(Err(HookError::Failed(error.to_string())));
+        }
+        match outcome.recv_timeout(DIALOG_PATIENCE) {
+            Ok(copied) => CopyStart::Done(copied),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => CopyStart::Waiting {
+                outcome,
+                permission_dialog: on_gnome(),
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                CopyStart::Done(Err(HookError::Failed("the copy was abandoned".to_owned())))
+            }
+        }
     }
 
     fn clear_if_ours(&self) {

@@ -124,6 +124,51 @@ allowed. macOS ties the permission to the app's code signature: a build signed w
 ad-hoc signed build is a new app to macOS after each rebuild, so remove the old Vaultkeeper entry
 from the list and allow it again.
 
+## Copying on Linux
+
+On KDE, Sway and Hyprland a copy needs no permission: the compositor's data-control protocol takes
+it, marked as a secret so clipboard history skips it.
+
+GNOME has no such protocol, so Vaultkeeper copies through the desktop's RemoteDesktop portal, the
+only route GNOME gives a background program to the clipboard. The first copy opens GNOME's
+*Remote Desktop* dialog:
+
+1. Switch on **Allow Remote Interaction**. GNOME keeps *Share* disabled until you do; there is no
+   clipboard-only choice in that dialog.
+2. Leave **Clipboard** switched on and press **Share**.
+
+That switch also allows Vaultkeeper to send keyboard input. The copy path never sends any; the
+keyboard is in the request only because GNOME stores no grant for a session without a device and
+would then ask on every start. The portal offers no way to state a purpose in the dialog, so it
+shows none. The grant is kept (`clipboard-portal-token` in the data directory) and later copies ask
+nothing; revoke it in the desktop's privacy settings. GNOME shows its orange remote-session
+indicator while Vaultkeeper holds the session.
+
+While the dialog is open the Manager and the Quick Panel say *Waiting for clipboard permission*,
+and the value lands when you press *Share*; the clear countdown starts then. If you close the
+dialog, or leave it unanswered for three minutes, the copy falls back to the plain X11 clipboard
+when the session has one (clipboard history may record it there) and fails with a message
+otherwise. Vaultkeeper does not ask again for five minutes.
+
+GNOME keeps its own copy of whatever is on the clipboard and offers it again when the owner
+lets go. When the clear time comes Vaultkeeper therefore first replaces its selection with an
+empty marker, which makes GNOME drop that copy, then releases it and checks what the desktop
+reports. If the clipboard still offers the value, the log says the clear failed instead of
+reporting it done. A Vaultkeeper that is killed cannot do this, and GNOME then keeps the value.
+
+Limits of that check:
+
+- Clipboard history may already hold the value. Only KDE and the wlroots compositors honour the
+  secret mark; a GNOME history extension (GPaste, Clipboard Indicator) records the copy when it is
+  made, and clearing the clipboard does not remove it from that history.
+- The check looks at what the desktop reports within a quarter of a second after the release. A
+  history extension that puts the value back later than that is not noticed.
+- It reads back only `text/plain` types. An X11 program that offers the value only as
+  `UTF8_STRING` or `STRING` is not recognised as offering text.
+- A copy you make in another program is left alone when the clear time comes. If you make it in
+  the instant the clear runs, before the desktop has told Vaultkeeper about it, the clear can
+  still replace it.
+
 ## Auto-type on Linux
 
 Auto-type works in Wayland sessions only; the shortcut is Ctrl+Shift+Enter. Vaultkeeper tries two

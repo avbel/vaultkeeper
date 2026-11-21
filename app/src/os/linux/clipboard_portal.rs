@@ -8,6 +8,11 @@
 //! session stays open so a copy can be cleared later, only the keyboard device is requested, and the
 //! restore token lives in the data directory with mode 0600.
 //!
+//! The keyboard device stays in the request although nothing here types: GNOME's dialog enables
+//! "Share" only with "Allow Remote Interaction" switched on, and xdg-desktop-portal-gnome stores
+//! no restore token for a session without devices, so asking for none would bring the dialog back
+//! on every start.
+//!
 //! One task on the daemon's runtime owns the session, so callers on any thread (the clearer,
 //! blocking-pool copies) only exchange messages with it.
 
@@ -39,6 +44,10 @@ use crate::os::layout::CLIPBOARD_PORTAL_TOKEN_FILE;
 
 const TEXT_MIME: &str = "text/plain;charset=utf-8";
 const SECRET_HINT_MIME: &str = "x-kde-passwordManagerHint";
+/// Mutter's clipboard manager copies every text or image selection and offers that copy again
+/// once the owner is gone, so releasing the secret alone brings it back. A selection of a type it
+/// does not keep makes it drop its copy first.
+const CLEARED_MIME: &str = "application/x-vaultkeeper-cleared";
 /// RemoteDesktop gained the clipboard in version 2.
 const MIN_PORTAL_VERSION: u32 = 2;
 /// Told apart from other failures: a dismissed dialog must not be followed by a second one.
@@ -54,13 +63,37 @@ const DIALOG_TIMEOUT: Duration = Duration::from_secs(180);
 /// single worker.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const QUICK_TIMEOUT: Duration = Duration::from_secs(5);
+/// What a caller waits for a clear. The worst case inside is 5.25 s (two SetSelection calls, the
+/// confirmation and its settle time, SelectionRead and the read), and a lock-time clear holds the
+/// clipboard state for as long, so the parts are kept short.
+const CLEAR_TIMEOUT: Duration = Duration::from_secs(8);
+const CLEAR_CALL_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long the owner change that follows a release may take to arrive.
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(1);
+/// A copy put back by the desktop is announced right after the release; this covers the gap.
+const CONFIRM_SETTLE: Duration = Duration::from_millis(250);
 /// After a refused or failed grant, copies go to the next link instead of asking again.
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(300);
 
 type Reply<T> = mpsc::SyncSender<T>;
 type Transfers<'a> = Pin<Box<dyn Stream<Item = (Session<RemoteDesktop>, String, u32)> + Send + 'a>>;
-type Owners<'a> =
-    Pin<Box<dyn Stream<Item = (Session<RemoteDesktop>, SelectionOwnerChanged)> + Send + 'a>>;
+type Owners<'a> = Pin<Box<dyn Stream<Item = OwnerChange> + Send + 'a>>;
+
+/// What the desktop said about a new clipboard owner; a released clipboard has no types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnerChange {
+    mime_types: Vec<String>,
+    ours: Option<bool>,
+}
+
+impl From<SelectionOwnerChanged> for OwnerChange {
+    fn from(change: SelectionOwnerChanged) -> Self {
+        Self {
+            mime_types: change.mime_types().to_vec(),
+            ours: change.session_is_owner(),
+        }
+    }
+}
 
 enum Command {
     Set(Zeroizing<String>, Reply<std::result::Result<(), String>>),
@@ -131,7 +164,7 @@ impl ClipboardBackend for PortalLink {
     }
 
     fn clear(&mut self) -> Result<()> {
-        self.ask(QUICK_TIMEOUT, Command::Clear)?
+        self.ask(CLEAR_TIMEOUT, Command::Clear)?
             .map_err(Error::Clipboard)
     }
 }
@@ -244,7 +277,7 @@ impl Worker {
             // The caller gave up while the permission dialog was open and the chain moved on to
             // another link, so nothing would ever clear this selection.
             tracing::info!("clipboard portal copy abandoned by its caller; releasing it");
-            self.end_session(&open, true).await;
+            self.end_session(&open, true, &mut owners).await;
             return Ended::Idle;
         }
         let mut open_channel = true;
@@ -252,6 +285,11 @@ impl Worker {
         let mut retry = None;
         while open_channel {
             let event = tokio::select! {
+                // Owner changes first: a command must not act on ownership that a queued
+                // change already ended.
+                biased;
+                Some(change) = owners.next() => Event::Owner(change.ours),
+                Some((_, mime, serial)) = transfers.next() => Event::Transfer(mime, serial),
                 command = commands.recv() => {
                     match command {
                         None => open_channel = false,
@@ -267,10 +305,6 @@ impl Worker {
                     }
                     continue;
                 }
-                Some((_, mime, serial)) = transfers.next() => Event::Transfer(mime, serial),
-                Some((_, change)) = owners.next() => {
-                    Event::Owner(change.session_is_owner())
-                }
                 else => break,
             };
             match event {
@@ -280,7 +314,7 @@ impl Worker {
                 Event::Owner(None) => tracing::debug!("portal owner change without ownership"),
             }
         }
-        self.end_session(&open, usable).await;
+        self.end_session(&open, usable, &mut owners).await;
         match retry {
             Some((text, reply)) => Ended::Retry(text, reply),
             None if open_channel => Ended::Idle,
@@ -288,18 +322,43 @@ impl Worker {
         }
     }
 
-    /// Drops the text and, while the session is usable, releases the selection if it is still
-    /// ours (never another app's copy) and closes the session.
-    async fn end_session(&mut self, open: &Open, usable: bool) {
-        let owned = self.owned;
-        self.text = None;
-        self.owned = false;
-        if usable {
-            if owned {
-                release(open).await;
-            }
-            close(open).await;
+    /// While the session is usable, removes the selection if it is still ours (never another
+    /// app's copy) and closes the session.
+    async fn end_session(&mut self, open: &Open, usable: bool, owners: &mut Owners<'_>) {
+        if !usable {
+            self.text = None;
+            self.owned = false;
+            return;
         }
+        // Closing a session that still owns the text would leave the desktop's copy of it behind.
+        if let Err(error) = self.clear(open, owners).await {
+            tracing::warn!(%error, "could not clear the portal clipboard before closing");
+        }
+        close(open).await;
+    }
+
+    /// Removes our selection so that nothing offers the text any more, and says so only once the
+    /// desktop confirmed it. Nothing to do when the selection is no longer ours.
+    async fn clear(
+        &mut self,
+        open: &Open,
+        owners: &mut Owners<'_>,
+    ) -> std::result::Result<(), String> {
+        let owned = self.owned;
+        self.owned = false;
+        let Some(text) = self.text.take().filter(|_| owned) else {
+            return Ok(());
+        };
+        // SetSelection takes the clipboard whoever owns it. A copy made in another app whose
+        // owner change has not reached us yet (two D-Bus hops behind the compositor) is still
+        // replaced; that window cannot be closed from here.
+        if another_app_took_over(owners) {
+            tracing::debug!("another app owns the clipboard; nothing of ours to clear");
+            return Ok(());
+        }
+        set_selection(open, &[CLEARED_MIME]).await?;
+        set_selection(open, &[]).await?;
+        confirm_cleared(open, &text, owners).await
     }
 
     async fn handle(&mut self, open: &Open, command: Command, owners: &mut Owners<'_>) -> Flow {
@@ -309,13 +368,7 @@ impl Worker {
                 Flow::Continue
             }
             Command::Clear(reply) => {
-                let owned = self.owned;
-                self.text = None;
-                self.owned = false;
-                if owned {
-                    release(open).await;
-                }
-                drop(reply.send(Ok(())));
+                drop(reply.send(self.clear(open, owners).await));
                 Flow::Continue
             }
             Command::Set(text, reply) => {
@@ -381,6 +434,7 @@ impl Worker {
             "SetSelection",
         )
         .await?;
+        tracing::debug!("copied through the clipboard portal");
         self.owned = true;
         self.no_retry_before = None;
         Ok(())
@@ -473,21 +527,132 @@ async fn subscribe(
         .receive_selection_owner_changed::<RemoteDesktop>()
         .await
         .map_err(|error| error.to_string())?;
+    let owners = owners.map(|(_, change)| OwnerChange::from(change));
     Ok((Box::pin(transfers), Box::pin(owners)))
 }
 
-/// An empty offer releases the selection; without it the text is still never served.
-async fn release(open: &Open) {
-    let released = bounded(
-        CALL_TIMEOUT,
-        open.clipboard
-            .set_selection(&open.session, SetSelectionOptions::default()),
+/// No types releases the selection.
+async fn set_selection(open: &Open, mime_types: &[&str]) -> std::result::Result<(), String> {
+    bounded(
+        CLEAR_CALL_TIMEOUT,
+        open.clipboard.set_selection(
+            &open.session,
+            SetSelectionOptions::default().set_mime_types(mime_types),
+        ),
         "SetSelection",
     )
-    .await;
-    if let Err(error) = released {
-        tracing::warn!(%error, "could not release the portal clipboard selection");
+    .await
+}
+
+/// Empties the queue of owner changes and tells whether one of them names another owner.
+fn another_app_took_over(owners: &mut Owners<'_>) -> bool {
+    let mut taken = false;
+    while let Some(change) = owners.next().now_or_never().flatten() {
+        taken |= change.ours == Some(false);
     }
+    taken
+}
+
+/// The last owner change after our release, once `settle` passed without another; `None` when
+/// the desktop said nothing within `limit`.
+async fn change_after_release(
+    owners: &mut Owners<'_>,
+    limit: Duration,
+    settle: Duration,
+) -> Option<OwnerChange> {
+    let mut after_release = None;
+    let mut wait = limit;
+    while let Ok(Some(change)) = tokio::time::timeout(wait, owners.next()).await {
+        // Our own placeholder selection is announced first.
+        if change.ours != Some(true) {
+            after_release = Some(change);
+            wait = settle;
+        }
+    }
+    after_release
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Cleared,
+    Unconfirmed,
+    /// Something offers text again; only reading that type tells whether it is ours.
+    ReadBack(String),
+}
+
+/// An empty clipboard is the proof. An owner without a text type cannot be yielding our text.
+fn verdict(after_release: Option<&OwnerChange>) -> Verdict {
+    let Some(change) = after_release else {
+        return Verdict::Unconfirmed;
+    };
+    change
+        .mime_types
+        .iter()
+        .find(|mime| mime.starts_with("text/plain"))
+        .map_or(Verdict::Cleared, |mime| Verdict::ReadBack(mime.clone()))
+}
+
+fn judge_read_back(offered: &[u8], text: &str) -> std::result::Result<(), String> {
+    if offered == text.as_bytes() {
+        return Err("the desktop still offers the copied text after the clear".to_owned());
+    }
+    Ok(())
+}
+
+async fn confirm_cleared(
+    open: &Open,
+    text: &str,
+    owners: &mut Owners<'_>,
+) -> std::result::Result<(), String> {
+    let after_release = change_after_release(owners, CONFIRM_TIMEOUT, CONFIRM_SETTLE).await;
+    tracing::debug!(left = ?after_release, "clipboard after the clear");
+    match verdict(after_release.as_ref()) {
+        Verdict::Cleared => Ok(()),
+        Verdict::Unconfirmed => {
+            Err("the desktop did not confirm that the clipboard was cleared".to_owned())
+        }
+        Verdict::ReadBack(mime) => {
+            let offered = read_selection(open, &mime, text.len()).await?;
+            judge_read_back(&offered, text)
+        }
+    }
+}
+
+/// At most one byte more than `limit`: enough to tell whether the content equals our text.
+async fn read_selection(
+    open: &Open,
+    mime: &str,
+    limit: usize,
+) -> std::result::Result<Zeroizing<Vec<u8>>, String> {
+    let fd = bounded(
+        CLEAR_CALL_TIMEOUT,
+        open.clipboard.selection_read(&open.session, mime),
+        "SelectionRead",
+    )
+    .await?;
+    let pipe = pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(fd))
+        .map_err(|error| format!("the read fd is not a pipe: {error}"))?;
+    let mut bytes = Zeroizing::new(vec![0_u8; limit.saturating_add(1)]);
+    let read = tokio::time::timeout(CLEAR_CALL_TIMEOUT, read_up_to(&pipe, &mut bytes))
+        .await
+        .map_err(|_| "the clipboard owner did not answer in time".to_owned())?
+        .map_err(|error| error.to_string())?;
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+async fn read_up_to(pipe: &pipe::Receiver, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        pipe.readable().await?;
+        match pipe.try_read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
 }
 
 async fn close(open: &Open) {
@@ -599,6 +764,91 @@ async fn write_all(pipe: &pipe::Sender, mut bytes: &[u8]) -> std::io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SHORT: Duration = Duration::from_millis(30);
+
+    fn change(mime_types: &[&str], ours: Option<bool>) -> OwnerChange {
+        OwnerChange {
+            mime_types: mime_types.iter().map(|&mime| mime.to_owned()).collect(),
+            ours,
+        }
+    }
+
+    /// Delivers `changes` and then stays silent, as the portal's signal stream does.
+    fn owners(changes: Vec<OwnerChange>) -> Owners<'static> {
+        Box::pin(futures_util::stream::iter(changes).chain(futures_util::stream::pending()))
+    }
+
+    fn after_release(changes: Vec<OwnerChange>) -> Option<OwnerChange> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        runtime.block_on(change_after_release(&mut owners(changes), SHORT, SHORT))
+    }
+
+    #[test]
+    fn a_copy_made_elsewhere_before_the_clear_is_left_alone() {
+        let mut queued = owners(vec![
+            change(&[TEXT_MIME, SECRET_HINT_MIME], Some(true)),
+            change(&[TEXT_MIME], Some(false)),
+        ]);
+        assert!(another_app_took_over(&mut queued));
+        assert!(
+            queued.next().now_or_never().is_none(),
+            "the queue was emptied"
+        );
+    }
+
+    #[test]
+    fn our_own_owner_change_does_not_stop_the_clear() {
+        let mut queued = owners(vec![
+            change(&[TEXT_MIME, SECRET_HINT_MIME], Some(true)),
+            change(&[], None),
+        ]);
+        assert!(!another_app_took_over(&mut queued));
+    }
+
+    #[test]
+    fn an_empty_clipboard_after_the_release_confirms_the_clear() {
+        let seen = after_release(vec![change(&[CLEARED_MIME], Some(true)), change(&[], None)]);
+        assert_eq!(seen, Some(change(&[], None)));
+        assert_eq!(verdict(seen.as_ref()), Verdict::Cleared);
+    }
+
+    #[test]
+    fn a_desktop_that_stays_silent_does_not_confirm() {
+        let seen = after_release(vec![change(&[CLEARED_MIME], Some(true))]);
+        assert_eq!(seen, None, "the placeholder alone proves nothing");
+        assert_eq!(verdict(seen.as_ref()), Verdict::Unconfirmed);
+    }
+
+    #[test]
+    fn text_offered_after_the_release_is_read_back() {
+        let seen = after_release(vec![
+            change(&[CLEARED_MIME], Some(true)),
+            change(&[], None),
+            change(&["text/html", TEXT_MIME], Some(false)),
+        ]);
+        assert_eq!(
+            verdict(seen.as_ref()),
+            Verdict::ReadBack(TEXT_MIME.to_owned())
+        );
+    }
+
+    #[test]
+    fn an_owner_without_text_cannot_hold_the_secret() {
+        let image = change(&["image/png"], Some(false));
+        assert_eq!(verdict(Some(&image)), Verdict::Cleared);
+    }
+
+    #[test]
+    fn only_the_same_text_read_back_fails_the_clear() {
+        assert!(judge_read_back(b"hunter2", "hunter2").is_err());
+        assert!(judge_read_back(b"hello", "hunter2").is_ok());
+        assert!(judge_read_back(b"hunter2\n", "hunter2").is_ok());
+        assert!(judge_read_back(b"", "hunter2").is_ok());
+    }
 
     /// One worker thread: the answering task shares it with the caller, as in the daemon.
     #[test]

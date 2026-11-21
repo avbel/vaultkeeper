@@ -103,10 +103,20 @@ impl ClipboardBackend for LinuxClipboard {
     }
 
     fn clear(&mut self) -> Result<()> {
-        match self.holder {
-            Some(index) => self.links[index].1.clear(),
-            None => Ok(()),
+        let Some(index) = self.holder else {
+            return Ok(());
+        };
+        let (kind, backend) = &mut self.links[index];
+        let cleared = backend.clear();
+        if let Err(error) = &cleared {
+            // The status must not keep vouching for a link that may have left a secret behind.
+            self.capabilities = self.capabilities.with(
+                *kind,
+                Probe::Degraded(format!("the last clear was not confirmed: {error}")),
+            );
+            self.report = self.capabilities.report();
         }
+        cleared
     }
 }
 
@@ -120,6 +130,7 @@ mod tests {
     struct Fake {
         content: Arc<Mutex<Option<String>>>,
         refuses: bool,
+        keeps_on_clear: bool,
     }
 
     impl Fake {
@@ -142,6 +153,9 @@ mod tests {
         }
 
         fn clear(&mut self) -> Result<()> {
+            if self.keeps_on_clear {
+                return Err(Error::Clipboard("still offered".into()));
+            }
             *self.content.lock().expect("lock") = None;
             Ok(())
         }
@@ -224,6 +238,25 @@ mod tests {
         );
         clipboard.clear().expect("clear");
         assert_eq!(plain.content(), None);
+    }
+
+    #[test]
+    fn a_clear_that_was_not_confirmed_shows_in_the_report() {
+        let stubborn = Fake {
+            keeps_on_clear: true,
+            ..Fake::default()
+        };
+        let (dc, plain) = (Fake::default(), Fake::default());
+        let mut clipboard =
+            LinuxClipboard::assemble(&caps(false, true, true), parts(&dc, &stubborn, &plain))
+                .expect("assemble");
+        clipboard.set_secret("hunter2").expect("copy");
+        assert_eq!(clipboard.report().note, None);
+        assert!(clipboard.clear().is_err());
+        let note = clipboard.report().note.clone().expect("note");
+        assert!(note.contains("not confirmed") && note.contains("still offered"));
+        clipboard.set_secret("hunter2").expect("copy");
+        assert_eq!(clipboard.report().note, None, "a working copy resets it");
     }
 
     #[test]

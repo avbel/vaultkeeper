@@ -22,6 +22,14 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// on the user.
 const LONG_TIMEOUT: Duration = Duration::from_mins(10);
 
+/// On Linux a first copy waits for the user to answer the desktop's clipboard permission dialog;
+/// the daemon gives up on that after four minutes and must be the one to say so.
+const CLIPBOARD_TIMEOUT: Duration = if cfg!(target_os = "linux") {
+    Duration::from_mins(5)
+} else {
+    DEFAULT_TIMEOUT
+};
+
 /// UI -> daemon.
 #[derive(Serialize, Deserialize)]
 pub enum UiMessage {
@@ -521,6 +529,7 @@ impl Call {
             | Self::UploadAttachment { .. }
             | Self::CreateFileSend { .. }
             | Self::DeleteAttachment { .. } => LONG_TIMEOUT,
+            Self::CopyToClipboard { .. } => CLIPBOARD_TIMEOUT,
             _ => DEFAULT_TIMEOUT,
         }
     }
@@ -628,6 +637,17 @@ mod tests {
             "the user may take a while to touch the sensor"
         );
         assert_eq!(Call::Folders.timeout(), DEFAULT_TIMEOUT);
+        let copy = Call::CopyToClipboard {
+            text: Zeroizing::new("x".to_owned()),
+            clear_after_secs: None,
+        };
+        // The daemon's own wait for the permission dialog is four minutes.
+        let expected = if cfg!(target_os = "linux") {
+            Duration::from_mins(5)
+        } else {
+            DEFAULT_TIMEOUT
+        };
+        assert_eq!(copy.timeout(), expected);
         assert_eq!(Call::Lock.timeout(), DEFAULT_TIMEOUT);
     }
 

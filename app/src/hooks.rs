@@ -34,10 +34,26 @@ pub enum HookError {
 
 pub type HookResult<T> = Result<T, HookError>;
 
+/// How a copy started. Only a desktop that asks the user first (the GNOME clipboard portal) makes
+/// the caller wait.
+pub enum CopyStart {
+    Done(HookResult<()>),
+    /// The outcome arrives later. `permission_dialog` says the wait is on GNOME's Remote Desktop
+    /// dialog, which needs a switch the user would not guess.
+    Waiting {
+        outcome: std::sync::mpsc::Receiver<HookResult<()>>,
+        permission_dialog: bool,
+    },
+}
+
 pub trait Clipboard: Send + Sync {
     /// Puts a secret on the clipboard (concealed) and clears it after `clear_after` if it still
     /// holds this value.
     fn copy(&self, text: &str, clear_after: Option<Duration>) -> HookResult<()>;
+    /// Like [`Self::copy`], but hands a copy that waits on the user back instead of blocking.
+    fn begin_copy(&self, text: &str, clear_after: Option<Duration>) -> CopyStart {
+        CopyStart::Done(self.copy(text, clear_after))
+    }
     /// Clears the clipboard now if it still holds the last value we copied.
     fn clear_if_ours(&self);
 }

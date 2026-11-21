@@ -130,6 +130,8 @@ pub struct App<S: VaultService> {
     last_sync: Cell<Option<u64>>,
     /// `(label, clears at unix time, total seconds)` of the last copy.
     clip: RefCell<Option<(SharedString, u64, i32)>>,
+    /// The toast of a copy that is still waiting on the desktop; no other copy starts meanwhile.
+    copy_waiting: Cell<Option<&'static str>>,
     manager: RefCell<Option<Manager>>,
     quick: RefCell<Option<Quick>>,
     lock_window: RefCell<Option<LockWindow>>,
@@ -200,6 +202,7 @@ impl<S: VaultService> App<S> {
             target: Cell::new(Target::None),
             last_sync: Cell::new(None),
             clip: RefCell::new(None),
+            copy_waiting: Cell::new(None),
             manager: RefCell::new(None),
             quick: RefCell::new(None),
             lock_window: RefCell::new(None),
