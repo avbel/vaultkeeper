@@ -55,8 +55,10 @@ async fn follow(changes: watch::Sender<SystemScheme>) {
 /// receiver that fires on every later change. Must not be called from inside an async context.
 #[must_use]
 pub fn start(runtime: &Handle) -> watch::Receiver<SystemScheme> {
+    // The timer is created inside `block_on`: a `timeout` built on this thread, outside the
+    // runtime, panics with "no reactor running".
     let initial = runtime
-        .block_on(tokio::time::timeout(INITIAL_READ_LIMIT, read_initial()))
+        .block_on(async { tokio::time::timeout(INITIAL_READ_LIMIT, read_initial()).await })
         .unwrap_or_else(|_| {
             tracing::warn!("the colour scheme portal did not answer in time");
             SystemScheme::Unknown
@@ -74,8 +76,9 @@ pub fn read_once() -> SystemScheme {
         .enable_all()
         .build();
     let scheme = match runtime {
+        // Same reason as in `start`: the timer must be created inside the runtime.
         Ok(runtime) => runtime
-            .block_on(tokio::time::timeout(INITIAL_READ_LIMIT, read_initial()))
+            .block_on(async { tokio::time::timeout(INITIAL_READ_LIMIT, read_initial()).await })
             .unwrap_or(SystemScheme::Unknown),
         Err(error) => {
             tracing::warn!(%error, "cannot read the colour scheme");
@@ -84,4 +87,28 @@ pub fn read_once() -> SystemScheme {
     };
     system_scheme::store(scheme);
     scheme
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `run_ui` calls `start` from the main thread, outside the runtime; building the timeout there
+    /// panicked with "no reactor running".
+    #[test]
+    fn start_works_from_a_thread_outside_the_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let receiver = start(runtime.handle());
+        assert_eq!(*receiver.borrow(), system_scheme::current());
+    }
+
+    /// The refusal window calls it with no runtime at all; it panicked the same way.
+    #[test]
+    fn read_once_works_without_a_runtime() {
+        assert_eq!(read_once(), system_scheme::current());
+    }
 }

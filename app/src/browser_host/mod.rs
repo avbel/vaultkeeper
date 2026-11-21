@@ -84,7 +84,7 @@ async fn run_async(caller: HostCaller) -> anyhow::Result<()> {
         return Ok(());
     }
     // The welcome means the daemon has verified this host by its exe.
-    vk_platform::hardening::harden_after_handshake();
+    vk_platform::hardening::harden_after_handshake()?;
     #[cfg(unix)]
     let (mut read, mut write) = stream.into_split();
     #[cfg(not(unix))]

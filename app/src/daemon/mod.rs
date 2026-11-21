@@ -19,9 +19,7 @@ pub(crate) mod tray;
 pub mod tray_sync;
 pub mod update;
 
-#[cfg(not(windows))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
@@ -94,8 +92,7 @@ fn write_desktop_entry() {
     }
 }
 
-/// The data dir after its startup check, and the socket dir (the runtime dir on Linux). On Linux
-/// the process is then non-dumpable and, when requested, sandboxed.
+/// The data dir after its startup check, and the socket dir (the runtime dir on Linux).
 fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     crate::os::startup_check::enforce(&data_dir)?;
@@ -103,15 +100,30 @@ fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
         crate::os::security_gate::enforce(crate::os::security_gate::Role::Daemon, &data_dir)
             .inspect_err(|refusal| crate::refusal::present(&data_dir, &refusal.to_string()))?;
     crate::app::note_start(&report);
-    // Nothing reads the daemon's exe: clients check it through daemon_check instead.
-    vk_platform::hardening::harden_after_handshake();
     let socket_dir = crate::os::layout::socket_dir(&data_dir);
     vk_platform::fs::ensure_private_dir(&socket_dir).context("create the socket directory")?;
+    Ok((data_dir, socket_dir))
+}
+
+/// Only in the process that became the daemon, so a forwarded launch never waits on the portal.
+/// Leaves the process non-dumpable and, on Linux when requested, sandboxed. No secrets are loaded
+/// yet, which is what makes the dumpable window up to here harmless.
+fn harden_daemon(data_dir: &Path, socket_dir: &Path) -> anyhow::Result<()> {
+    // Before Landlock too, which may not allow the session bus.
+    #[cfg(target_os = "linux")]
+    crate::os::linux::open::register_before_hardening(
+        crate::os::linux::open::RegistrationWait::Daemon,
+    );
+    // Nothing reads the daemon's exe: clients check it through daemon_check instead.
+    vk_platform::hardening::harden_after_handshake()
+        .inspect_err(|refusal| crate::refusal::present(data_dir, &refusal.to_string()))?;
     #[cfg(target_os = "linux")]
     if vk_platform::sandbox::requested() {
-        sandbox(&data_dir, &socket_dir);
+        sandbox(data_dir, socket_dir);
     }
-    Ok((data_dir, socket_dir))
+    #[cfg(not(target_os = "linux"))]
+    let _ = socket_dir;
+    Ok(())
 }
 
 /// The UI the daemon starts later inherits the same rule set.
@@ -225,6 +237,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     else {
         return Ok(());
     };
+    harden_daemon(&data_dir, &socket_dir)?;
     keep_launch_token(launch_token);
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()

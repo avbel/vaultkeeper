@@ -17,6 +17,26 @@ use crate::hooks::{HookError, HookResult};
 /// UI thread must not wait on it.
 const HAND_OVER_WAIT: Duration = Duration::from_secs(5);
 
+/// How long a process waits for its registration before it drops dumpable. A reply that arrives
+/// after that is refused anyway, so a timeout means portal calls fail until the next start.
+#[derive(Debug, Clone, Copy)]
+pub enum RegistrationWait {
+    /// D-Bus's own reply timeout: at login the daemon's call may be what activates the portal.
+    Daemon,
+    /// The daemon has already activated the portal, and it drops a UI that sends no Hello within
+    /// its 5 s handshake timeout, which runs from the spawn.
+    Ui,
+}
+
+impl RegistrationWait {
+    const fn limit(self) -> Duration {
+        match self {
+            Self::Daemon => Duration::from_secs(25),
+            Self::Ui => Duration::from_secs(2),
+        }
+    }
+}
+
 /// Never dropped: ashpd caches its session connection on the runtime that first used it, and the
 /// portal restart watcher lives on it too.
 fn runtime() -> Option<&'static Runtime> {
@@ -36,11 +56,30 @@ fn runtime() -> Option<&'static Runtime> {
 
 /// Runs `work` on the portal runtime and waits for it at most [`HAND_OVER_WAIT`].
 fn run_bounded<T: Send + 'static>(work: impl Future<Output = T> + Send + 'static) -> Option<T> {
+    run_waiting(work, HAND_OVER_WAIT)
+}
+
+fn run_waiting<T: Send + 'static>(
+    work: impl Future<Output = T> + Send + 'static,
+    wait: Duration,
+) -> Option<T> {
     let (tx, rx) = mpsc::channel();
     runtime()?.spawn(async move {
         let _ = tx.send(work.await);
     });
-    rx.recv_timeout(HAND_OVER_WAIT).ok()
+    rx.recv_timeout(wait).ok()
+}
+
+/// Registers while this process is still dumpable; daemon and UI call it before
+/// `harden_after_handshake`. The portal identifies a caller by opening `/proc/<pid>/root`, which a
+/// non-dumpable process denies, and caches the result per connection, so only a registration made
+/// now lets later portal calls on ashpd's shared connection through ([`portal`] has the details).
+pub fn register_before_hardening(wait: RegistrationWait) {
+    if run_waiting(portal::ensure_registered(), wait.limit()).is_none() {
+        tracing::warn!(
+            "portal registration did not finish before hardening; portal calls will be refused"
+        );
+    }
 }
 
 /// Binds this process to its app id at the portal; file dialogs call it before the first picker.

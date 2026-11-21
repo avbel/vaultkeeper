@@ -34,6 +34,27 @@ pub fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|line| line.strip_prefix(name)?.strip_prefix(':').map(str::trim))
 }
 
+/// `TracerPid` of `/proc/<pid>/status`: 0 when nothing traces the process.
+#[must_use]
+pub fn tracer_pid(status: &str) -> Option<u32> {
+    status_field(status, "TracerPid")?.parse().ok()
+}
+
+/// The first non-zero `TracerPid` among the per-thread statuses of `/proc/<pid>/task/*/status`,
+/// 0 when no thread is traced. ptrace attaches to single threads, so one traced worker is enough
+/// to read the whole address space. `None` when a status has no readable `TracerPid`.
+#[must_use]
+pub fn any_tracer<'a>(statuses: impl IntoIterator<Item = &'a str>) -> Option<u32> {
+    let mut tracer = 0;
+    for status in statuses {
+        let this = tracer_pid(status)?;
+        if tracer == 0 {
+            tracer = this;
+        }
+    }
+    Some(tracer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +92,27 @@ mod tests {
         assert_eq!(status_field(status, "PPid"), Some("1"));
         assert_eq!(status_field(status, "Umask"), Some("0077"));
         assert_eq!(status_field(status, "Missing"), None);
+    }
+
+    #[test]
+    fn tracer_pid_from_status() {
+        let untraced = "Name:\tvaultkeeper\nState:\tS (sleeping)\nTracerPid:\t0\nUid:\t1000\n";
+        assert_eq!(tracer_pid(untraced), Some(0));
+        assert_eq!(
+            tracer_pid("Name:\tvaultkeeper\nTracerPid:\t4242\n"),
+            Some(4242)
+        );
+        assert_eq!(tracer_pid("Name:\tvaultkeeper\nPPid:\t1\n"), None);
+        assert_eq!(tracer_pid("TracerPid:\tgarbage\n"), None);
+    }
+
+    #[test]
+    fn any_thread_tracer_counts() {
+        let main = "Name:\tvaultkeeper\nTracerPid:\t0\n";
+        let worker = "Name:\tvaultkeeper-port\nTracerPid:\t31337\n";
+        assert_eq!(any_tracer([main, main]), Some(0));
+        assert_eq!(any_tracer([main, worker, main]), Some(31337));
+        assert_eq!(any_tracer([main, "Name:\tbroken\n"]), None);
+        assert_eq!(any_tracer([]), Some(0));
     }
 }

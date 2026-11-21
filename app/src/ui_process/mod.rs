@@ -48,6 +48,10 @@ pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow
     let report = crate::os::security_gate::enforce(crate::os::security_gate::Role::Ui, &data_dir)?;
     crate::app::note_start(&report);
     step("start-up check passed");
+    // Before the daemon connection, so nothing from the vault is in memory while the portal still
+    // needs this process dumpable.
+    #[cfg(target_os = "linux")]
+    crate::os::linux::open::register_before_hardening(crate::os::linux::open::RegistrationWait::Ui);
     // One worker: this process only waits on the daemon.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -65,8 +69,9 @@ pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow
         Err(error) => return Err(error).context("connect to the Vaultkeeper daemon"),
     };
     step("connected to the daemon");
-    // The daemon has verified this process by its exe; nothing needs it readable any more.
-    vk_platform::hardening::harden_after_handshake();
+    // The daemon has verified this process by its exe; nothing needs it readable any more. A
+    // refusal exits with an error, which the daemon logs with the exit status.
+    vk_platform::hardening::harden_after_handshake()?;
     let remote = Arc::new(remote);
     let notify = notifier(&remote);
     select_backend(Backend::Ui {

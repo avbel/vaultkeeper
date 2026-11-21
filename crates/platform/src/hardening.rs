@@ -29,11 +29,62 @@ pub fn harden_process(role: Role) {
     }
 }
 
+/// Why a process refuses to go on after hardening.
+#[derive(Debug, thiserror::Error)]
+pub enum HardeningError {
+    /// A debugger or another program attached while the process was still dumpable.
+    #[error(
+        "process {tracer} is tracing Vaultkeeper and could read its memory; close that program \
+         or debugger and start Vaultkeeper again"
+    )]
+    Traced { tracer: u32 },
+    /// The protection could not be confirmed, so the process cannot know it is not readable.
+    #[error("Vaultkeeper could not confirm that other programs cannot read its memory: {0}")]
+    Unverified(String),
+}
+
 /// Linux: makes the process non-dumpable once the daemon has verified it, which needed its
 /// `/proc/<pid>/exe` (linux-plan.md 1d, 2c). The daemon calls it at start. Elsewhere a no-op.
-pub fn harden_after_handshake() {
+///
+/// # Errors
+/// On Linux, when dumpable does not read back 0, when the thread statuses cannot be read, or when
+/// any thread is traced: a tracer that attached during the dumpable window stays attached after
+/// dumpable is cleared. Debug builds let a tracer through with `VK_ALLOW_TRACER=1`, so developers
+/// can run gdb; release builds never do.
+pub fn harden_after_handshake() -> Result<(), HardeningError> {
     #[cfg(target_os = "linux")]
-    vk_linux::probes::drop_dumpable();
+    {
+        vk_linux::probes::drop_dumpable();
+        match vk_linux::probes::dumpable() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(HardeningError::Unverified(
+                    "the process is still dumpable".to_owned(),
+                ));
+            }
+            Err(error) => return Err(HardeningError::Unverified(error)),
+        }
+        check_no_tracer()?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn check_no_tracer() -> Result<(), HardeningError> {
+    match vk_linux::probes::tracer_pid() {
+        Ok(0) => Ok(()),
+        Ok(tracer) if tracer_allowed() => {
+            tracing::warn!(tracer, "a tracer is attached; allowed by VK_ALLOW_TRACER=1");
+            Ok(())
+        }
+        Ok(tracer) => Err(HardeningError::Traced { tracer }),
+        Err(error) => Err(HardeningError::Unverified(error)),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn tracer_allowed() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("VK_ALLOW_TRACER").is_some_and(|value| value == "1")
 }
 
 /// Whether `harden_process` replaced this process's DACL. The Windows stand-in for the macOS
@@ -89,6 +140,40 @@ mod tests {
         let status = unsafe { libc::getrlimit(libc::RLIMIT_CORE, &raw mut limit) };
         assert_eq!(status, 0);
         assert_eq!((limit.rlim_cur, limit.rlim_max), (0, 0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_untraced_process_passes_the_tracer_check() {
+        if vk_linux::probes::tracer_pid() != Ok(0) {
+            // Run under a debugger or strace: the refusal is the expected outcome there.
+            return;
+        }
+        assert!(harden_after_handshake().is_ok());
+        assert_eq!(vk_linux::probes::dumpable(), Ok(false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_thread_is_read_and_an_untraced_worker_passes() {
+        if vk_linux::probes::tracer_pid() != Ok(0) {
+            return;
+        }
+        let (started, ready) = std::sync::mpsc::channel();
+        let (finish, done) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = started.send(());
+            let _ = done.recv();
+        });
+        ready.recv().expect("worker started");
+        let threads = std::fs::read_dir("/proc/self/task")
+            .expect("task dir")
+            .count();
+        assert!(threads >= 2, "the worker shows up in /proc/self/task");
+        assert_eq!(vk_linux::probes::tracer_pid(), Ok(0));
+        assert!(harden_after_handshake().is_ok());
+        drop(finish);
+        worker.join().expect("worker");
     }
 
     #[test]

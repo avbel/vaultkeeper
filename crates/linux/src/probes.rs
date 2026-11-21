@@ -170,6 +170,27 @@ pub fn drop_dumpable() {
     }
 }
 
+/// Who traces any thread of this process, 0 for nobody. Clearing dumpable does not detach a
+/// tracer that attached before, so hardening checks this right after [`drop_dumpable`].
+pub fn tracer_pid() -> Result<u32, String> {
+    let tasks = fs::read_dir("/proc/self/task")
+        .map_err(|error| format!("cannot list /proc/self/task: {error}"))?;
+    let mut statuses = Vec::new();
+    for task in tasks {
+        let task = task.map_err(|error| format!("cannot list /proc/self/task: {error}"))?;
+        match fs::read_to_string(task.path().join("status")) {
+            Ok(status) => statuses.push(status),
+            // The thread exited between the listing and the read.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ESRCH) => {}
+            Err(error) => return Err(format!("cannot read a thread status: {error}")),
+        }
+    }
+    parse::any_tracer(statuses.iter().map(String::as_str))
+        .ok_or_else(|| "a thread status has no TracerPid".to_owned())
+}
+
 pub fn dumpable() -> Result<bool, String> {
     // SAFETY: PR_GET_DUMPABLE takes no arguments.
     let result = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
