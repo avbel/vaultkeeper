@@ -137,6 +137,48 @@ pub struct HotkeyBindings {
     pub generator: String,
 }
 
+/// The commands that map a window the user is about to type into.
+#[cfg(target_os = "linux")]
+const fn opens_a_window(command: &UiCommand) -> bool {
+    matches!(
+        command,
+        UiCommand::ShowManager
+            | UiCommand::ShowQuickPanel { .. }
+            | UiCommand::ToggleQuickPanel { .. }
+            | UiCommand::ShowUnlock
+            | UiCommand::ShowLogin
+            | UiCommand::ShowSettings
+            | UiCommand::ShowGenerator
+    )
+}
+
+/// What to queue for `command`. A UI that runs (or was started and has not connected yet) cannot
+/// read the token from its environment, so the token goes as a command queued right before the
+/// one that opens the window. With no UI yet the token stays pending and the launcher puts it in
+/// the new process's environment; `take` is not even called then.
+#[cfg(target_os = "linux")]
+fn with_activation_token(
+    command: UiCommand,
+    ui_alive: bool,
+    take: impl FnOnce() -> Option<String>,
+) -> Vec<UiCommand> {
+    if !ui_alive || !opens_a_window(&command) {
+        return vec![command];
+    }
+    match take() {
+        Some(token) => {
+            tracing::debug!("activation token queued for the UI");
+            vec![
+                UiCommand::ActivationToken {
+                    token: vk_ipc::ActivationToken::new(token),
+                },
+                command,
+            ]
+        }
+        None => vec![command],
+    }
+}
+
 fn hotkey_bindings_command(bindings: HotkeyBindings) -> UiCommand {
     UiCommand::HotkeyBindings {
         mode: bindings.mode,
@@ -628,7 +670,16 @@ impl Daemon {
         if command == UiCommand::ShowSettings {
             self.replay_setup_issues();
         }
-        self.send(|seq| DaemonEvent::Command { seq, command });
+        #[cfg(target_os = "linux")]
+        let queue = {
+            let ui_alive = self.ui_connected() || self.launcher.is_running();
+            with_activation_token(command, ui_alive, crate::os::linux::activation::take)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let queue = [command];
+        for command in queue {
+            self.send(|seq| DaemonEvent::Command { seq, command });
+        }
     }
 
     /// Queues the event `numbered` builds with its number, makes sure a UI process is on its
@@ -1241,6 +1292,65 @@ mod tests {
         Identity {
             server: url::Url::parse("https://vault.example").expect("url"),
             email: email.to_owned(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod activation_token {
+        use super::*;
+
+        fn token_command() -> UiCommand {
+            UiCommand::ActivationToken {
+                token: vk_ipc::ActivationToken::new("tok".to_owned()),
+            }
+        }
+
+        #[test]
+        fn a_running_ui_gets_the_token_right_before_the_window_command() {
+            for command in [
+                UiCommand::ShowManager,
+                UiCommand::ShowQuickPanel { target: None },
+                UiCommand::ToggleQuickPanel { target: None },
+                UiCommand::ShowSettings,
+                UiCommand::ShowGenerator,
+            ] {
+                let queue = with_activation_token(command.clone(), true, || Some("tok".to_owned()));
+                assert_eq!(queue, vec![token_command(), command]);
+            }
+        }
+
+        #[test]
+        fn a_command_that_opens_no_window_leaves_the_token_pending() {
+            for command in [
+                UiCommand::ReloadSettings,
+                UiCommand::Toast {
+                    text: "x".to_owned(),
+                    error: false,
+                },
+            ] {
+                let queue = with_activation_token(command.clone(), true, || {
+                    panic!("the token must stay pending")
+                });
+                assert_eq!(queue, vec![command]);
+            }
+        }
+
+        #[test]
+        fn with_no_ui_yet_the_token_stays_for_the_process_the_launcher_starts() {
+            let command = UiCommand::ShowQuickPanel { target: None };
+            let queue = with_activation_token(command.clone(), false, || {
+                panic!("the token must stay pending")
+            });
+            assert_eq!(queue, vec![command]);
+        }
+
+        #[test]
+        fn a_press_without_a_token_queues_only_its_command() {
+            let command = UiCommand::ShowGenerator;
+            assert_eq!(
+                with_activation_token(command.clone(), true, || None),
+                vec![command]
+            );
         }
     }
 

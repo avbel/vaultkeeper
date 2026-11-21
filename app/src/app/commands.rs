@@ -60,10 +60,44 @@ pub enum UiCommand {
         quick_panel: String,
         generator: String,
     },
+    /// Linux: the focus token for the window the next command opens.
+    ActivationToken(vk_ipc::ActivationToken),
+}
+
+/// Runs `command` with the held activation token available to the windows it opens; whatever it
+/// leaves unused is dropped.
+fn with_activation_token(opens_window: bool, run: impl FnOnce()) {
+    #[cfg(target_os = "linux")]
+    {
+        crate::os::linux::activation::release(opens_window);
+        run();
+        crate::os::linux::activation::discard();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = opens_window;
+        run();
+    }
+}
+
+fn hold_activation_token(token: vk_ipc::ActivationToken) {
+    #[cfg(target_os = "linux")]
+    crate::os::linux::activation::hold(token.into_inner());
+    #[cfg(not(target_os = "linux"))]
+    drop(token);
 }
 
 impl<S: VaultService> App<S> {
     pub fn handle(&self, command: UiCommand) {
+        if let UiCommand::ActivationToken(token) = command {
+            hold_activation_token(token);
+            return;
+        }
+        let opens_window = command.opens_a_focusable_window();
+        with_activation_token(opens_window, || self.run_command(command));
+    }
+
+    fn run_command(&self, command: UiCommand) {
         // Any other window request drops the target, so a panel opened later from inside
         // vaultkeeper (⌘K) never types into an app that was in front long ago. An open panel keeps
         // its own copy.
@@ -125,6 +159,7 @@ impl<S: VaultService> App<S> {
                 quick_panel,
                 generator,
             }),
+            UiCommand::ActivationToken(_) => {}
         }
     }
 
@@ -266,6 +301,21 @@ impl UiCommand {
         }
     }
 
+    /// The commands the user asked for by a shortcut or the tray: only these may take an
+    /// activation token, never a prompt another process raised (SSH approval, browser prompts).
+    const fn opens_a_focusable_window(&self) -> bool {
+        matches!(
+            self,
+            Self::ShowManager
+                | Self::ShowQuickPanel { .. }
+                | Self::ToggleQuickPanel { .. }
+                | Self::ShowUnlock
+                | Self::ShowLogin
+                | Self::ShowSettings
+                | Self::ShowGenerator
+        )
+    }
+
     /// Commands that put a window in front of the user, so the app must come forward first.
     const fn shows_a_window(&self) -> bool {
         !matches!(
@@ -278,6 +328,7 @@ impl UiCommand {
                 | Self::SshAgentFailed(_)
                 | Self::HotkeyIssues { .. }
                 | Self::HotkeyBindings { .. }
+                | Self::ActivationToken(_)
                 | Self::ShowBrowserPrompt(BrowserPromptRequest {
                     prompt: vk_ipc::BrowserPrompt::Save { .. }
                         | vk_ipc::BrowserPrompt::AddAddress { .. }

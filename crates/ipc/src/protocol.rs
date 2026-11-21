@@ -207,6 +207,34 @@ pub enum UiCommand {
         quick_panel: String,
         generator: String,
     },
+    /// A single-use `xdg-activation` token for the window the next command opens, queued right
+    /// before it. Linux only; the compositor ties focus to it.
+    ActivationToken {
+        token: ActivationToken,
+    },
+}
+
+/// An `xdg-activation` token. A token is a bearer secret for one focus grant, so `Debug` hides it.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ActivationToken(String);
+
+impl ActivationToken {
+    #[must_use]
+    pub const fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ActivationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ActivationToken(..)")
+    }
 }
 
 /// How a shortcut reaches the daemon.

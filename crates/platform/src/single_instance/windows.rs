@@ -74,9 +74,10 @@ struct Server {
 pub(super) fn acquire(
     dir: &Path,
     command: Command,
-    on_command: impl Fn(Command) + Send + 'static,
+    activation_token: Option<&str>,
+    on_command: impl Fn(Command, Option<String>) + Send + 'static,
 ) -> Result<Guard> {
-    let _ = dir;
+    let _ = (dir, activation_token);
     let sid = vk_win::current_user_sid()?;
     let Some(mutex) = create_owned_mutex(&sid)? else {
         // The mutex can be held by a process that serves no pipe (another session's daemon, or a
@@ -251,7 +252,7 @@ fn new_event() -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
-fn serve(server: &Server, on_command: &impl Fn(Command)) {
+fn serve(server: &Server, on_command: &impl Fn(Command, Option<String>)) {
     let pipe = server.pipe.as_raw_handle();
     while !server.stop.load(Ordering::Acquire) {
         let outcome = match accept(server) {
@@ -271,7 +272,7 @@ fn serve(server: &Server, on_command: &impl Fn(Command)) {
             DisconnectNamedPipe(pipe);
         }
         match outcome {
-            Ok(Some(command)) => on_command(command),
+            Ok(Some(command)) => on_command(command, None),
             Ok(None) => {}
             Err(error) => tracing::debug!(error = %error, "bad single-instance message"),
         }

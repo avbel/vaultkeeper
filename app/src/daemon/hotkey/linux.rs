@@ -6,8 +6,8 @@
 use std::{
     cell::RefCell,
     future::Future,
-    sync::{Arc, Mutex, OnceLock, PoisonError},
-    time::{Duration, Instant},
+    sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use ashpd::{
@@ -65,9 +65,6 @@ enum Control {
 }
 
 static CONTROL: OnceLock<mpsc::UnboundedSender<Control>> = OnceLock::new();
-static PENDING_TOKEN: Mutex<Option<(Instant, String)>> = Mutex::new(None);
-/// A token that has waited longer was not meant for the UI that starts now.
-const TOKEN_LIFETIME: Duration = Duration::from_secs(10);
 
 /// The `Hotkey` the daemon shell holds: `bind` only records what is wanted, and a task on the
 /// daemon's runtime talks to the portal.
@@ -123,23 +120,6 @@ pub fn configure_system_shortcuts() {
     if let Some(control) = CONTROL.get() {
         let _ = control.send(Control::Configure);
     }
-}
-
-/// The activation token the last shortcut press carried, handed to the UI process that press
-/// starts as `XDG_ACTIVATION_TOKEN`. A token works once, so it is taken, not copied.
-pub fn take_activation_token() -> Option<String> {
-    let pending = PENDING_TOKEN
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
-    pending
-        .filter(|(stored, _)| stored.elapsed() < TOKEN_LIFETIME)
-        .map(|(_, token)| token)
-}
-
-fn store_activation_token(token: Option<String>) {
-    *PENDING_TOKEN.lock().unwrap_or_else(PoisonError::into_inner) =
-        token.map(|token| (Instant::now(), token));
 }
 
 /// `(shortcut id, the desktop's description of its trigger)`.
@@ -552,7 +532,7 @@ fn press(daemon: &Arc<Daemon>, wanted: &Wanted, paused: bool, id: &str, token: O
         return;
     }
     tracing::debug!(?slot, token = token.is_some(), "global shortcut pressed");
-    store_activation_token(token);
+    crate::os::linux::activation::offer(token);
     let daemon = Arc::clone(daemon);
     // `typing_target` may wait on another thread, so the press is applied off the portal task.
     tokio::task::spawn_blocking(move || {

@@ -51,6 +51,18 @@ impl Command {
 /// First byte of every command message, so stray connections are told apart from commands.
 const MESSAGE_TAG: u8 = 0xB1;
 
+/// Longest activation token a message carries; compositors issue tokens well under this.
+const MAX_TOKEN_LEN: usize = 256;
+
+/// Whether `token` is shaped like an `xdg-activation` token: short, printable ASCII. It comes from
+/// an environment variable or a local socket, so nothing else may reach the compositor or a log.
+#[must_use]
+pub fn is_valid_activation_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= MAX_TOKEN_LEN
+        && token.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
 /// The machine-wide single-instance pipe, SID-scoped so two users keep separate daemons.
 #[cfg_attr(
     not(windows),
@@ -118,14 +130,17 @@ pub fn quit_running(timeout: std::time::Duration) -> Result<()> {
 
 /// Returns the guard if we are the first instance; otherwise forwards `command` to the
 /// running instance and returns [`crate::Error::AlreadyRunning`]. `on_command` runs on a
-/// background thread for commands from later launches.
+/// background thread for commands from later launches, with the `XDG_ACTIVATION_TOKEN` the later
+/// launch handed over in `activation_token` (Linux: a compositor `exec` binding gives the process
+/// it starts an `XDG_ACTIVATION_TOKEN`).
 pub fn acquire(
     command: Command,
-    on_command: impl Fn(Command) + Send + 'static,
+    activation_token: Option<&str>,
+    on_command: impl Fn(Command, Option<String>) + Send + 'static,
 ) -> Result<InstanceGuard> {
     let dir = crate::paths::socket_dir(&crate::paths::data_dir()?);
     crate::fs::ensure_private_dir(&dir)?;
-    acquire_in(&dir, command, on_command)
+    acquire_in(&dir, command, activation_token, on_command)
 }
 
 /// [`acquire`] with the lock and socket in `dir` instead of the data dir. `dir` must exist and
@@ -134,18 +149,19 @@ pub fn acquire(
 pub fn acquire_in(
     dir: &Path,
     command: Command,
-    on_command: impl Fn(Command) + Send + 'static,
+    activation_token: Option<&str>,
+    on_command: impl Fn(Command, Option<String>) + Send + 'static,
 ) -> Result<InstanceGuard> {
     #[cfg(unix)]
     {
         Ok(InstanceGuard {
-            _guard: unix::acquire(dir, command, on_command)?,
+            _guard: unix::acquire(dir, command, activation_token, on_command)?,
         })
     }
     #[cfg(windows)]
     {
         Ok(InstanceGuard {
-            _guard: windows::acquire(dir, command, on_command)?,
+            _guard: windows::acquire(dir, command, activation_token, on_command)?,
         })
     }
 }
@@ -169,7 +185,7 @@ mod unix {
         GenericFilePath, Listener, ListenerOptions, Stream, ToFsName, prelude::*,
     };
 
-    use super::{Command, MESSAGE_TAG};
+    use super::{Command, MAX_TOKEN_LEN, MESSAGE_TAG, is_valid_activation_token};
     use crate::{Error, Result};
 
     const LOCK_FILE: &str = "instance.lock";
@@ -193,7 +209,8 @@ mod unix {
     pub(super) fn acquire(
         dir: &Path,
         command: Command,
-        on_command: impl Fn(Command) + Send + 'static,
+        token: Option<&str>,
+        on_command: impl Fn(Command, Option<String>) + Send + 'static,
     ) -> Result<Guard> {
         let lock = OpenOptions::new()
             .create(true)
@@ -205,7 +222,7 @@ mod unix {
         match lock.try_lock() {
             Ok(()) => listen(lock, socket, on_command),
             Err(TryLockError::WouldBlock) => {
-                let _ = forward(&socket, command);
+                let _ = forward(&socket, command, token);
                 Err(Error::AlreadyRunning)
             }
             Err(TryLockError::Error(err)) => Err(err.into()),
@@ -228,7 +245,7 @@ mod unix {
                 Err(TryLockError::WouldBlock) => {}
             }
             if !sent {
-                forward(&dir.join(SOCKET_FILE), Command::Quit)?;
+                forward(&dir.join(SOCKET_FILE), Command::Quit, None)?;
                 sent = true;
             }
             if Instant::now() >= deadline {
@@ -245,7 +262,7 @@ mod unix {
     fn listen(
         lock: File,
         socket: PathBuf,
-        on_command: impl Fn(Command) + Send + 'static,
+        on_command: impl Fn(Command, Option<String>) + Send + 'static,
     ) -> Result<Guard> {
         // Holding the lock proves any existing socket file is stale.
         match std::fs::remove_file(&socket) {
@@ -268,7 +285,11 @@ mod unix {
         })
     }
 
-    fn serve(listener: &Listener, stop: &AtomicBool, on_command: &impl Fn(Command)) {
+    fn serve(
+        listener: &Listener,
+        stop: &AtomicBool,
+        on_command: &impl Fn(Command, Option<String>),
+    ) {
         loop {
             let accepted = listener.accept();
             if stop.load(Ordering::Acquire) {
@@ -276,7 +297,7 @@ mod unix {
             }
             match accepted {
                 Ok(stream) => match read_command(stream) {
-                    Ok(Some(command)) => on_command(command),
+                    Ok(Some((command, token))) => on_command(command, token),
                     Ok(None) => tracing::debug!("ignored unknown single-instance message"),
                     Err(err) => tracing::debug!(error = %err, "bad single-instance message"),
                 },
@@ -288,7 +309,7 @@ mod unix {
         }
     }
 
-    fn read_command(mut stream: Stream) -> io::Result<Option<Command>> {
+    fn read_command(mut stream: Stream) -> io::Result<Option<(Command, Option<String>)>> {
         // macOS rejects this with EINVAL once the peer has closed, which a sender does right
         // after writing; its bytes are still buffered and the read cannot block then.
         if let Err(err) = stream.set_recv_timeout(Some(READ_TIMEOUT)) {
@@ -296,22 +317,36 @@ mod unix {
         }
         let mut message = [0_u8; 2];
         stream.read_exact(&mut message)?;
-        Ok(match message {
-            [MESSAGE_TAG, code] => Command::from_code(code),
-            _ => None,
-        })
+        let [MESSAGE_TAG, code] = message else {
+            return Ok(None);
+        };
+        let Some(command) = Command::from_code(code) else {
+            return Ok(None);
+        };
+        let mut token = Vec::new();
+        let limit = u64::try_from(MAX_TOKEN_LEN + 1).unwrap_or(u64::MAX);
+        if let Err(err) = (&mut stream).take(limit).read_to_end(&mut token) {
+            tracing::debug!(error = %err, "single-instance activation token not read");
+            token.clear();
+        }
+        let token = String::from_utf8(token)
+            .ok()
+            .filter(|token| is_valid_activation_token(token));
+        Ok(Some((command, token)))
     }
 
-    fn send(socket: &Path, code: u8) -> io::Result<()> {
+    fn send(socket: &Path, code: u8, token: Option<&str>) -> io::Result<()> {
         let mut stream = Stream::connect(socket.to_fs_name::<GenericFilePath>()?)?;
-        stream.write_all(&[MESSAGE_TAG, code])?;
+        let mut message = vec![MESSAGE_TAG, code];
+        message.extend_from_slice(token.unwrap_or_default().as_bytes());
+        stream.write_all(&message)?;
         stream.flush()
     }
 
-    fn forward(socket: &Path, command: Command) -> io::Result<()> {
+    pub(super) fn forward(socket: &Path, command: Command, token: Option<&str>) -> io::Result<()> {
         let mut last_error = None;
         for _ in 0..CONNECT_ATTEMPTS {
-            match send(socket, command.code()) {
+            match send(socket, command.code(), token) {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err),
             }
@@ -329,7 +364,7 @@ mod unix {
                 return;
             };
             // accept() only returns on a connection; without one the thread would block forever.
-            match send(&self.socket, WAKE_CODE) {
+            match send(&self.socket, WAKE_CODE, None) {
                 Ok(()) => {
                     if thread.join().is_err() {
                         tracing::error!("single-instance listener panicked");
@@ -355,9 +390,16 @@ mod tests {
 
     const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-    fn recorder() -> (mpsc::Receiver<Command>, impl Fn(Command) + Send + 'static) {
+    type Recorded = (Command, Option<String>);
+
+    fn recorder() -> (
+        mpsc::Receiver<Recorded>,
+        impl Fn(Command, Option<String>) + Send + 'static,
+    ) {
         let (tx, rx) = mpsc::channel();
-        (rx, move |command| tx.send(command).expect("receiver alive"))
+        (rx, move |command, token| {
+            tx.send((command, token)).expect("receiver alive");
+        })
     }
 
     #[test]
@@ -378,25 +420,28 @@ mod tests {
     fn second_launch_forwards_its_command_and_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (rx, on_command) = recorder();
-        let guard = acquire_in(dir.path(), Command::ShowManager, on_command).expect("first");
+        let guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
 
-        let second = acquire_in(dir.path(), Command::ShowQuickPanel, |_| {});
+        let second = acquire_in(dir.path(), Command::ShowQuickPanel, None, |_, _| {});
         assert!(matches!(second, Err(Error::AlreadyRunning)));
         assert_eq!(
             rx.recv_timeout(DELIVERY_TIMEOUT),
-            Ok(Command::ShowQuickPanel)
+            Ok((Command::ShowQuickPanel, None))
         );
 
-        let third = acquire_in(dir.path(), Command::ShowManager, |_| {});
+        let third = acquire_in(dir.path(), Command::ShowManager, None, |_, _| {});
         assert!(matches!(third, Err(Error::AlreadyRunning)));
-        assert_eq!(rx.recv_timeout(DELIVERY_TIMEOUT), Ok(Command::ShowManager));
+        assert_eq!(
+            rx.recv_timeout(DELIVERY_TIMEOUT),
+            Ok((Command::ShowManager, None))
+        );
         drop(guard);
     }
 
     #[test]
     fn releasing_the_guard_lets_the_next_launch_become_first() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let first = acquire_in(dir.path(), Command::ShowManager, |_| {}).expect("first");
+        let first = acquire_in(dir.path(), Command::ShowManager, None, |_, _| {}).expect("first");
         drop(first);
         assert!(
             !dir.path().join("instance.sock").exists(),
@@ -404,12 +449,12 @@ mod tests {
         );
 
         let (rx, on_command) = recorder();
-        let _next = acquire_in(dir.path(), Command::ShowManager, on_command).expect("next");
-        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, |_| {});
+        let _next = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("next");
+        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, None, |_, _| {});
         assert!(matches!(refused, Err(Error::AlreadyRunning)));
         assert_eq!(
             rx.recv_timeout(DELIVERY_TIMEOUT),
-            Ok(Command::ShowQuickPanel)
+            Ok((Command::ShowQuickPanel, None))
         );
     }
 
@@ -424,12 +469,12 @@ mod tests {
         );
 
         let (rx, on_command) = recorder();
-        let _guard = acquire_in(dir.path(), Command::ShowManager, on_command).expect("first");
-        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, |_| {});
+        let _guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
+        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, None, |_, _| {});
         assert!(matches!(refused, Err(Error::AlreadyRunning)));
         assert_eq!(
             rx.recv_timeout(DELIVERY_TIMEOUT),
-            Ok(Command::ShowQuickPanel)
+            Ok((Command::ShowQuickPanel, None))
         );
     }
 
@@ -439,20 +484,61 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let (rx, on_command) = recorder();
-        let _guard = acquire_in(dir.path(), Command::ShowManager, on_command).expect("first");
+        let _guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
         let socket = dir.path().join("instance.sock");
         let mut stray = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
         stray.write_all(b"GET / HTTP/1.1\r\n").expect("write");
         drop(stray);
         drop(std::os::unix::net::UnixStream::connect(&socket).expect("empty connection"));
 
-        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, |_| {});
+        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, None, |_, _| {});
         assert!(matches!(refused, Err(Error::AlreadyRunning)));
         assert_eq!(
             rx.recv_timeout(DELIVERY_TIMEOUT),
-            Ok(Command::ShowQuickPanel)
+            Ok((Command::ShowQuickPanel, None))
         );
         assert!(rx.try_recv().is_err(), "only the real command is delivered");
+    }
+
+    #[test]
+    fn a_forwarded_activation_token_reaches_the_first_instance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (rx, on_command) = recorder();
+        let _guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
+        let socket = dir.path().join("instance.sock");
+
+        unix::forward(&socket, Command::ShowQuickPanel, Some("tok-123_ABC")).expect("forward");
+        assert_eq!(
+            rx.recv_timeout(DELIVERY_TIMEOUT),
+            Ok((Command::ShowQuickPanel, Some("tok-123_ABC".to_owned())))
+        );
+    }
+
+    #[test]
+    fn a_malformed_activation_token_is_dropped_but_the_command_is_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (rx, on_command) = recorder();
+        let _guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
+        let socket = dir.path().join("instance.sock");
+
+        for token in ["has space", "tab\there", &"x".repeat(MAX_TOKEN_LEN + 1)] {
+            unix::forward(&socket, Command::ShowGenerator, Some(token)).expect("forward");
+            assert_eq!(
+                rx.recv_timeout(DELIVERY_TIMEOUT),
+                Ok((Command::ShowGenerator, None)),
+                "{token:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn activation_tokens_must_be_short_printable_ascii() {
+        assert!(is_valid_activation_token("a1b2-C3_d4"));
+        assert!(!is_valid_activation_token(""));
+        assert!(!is_valid_activation_token("two words"));
+        assert!(!is_valid_activation_token("caf\u{e9}"));
+        assert!(is_valid_activation_token(&"x".repeat(MAX_TOKEN_LEN)));
+        assert!(!is_valid_activation_token(&"x".repeat(MAX_TOKEN_LEN + 1)));
     }
 
     #[test]
@@ -465,9 +551,9 @@ mod tests {
     fn quit_running_delivers_quit_and_waits_for_the_lock() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (rx, on_command) = recorder();
-        let guard = acquire_in(dir.path(), Command::ShowManager, on_command).expect("first");
+        let guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
         let releaser = std::thread::spawn(move || {
-            assert_eq!(rx.recv_timeout(DELIVERY_TIMEOUT), Ok(Command::Quit));
+            assert_eq!(rx.recv_timeout(DELIVERY_TIMEOUT), Ok((Command::Quit, None)));
             drop(guard);
         });
         unix::quit_running(dir.path(), DELIVERY_TIMEOUT).expect("quit and exit");
@@ -477,7 +563,7 @@ mod tests {
     #[test]
     fn quit_running_times_out_when_the_instance_stays() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let _guard = acquire_in(dir.path(), Command::ShowManager, |_| {}).expect("first");
+        let _guard = acquire_in(dir.path(), Command::ShowManager, None, |_, _| {}).expect("first");
         let error = unix::quit_running(dir.path(), Duration::from_millis(300)).expect_err("stays");
         assert!(matches!(error, Error::Io(err) if err.kind() == std::io::ErrorKind::TimedOut));
     }
@@ -486,7 +572,7 @@ mod tests {
     fn missing_dir_is_an_io_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("missing");
-        let result = acquire_in(&missing, Command::ShowManager, |_| {});
+        let result = acquire_in(&missing, Command::ShowManager, None, |_, _| {});
         assert!(
             matches!(result, Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound)
         );

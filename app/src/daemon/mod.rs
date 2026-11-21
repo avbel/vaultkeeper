@@ -157,7 +157,56 @@ fn sandbox(data_dir: &Path, socket_dir: &Path) {
     }
 }
 
+/// The token a launch carried belongs to the window its command opens.
+fn keep_launch_token(token: Option<String>) {
+    tracing::debug!(token = token.is_some(), "activation token from a launch");
+    #[cfg(target_os = "linux")]
+    crate::os::linux::activation::offer(token);
+    #[cfg(not(target_os = "linux"))]
+    drop(token);
+}
+
+/// Taken before any thread starts: it is removed from the environment so children never inherit it.
+#[cfg(target_os = "linux")]
+fn take_launch_token() -> Option<String> {
+    crate::os::linux::activation::take_from_environment()
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn take_launch_token() -> Option<String> {
+    None
+}
+
+/// `None` when another instance runs: it was asked to show what `launch` asks for.
+fn acquire_instance(
+    socket_dir: &std::path::Path,
+    launch: Launch,
+    token: Option<&str>,
+    forward: std::sync::mpsc::Sender<(single_instance::Command, Option<String>)>,
+) -> anyhow::Result<Option<single_instance::InstanceGuard>> {
+    let acquired = single_instance::acquire_in(
+        socket_dir,
+        routing::forwarded(launch),
+        token,
+        move |command, token| {
+            let _ = forward.send((command, token));
+        },
+    );
+    match acquired {
+        Ok(instance) => Ok(Some(instance)),
+        Err(vk_platform::Error::AlreadyRunning) => {
+            tracing::info!("vaultkeeper is already running; asked it to show a window");
+            Ok(None)
+        }
+        Err(error) => {
+            tracing::error!(%error, "cannot start or reach a Vaultkeeper instance");
+            Err(error).context("check for a running Vaultkeeper")
+        }
+    }
+}
+
 pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
+    let launch_token = take_launch_token();
     let overrides = TestOverrides::from_env();
     // Windows: step 3b - the restart hand-off waits on the old process handle.
     #[cfg(unix)]
@@ -171,21 +220,12 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     refresh_shell_entries(launch);
     let (data_dir, socket_dir) = prepare_dirs()?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
-    let instance = match single_instance::acquire_in(&socket_dir, routing::forwarded(launch), {
-        move |command| {
-            let _ = forward_tx.send(command);
-        }
-    }) {
-        Ok(instance) => instance,
-        Err(vk_platform::Error::AlreadyRunning) => {
-            tracing::info!("vaultkeeper is already running; asked it to show a window");
-            return Ok(());
-        }
-        Err(error) => {
-            tracing::error!(%error, "cannot start or reach a Vaultkeeper instance");
-            return Err(error).context("check for a running Vaultkeeper");
-        }
+    let Some(instance) =
+        acquire_instance(&socket_dir, launch, launch_token.as_deref(), forward_tx)?
+    else {
+        return Ok(());
     };
+    keep_launch_token(launch_token);
     // Two workers: vault work is short and I/O bound; more threads only cost memory.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -212,7 +252,8 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
         std::thread::Builder::new()
             .name("vaultkeeper-instance".to_owned())
             .spawn(move || {
-                for command in forward_rx {
+                for (command, token) in forward_rx {
+                    keep_launch_token(token);
                     routing::dispatch_second_launch(
                         command,
                         || daemon.typing_target(),

@@ -12,7 +12,7 @@ mod portal_plan;
 #[cfg(not(target_os = "linux"))]
 pub use global::Hotkey;
 #[cfg(target_os = "linux")]
-pub use linux::{Hotkey, configure_system_shortcuts, take_activation_token};
+pub use linux::{Hotkey, configure_system_shortcuts};
 
 #[cfg(not(target_os = "linux"))]
 pub fn configure_system_shortcuts() {}

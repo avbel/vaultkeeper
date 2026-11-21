@@ -79,6 +79,7 @@ pub fn command_for(command: vk_ipc::UiCommand) -> UiCommand {
             quick_panel,
             generator,
         },
+        vk_ipc::UiCommand::ActivationToken { token } => UiCommand::ActivationToken(token),
     }
 }
 
@@ -162,6 +163,12 @@ mod tests {
                     generator: String::new(),
                 },
                 r#"HotkeyBindings { mode: Portal, quick_panel: "Ctrl+Shift+Space", generator: "" }"#,
+            ),
+            (
+                vk_ipc::UiCommand::ActivationToken {
+                    token: vk_ipc::ActivationToken::new("secret-token".to_owned()),
+                },
+                "ActivationToken(ActivationToken(..))",
             ),
         ];
         for (daemon, app) in pairs {

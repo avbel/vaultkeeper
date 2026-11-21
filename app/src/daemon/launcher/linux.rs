@@ -33,7 +33,7 @@ pub fn spawn(
         ))
         .stdin(std::process::Stdio::null())
         .kill_on_drop(false);
-    if let Some(token) = crate::daemon::hotkey::take_activation_token() {
+    if let Some(token) = crate::os::linux::activation::take() {
         command.env("XDG_ACTIVATION_TOKEN", token);
     }
     // SAFETY: the hook runs in the forked child before exec and only calls fcntl, which is

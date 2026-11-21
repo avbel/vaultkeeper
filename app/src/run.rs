@@ -52,7 +52,7 @@ pub fn select_backend(backend: Backend) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     let selector = macos_backend(selector, backend);
     #[cfg(target_os = "linux")]
-    let selector = linux_backend(selector);
+    let selector = linux_backend(selector, !matches!(backend, Backend::Daemon));
     #[cfg(not(target_os = "macos"))]
     drop(backend);
     selector
@@ -61,11 +61,21 @@ pub fn select_backend(backend: Backend) -> anyhow::Result<()> {
 }
 
 /// The Wayland app id is what the compositor and portals match to the installed desktop file.
+///
+/// Windows of the UI pick up the activation token the daemon forwarded; the daemon keeps its own
+/// for the UI process it starts.
 #[cfg(target_os = "linux")]
-fn linux_backend(selector: slint::BackendSelector) -> slint::BackendSelector {
+fn linux_backend(selector: slint::BackendSelector, takes_token: bool) -> slint::BackendSelector {
     use slint::winit_030::winit::platform::wayland::WindowAttributesExtWayland;
     use vk_platform::desktop_file::APP_ID;
-    selector.with_winit_window_attributes_hook(|attributes| attributes.with_name(APP_ID, APP_ID))
+    selector.with_winit_window_attributes_hook(move |attributes| {
+        let attributes = attributes.with_name(APP_ID, APP_ID);
+        if takes_token {
+            crate::os::linux::activation::attach_pending(attributes)
+        } else {
+            attributes
+        }
+    })
 }
 
 #[cfg(target_os = "macos")]

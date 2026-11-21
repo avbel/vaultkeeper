@@ -1,5 +1,6 @@
 //! Linux-only app hooks.
 
+pub mod activation;
 pub mod clipboard_portal;
 pub mod color_scheme;
 pub mod hotkey_status;
