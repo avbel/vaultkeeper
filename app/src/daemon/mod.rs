@@ -92,23 +92,29 @@ fn write_desktop_entry() {
     }
 }
 
-/// The data dir after its startup check, and the socket dir (the runtime dir on Linux).
+/// The data dir after its startup check, and the socket dir (the runtime dir on Linux). Runs in
+/// every `--daemon` launch, also one that only forwards its command, so the gate here is the
+/// quick part: what can refuse, with no tool spawned and no bus asked.
 fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     crate::os::startup_check::enforce(&data_dir)?;
-    let report =
-        crate::os::security_gate::enforce(crate::os::security_gate::Role::Daemon, &data_dir)
-            .inspect_err(|refusal| crate::refusal::present(&data_dir, &refusal.to_string()))?;
-    crate::app::note_start(&report);
+    crate::os::security_gate::enforce(crate::os::security_gate::Role::Launch, &data_dir)
+        .inspect_err(|refusal| crate::refusal::present(&data_dir, &refusal.to_string()))?;
     let socket_dir = crate::os::layout::socket_dir(&data_dir);
     vk_platform::fs::ensure_private_dir(&socket_dir).context("create the socket directory")?;
     Ok((data_dir, socket_dir))
 }
 
-/// Only in the process that became the daemon, so a forwarded launch never waits on the portal.
-/// Leaves the process non-dumpable and, on Linux when requested, sandboxed. No secrets are loaded
-/// yet, which is what makes the dumpable window up to here harmless.
+/// Only in the process that became the daemon, so a forwarded launch never waits on
+/// `systemd-creds`, the bus name probes or the portal. Leaves the process non-dumpable and, on
+/// Linux when requested, sandboxed. No secrets are loaded yet, which is what makes the dumpable
+/// window up to here harmless.
 fn harden_daemon(data_dir: &Path, socket_dir: &Path) -> anyhow::Result<()> {
+    use crate::os::{security_gate, self_protection};
+    // The full report, before Landlock: its systemd-creds probe is what the token store reuses.
+    let report = security_gate::enforce(security_gate::Role::Daemon, data_dir)
+        .inspect_err(|refusal| crate::refusal::present(data_dir, &refusal.to_string()))?;
+    crate::app::note_start(&report);
     // Before Landlock too, which may not allow the session bus.
     #[cfg(target_os = "linux")]
     crate::os::linux::open::register_before_hardening(
@@ -117,55 +123,66 @@ fn harden_daemon(data_dir: &Path, socket_dir: &Path) -> anyhow::Result<()> {
     // Nothing reads the daemon's exe: clients check it through daemon_check instead.
     vk_platform::hardening::harden_after_handshake()
         .inspect_err(|refusal| crate::refusal::present(data_dir, &refusal.to_string()))?;
+    self_protection::note_non_dumpable();
     #[cfg(target_os = "linux")]
-    if vk_platform::sandbox::requested() {
-        sandbox(data_dir, socket_dir);
-    }
+    self_protection::note_sandbox(if vk_platform::sandbox::requested() {
+        sandbox(data_dir, socket_dir)
+    } else {
+        self_protection::Sandbox::NotRequested
+    });
     #[cfg(not(target_os = "linux"))]
     let _ = socket_dir;
     Ok(())
 }
 
-/// The UI the daemon starts later inherits the same rule set.
+/// The UI the daemon starts later inherits the same rule set. Without a home directory or a
+/// known binary path there is no rule set to derive, and the daemon runs unsandboxed and says
+/// so rather than under a guessed, wider one.
 #[cfg(target_os = "linux")]
-fn sandbox(data_dir: &Path, socket_dir: &Path) {
-    use vk_platform::desktop_file;
+fn sandbox(data_dir: &Path, socket_dir: &Path) -> crate::os::self_protection::Sandbox {
+    use crate::os::self_protection::Sandbox;
+    use vk_platform::{desktop_file, sandbox};
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
+    let install = vk_platform::install_kind::current_install_path()
+        .and_then(|install| sandbox::install_paths(&install, &home));
+    let Some(install) = install else {
+        let why = "the home directory or the path of the vaultkeeper binary is unknown";
+        tracing::warn!(why, "the Landlock sandbox was requested but is not applied");
+        return Sandbox::Failed(why.to_owned());
+    };
     let config_home = desktop_file::config_home().unwrap_or_else(|| home.join(".config"));
     let data_home = desktop_file::data_home().unwrap_or_else(|| home.join(".local/share"));
     let cache_home = desktop_file::cache_home().unwrap_or_else(|| home.join(".cache"));
     let log_dir = crate::os::log_file::log_dir().unwrap_or_else(|| data_dir.join("logs"));
-    let install = vk_platform::install_kind::current_install_path().unwrap_or_default();
-    // Under Homebrew the whole prefix: `opt/vaultkeeper` resolves to a versioned Cellar directory,
-    // and the next upgrade's binary lives in another one. Elsewhere `<prefix>/bin/vaultkeeper`.
-    let install_text = install.to_string_lossy();
-    let install_prefix = install_text.split_once("/opt/vaultkeeper/").map_or_else(
-        || {
-            install
-                .ancestors()
-                .nth(2)
-                .unwrap_or(Path::new("/"))
-                .to_owned()
-        },
-        |(prefix, _)| PathBuf::from(prefix),
-    );
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    let rules = vk_platform::sandbox::rules(&vk_platform::sandbox::Dirs {
+    let rules = sandbox::rules(&sandbox::Dirs {
         home: &home,
         data_dir,
         socket_dir,
         log_dir: &log_dir,
-        install_prefix: &install_prefix,
-        runtime_dir: runtime_dir.as_deref(),
+        install: &install,
+        session: &sandbox::Session::from_env(),
         config_home: &config_home,
         data_home: &data_home,
         cache_home: &cache_home,
     });
-    match vk_platform::sandbox::restrict(&rules) {
-        Ok(status) => tracing::info!(%status, "sandbox"),
-        Err(error) => tracing::warn!(%error, "the Landlock sandbox could not be applied"),
+    match sandbox::restrict(&rules) {
+        Ok(enforcement) => {
+            if enforcement == sandbox::Enforcement::Full {
+                tracing::info!(status = %enforcement, "sandbox");
+            } else {
+                tracing::warn!(status = %enforcement, "sandbox");
+            }
+            Sandbox::Applied {
+                enforcement,
+                abi: vk_linux::probes::landlock_abi().ok(),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the Landlock sandbox could not be applied");
+            Sandbox::Failed(error.to_string())
+        }
     }
 }
 

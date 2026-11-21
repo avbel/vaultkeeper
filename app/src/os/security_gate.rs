@@ -1,9 +1,10 @@
 //! The startup security baseline (linux-plan.md 1c, linux-ideas.md §9): the chains of
 //! `vk_platform::security` built from probe facts, and the decision whether this start may go on.
 //!
-//! Only chains whose mechanism is active today are registered. Anti memory read (C3) joins with
-//! 2c, which makes the daemon non-dumpable, and the self-sandbox (C6) with 1f, which applies
-//! Landlock: listing them earlier would report protection the process does not have yet.
+//! Only chains whose mechanism is active today are registered. Anti memory read (C3) and the
+//! self-sandbox (C6) are applied by the daemon after its instance lock, later than the startup
+//! gate, so their rows come from [`super::self_protection`] and show in the daemon's report
+//! (Settings) only: a `security status` process cannot see what another process did to itself.
 //! macOS and Windows get no chains, so `enforce` never refuses there.
 
 use std::{
@@ -36,6 +37,10 @@ pub const REFUSED_EXIT: i32 = 78;
 /// Which process is starting; the CLI and the browser host need no display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
+    /// A `--daemon` or `--tray` start before the instance lock: the chains that can refuse and
+    /// nothing that spawns a tool or asks the bus, so a launch that only forwards its command
+    /// to the running daemon neither waits for those probes nor depends on them.
+    Launch,
     Daemon,
     Ui,
     Cli,
@@ -67,6 +72,10 @@ pub struct Facts {
     /// The GlobalShortcuts portal's state as the daemon found it; `None` while unknown.
     pub global_shortcuts: Option<Result<(), String>>,
     pub desktop: Desktop,
+    /// Whether the daemon is non-dumpable and untraced; `None` until it hardened itself.
+    pub memory_read: Option<Result<(), String>>,
+    /// The Landlock outcome; `None` until the daemon decided it.
+    pub sandbox: Option<super::self_protection::Sandbox>,
 }
 
 /// What the D-Bus name probes found; only the daemon asks (the CLI never pays for a bus round
@@ -214,6 +223,18 @@ pub fn chains(facts: &Facts, role: Role) -> Vec<Chain> {
     }
     if role == Role::Daemon {
         chains.extend(hotkey_chain(facts));
+        chains.extend(
+            facts
+                .memory_read
+                .as_ref()
+                .map(super::self_protection::memory_chain),
+        );
+        chains.extend(
+            facts
+                .sandbox
+                .as_ref()
+                .map(super::self_protection::sandbox_chain),
+        );
     }
     chains
 }
@@ -479,6 +500,8 @@ impl Facts {
             } else {
                 Desktop::not_probed()
             },
+            memory_read: super::self_protection::memory_read(),
+            sandbox: super::self_protection::sandbox(),
         }
     }
 }
@@ -588,6 +611,8 @@ mod tests {
                 logind: Ok(()),
                 screensaver: Ok(()),
             },
+            memory_read: None,
+            sandbox: None,
         }
     }
 
@@ -645,6 +670,49 @@ mod tests {
             decide(&report, false, None),
             Decision::Proceed { warn: false }
         );
+    }
+
+    #[test]
+    fn a_launch_checks_every_chain_that_can_refuse_the_daemon_and_no_other() {
+        let ids = |role| -> Vec<&'static str> {
+            chains(&good(), role)
+                .iter()
+                .filter(|chain| role == Role::Launch || chain.required == Required::Refuse)
+                .map(|chain| chain.id)
+                .collect()
+        };
+        assert_eq!(ids(Role::Launch), ids(Role::Daemon));
+        assert_eq!(
+            ids(Role::Launch),
+            ["kernel", "runtime-dir", "wayland", "key-memory"]
+        );
+    }
+
+    #[test]
+    fn the_daemon_rows_for_its_own_process_join_once_known() {
+        use crate::os::self_protection::Sandbox;
+        let has = |report: &Report, id: &str| report.chains.iter().any(|chain| chain.id == id);
+        let before = evaluate(&good(), Role::Daemon);
+        assert!(!has(&before, "memory-read") && !has(&before, "sandbox"));
+
+        let facts = Facts {
+            memory_read: Some(Ok(())),
+            sandbox: Some(Sandbox::Failed("the install path is unknown".to_owned())),
+            ..good()
+        };
+        let report = evaluate(&facts, Role::Daemon);
+        assert_eq!(chain_of(&report, "memory-read").status, ChainStatus::Full);
+        let sandbox = chain_of(&report, "sandbox");
+        assert_eq!(sandbox.status, ChainStatus::Reduced);
+        assert_eq!(
+            sandbox.note.as_deref(),
+            Some("requested but not applied: the install path is unknown")
+        );
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
+        assert!(!has(&evaluate(&facts, Role::Ui), "sandbox"));
     }
 
     #[test]
