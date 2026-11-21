@@ -372,10 +372,11 @@ impl Settings {
     }
 }
 
-/// Windows reserves most Win+ chords and Ctrl+Alt is AltGr on many layouts, so Ctrl+Shift it is.
-#[cfg(windows)]
+/// Windows and the Linux desktops reserve most Win/Super chords and Ctrl+Alt is AltGr on many
+/// layouts, so Ctrl+Shift it is.
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_HOTKEY: &str = "Ctrl+Shift+Space";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub const DEFAULT_HOTKEY: &str = "Cmd+Shift+Space";
 
 /// "Cmd+Shift+Space" as macOS shows it, "⌘⇧Space": modifiers as symbols in Apple's order
@@ -439,10 +440,10 @@ pub fn hotkey_symbols(accelerator: &str) -> String {
     text
 }
 
-/// The shortcut as this platform shows it: macOS symbols, or "Ctrl+Shift+Space" on Windows.
+/// The shortcut as this platform shows it: macOS symbols, or "Ctrl+Shift+Space" elsewhere.
 #[must_use]
 pub fn hotkey_display(accelerator: &str) -> String {
-    if cfg!(windows) {
+    if cfg!(not(target_os = "macos")) {
         hotkey_names(accelerator)
     } else {
         hotkey_symbols(accelerator)

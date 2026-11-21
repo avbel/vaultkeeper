@@ -119,7 +119,7 @@ fn a_reprompt_item_needs_the_master_password_first() {
     let panel = h.app.quick_panel().expect("stays open");
     assert_eq!(
         panel.get_toast_text(),
-        if cfg!(windows) {
+        if cfg!(not(target_os = "macos")) {
             "Open in Manager (Ctrl+O) to confirm your master password"
         } else {
             "Open in Manager (⌘O) to confirm your master password"
@@ -299,7 +299,7 @@ fn only_the_footer_legend_shows_the_shortcut() {
     assert!(
         !exists(
             &panel,
-            if cfg!(windows) {
+            if cfg!(not(target_os = "macos")) {
                 "Ctrl+Shift+Enter"
             } else {
                 "⌘⇧↩"

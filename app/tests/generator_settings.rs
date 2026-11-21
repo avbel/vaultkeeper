@@ -296,7 +296,7 @@ fn the_quick_panel_shortcut_is_refused_as_the_generator_hotkey() {
     let h = harness(Setup::default());
     let window = settings_window(&h);
     window.invoke_generator_hotkey_accepted(
-        if cfg!(windows) {
+        if cfg!(not(target_os = "macos")) {
             "shift+ctrl+space"
         } else {
             "shift+cmd+space"

@@ -23,7 +23,7 @@ pub(super) enum Pending {
     Edit,
 }
 
-pub const CONFIRM_IN_MANAGER: &str = if cfg!(windows) {
+pub const CONFIRM_IN_MANAGER: &str = if cfg!(not(target_os = "macos")) {
     "Open in Manager (Ctrl+O) to confirm your master password"
 } else {
     "Open in Manager (⌘O) to confirm your master password"

@@ -17,35 +17,41 @@ use vaultkeeper::{
 const QUICK: &str = "Quick Panel hotkey";
 const GENERATOR: &str = "Generator hotkey";
 
-const DEFAULT_SYMBOLS: &str = if cfg!(windows) {
+const DEFAULT_SYMBOLS: &str = if cfg!(not(target_os = "macos")) {
     "Ctrl+Shift+Space"
 } else {
     "⇧⌘Space"
 };
 /// The default Quick Panel chord as the Slint keys that record it. Slint swaps ⌘ and ⌃ only on
-/// macOS: there `Control` is ⌘ and `Meta` is ⌃; on Windows `Control` is Ctrl and `Meta` is Win.
+/// macOS: there `Control` is ⌘ and `Meta` is ⌃; elsewhere `Control` is Ctrl and `Meta` is Win/Super.
 const DEFAULT_CHORD: [Key; 2] = [Key::Control, Key::Shift];
 /// Ctrl+Shift as keys, accelerator and display.
-const CTRL_SHIFT_KEYS: [Key; 2] = if cfg!(windows) {
+const CTRL_SHIFT_KEYS: [Key; 2] = if cfg!(not(target_os = "macos")) {
     [Key::Control, Key::Shift]
 } else {
     [Key::Meta, Key::Shift]
 };
-const CTRL_SHIFT_F5: &str = if cfg!(windows) {
+const CTRL_SHIFT_F5: &str = if cfg!(not(target_os = "macos")) {
     "Ctrl+Shift+F5"
 } else {
     "⌃⇧F5"
 };
-/// What recording `Control+Alt` plus a letter saves: ⌘+Alt on macOS, Ctrl+Alt on Windows.
-const MOD_ALT: &str = if cfg!(windows) { "Ctrl+Alt" } else { "Cmd+Alt" };
-const NEEDS_MODIFIER: &str = if cfg!(windows) {
+/// What recording `Control+Alt` plus a letter saves: ⌘+Alt on macOS, Ctrl+Alt elsewhere.
+const MOD_ALT: &str = if cfg!(not(target_os = "macos")) {
+    "Ctrl+Alt"
+} else {
+    "Cmd+Alt"
+};
+const NEEDS_MODIFIER: &str = if cfg!(target_os = "macos") {
+    "⌘, ⌥ or ⌃"
+} else if cfg!(windows) {
     "Ctrl, Alt or Win"
 } else {
-    "⌘, ⌥ or ⌃"
+    "Ctrl, Alt or Super"
 };
 
 fn mod_alt_shown(key: &str) -> String {
-    if cfg!(windows) {
+    if cfg!(not(target_os = "macos")) {
         format!("Ctrl+Alt+{key}")
     } else {
         format!("⌥⌘{key}")

@@ -1,0 +1,8 @@
+# Shared libraries the release binary may link directly (readelf NEEDED). Wayland, xkbcommon and
+# EGL are loaded at run time and appear in the formula's caveats instead. A new entry here means
+# the caveats' package lists need it too (linux-ideas.md §7.6).
+libc.so.6
+libm.so.6
+libgcc_s.so.1
+libudev.so.1
+libfontconfig.so.1

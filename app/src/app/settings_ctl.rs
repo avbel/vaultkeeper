@@ -15,10 +15,10 @@ use crate::{
     viewmodel::host,
 };
 
-/// The tray icon is a menu bar icon on macOS and a taskbar icon on Windows.
+/// The tray icon is a menu bar icon on macOS and a tray icon on Windows and Linux.
 #[must_use]
 pub fn tray_icon_label() -> &'static str {
-    if cfg!(windows) {
+    if cfg!(not(target_os = "macos")) {
         "Tray icon"
     } else {
         "Menu bar icon"

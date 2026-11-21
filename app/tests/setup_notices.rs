@@ -70,7 +70,11 @@ fn the_altgr_hint_is_not_an_error_and_does_not_block_saving() {
 
     assert_eq!(h.settings.load().generator_hotkey, "Ctrl+Alt+G");
     assert!(!window.get_generator_hotkey_note_is_error());
-    let expected = if cfg!(windows) { ALTGR_WARNING } else { "" };
+    let expected = if cfg!(not(target_os = "macos")) {
+        ALTGR_WARNING
+    } else {
+        ""
+    };
     assert_eq!(window.get_generator_hotkey_note(), expected);
 }
 

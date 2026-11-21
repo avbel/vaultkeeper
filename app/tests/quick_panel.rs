@@ -188,7 +188,7 @@ fn reprompt_items_are_refused_in_the_quick_panel() {
     assert!(panel.get_toast_shown());
     assert_eq!(
         panel.get_toast_text(),
-        if cfg!(windows) {
+        if cfg!(not(target_os = "macos")) {
             "Open in Manager (Ctrl+O) to confirm your master password"
         } else {
             "Open in Manager (⌘O) to confirm your master password"
@@ -256,7 +256,14 @@ fn the_master_password_is_cleared_after_an_inline_unlock() {
 fn cmd_e_opens_the_found_item_in_the_manager_editor() {
     let (h, panel) = open(true);
     assert!(
-        common::exists(&panel, if cfg!(windows) { "Ctrl+E" } else { "⌘E" }),
+        common::exists(
+            &panel,
+            if cfg!(not(target_os = "macos")) {
+                "Ctrl+E"
+            } else {
+                "⌘E"
+            }
+        ),
         "the footer hint"
     );
     type_into(&panel, "Quick search", "gith");

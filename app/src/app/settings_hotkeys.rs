@@ -48,11 +48,11 @@ pub(super) struct Issues {
     pub generator: bool,
 }
 
-/// What to show under a shortcut: the refusal wins over the AltGr hint, which is Windows only.
+/// What to show under a shortcut: the refusal wins over the AltGr hint, which macOS never needs.
 pub(super) fn hotkey_note(accelerator: &str, refused: bool) -> (&'static str, bool) {
     if refused {
         (UNAVAILABLE_NOTICE, true)
-    } else if cfg!(windows) && ctrl_alt_only(accelerator) {
+    } else if cfg!(not(target_os = "macos")) && ctrl_alt_only(accelerator) {
         (ALTGR_WARNING, false)
     } else {
         ("", false)
@@ -72,14 +72,14 @@ pub(super) fn show_hotkeys(window: &SettingsWindow, settings: &Settings, issues:
     window.set_generator_hotkey_note_is_error(refused);
 }
 
-/// Slint reports ⌘ as `control` and ⌃ as `meta` on macOS; on Windows `control` is Ctrl and
-/// `meta` is the Win key.
+/// Slint reports ⌘ as `control` and ⌃ as `meta` on macOS; elsewhere `control` is Ctrl and
+/// `meta` is the Win or Super key.
 #[allow(
     clippy::fn_params_excessive_bools,
     reason = "mirrors the Slint callback"
 )]
 fn slint_mods(control: bool, meta: bool, alt: bool, shift: bool) -> Mods {
-    let (cmd, ctrl) = if cfg!(windows) {
+    let (cmd, ctrl) = if cfg!(not(target_os = "macos")) {
         (meta, control)
     } else {
         (control, meta)
@@ -297,8 +297,8 @@ mod tests {
     }
 
     #[test]
-    fn the_altgr_hint_is_a_non_error_note_on_windows_only() {
-        let expected = if cfg!(windows) {
+    fn the_altgr_hint_is_a_non_error_note_off_macos() {
+        let expected = if cfg!(not(target_os = "macos")) {
             (ALTGR_WARNING, false)
         } else {
             ("", false)

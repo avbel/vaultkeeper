@@ -20,7 +20,7 @@ const SAMPLES: [&str; 6] = [
     "Alt+Ctrl+Digit1",
 ];
 
-fn windows_forbidden(text: &str) -> bool {
+fn ctrl_keys_forbidden(text: &str) -> bool {
     text.contains('⌘') || text.contains("Cmd") || text.contains("Command") || text.contains('⌥')
 }
 
@@ -29,8 +29,8 @@ fn macos_forbidden(text: &str) -> bool {
 }
 
 fn forbidden(text: &str) -> bool {
-    if cfg!(windows) {
-        windows_forbidden(text)
+    if cfg!(not(target_os = "macos")) {
+        ctrl_keys_forbidden(text)
     } else {
         macos_forbidden(text)
     }
@@ -50,7 +50,7 @@ fn hotkey_display_and_the_recorder_hint_use_the_platform_keys() {
 
 #[test]
 fn the_default_hotkey_reads_naturally_on_each_platform() {
-    let expected = if cfg!(windows) {
+    let expected = if cfg!(not(target_os = "macos")) {
         "Ctrl+Shift+Space"
     } else {
         "⇧⌘Space"
@@ -75,5 +75,5 @@ fn the_slint_labels_use_the_platform_keys() {
     ] {
         assert!(!forbidden(label.as_str()), "{label}");
     }
-    assert_eq!(keys.get_windows(), cfg!(windows));
+    assert_eq!(keys.get_ctrl_keys(), cfg!(not(target_os = "macos")));
 }

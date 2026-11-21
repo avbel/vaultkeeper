@@ -17,16 +17,20 @@ pub struct Mods {
 }
 
 /// The modifiers `accelerator` accepts, spelled the way this platform labels the keys.
-pub const MODIFIER_HINT: &str = if cfg!(windows) {
+pub const MODIFIER_HINT: &str = if cfg!(target_os = "macos") {
+    "⌘, ⌥ or ⌃"
+} else if cfg!(windows) {
     "Ctrl, Alt or Win"
 } else {
-    "⌘, ⌥ or ⌃"
+    "Ctrl, Alt or Super"
 };
 
-pub const UNAVAILABLE_NOTICE: &str = if cfg!(windows) {
+pub const UNAVAILABLE_NOTICE: &str = if cfg!(target_os = "macos") {
+    "This shortcut is used by another app or reserved by macOS. Pick another one."
+} else if cfg!(windows) {
     "This shortcut is used by another app or reserved by Windows. Pick another one."
 } else {
-    "This shortcut is used by another app or reserved by macOS. Pick another one."
+    "This shortcut is used by another app or reserved by your desktop. Pick another one."
 };
 
 pub const ALTGR_WARNING: &str = "Ctrl+Alt works like AltGr on some keyboard layouts and can block typing characters such as @. Consider adding Shift.";

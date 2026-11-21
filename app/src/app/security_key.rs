@@ -245,7 +245,13 @@ fn key_error_text(error: &HookError) -> String {
     match error {
         HookError::Unavailable(_) => format!(
             "Security keys cannot be used on this {}",
-            if cfg!(windows) { "PC" } else { "Mac" }
+            if cfg!(target_os = "macos") {
+                "Mac"
+            } else if cfg!(windows) {
+                "PC"
+            } else {
+                "computer"
+            }
         ),
         HookError::Cancelled => String::new(),
         HookError::Failed(text) => text.clone(),

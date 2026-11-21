@@ -23,7 +23,7 @@ export component LockWindow inherits Window {
     icon: @image-url("icons/tray-blue.svg");
     width: 420px;
     // Windows draws a native title bar, so the content needs less room above and below it.
-    height: Keys.windows ? 430px : 500px;
+    height: Keys.ctrl-keys ? 430px : 500px;
     background: Theme.bg;
     default-font-size: Theme.font-body;
     forward-focus: password-field;
@@ -69,8 +69,8 @@ export component LockWindow inherits Window {
 
     VerticalLayout {
         padding: Theme.s6;
-        padding-top: Keys.windows ? Theme.s3 : 44px;
-        padding-bottom: Keys.windows ? Theme.s4 : Theme.s6;
+        padding-top: Keys.ctrl-keys ? Theme.s3 : 44px;
+        padding-bottom: Keys.ctrl-keys ? Theme.s4 : Theme.s6;
         spacing: Theme.s3;
         alignment: center;
         HorizontalLayout {

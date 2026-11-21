@@ -462,10 +462,7 @@ jobs:
         shell: pwsh
         run: Copy-Item -Path out/signed-setup/*-${{ matrix.arch }}-setup.exe -Destination out -Force
 
-      # The updater's format (app/src/daemon/update/signature.rs) is minisign-style (the same container,
-      # a different message): stock minisign can neither produce nor verify it. The Ed25519 signature is over
-      # "Ed" || key id || SHA-512(asset), and the global one over "Ed" || key id || signature ||
-      # trusted comment. UPDATE_SIGNING_KEY is an Ed25519 private key in PKCS#8 PEM.
+      # The updater's signature format is described in scripts/sign-update-asset.sh.
       - name: Sign the update asset
         if: steps.signers.outputs.minisign == 'true'
         shell: bash
@@ -473,31 +470,13 @@ jobs:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          work=$(mktemp -d)
-          trap 'rm -rf "$work"' EXIT
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$work/key.pem"
           version=${TAG#v}
           asset=$(basename out/Vaultkeeper-v*-${{ matrix.arch }}-setup.exe)
           if [ "$asset" != "Vaultkeeper-v$version-${{ matrix.arch }}-setup.exe" ]; then
             echo "::error::unexpected installer name $asset for version $version"
             exit 1
           fi
-          openssl pkey -in "$work/key.pem" -pubout -out "$work/pub.pem"
-          openssl pkey -in "$work/key.pem" -pubout -outform DER | tail -c 32 > "$work/pub"
-          { printf Ed; cat "$work/pub"; } | openssl dgst -sha512 -binary | head -c 8 > "$work/keyid"
-          { printf Ed; cat "$work/keyid"; openssl dgst -sha512 -binary < "out/$asset"; } > "$work/msg"
-          openssl pkeyutl -sign -inkey "$work/key.pem" -rawin -in "$work/msg" -out "$work/sig"
-          { printf Ed; cat "$work/keyid" "$work/sig"; } > "$work/blob"
-          { cat "$work/blob"; printf 'vaultkeeper %s %s' "$version" "$asset"; } > "$work/gmsg"
-          openssl pkeyutl -sign -inkey "$work/key.pem" -rawin -in "$work/gmsg" -out "$work/gsig"
-          openssl pkeyutl -verify -pubin -inkey "$work/pub.pem" -rawin -in "$work/msg" -sigfile "$work/sig"
-          openssl pkeyutl -verify -pubin -inkey "$work/pub.pem" -rawin -in "$work/gmsg" -sigfile "$work/gsig"
-          {
-            echo "untrusted comment: vaultkeeper release signature"
-            base64 < "$work/blob" | tr -d '\n'; echo
-            echo "trusted comment: vaultkeeper $version $asset"
-            base64 < "$work/gsig" | tr -d '\n'; echo
-          } > "out/$asset.minisig"
+          scripts/sign-update-asset.sh "out/$asset" "$version"
 
       - id: result
         shell: pwsh
@@ -523,9 +502,70 @@ jobs:
             out/Vaultkeeper-v*-${{ matrix.arch }}.zip
           if-no-files-found: error
 
+  linux-build:
+    name: Linux tarball ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    # UPDATE_SIGNING_KEY lives in this environment, as for the Windows package.
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-24.04 (glibc 2.39) is older than every supported distribution's glibc.
+          - {arch: x64, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu}
+          - {arch: arm64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+            libdbus-1-dev libudev-dev clang libelf-dev zlib1g-dev
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      # Restore only: cargo-cache.yml seeds this key from main.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: linux-release-${{ matrix.arch }}
+          save-if: false
+
+      - name: Build
+        run: |
+          cargo build --release --locked -p vaultkeeper --target ${{ matrix.target }}
+          strip target/${{ matrix.target }}/release/vaultkeeper
+
+      - name: Bundle
+        run: scripts/bundle-linux.sh ${{ matrix.target }}
+
+      - name: Sign the tarball
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set: the Linux tarball ships without a .minisig"
+            exit 0
+          fi
+          scripts/sign-update-asset.sh "out/vaultkeeper-v${TAG#v}-${{ matrix.target }}.tar.gz" "${TAG#v}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            out/vaultkeeper-v*-${{ matrix.target }}.tar.gz
+            out/vaultkeeper-v*-${{ matrix.target }}.tar.gz.minisig
+          if-no-files-found: error
+
   release:
     name: GitHub release
-    needs: [macos, extensions, windows-package]
+    needs: [macos, extensions, windows-package, linux-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -543,6 +583,12 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           pattern: windows-package-*
+          merge-multiple: true
+          path: out
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: linux-*
           merge-multiple: true
           path: out
 
@@ -676,3 +722,51 @@ jobs:
           release-tag: ${{ env.TAG }}
           installers-regex: '-${{ matrix.arch }}-setup\.exe$'
           token: ${{ secrets.WINGET_TOKEN }}
+
+  # Rewrites the tap's formula for the new release. The first formula is committed to
+  # avbel/homebrew-tap by hand (packaging/homebrew/vaultkeeper.rb); this job only updates it. The
+  # token lives in its own environment so the signing jobs cannot read it.
+  homebrew:
+    name: Homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    environment: homebrew
+    steps:
+      - id: gate
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set: skipped the Homebrew tap"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          path: vaultkeeper
+
+      - if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: avbel/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=${TAG#v}
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir .
+          vaultkeeper/scripts/bump-homebrew.rb tap/Formula/vaultkeeper.rb "$version" SHA256SUMS
+          ruby -c tap/Formula/vaultkeeper.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "vaultkeeper $version"
+          git push
