@@ -170,6 +170,8 @@ pub struct App<S: VaultService> {
     ssh_notice: RefCell<String>,
     /// Shortcuts the OS refused (Quick Panel, Generator), as the daemon last reported.
     hotkey_issues: Cell<settings_hotkeys::Issues>,
+    /// Who owns the shortcuts and what the desktop calls them (Linux), as the daemon last reported.
+    hotkey_bindings: RefCell<settings_hotkeys::Bindings>,
     /// The protection chains the daemon last reported, for the Settings summary and list.
     security: RefCell<crate::hooks::SecurityReportDto>,
     /// Number of the newest security check, so only its answer is applied.
@@ -226,6 +228,7 @@ impl<S: VaultService> App<S> {
             pending_notice: RefCell::new(None),
             ssh_notice: RefCell::new(String::new()),
             hotkey_issues: Cell::new(settings_hotkeys::Issues::default()),
+            hotkey_bindings: RefCell::default(),
             security: RefCell::default(),
             security_seq: Cell::new(0),
             security_error: RefCell::default(),

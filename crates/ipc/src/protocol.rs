@@ -66,6 +66,9 @@ pub enum UiNotice {
     /// Not sent by a UI: the server queues it when a UI session ends, however it ended, so
     /// whatever the UI turned on (a hotkey pause) can be undone.
     Disconnected,
+    /// Settings' "Change in system settings…": the daemon opens the desktop's shortcut dialog for
+    /// the shortcuts it bound through the GlobalShortcuts portal.
+    ConfigureShortcuts,
 }
 
 /// Daemon -> UI.
@@ -197,6 +200,25 @@ pub enum UiCommand {
         quick_panel: bool,
         generator: bool,
     },
+    /// Who owns the shortcuts: Settings shows the desktop's own description of each (portal) or
+    /// the compositor lines to paste (manual) instead of the plain recorders. Linux only.
+    HotkeyBindings {
+        mode: HotkeyMode,
+        quick_panel: String,
+        generator: String,
+    },
+}
+
+/// How a shortcut reaches the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum HotkeyMode {
+    /// The daemon registers the saved accelerator itself (macOS, Windows).
+    #[default]
+    Recorder,
+    /// The desktop's GlobalShortcuts portal holds the binding and may change it.
+    Portal,
+    /// No portal backend: the user binds `vaultkeeper --search` in the compositor.
+    Manual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

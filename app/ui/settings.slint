@@ -80,6 +80,11 @@ export component SettingsWindow inherits Window {
     in property <bool> hotkey-note-is-error;
     in property <string> generator-hotkey-note;
     in property <bool> generator-hotkey-note-is-error;
+    // Linux with a GlobalShortcuts portal: the desktop owns the bindings and has its own dialog.
+    in property <bool> shortcuts-configurable: false;
+    // Linux without the portal: the compositor lines to paste, with the sentence introducing them.
+    in property <string> shortcut-lines-hint;
+    in property <string> shortcut-lines;
     // Why the daemon could not start the SSH agent; empty when it could.
     in property <string> ssh-notice;
     // Which recorder waits for a key: 0 none, 1 Quick Panel, 2 Generator. Read by the winit key
@@ -130,6 +135,8 @@ export component SettingsWindow inherits Window {
     callback copy-cli-path-setup() -> bool;
     callback copy-socket() -> bool;
     callback copy-ssh-config() -> bool;
+    callback copy-shortcut-lines() -> bool;
+    callback configure-shortcuts();
     callback ssh-approval-selected(int);
     callback ssh-biometric-toggled(bool);
     callback biometric-right-away-toggled(bool);
@@ -577,6 +584,47 @@ export component SettingsWindow inherits Window {
                     accessible-role: AccessibleRole.text;
                     accessible-label: "Generator hotkey note";
                     accessible-value: self.text;
+                }
+                if root.shortcuts-configurable: Btn {
+                    text: "Change in system settings…";
+                    clicked => { root.configure-shortcuts(); }
+                }
+                if root.shortcut-lines-hint != "": VerticalLayout {
+                    spacing: Theme.s1;
+                    Text {
+                        text: root.shortcut-lines-hint;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-hint;
+                        wrap: word-wrap;
+                    }
+                    if root.shortcut-lines != "": Rectangle {
+                        background: Theme.surface-raised;
+                        border-radius: Theme.radius-control;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        HorizontalLayout {
+                            padding: Theme.s2;
+                            spacing: Theme.s2;
+                            Text {
+                                text: root.shortcut-lines;
+                                font-family: Theme.mono;
+                                font-size: Theme.font-meta;
+                                color: Theme.text;
+                                horizontal-stretch: 1;
+                                wrap: word-wrap;
+                                accessible-role: AccessibleRole.text;
+                                accessible-label: "Shortcut binding lines";
+                                accessible-value: self.text;
+                            }
+                            CopyBtn {
+                                y: 0px;
+                                code: 3;
+                                label: "Copy shortcut binding lines";
+                                emphasized: true;
+                                copy => { return root.copy-shortcut-lines(); }
+                            }
+                        }
+                    }
                 }
                 if root.error-text != "": Text {
                     text: root.error-text;

@@ -69,6 +69,8 @@ pub trait GlobalHotkey: Send + Sync {
     fn pause(&self, recording: bool) {
         let _ = recording;
     }
+    /// "Change in system settings…": the desktop's own shortcut dialog (Linux portal).
+    fn configure_system(&self) {}
 }
 
 pub trait UrlOpener: Send + Sync {

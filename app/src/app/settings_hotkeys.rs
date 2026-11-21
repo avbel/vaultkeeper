@@ -11,6 +11,7 @@ use slint::{
         },
     },
 };
+use vk_ipc::HotkeyMode;
 use vk_vault::VaultService;
 
 use super::{App, handler};
@@ -21,6 +22,7 @@ use crate::{
         physical_accelerator,
     },
     settings::{Settings, ctrl_alt_only, hotkey_display, hotkey_symbols},
+    shortcut_syntax::{Compositor, compositor_lines},
     ui::SettingsWindow,
 };
 
@@ -48,6 +50,92 @@ pub(super) struct Issues {
     pub generator: bool,
 }
 
+/// Who owns the shortcuts and what the desktop calls them, as the daemon reported (Linux only;
+/// elsewhere the recorders are the whole story).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Bindings {
+    pub mode: HotkeyMode,
+    pub quick_panel: String,
+    pub generator: String,
+}
+
+/// What Settings adds to the recorders when the desktop owns the shortcuts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SystemView {
+    quick_panel_note: String,
+    generator_note: String,
+    /// The desktop has a shortcut dialog the "Change in system settings…" button opens.
+    configurable: bool,
+    lines_hint: String,
+    lines: String,
+}
+
+fn system_view(bindings: &Bindings, settings: &Settings, compositor: Compositor) -> SystemView {
+    match bindings.mode {
+        HotkeyMode::Recorder => SystemView::default(),
+        HotkeyMode::Portal => SystemView {
+            quick_panel_note: assigned_note(&bindings.quick_panel),
+            generator_note: if settings.generator_hotkey.trim().is_empty() {
+                String::new()
+            } else {
+                assigned_note(&bindings.generator)
+            },
+            configurable: true,
+            ..SystemView::default()
+        },
+        HotkeyMode::Manual => {
+            let lines = compositor_lines(compositor, &settings.hotkey, &settings.generator_hotkey);
+            SystemView {
+                lines_hint: manual_hint(compositor, lines.is_some()).to_owned(),
+                lines: lines.unwrap_or_default(),
+                ..SystemView::default()
+            }
+        }
+    }
+}
+
+fn assigned_note(trigger: &str) -> String {
+    if trigger.is_empty() {
+        "Not assigned by your desktop yet. Use \"Change in system settings…\".".to_owned()
+    } else {
+        format!("Your desktop uses: {trigger}")
+    }
+}
+
+const fn manual_hint(compositor: Compositor, has_lines: bool) -> &'static str {
+    match (compositor, has_lines) {
+        (Compositor::Sway, true) => {
+            "This desktop cannot register global shortcuts for apps. Add to your Sway config:"
+        }
+        (Compositor::Hyprland, true) => {
+            "This desktop cannot register global shortcuts for apps. Add to your Hyprland config:"
+        }
+        (Compositor::Omarchy, true) => {
+            "This desktop cannot register global shortcuts for apps. Add to ~/.config/hypr/bindings.lua:"
+        }
+        _ => {
+            "This desktop cannot register global shortcuts for apps. Bind `vaultkeeper --search` (and `vaultkeeper --generator`) to keys in your desktop's keyboard settings."
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn current_compositor() -> Compositor {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let omarchy = vk_linux::distro::detect() == vk_linux::distro::Distro::Omarchy;
+    Compositor::detect(&desktop, omarchy)
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn current_compositor() -> Compositor {
+    Compositor::Other
+}
+
+/// The binding lines the Copy button puts on the clipboard.
+pub(super) fn manual_lines(bindings: &Bindings, settings: &Settings) -> String {
+    system_view(bindings, settings, current_compositor()).lines
+}
+
 /// What to show under a shortcut: the refusal wins over the AltGr hint, which macOS never needs.
 pub(super) fn hotkey_note(accelerator: &str, refused: bool) -> (&'static str, bool) {
     if refused {
@@ -59,17 +147,36 @@ pub(super) fn hotkey_note(accelerator: &str, refused: bool) -> (&'static str, bo
     }
 }
 
-pub(super) fn show_hotkeys(window: &SettingsWindow, settings: &Settings, issues: Issues) {
+pub(super) fn show_hotkeys(
+    window: &SettingsWindow,
+    settings: &Settings,
+    issues: Issues,
+    bindings: &Bindings,
+) {
+    let system = system_view(bindings, settings, current_compositor());
     window.set_hotkey(settings.hotkey.as_str().into());
     window.set_hotkey_shown(hotkey_display(&settings.hotkey).into());
     window.set_generator_hotkey(settings.generator_hotkey.as_str().into());
     window.set_generator_hotkey_shown(hotkey_display(&settings.generator_hotkey).into());
     let (text, refused) = hotkey_note(&settings.hotkey, issues.quick_panel);
+    let text = if system.quick_panel_note.is_empty() {
+        text
+    } else {
+        system.quick_panel_note.as_str()
+    };
     window.set_hotkey_note(text.into());
     window.set_hotkey_note_is_error(refused);
     let (text, refused) = hotkey_note(&settings.generator_hotkey, issues.generator);
+    let text = if system.generator_note.is_empty() {
+        text
+    } else {
+        system.generator_note.as_str()
+    };
     window.set_generator_hotkey_note(text.into());
     window.set_generator_hotkey_note_is_error(refused);
+    window.set_shortcuts_configurable(system.configurable);
+    window.set_shortcut_lines_hint(system.lines_hint.into());
+    window.set_shortcut_lines(system.lines.into());
 }
 
 /// Slint reports ⌘ as `control` and ⌃ as `meta` on macOS; elsewhere `control` is Ctrl and
@@ -122,6 +229,16 @@ impl<S: VaultService> App<S> {
                 )
             }
         ));
+        window.on_configure_shortcuts(handler!(self, |app| {
+            app.hooks.hotkey.configure_system();
+        }));
+        window.on_copy_shortcut_lines(handler!(self, false, |app| {
+            let lines = zeroize::Zeroizing::new(manual_lines(
+                &app.hotkey_bindings.borrow(),
+                &app.settings.borrow(),
+            ));
+            app.copy_text("shortcut lines", &lines)
+        }));
         window.on_recording_changed(handler!(self, |app, recording| {
             app.hooks.hotkey.pause(recording);
         }));
@@ -139,7 +256,29 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .map(ComponentHandle::clone_strong);
         if let Some(window) = window {
-            show_hotkeys(&window, &self.settings.borrow(), self.hotkey_issues.get());
+            show_hotkeys(
+                &window,
+                &self.settings.borrow(),
+                self.hotkey_issues.get(),
+                &self.hotkey_bindings.borrow(),
+            );
+        }
+    }
+
+    pub(super) fn hotkey_bindings_changed(&self, bindings: Bindings) {
+        self.hotkey_bindings.replace(bindings);
+        let window = self
+            .settings_window
+            .borrow()
+            .as_ref()
+            .map(ComponentHandle::clone_strong);
+        if let Some(window) = window {
+            show_hotkeys(
+                &window,
+                &self.settings.borrow(),
+                self.hotkey_issues.get(),
+                &self.hotkey_bindings.borrow(),
+            );
         }
     }
 
@@ -248,7 +387,12 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .map(ComponentHandle::clone_strong);
         if let Some(window) = window {
-            show_hotkeys(&window, &self.settings.borrow(), self.hotkey_issues.get());
+            show_hotkeys(
+                &window,
+                &self.settings.borrow(),
+                self.hotkey_issues.get(),
+                &self.hotkey_bindings.borrow(),
+            );
         }
         saved
     }
@@ -304,6 +448,72 @@ mod tests {
             ("", false)
         };
         assert_eq!(hotkey_note("Ctrl+Alt+G", false), expected);
+    }
+
+    fn bindings(mode: HotkeyMode, quick_panel: &str) -> Bindings {
+        Bindings {
+            mode,
+            quick_panel: quick_panel.to_owned(),
+            generator: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_recorders_stand_alone_where_the_daemon_registers_the_shortcuts() {
+        let view = system_view(&Bindings::default(), &Settings::default(), Compositor::Sway);
+        assert_eq!(view, SystemView::default());
+    }
+
+    #[test]
+    fn a_portal_shows_the_desktops_trigger_and_offers_its_dialog() {
+        let settings = Settings {
+            generator_hotkey: String::new(),
+            ..Settings::default()
+        };
+        let view = system_view(
+            &bindings(HotkeyMode::Portal, "Ctrl+Shift+Space"),
+            &settings,
+            Compositor::Other,
+        );
+        assert_eq!(view.quick_panel_note, "Your desktop uses: Ctrl+Shift+Space");
+        assert_eq!(
+            view.generator_note, "",
+            "no Generator shortcut, nothing to say"
+        );
+        assert!(view.configurable);
+        let unassigned = system_view(
+            &bindings(HotkeyMode::Portal, ""),
+            &settings,
+            Compositor::Other,
+        );
+        assert!(unassigned.quick_panel_note.starts_with("Not assigned"));
+    }
+
+    #[test]
+    fn without_a_portal_the_compositor_lines_follow_the_saved_shortcuts() {
+        let settings = Settings {
+            hotkey: "Ctrl+Shift+Space".to_owned(),
+            generator_hotkey: String::new(),
+            ..Settings::default()
+        };
+        let view = system_view(
+            &bindings(HotkeyMode::Manual, ""),
+            &settings,
+            Compositor::Omarchy,
+        );
+        assert_eq!(
+            view.lines,
+            "o.bind(\"CTRL + SHIFT + SPACE\", \"Vaultkeeper\", \"vaultkeeper --search\")"
+        );
+        assert!(view.lines_hint.contains("bindings.lua"));
+        assert!(!view.configurable);
+        let other = system_view(
+            &bindings(HotkeyMode::Manual, ""),
+            &settings,
+            Compositor::Other,
+        );
+        assert_eq!(other.lines, "");
+        assert!(other.lines_hint.contains("vaultkeeper --search"));
     }
 
     #[test]

@@ -52,7 +52,8 @@ impl HotkeyPause {
             UiNotice::SettingsChanged
             | UiNotice::Activity
             | UiNotice::Alive(_)
-            | UiNotice::Modal(_) => {}
+            | UiNotice::Modal(_)
+            | UiNotice::ConfigureShortcuts => {}
         }
     }
 

@@ -70,6 +70,15 @@ pub fn command_for(command: vk_ipc::UiCommand) -> UiCommand {
             quick_panel,
             generator,
         },
+        vk_ipc::UiCommand::HotkeyBindings {
+            mode,
+            quick_panel,
+            generator,
+        } => UiCommand::HotkeyBindings {
+            mode,
+            quick_panel,
+            generator,
+        },
     }
 }
 
@@ -145,6 +154,14 @@ mod tests {
                     generator: false,
                 },
                 "HotkeyIssues { quick_panel: true, generator: false }",
+            ),
+            (
+                vk_ipc::UiCommand::HotkeyBindings {
+                    mode: vk_ipc::HotkeyMode::Portal,
+                    quick_panel: "Ctrl+Shift+Space".to_owned(),
+                    generator: String::new(),
+                },
+                r#"HotkeyBindings { mode: Portal, quick_panel: "Ctrl+Shift+Space", generator: "" }"#,
             ),
         ];
         for (daemon, app) in pairs {

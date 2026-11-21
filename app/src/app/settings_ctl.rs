@@ -133,7 +133,12 @@ impl<S: VaultService> App<S> {
         window.set_ssh_biometric(settings.ssh_touch_id);
         window.set_biometric_right_away(settings.touch_id_right_away);
         window.set_show_site_icons(settings.show_site_icons);
-        super::settings_hotkeys::show_hotkeys(window, &settings, self.hotkey_issues.get());
+        super::settings_hotkeys::show_hotkeys(
+            window,
+            &settings,
+            self.hotkey_issues.get(),
+            &self.hotkey_bindings.borrow(),
+        );
         self.fill_browser_settings(window, &settings);
         self.fill_security(window);
     }

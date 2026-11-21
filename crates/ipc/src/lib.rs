@@ -60,8 +60,8 @@ pub use peer::{PeerCredentials, PeerVerifier, SameExecutable, has_hardened_runti
 #[cfg(unix)]
 pub use peer::{parent_pid, process_executable};
 pub use protocol::{
-    BrowserPrompt, BrowserReply, PROTOCOL_VERSION, SshApprovalKind, SshDecision, SshPrompt,
-    TouchIdFailure, TypingTarget, UiCommand, UiNotice,
+    BrowserPrompt, BrowserReply, HotkeyMode, PROTOCOL_VERSION, SshApprovalKind, SshDecision,
+    SshPrompt, TouchIdFailure, TypingTarget, UiCommand, UiNotice,
 };
 pub use security::{ChainDto, ChainState, SecurityFuture, SecurityHost, SecurityReportDto};
 pub use server::{

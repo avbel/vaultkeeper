@@ -194,6 +194,10 @@ impl GlobalHotkey for HotkeyBinding {
     fn pause(&self, recording: bool) {
         (self.notify)(UiNotice::ShortcutRecording(recording));
     }
+
+    fn configure_system(&self) {
+        (self.notify)(UiNotice::ConfigureShortcuts);
+    }
 }
 
 /// The daemon starts and stops the agent when it re-reads the saved setting.

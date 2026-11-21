@@ -126,6 +126,23 @@ const fn hotkey_issues_command(issues: HotkeyIssues) -> UiCommand {
 struct SetupIssues {
     ssh_agent: Option<String>,
     hotkeys: HotkeyIssues,
+    bindings: Option<HotkeyBindings>,
+}
+
+/// Who owns the shortcuts and what the desktop calls them; reported by the Linux backend only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotkeyBindings {
+    pub mode: vk_ipc::HotkeyMode,
+    pub quick_panel: String,
+    pub generator: String,
+}
+
+fn hotkey_bindings_command(bindings: HotkeyBindings) -> UiCommand {
+    UiCommand::HotkeyBindings {
+        mode: bindings.mode,
+        quick_panel: bindings.quick_panel,
+        generator: bindings.generator,
+    }
 }
 
 pub struct Daemon {
@@ -436,6 +453,11 @@ impl Daemon {
         self.hotkey_pause.is_paused()
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn runtime_handle(&self) -> Handle {
+        self.runtime.clone()
+    }
+
     #[must_use]
     pub fn ui_connected(&self) -> bool {
         guard(&self.server)
@@ -706,12 +728,34 @@ impl Daemon {
         }
     }
 
+    /// Called when the portal's shortcut list changes or the backend is found missing.
+    pub fn report_hotkey_bindings(self: &Arc<Self>, bindings: HotkeyBindings) {
+        let changed = guard(&self.setup_issues)
+            .bindings
+            .replace(bindings.clone())
+            .as_ref()
+            != Some(&bindings);
+        if changed && self.ui_connected() {
+            self.send_command(hotkey_bindings_command(bindings));
+        }
+    }
+
     /// Settings is about to open in a UI that may have started after the failure.
     fn replay_setup_issues(self: &Arc<Self>) {
-        let (ssh_agent, hotkeys) = {
+        let (ssh_agent, hotkeys, bindings) = {
             let issues = guard(&self.setup_issues);
-            (issues.ssh_agent.clone(), issues.hotkeys)
+            (
+                issues.ssh_agent.clone(),
+                issues.hotkeys,
+                issues.bindings.clone(),
+            )
         };
+        if let Some(bindings) = bindings {
+            self.send(|seq| DaemonEvent::Command {
+                seq,
+                command: hotkey_bindings_command(bindings),
+            });
+        }
         if let Some(message) = ssh_agent {
             self.send(|seq| DaemonEvent::Command {
                 seq,
@@ -1023,6 +1067,7 @@ async fn notices_loop(daemon: Arc<Daemon>, mut notices: mpsc::Receiver<UiNotice>
             UiNotice::ShortcutRecording(_) | UiNotice::Disconnected => {
                 daemon.hotkey_pause.on_notice(notice);
             }
+            UiNotice::ConfigureShortcuts => super::hotkey::configure_system_shortcuts(),
         }
     }
 }

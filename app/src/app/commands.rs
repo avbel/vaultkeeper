@@ -52,6 +52,12 @@ pub enum UiCommand {
         quick_panel: bool,
         generator: bool,
     },
+    /// Who owns the shortcuts and the desktop's name for each; Settings shows it under them.
+    HotkeyBindings {
+        mode: vk_ipc::HotkeyMode,
+        quick_panel: String,
+        generator: String,
+    },
 }
 
 impl<S: VaultService> App<S> {
@@ -105,6 +111,15 @@ impl<S: VaultService> App<S> {
                 quick_panel,
                 generator,
             } => self.hotkey_issues_changed(quick_panel, generator),
+            UiCommand::HotkeyBindings {
+                mode,
+                quick_panel,
+                generator,
+            } => self.hotkey_bindings_changed(super::settings_hotkeys::Bindings {
+                mode,
+                quick_panel,
+                generator,
+            }),
         }
     }
 
@@ -225,6 +240,7 @@ impl UiCommand {
                 | Self::Toast { .. }
                 | Self::SshAgentFailed(_)
                 | Self::HotkeyIssues { .. }
+                | Self::HotkeyBindings { .. }
                 | Self::ShowBrowserPrompt(BrowserPromptRequest {
                     prompt: vk_ipc::BrowserPrompt::Save { .. }
                         | vk_ipc::BrowserPrompt::AddAddress { .. }

@@ -27,6 +27,7 @@ pub mod run;
 pub mod send_view;
 pub mod server_url;
 pub mod settings;
+pub mod shortcut_syntax;
 pub mod sidebar;
 pub mod site_icon;
 pub mod ui_process;

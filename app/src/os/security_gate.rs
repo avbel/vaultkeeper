@@ -64,6 +64,8 @@ pub struct Facts {
     pub key_backend: &'static str,
     /// Which key `systemd-creds` binds the stored tokens to, or why it is unavailable (C1 link 5).
     pub creds: vk_platform::creds::Backend,
+    /// The GlobalShortcuts portal's state as the daemon found it; `None` while unknown.
+    pub global_shortcuts: Option<Result<(), String>>,
 }
 
 /// The issues a user accepted with `vaultkeeper security accept`, stored in settings.json.
@@ -167,7 +169,27 @@ pub fn chains(facts: &Facts, role: Role) -> Vec<Chain> {
             fix: Some(fix(facts.distro, Item::SecretMem)),
         });
     }
+    if role == Role::Daemon {
+        chains.extend(hotkey_chain(facts));
+    }
     chains
+}
+
+/// C9: the portal binds the shortcuts (Full); otherwise the user pastes the compositor lines
+/// Settings shows (Standard). Left out until the daemon has tried the portal.
+fn hotkey_chain(facts: &Facts) -> Option<Chain> {
+    let portal = facts.global_shortcuts.as_ref()?;
+    Some(Chain {
+        id: "hotkey",
+        name: "Global shortcuts",
+        required: Required::Status,
+        minimum: 1,
+        links: vec![
+            link("global-shortcuts", "GlobalShortcuts portal", portal),
+            always("compositor-binding", "compositor binding"),
+        ],
+        fix: None,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -322,6 +344,7 @@ impl Facts {
             } else {
                 vk_platform::creds::Backend::Unavailable("not probed in this process".to_owned())
             },
+            global_shortcuts: crate::os::linux::hotkey_status::get(),
         }
     }
 }
@@ -410,6 +433,8 @@ pub fn refusal_text(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
+    use vk_platform::security::ChainStatus;
+
     use super::*;
 
     fn good() -> Facts {
@@ -421,6 +446,7 @@ mod tests {
             runtime_dir: Ok(()),
             key_backend: "memfd_secret",
             creds: vk_platform::creds::Backend::Host,
+            global_shortcuts: None,
         }
     }
 
@@ -548,6 +574,37 @@ mod tests {
             .expect("key chain");
         assert_eq!(key.active.as_deref(), Some("keyctl"));
         assert_eq!(key.fallback.as_deref(), Some("mlock"));
+    }
+
+    fn hotkey_status(facts: &Facts, role: Role) -> Option<ChainStatus> {
+        evaluate(facts, role)
+            .chains
+            .iter()
+            .find(|chain| chain.id == "hotkey")
+            .map(|chain| chain.status)
+    }
+
+    #[test]
+    fn the_hotkey_chain_follows_the_portal_and_never_warns() {
+        let facts = |global_shortcuts| Facts {
+            global_shortcuts,
+            ..good()
+        };
+        assert_eq!(hotkey_status(&facts(None), Role::Daemon), None);
+        assert_eq!(
+            hotkey_status(&facts(Some(Ok(()))), Role::Daemon),
+            Some(ChainStatus::Full)
+        );
+        let missing = facts(Some(Err("no portal".to_owned())));
+        assert_eq!(
+            hotkey_status(&missing, Role::Daemon),
+            Some(ChainStatus::Standard)
+        );
+        assert_eq!(hotkey_status(&missing, Role::Ui), None);
+        assert_eq!(
+            decide(&evaluate(&missing, Role::Daemon), false, None),
+            Decision::Proceed { warn: false }
+        );
     }
 
     #[test]
