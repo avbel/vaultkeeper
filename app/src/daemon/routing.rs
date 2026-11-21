@@ -17,6 +17,8 @@ pub enum TrayAction {
     SwitchAccount(i32),
     /// The update item: check, install a staged update, or open the release page.
     Update,
+    /// Linux: restart from the install path after a package manager replaced the binary.
+    RestartUpdated,
     Quit,
 }
 
@@ -28,6 +30,7 @@ pub enum Effect {
     Sync,
     SwitchAccount(Arc<str>),
     Update,
+    RestartUpdated,
     Quit,
 }
 
@@ -67,6 +70,7 @@ pub fn tray(
         },
         TrayAction::SwitchAccount(index) => switch_account(index, accounts),
         TrayAction::Update => vec![Effect::Update],
+        TrayAction::RestartUpdated => vec![Effect::RestartUpdated],
         TrayAction::Quit => vec![Effect::Quit],
     }
 }
@@ -255,6 +259,10 @@ mod tests {
             [Effect::Show(UiCommand::ShowSettings)]
         );
         assert_eq!(tray_now(TrayAction::Quit, &state, &[]), [Effect::Quit]);
+        assert_eq!(
+            tray_now(TrayAction::RestartUpdated, &state, &[]),
+            [Effect::RestartUpdated]
+        );
     }
 
     #[test]

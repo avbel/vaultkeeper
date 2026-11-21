@@ -181,6 +181,9 @@ pub struct Daemon {
     self_update: bool,
     /// Set once an update was swapped in: the bundle to start again after shutdown.
     restart: Mutex<Option<PathBuf>>,
+    /// The install path once it names another file than the running binary (a package manager
+    /// upgraded under this daemon): the state "Updated". Only Linux ever sets it.
+    upgraded: watch::Sender<Option<PathBuf>>,
 }
 
 /// What the launcher needs to hand a UI process its channel: nothing on macOS, where the UI
@@ -368,6 +371,7 @@ impl Daemon {
             #[cfg(target_os = "linux")]
             self_update,
             restart: Mutex::new(None),
+            upgraded: watch::Sender::new(None),
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -481,6 +485,36 @@ impl Daemon {
         )
     }
 
+    #[must_use]
+    pub fn upgraded(&self) -> Option<PathBuf> {
+        self.upgraded.borrow().clone()
+    }
+
+    #[must_use]
+    pub fn subscribe_upgraded(&self) -> watch::Receiver<Option<PathBuf>> {
+        self.upgraded.subscribe()
+    }
+
+    #[cfg(any(target_os = "linux", all(test, unix)))]
+    pub(crate) fn mark_upgraded(&self, install: PathBuf) {
+        self.upgraded
+            .send_if_modified(|current| update::upgraded::record(current, install));
+    }
+
+    /// The install path can vanish after the state was set (an uninstall); quitting then would
+    /// end in a failed relaunch, so the state is dropped instead.
+    fn restart_into_upgrade(&self) {
+        let Some(install) = self.upgraded() else {
+            return;
+        };
+        if install.exists() {
+            self.restart_for_update(install);
+        } else {
+            tracing::warn!(path = %install.display(), "the updated binary is gone; not restarting");
+            self.upgraded.send_replace(None);
+        }
+    }
+
     /// The new app is in place: quit the event loop so `run` shuts down and starts `bundle`.
     pub fn restart_for_update(&self, bundle: PathBuf) {
         *guard(&self.restart) = Some(bundle);
@@ -555,6 +589,9 @@ impl Daemon {
                 if let Some(updater) = &self.updater {
                     updater.clicked();
                 }
+            }
+            Effect::RestartUpdated => {
+                self.restart_into_upgrade();
             }
             // The shell quits its event loop and then calls `shutdown`.
             Effect::Quit => {}

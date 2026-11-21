@@ -25,6 +25,8 @@ pub enum IpcError {
     Disconnected,
     #[error("the Vaultkeeper daemon did not answer within {0:?}")]
     Timeout(Duration),
+    #[error("the Vaultkeeper daemon runs a binary that was replaced by an update")]
+    DaemonOutdated,
     #[error("invalid data over IPC: {0}")]
     Convert(#[from] ConvertError),
 }
@@ -52,6 +54,7 @@ impl IpcError {
             | Self::Decode(_)
             | Self::VersionMismatch { .. }
             | Self::Protocol(_)
+            | Self::DaemonOutdated
             | Self::Convert(_) => io::ErrorKind::InvalidData,
         }
     }

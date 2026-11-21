@@ -126,6 +126,8 @@ struct Snapshot {
     sync_label: String,
     update_label: String,
     update_enabled: bool,
+    #[cfg(target_os = "linux")]
+    restart_to_update: bool,
 }
 
 fn snapshot(daemon: &Daemon) -> Snapshot {
@@ -160,6 +162,8 @@ fn snapshot(daemon: &Daemon) -> Snapshot {
             .map(super::update::Status::tray_label)
             .unwrap_or_default(),
         update_enabled: update.is_none_or(|status| status.tray_enabled()),
+        #[cfg(target_os = "linux")]
+        restart_to_update: daemon.upgraded().is_some(),
     }
 }
 
@@ -290,6 +294,7 @@ fn follow_changes(
     let mut settings = daemon.subscribe_settings();
     let mut sync = daemon.subscribe_tray_sync();
     let mut update = daemon.subscribe_update();
+    let mut upgraded = daemon.subscribe_upgraded();
     slint::spawn_local(async move {
         loop {
             tokio::select! {
@@ -297,6 +302,7 @@ fn follow_changes(
                 vault = changes.changed() => if vault.is_err() { break },
                 prefs = settings.changed() => if prefs.is_err() { break },
                 status = sync.changed() => if status.is_err() { break },
+                state = upgraded.changed() => if state.is_err() { break },
                 status = async {
                     match update.as_mut() {
                         Some(update) => update.changed().await,

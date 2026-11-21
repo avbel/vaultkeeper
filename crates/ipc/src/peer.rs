@@ -10,8 +10,10 @@
 //! On Linux the peer's executable is identified by the device and inode of `/proc/<pid>/exe`,
 //! read while a pidfd from `SO_PEERPIDFD` pins the connecting process: if it exited and its pid
 //! was reused before the read, the pidfd reports the exit and the identity is dropped
-//! (linux-plan.md 2c). Path strings are never compared, so a Homebrew Cellar path change does not
-//! matter and a copy elsewhere does.
+//! (linux-plan.md 2c). The path never admits a peer: identity alone does, so a Homebrew Cellar path
+//! change does not matter and a copy elsewhere does not get in. The one use of the path is
+//! [`Verdict::DaemonOutdated`], where it must match the install path in addition to the file's
+//! current on-disk identity.
 
 use std::{
     io,
@@ -26,7 +28,9 @@ pub struct PeerCredentials {
     pub uid: u32,
     pub pid: i32,
     /// Canonicalized path of the peer's executable, for logs; empty when the OS would not say.
-    /// Never used to decide: the path can change under a live process.
+    /// A necessary but never sufficient condition: it only qualifies a peer for
+    /// [`Verdict::DaemonOutdated`], together with the install path's on-disk identity, because the
+    /// path can change under a live process.
     pub executable: PathBuf,
     /// The kernel's `audit_token_t` of the peer process (macOS).
     pub(crate) audit_token: Option<[u32; 8]>,
@@ -197,6 +201,80 @@ impl PeerVerifier for SameExecutable {
     #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
     fn verify(&self, peer: &PeerCredentials) -> bool {
         peer.executable == self.executable
+    }
+}
+
+/// How the CLI socket treats a connecting peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    Accepted,
+    /// The peer is the binary now installed at the daemon's install path while this daemon still
+    /// runs the one it replaced (Linux): it may be told to restart the daemon, nothing else.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "decided on Linux only")
+    )]
+    DaemonOutdated,
+    Rejected,
+}
+
+/// The file now behind the daemon's install path.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Installed {
+    path: PathBuf,
+    identity: FileIdentity,
+}
+
+#[cfg(target_os = "linux")]
+impl Installed {
+    pub(crate) fn read(install: &Path) -> Option<Self> {
+        let path = install.canonicalize().ok()?;
+        let identity = FileIdentity::of(&path).ok()?;
+        Some(Self { path, identity })
+    }
+}
+
+/// An attacker binary elsewhere gets `Rejected`: only the identity of the very file at the
+/// install path, read from disk now, earns `DaemonOutdated`. Whoever can replace that file already
+/// has this user's write access to the install, which this check does not claim to stop.
+#[cfg(target_os = "linux")]
+pub(crate) fn decide(
+    own: FileIdentity,
+    peer: &PeerCredentials,
+    installed: impl FnOnce() -> Option<Installed>,
+) -> Verdict {
+    let Some(peer_identity) = peer.exe_identity else {
+        return Verdict::Rejected;
+    };
+    if peer_identity == own {
+        return Verdict::Accepted;
+    }
+    match installed() {
+        Some(installed)
+            if installed.identity == peer_identity && installed.path == peer.executable =>
+        {
+            Verdict::DaemonOutdated
+        }
+        _ => Verdict::Rejected,
+    }
+}
+
+impl SameExecutable {
+    pub(crate) fn verdict(&self, peer: &PeerCredentials, install: Option<&Path>) -> Verdict {
+        #[cfg(target_os = "linux")]
+        {
+            decide(self.identity, peer, || install.and_then(Installed::read))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = install;
+            if self.verify(peer) {
+                Verdict::Accepted
+            } else {
+                Verdict::Rejected
+            }
+        }
     }
 }
 
@@ -508,6 +586,74 @@ mod tests {
         assert_eq!(peer.exe_identity, None);
         let any_binary = SameExecutable::new(Path::new("/proc/self/exe")).expect("verifier");
         assert!(!any_binary.verify(&peer));
+    }
+
+    #[cfg(target_os = "linux")]
+    mod verdicts {
+        use super::*;
+
+        const OLD: FileIdentity = FileIdentity { dev: 1, ino: 10 };
+        const NEW: FileIdentity = FileIdentity { dev: 1, ino: 11 };
+
+        fn peer(identity: Option<FileIdentity>, path: &str) -> PeerCredentials {
+            PeerCredentials {
+                uid: 0,
+                pid: 1,
+                executable: PathBuf::from(path),
+                audit_token: None,
+                exe_identity: identity,
+            }
+        }
+
+        fn installed(identity: FileIdentity) -> Installed {
+            Installed {
+                path: PathBuf::from("/opt/vk/bin/vaultkeeper"),
+                identity,
+            }
+        }
+
+        #[test]
+        fn the_daemons_own_binary_is_accepted() {
+            let peer = peer(Some(OLD), "/opt/vk/bin/vaultkeeper");
+            assert_eq!(decide(OLD, &peer, || None), Verdict::Accepted);
+            assert_eq!(
+                decide(OLD, &peer, || Some(installed(NEW))),
+                Verdict::Accepted
+            );
+        }
+
+        #[test]
+        fn the_installed_binary_replacing_ours_is_an_outdated_daemon() {
+            let peer = peer(Some(NEW), "/opt/vk/bin/vaultkeeper");
+            assert_eq!(
+                decide(OLD, &peer, || Some(installed(NEW))),
+                Verdict::DaemonOutdated
+            );
+        }
+
+        #[test]
+        fn any_other_peer_is_rejected() {
+            let elsewhere = peer(Some(NEW), "/tmp/evil");
+            assert_eq!(
+                decide(OLD, &elsewhere, || Some(installed(NEW))),
+                Verdict::Rejected
+            );
+            let stale = peer(
+                Some(FileIdentity { dev: 1, ino: 12 }),
+                "/opt/vk/bin/vaultkeeper",
+            );
+            assert_eq!(
+                decide(OLD, &stale, || Some(installed(NEW))),
+                Verdict::Rejected
+            );
+            let installed_peer = peer(Some(NEW), "/opt/vk/bin/vaultkeeper");
+            assert_eq!(decide(OLD, &installed_peer, || None), Verdict::Rejected);
+            let unknown = peer(None, "/opt/vk/bin/vaultkeeper");
+            assert_eq!(
+                decide(OLD, &unknown, || Some(installed(NEW))),
+                Verdict::Rejected
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

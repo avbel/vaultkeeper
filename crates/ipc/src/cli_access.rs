@@ -1,6 +1,6 @@
 //! The terminal commands talk to the tray through a separate, read-only TLS endpoint.
 
-use std::{fs, io, sync::Arc, time::Duration};
+use std::{fs, io, path::PathBuf, sync::Arc, time::Duration};
 
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
@@ -17,10 +17,14 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use vk_vault::model::{CliLoginField, CliLoginKey};
 use zeroize::Zeroizing;
 
+#[cfg(not(target_os = "linux"))]
+use crate::PeerVerifier;
 #[cfg(unix)]
 use crate::peer;
 use crate::{
-    IpcError, PeerCredentials, PeerVerifier, SameExecutable, frame, server,
+    IpcError, PeerCredentials, SameExecutable, frame,
+    peer::Verdict,
+    server,
     transport::{self, Endpoint, Listener as TransportListener, Stream},
 };
 
@@ -29,6 +33,10 @@ const DEADLINE: Duration = Duration::from_secs(5);
 const MAX_CONNECTIONS: usize = 16;
 const MAX_CERTIFICATE: usize = 4096;
 const MAX_REQUEST: usize = 4096;
+/// Sent in place of the certificate to a peer that is the freshly installed binary talking to a
+/// daemon that still runs the replaced one. It is not DER, so an older CLI fails on it exactly as
+/// on any other bad certificate and reports the endpoint unavailable.
+const OUTDATED_DAEMON: &[u8] = b"vaultkeeper:daemon-outdated";
 
 #[derive(Serialize, Deserialize)]
 pub enum Request {
@@ -78,10 +86,14 @@ impl Drop for Listener {
 pub fn serve(
     endpoint: impl Into<Endpoint>,
     changes: watch::Receiver<u64>,
+    install_path: Option<PathBuf>,
     handle: impl Fn(Request) -> Response + Send + Sync + 'static,
 ) -> Result<Listener, IpcError> {
     let endpoint = endpoint.into();
-    let verifier = SameExecutable::current()?;
+    let admission = Admission {
+        verifier: SameExecutable::current()?,
+        install_path,
+    };
     let identity = rcgen::generate_simple_self_signed(vec![SERVER_NAME.to_owned()])
         .map_err(io::Error::other)?;
     let certificate = identity.cert.der().clone();
@@ -100,7 +112,7 @@ pub fn serve(
     let socket = server::bind_endpoint(&endpoint)?;
     let task = tokio::spawn(accept(
         socket,
-        verifier,
+        admission,
         acceptor,
         certificate,
         changes,
@@ -111,7 +123,7 @@ pub fn serve(
 
 async fn accept(
     socket: TransportListener,
-    verifier: SameExecutable,
+    admission: Admission,
     acceptor: TlsAcceptor,
     certificate: CertificateDer<'static>,
     changes: watch::Receiver<u64>,
@@ -124,7 +136,7 @@ async fn accept(
             Some(_) = connections.join_next() => {}
             accepted = socket.accept() => match accepted {
                 Ok((stream, peer)) if connections.len() < MAX_CONNECTIONS => {
-                    let verifier = verifier.clone();
+                    let admission = admission.clone();
                     let acceptor = acceptor.clone();
                     let certificate = certificate.clone();
                     let changes = changes.clone();
@@ -132,7 +144,7 @@ async fn accept(
                     connections.spawn(async move {
                         let _ = timeout(
                             DEADLINE,
-                            respond(stream, peer, &verifier, acceptor, &certificate, changes, &*handle),
+                            respond(stream, peer, &admission, acceptor, &certificate, changes, &*handle),
                         ).await;
                     });
                 }
@@ -146,35 +158,71 @@ async fn accept(
     }
 }
 
+#[derive(Clone)]
+struct Admission {
+    verifier: SameExecutable,
+    install_path: Option<PathBuf>,
+}
+
+fn untrusted() -> IpcError {
+    io::Error::new(io::ErrorKind::PermissionDenied, "untrusted CLI socket peer").into()
+}
+
+#[cfg(not(target_os = "linux"))]
 fn verify(peer: &PeerCredentials, verifier: &SameExecutable) -> Result<(), IpcError> {
     #[cfg(unix)]
     if peer.uid != peer::own_uid() {
-        return Err(
-            io::Error::new(io::ErrorKind::PermissionDenied, "untrusted CLI socket peer").into(),
-        );
+        return Err(untrusted());
     }
     if !verifier.verify(peer) {
-        return Err(
-            io::Error::new(io::ErrorKind::PermissionDenied, "untrusted CLI socket peer").into(),
-        );
+        return Err(untrusted());
     }
     Ok(())
+}
+
+async fn write_frame_bytes(stream: &mut Stream, body: &[u8]) -> Result<(), IpcError> {
+    let size = u32::try_from(body.len()).map_err(io::Error::other)?;
+    stream.write_u32_le(size).await?;
+    stream.write_all(body).await?;
+    Ok(())
+}
+
+/// Same-user peers only; the outdated-daemon outcome sends a fixed non-secret frame and closes.
+async fn admit(
+    stream: &mut Stream,
+    peer: &PeerCredentials,
+    admission: &Admission,
+) -> Result<(), IpcError> {
+    #[cfg(unix)]
+    if peer.uid != peer::own_uid() {
+        return Err(untrusted());
+    }
+    match admission
+        .verifier
+        .verdict(peer, admission.install_path.as_deref())
+    {
+        Verdict::Accepted => Ok(()),
+        Verdict::DaemonOutdated => {
+            write_frame_bytes(stream, OUTDATED_DAEMON).await?;
+            stream.flush().await?;
+            Err(untrusted())
+        }
+        Verdict::Rejected => Err(untrusted()),
+    }
 }
 
 async fn respond(
     mut stream: Stream,
     peer: PeerCredentials,
-    verifier: &SameExecutable,
+    admission: &Admission,
     acceptor: TlsAcceptor,
     certificate: &[u8],
     mut changes: watch::Receiver<u64>,
     handle: &impl Fn(Request) -> Response,
 ) -> Result<(), IpcError> {
-    verify(&peer, verifier)?;
+    admit(&mut stream, &peer, admission).await?;
     // Only the public certificate crosses the kernel-authenticated socket before TLS.
-    let size = u32::try_from(certificate.len()).map_err(io::Error::other)?;
-    stream.write_u32_le(size).await?;
-    stream.write_all(certificate).await?;
+    write_frame_bytes(&mut stream, certificate).await?;
     let mut tls = acceptor.accept(stream).await?;
     let body = frame::read_frame_with_limit(&mut tls, MAX_REQUEST)
         .await?
@@ -232,6 +280,9 @@ async fn exchange(endpoint: &Endpoint, request: &Request) -> Result<Response, Ip
     let certificate = frame::read_frame_with_limit(&mut stream, MAX_CERTIFICATE)
         .await?
         .ok_or(IpcError::Disconnected)?;
+    if certificate.as_slice() == OUTDATED_DAEMON {
+        return Err(IpcError::DaemonOutdated);
+    }
     // The daemon sends its certificate only after it verified us by our exe.
     #[cfg(target_os = "linux")]
     vk_linux::probes::drop_dumpable();
@@ -265,6 +316,8 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
+    #[cfg(target_os = "linux")]
+    use std::path::Path;
     use tokio::net::UnixStream;
 
     use super::*;
@@ -290,7 +343,7 @@ mod tests {
         let (publish, changes) = watch::channel(0);
         let calls = Arc::new(AtomicUsize::new(0));
         let handled = Arc::clone(&calls);
-        let listener = serve(path.clone(), changes, move |request| {
+        let listener = serve(path.clone(), changes, None, move |request| {
             handled.fetch_add(1, Ordering::Relaxed);
             match request {
                 Request::ListKeys => Response::Keys(vec![CliLoginKey {
@@ -341,5 +394,73 @@ mod tests {
 
         drop(listener);
         assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn an_outdated_daemon_refusal_carries_no_secret_and_other_peers_get_nothing() {
+        let own_exe = std::env::current_exe().expect("exe");
+        let admission = |install: &Path| Admission {
+            verifier: SameExecutable::new(Path::new("/bin/sh")).expect("sh"),
+            install_path: Some(install.to_path_buf()),
+        };
+
+        let (ours, mut theirs) = UnixStream::pair().expect("pair");
+        let peer = transport::unix::credentials(&ours).expect("credentials");
+        let mut stream = Stream::from(ours);
+        let outcome = admit(&mut stream, &peer, &admission(&own_exe)).await;
+        assert!(outcome.is_err());
+        drop(stream);
+        let frame = frame::read_frame_with_limit(&mut theirs, MAX_CERTIFICATE)
+            .await
+            .expect("frame")
+            .expect("one frame");
+        assert_eq!(frame.as_slice(), OUTDATED_DAEMON);
+        assert!(
+            frame::read_frame_with_limit(&mut theirs, MAX_CERTIFICATE)
+                .await
+                .expect("eof")
+                .is_none(),
+            "nothing follows the refusal"
+        );
+
+        let (ours, mut theirs) = UnixStream::pair().expect("pair");
+        let peer = transport::unix::credentials(&ours).expect("credentials");
+        let mut stream = Stream::from(ours);
+        let other_install = Path::new("/bin/sh");
+        assert!(
+            admit(&mut stream, &peer, &admission(other_install))
+                .await
+                .is_err()
+        );
+        drop(stream);
+        assert!(
+            frame::read_frame_with_limit(&mut theirs, MAX_CERTIFICATE)
+                .await
+                .expect("eof")
+                .is_none(),
+            "a peer that is not the installed binary gets no frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_turns_the_outdated_frame_into_its_own_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new();
+        fs::create_dir_all(&dir.0).expect("dir");
+        fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o700)).expect("mode");
+        let path = dir.0.join("outdated.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let size = u32::try_from(OUTDATED_DAEMON.len()).expect("small");
+            stream.write_u32_le(size).await.expect("size");
+            stream.write_all(OUTDATED_DAEMON).await.expect("body");
+            stream.flush().await.expect("flush");
+        });
+        let outcome = call(&path, &Request::ListKeys).await;
+        server.await.expect("server");
+        assert!(matches!(outcome, Err(IpcError::DaemonOutdated)));
     }
 }

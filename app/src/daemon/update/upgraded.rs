@@ -3,7 +3,11 @@
 //! directory; the daemon keeps running the deleted inode. Once the vault is quiet it restarts
 //! from the install path, the same gate the macOS self-update uses.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::daemon::Daemon;
 
@@ -28,6 +32,24 @@ pub fn replaced(running: FileIdentity, installed: Option<FileIdentity>) -> bool 
     installed.is_some_and(|installed| installed != running)
 }
 
+/// The install path to restart from, once it names another file than the running binary.
+#[must_use]
+pub fn updated_install(
+    running: FileIdentity,
+    installed: Option<FileIdentity>,
+    install: &Path,
+) -> Option<PathBuf> {
+    replaced(running, installed).then(|| install.to_path_buf())
+}
+
+/// Stores the install path; false when it was already the state, so watchers are not woken again.
+#[must_use]
+pub fn record(current: &mut Option<PathBuf>, install: PathBuf) -> bool {
+    let changed = current.as_ref() != Some(&install);
+    *current = Some(install);
+    changed
+}
+
 pub async fn watch(daemon: Arc<Daemon>) {
     // `/proc/self/exe` names the image the kernel loaded, even once its file is deleted.
     let Some(running) = identity(Path::new("/proc/self/exe")) else {
@@ -37,18 +59,17 @@ pub async fn watch(daemon: Arc<Daemon>) {
     let Some(install) = vk_platform::install_kind::current_install_path() else {
         return;
     };
-    let mut announced = false;
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
-        if !replaced(running, identity(&install)) {
+        let Some(updated) = updated_install(running, identity(&install), &install) else {
             continue;
-        }
-        if !announced {
+        };
+        if daemon.upgraded().is_none() {
             tracing::info!(path = %install.display(), "Vaultkeeper was updated; restarting once the vault is locked");
-            announced = true;
         }
+        daemon.mark_upgraded(updated.clone());
         if daemon.quiet_for_update() {
-            daemon.restart_for_update(install);
+            daemon.restart_for_update(updated);
             return;
         }
     }
@@ -66,6 +87,26 @@ mod tests {
             !replaced((1, 10), None),
             "no install path is not an upgrade"
         );
+    }
+
+    #[test]
+    fn updated_names_the_install_path_only_for_a_replaced_binary() {
+        let install = Path::new("/opt/vaultkeeper/bin/vaultkeeper");
+        assert_eq!(
+            updated_install((1, 10), Some((1, 11)), install),
+            Some(install.to_path_buf())
+        );
+        assert_eq!(updated_install((1, 10), Some((1, 10)), install), None);
+        assert_eq!(updated_install((1, 10), None, install), None);
+    }
+
+    #[test]
+    fn recording_the_same_install_path_twice_wakes_watchers_once() {
+        let mut state = None;
+        let install = PathBuf::from("/opt/vaultkeeper/bin/vaultkeeper");
+        assert!(record(&mut state, install.clone()));
+        assert!(!record(&mut state, install.clone()));
+        assert_eq!(state, Some(install));
     }
 
     #[test]

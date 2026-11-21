@@ -41,6 +41,9 @@ impl Daemon {
         match cli_access::serve(
             cli_endpoint(&self.data_dir),
             self.vault.changes(),
+            cfg!(target_os = "linux")
+                .then(vk_platform::install_kind::current_install_path)
+                .flatten(),
             move |request| {
                 daemon.upgrade().map_or(Response::Unavailable, |daemon| {
                     daemon.read_cli_access(request)

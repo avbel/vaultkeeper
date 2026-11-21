@@ -29,6 +29,8 @@ pub struct MenuState {
     /// Empty hides the update item.
     pub update_label: String,
     pub update_enabled: bool,
+    /// A package manager replaced the binary under this daemon (Linux).
+    pub restart_to_update: bool,
 }
 
 /// The host reads `_` in a label as an access-key marker, so a literal one is doubled; an
@@ -97,6 +99,12 @@ pub fn build(state: &MenuState) -> Vec<Entry> {
             action: TrayAction::Update,
         });
     }
+    if state.restart_to_update {
+        entries.push(item(
+            "Restart to finish the update",
+            TrayAction::RestartUpdated,
+        ));
+    }
     entries.push(item("Quit", TrayAction::Quit));
     entries
 }
@@ -141,6 +149,28 @@ mod tests {
                 "Quit"
             ]
         );
+    }
+
+    #[test]
+    fn tray_restart_item_shows_only_once_updated() {
+        assert!(!labels(&build(&unlocked())).contains(&"Restart to finish the update"));
+        let entries = build(&MenuState {
+            restart_to_update: true,
+            ..unlocked()
+        });
+        let shown = labels(&entries);
+        assert_eq!(
+            shown[shown.len() - 2..],
+            ["Restart to finish the update", "Quit"]
+        );
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            Entry::Item {
+                action: TrayAction::RestartUpdated,
+                enabled: true,
+                ..
+            }
+        )));
     }
 
     #[test]

@@ -4,13 +4,18 @@ use std::io::{self, Write};
 
 use anyhow::{Context, bail};
 use serde::Serialize;
-use vk_ipc::cli_access::{self, Request, Response};
+use vk_ipc::{
+    IpcError,
+    cli_access::{self, Request, Response},
+};
 use zeroize::Zeroizing;
 
 use crate::{
     cli::USAGE,
     os::layout::{cli_endpoint, data_dir},
 };
+
+const OUTDATED_NOTICE: &str = "Vaultkeeper was updated - restart it to use the new version (tray menu or `vaultkeeper --quit` then start)";
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let request = match args {
@@ -41,6 +46,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     match runtime.block_on(cli_access::call(socket, &request)) {
+        Err(IpcError::DaemonOutdated) => bail!(OUTDATED_NOTICE),
         Ok(Response::Keys(keys)) => write_json(&keys),
         Ok(Response::Fields(fields)) => write_json(&fields),
         Ok(Response::Value(value)) => write_output(value.as_bytes()),
@@ -81,4 +87,16 @@ fn write_output(output: &[u8]) -> anyhow::Result<()> {
     stdout.write_all(output)?;
     stdout.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_outdated_notice_names_the_way_out_in_ascii() {
+        assert!(OUTDATED_NOTICE.is_ascii());
+        assert!(OUTDATED_NOTICE.contains("vaultkeeper --quit"));
+        assert!(OUTDATED_NOTICE.starts_with("Vaultkeeper was updated"));
+    }
 }

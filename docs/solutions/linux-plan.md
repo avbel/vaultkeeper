@@ -197,7 +197,7 @@ kind: change
 
 ## 2e Upgrade under a running daemon
 files: crates/platform/src/install_kind.rs, app/src/daemon/update/mod.rs, app/src/daemon/tray.rs, app/src/cli.rs
-do: `install_kind::exe_identity()` (statx + the ` (deleted)` marker) and `install_kind::current_install_path()` (Homebrew: `<prefix>/opt/vaultkeeper/bin/vaultkeeper`; else the realpath at start). State `Updated` when the install path's identity differs from the running one: tray item "Restart to finish the update", CLI connects get the message from 2c, and the daemon re-executes the install path with `--tray` when `quiet_for_update()` holds (same gate as the macOS swap). With BPF installed the restarted daemon reports "this build is not enrolled" (4c) — the enrol prompt follows.
+do: `install_kind::exe_identity()` (statx + the ` (deleted)` marker) and `install_kind::current_install_path()` (Homebrew: `<prefix>/opt/vaultkeeper/bin/vaultkeeper`; else the realpath at start). State `Updated` when the install path's identity differs from the running one: tray item "Restart to finish the update", CLI connects get the message from 2c, and the daemon re-executes the install path with `--tray` when `quiet_for_update()` holds (same gate as the macOS swap). With BPF installed the restarted daemon reports "this build is not enrolled" (4c) — the enrol prompt follows. The CLI notice (a refusal frame sent to the freshly installed binary) appears only for upgrades from a build that contains this change; older daemons just look unavailable to the new CLI.
 done-when: `cargo test -p vaultkeeper update` (state machine with fake identities); `scripts/check-linux.sh -p vaultkeeper --all-targets`
 needs: 2c, 6c
 difficulty: medium

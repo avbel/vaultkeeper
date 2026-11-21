@@ -318,5 +318,6 @@ fn menu_state(snapshot: Snapshot) -> MenuState {
         sync_label: snapshot.sync_label,
         update_label: snapshot.update_label,
         update_enabled: snapshot.update_enabled,
+        restart_to_update: snapshot.restart_to_update,
     }
 }
