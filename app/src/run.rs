@@ -51,11 +51,21 @@ pub fn select_backend(backend: Backend) -> anyhow::Result<()> {
         .renderer_name("software".to_owned());
     #[cfg(target_os = "macos")]
     let selector = macos_backend(selector, backend);
+    #[cfg(target_os = "linux")]
+    let selector = linux_backend(selector);
     #[cfg(not(target_os = "macos"))]
     drop(backend);
     selector
         .select()
         .context("select the winit software backend")
+}
+
+/// The Wayland app id is what the compositor and portals match to the installed desktop file.
+#[cfg(target_os = "linux")]
+fn linux_backend(selector: slint::BackendSelector) -> slint::BackendSelector {
+    use slint::winit_030::winit::platform::wayland::WindowAttributesExtWayland;
+    use vk_platform::desktop_file::APP_ID;
+    selector.with_winit_window_attributes_hook(|attributes| attributes.with_name(APP_ID, APP_ID))
 }
 
 #[cfg(target_os = "macos")]

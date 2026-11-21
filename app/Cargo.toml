@@ -84,6 +84,29 @@ authenticator = { version = "0.5.0", default-features = false, features = ["cryp
 libc = "0.2.191"
 secure_memory.workspace = true
 vk-linux.workspace = true
+# Portals without GTK: app registration, GlobalShortcuts, OpenURI, RemoteDesktop + Clipboard
+# (auto-type), Settings, Background (steps 3a/3b/3d/3h/3i). tokio matches the workspace runtime.
+ashpd = { version = "0.14.1", default-features = false, features = [
+    "tokio",
+    "background",
+    "clipboard",
+    "global_shortcuts",
+    "open_uri",
+    "remote_desktop",
+    # remote_desktop imports screencast::Stream, so it does not build without it.
+    "screencast",
+    "settings",
+] }
+# Tray (3e). Slint's `system-tray` feature already builds ksni with `async-io`, and ksni rejects
+# both runtimes at once, so this follows it. ksni needs zbus 5, so the build carries two zbus
+# majors next to ashpd's zbus 6.
+ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
+# Signal streams from zbus (the portal restart watcher); already in the tree through ashpd.
+futures-util = { version = "0.3", default-features = false }
+# Same major as ashpd, for session-bus calls outside the portals (notifications, step 3f).
+zbus = { version = "6.0.0", default-features = false, features = ["tokio"] }
+# File dialogs through the FileChooser portal, no GTK (3h).
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 
 [target.'cfg(windows)'.dependencies]
 # Native open/save panels for attachments; IFileDialog, no portal or Wayland backends.
