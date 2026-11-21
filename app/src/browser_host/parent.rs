@@ -1,9 +1,13 @@
 #[cfg(any(windows, test))]
 mod chain;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(any(target_os = "linux", test))]
+mod linux_rules;
 #[cfg(windows)]
 mod windows;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 use vk_ipc::browser::protocol::KnownBrowser;
 #[cfg(unix)]
 use vk_ipc::browser::protocol::ParentInfo;
@@ -60,7 +64,10 @@ fn identify_browser(pid: i32, caller: &HostCaller) -> Option<KnownBrowser> {
         .map(|&(browser, _)| browser)
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(target_os = "linux")]
+use linux::identify_browser;
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn identify_browser(_pid: i32, _caller: &HostCaller) -> Option<KnownBrowser> {
     None
 }

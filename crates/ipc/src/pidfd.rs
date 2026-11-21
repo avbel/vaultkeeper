@@ -1,4 +1,4 @@
-//! Process file descriptors of socket peers (Linux): taken with `SO_PEERPIDFD` at connect time,
+//! Process file descriptors (Linux): taken with `SO_PEERPIDFD` at connect time or opened by pid,
 //! they keep naming the same process even if its pid is reused.
 
 use std::{
@@ -32,7 +32,21 @@ pub(crate) fn of_peer(stream: &UnixStream) -> io::Result<OwnedFd> {
 
 /// A pidfd polls readable once its process has exited; a poll error counts as exited too, so
 /// the check fails closed.
-pub(crate) fn exited(pidfd: &OwnedFd) -> bool {
+/// Pins `pid` now; a check with [`exited`] afterwards shows whether what was read since still
+/// belongs to it.
+pub fn open(pid: i32) -> io::Result<OwnedFd> {
+    // SAFETY: pidfd_open takes a pid and flags and has no memory preconditions.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = libc::c_int::try_from(fd).map_err(io::Error::other)?;
+    // SAFETY: the kernel returned a new pidfd that nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[must_use]
+pub fn exited(pidfd: &OwnedFd) -> bool {
     let mut poll = libc::pollfd {
         fd: pidfd.as_raw_fd(),
         events: libc::POLLIN,

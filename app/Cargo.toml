@@ -80,6 +80,8 @@ zeroize.workspace = true
 authenticator = { version = "0.5.0", default-features = false, features = ["crypto_rust"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# fcntl in the UI spawn's pre-exec hook (daemon/launcher/linux.rs).
+libc = "0.2.191"
 secure_memory.workspace = true
 vk-linux.workspace = true
 

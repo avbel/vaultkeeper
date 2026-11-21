@@ -2,6 +2,8 @@
 //! runs: none is started while one is connected or still starting, and commands wait in the IPC
 //! event queue until it connects.
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(windows)]
 mod windows;
 
@@ -62,8 +64,8 @@ fn ui_args_for(first_unlock: bool, no_activate: bool, skip: bool) -> Vec<&'stati
     args
 }
 
-/// [`ui_args`] plus the inherited pipe handle's value, for the Windows UI process.
-#[cfg(any(windows, test))]
+/// [`ui_args`] plus the inherited channel: a pipe handle on Windows, a socket fd on Linux.
+#[cfg(any(windows, target_os = "linux", test))]
 #[must_use]
 fn ui_args_with_pipe(first_unlock: bool, no_activate: bool, handle: usize) -> Vec<String> {
     let mut args: Vec<String> = ui_args(first_unlock, no_activate)
@@ -107,8 +109,8 @@ struct Running {
 pub struct Launcher {
     exe: Option<PathBuf>,
     running: Mutex<Option<Running>>,
-    /// Where the UI's pipe goes once the process is spawned (Windows).
-    #[cfg(windows)]
+    /// Where the UI's channel goes once the process is spawned (Windows, Linux).
+    #[cfg(any(windows, target_os = "linux"))]
     ui_sink: Option<vk_ipc::UiSink>,
 }
 
@@ -119,13 +121,13 @@ impl Launcher {
         Self {
             exe,
             running: Mutex::new(None),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             ui_sink: None,
         }
     }
 
-    /// Where the pipe to each new UI process is delivered; without it none can start.
-    #[cfg(windows)]
+    /// Where the channel to each new UI process is delivered; without it none can start.
+    #[cfg(any(windows, target_os = "linux"))]
     #[must_use]
     pub fn with_ui_sink(self, sink: vk_ipc::UiSink) -> Self {
         Self {
@@ -217,14 +219,22 @@ impl Launcher {
         });
     }
 
-    #[cfg(not(windows))]
-    #[allow(clippy::unused_self, reason = "Windows needs the channel sink")]
+    /// On Linux with a sink the UI gets its own socket pair; otherwise it connects to `ui.sock`.
+    #[cfg(unix)]
+    #[cfg_attr(
+        target_os = "macos",
+        allow(clippy::unused_self, reason = "Linux needs the channel sink")
+    )]
     fn spawn(
         &self,
         exe: &std::path::Path,
         first_unlock: bool,
         no_activate: bool,
     ) -> std::io::Result<UiChild> {
+        #[cfg(target_os = "linux")]
+        if let Some(sink) = &self.ui_sink {
+            return linux::spawn(exe, first_unlock, no_activate, sink).map(UiChild);
+        }
         tokio::process::Command::new(exe)
             .args(ui_args(first_unlock, no_activate))
             .stdin(std::process::Stdio::null())
@@ -390,11 +400,31 @@ mod tests {
         assert_eq!(ui_args(false, true), ["--ui", "--no-activate"]);
     }
 
+    /// Linux hands each UI a channel; the receiver keeps the server ends alive for the test.
+    #[cfg(unix)]
+    fn unix_launcher(
+        exe: PathBuf,
+    ) -> (
+        Launcher,
+        Option<tokio::sync::mpsc::Receiver<vk_ipc::transport::Stream>>,
+    ) {
+        #[cfg(target_os = "linux")]
+        {
+            let (sink, streams) = vk_ipc::UiSink::channel(4);
+            (Launcher::new(Some(exe)).with_ui_sink(sink), Some(streams))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            (Launcher::new(Some(exe)), None)
+        }
+    }
+
     // These spawn Unix tools; the Windows launcher needs a real pipe and is covered in CI.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_started_child_is_tracked_until_it_exits() {
-        let launcher = std::sync::Arc::new(Launcher::new(Some(PathBuf::from("/usr/bin/true"))));
+        let (launcher, _streams) = unix_launcher(PathBuf::from("/usr/bin/true"));
+        let launcher = std::sync::Arc::new(launcher);
         let (done, exited) = tokio::sync::oneshot::channel();
         let reaper = std::sync::Arc::clone(&launcher);
         launcher.ensure(false, false, false, move |ran| {
@@ -434,7 +464,8 @@ mod tests {
         let script = dir.path().join("hang.sh");
         std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").expect("script");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("mode");
-        let launcher = std::sync::Arc::new(Launcher::new(Some(script)));
+        let (launcher, _streams) = unix_launcher(script);
+        let launcher = std::sync::Arc::new(launcher);
         let (done, exited) = tokio::sync::mpsc::unbounded_channel();
         // Exec'ing a file just written fails with ETXTBSY while another test thread forks.
         for _ in 0..20 {

@@ -263,9 +263,10 @@ pub async fn serve_with<S: VaultService>(
     ))
 }
 
-/// Hands in connections instead of accepting them: the Windows daemon creates the UI's pipe
-/// itself and gives its server end to [`UiSink::offer`], so there is no name to listen on and no
-/// peer to check (`docs/solutions/windows-support.md` §5.2).
+/// Hands in connections instead of accepting them: the Windows and Linux daemons create the UI's
+/// channel themselves (a pipe, a socket pair) and give its server end to [`UiSink::offer`], so
+/// there is no name to listen on and no peer to check (`docs/solutions/windows-support.md` §5.2,
+/// linux-plan.md 2d).
 pub fn serve_inherited<S: VaultService>(
     service: Arc<S>,
     events: mpsc::Receiver<DaemonEvent>,
@@ -281,6 +282,14 @@ pub fn serve_inherited<S: VaultService>(
 pub struct UiSink(mpsc::Sender<Stream>);
 
 impl UiSink {
+    /// A sink whose streams arrive on the returned receiver, for callers that run their own
+    /// accept loop (and tests that only spawn processes).
+    #[must_use]
+    pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<Stream>) {
+        let (sink, streams) = mpsc::channel(capacity);
+        (Self(sink), streams)
+    }
+
     /// Serves `stream` as a UI connection. Its owner vouches for the peer, so the verifier is
     /// not asked.
     pub fn offer(&self, stream: Stream) -> Result<(), IpcError> {

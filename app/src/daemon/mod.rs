@@ -63,7 +63,7 @@ impl TestOverrides {
 }
 
 /// The exit status that asks launchd's `KeepAlive` to start the (updated) app again.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const RESTART_EXIT: i32 = 75;
 /// How long an updated app waits for the old daemon to finish shutting down.
 #[cfg(unix)]
@@ -199,6 +199,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
         config.ui_exe = Some(std::env::current_exe().context("locate the vaultkeeper binary")?);
     }
     config.self_update = !overrides.headless;
+    config.inherit_ui_channel = config.ui_exe.is_some();
     let daemon = runtime.block_on(Daemon::start(config))?;
     let forwarder = {
         let daemon = Arc::clone(&daemon);
@@ -257,12 +258,26 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     ran
 }
 
+/// Starts the upgraded binary, which waits for this process to exit before taking the instance
+/// lock. A user unit's `Restart=` does not apply: this exit is a clean one.
+#[cfg(target_os = "linux")]
+fn relaunch(exe: &Path) {
+    let pid = std::process::id().to_string();
+    match std::process::Command::new(exe)
+        .args(["--tray", "--wait-for", &pid])
+        .spawn()
+    {
+        Ok(_) => tracing::info!(exe = %exe.display(), "started the upgraded Vaultkeeper"),
+        Err(error) => tracing::error!(%error, "cannot start the upgraded Vaultkeeper"),
+    }
+}
+
 /// Starts the updated app. When launchd started this process as the login agent's job, a non-zero
 /// exit makes it start the same path again (`KeepAlive { SuccessfulExit = false }`), so the new
 /// daemon stays launchd's job and is restarted after a crash; the exit releases the lock.
 /// Otherwise LaunchServices opens a new instance, which waits for this process to exit before
 /// taking the single-instance lock.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn relaunch(bundle: &Path) {
     if vk_platform::autostart::started_by_login_agent() {
         tracing::info!("exiting for launchd to start the updated app");

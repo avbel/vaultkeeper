@@ -113,7 +113,8 @@ pub struct Args {
     pub ui: bool,
     /// With `--ui`: no unlock happened since the daemon started.
     pub first_unlock: bool,
-    /// With `--ui` on Windows: the inherited pipe handle that carries the daemon connection.
+    /// With `--ui`: the inherited channel to the daemon, a pipe handle on Windows and a socket fd
+    /// on Linux.
     pub ui_pipe: Option<usize>,
     pub no_activate: bool,
     pub tray: bool,

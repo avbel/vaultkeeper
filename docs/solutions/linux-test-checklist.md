@@ -91,6 +91,7 @@ Manual checks that need a real session, one section per risk; run in the four VM
 - [ ] Ubuntu Firefox snap: with `widget.use-xdg-desktop-portal.native-messaging-proxy=1` the extension connects through the proxy; Settings identifies "Firefox"; without the pref the Settings notice explains it.
 - [ ] Fedora Firefox rpm: direct manifest in `~/.mozilla/native-messaging-hosts` works; the host identifies Firefox by path.
 - [ ] Chrome (.deb on Kubuntu; Omarchy default): manifest in `~/.config/google-chrome/NativeMessagingHosts`; the host identifies `/opt/google/chrome/chrome`; fill, save prompt, TOTP copy, passkey create/sign (UV via the FIDO2 chain). Omarchy `omarchy install browser chromium` (omarchy-chromium-bin): `~/.config/chromium/…` manifest and identification work.
+- [ ] Flatpak Firefox or Chrome (Flathub), if the extension reaches the host at all: the host's parent is `bwrap` or the proxy's parent is no allowlisted path, so the pairing prompt says "unknown browser" (5b never trusts it). Record the parent chain (`ps -o pid,ppid,args --forest`) for each browser above, so the allowlist matches what the distributions really run.
 - [ ] "Hardened runtime" status row is green only when `is_hardened()` holds; with BPF the browser socket refuses a foreign client.
 
 ### 15. Omarchy kernel and configuration swaps (`vm-omarchy`) — the probes must decide, never a default

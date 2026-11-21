@@ -24,6 +24,8 @@ pub mod release;
     allow(dead_code, reason = "only the Windows installer uses it")
 )]
 mod setup_policy;
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub mod upgraded;
 // Verification is called on Windows only; macOS relies on the bundle's code signature.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod signature;

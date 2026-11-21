@@ -90,6 +90,10 @@ pub struct DaemonConfig {
     pub frontmost: Arc<dyn FrontmostApp>,
     /// Check GitHub for releases and install them ([`super::update`]); only the real daemon.
     pub self_update: bool,
+    /// Linux: hand each UI process its own socket pair instead of serving `ui.sock`; only the
+    /// real daemon, since tests play the UI over the socket. macOS always serves `ui.sock` and
+    /// Windows always hands over a pipe.
+    pub inherit_ui_channel: bool,
 }
 
 impl DaemonConfig {
@@ -106,6 +110,7 @@ impl DaemonConfig {
             ui_hang_after: UI_HANG_AFTER,
             frontmost: Arc::new(SystemFrontmost),
             self_update: false,
+            inherit_ui_channel: false,
         }
     }
 }
@@ -154,30 +159,62 @@ pub struct Daemon {
     cli_access: cli_access::CliAccessState,
     site_icons: Arc<SiteIcons>,
     updater: Option<Arc<update::Updater>>,
+    /// The real daemon, not a test one: only it restarts itself after a package upgrade.
+    #[cfg(target_os = "linux")]
+    self_update: bool,
     /// Set once an update was swapped in: the bundle to start again after shutdown.
     restart: Mutex<Option<PathBuf>>,
 }
 
 /// What the launcher needs to hand a UI process its channel: nothing on macOS, where the UI
-/// connects to `ui.sock`, and the sink for the server end of each spawned process's pipe on Windows.
-#[cfg(not(windows))]
+/// connects to `ui.sock`; the sink for the server end of each spawned process's pipe on Windows;
+/// on Linux the sink for its socket pair, or nothing when the UI connects to `ui.sock`
+/// ([`DaemonConfig::inherit_ui_channel`]).
+#[cfg(target_os = "macos")]
 type UiLink = ();
 #[cfg(windows)]
 type UiLink = vk_ipc::UiSink;
+#[cfg(target_os = "linux")]
+type UiLink = Option<vk_ipc::UiSink>;
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+async fn listen_socket(
+    data_dir: &Path,
+    vault: Arc<Vault>,
+    queue: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+) -> anyhow::Result<ServerHandle> {
+    let ui_socket = layout::socket_path(&layout::ui_endpoint(data_dir))
+        .context("the UI channel is not a socket file")?;
+    vk_ipc::serve_with(ui_socket, vault, queue, options)
+        .await
+        .context("listen on the UI socket")
+}
+
+#[cfg(target_os = "macos")]
 async fn listen_ui(
     data_dir: &Path,
     vault: Arc<Vault>,
     queue: mpsc::Receiver<DaemonEvent>,
     options: ServeOptions,
+    _inherit: bool,
 ) -> anyhow::Result<(ServerHandle, UiLink)> {
-    let ui_socket = layout::socket_path(&layout::ui_endpoint(data_dir))
-        .context("the UI channel is not a socket file")?;
-    let server = vk_ipc::serve_with(ui_socket, vault, queue, options)
-        .await
-        .context("listen on the UI socket")?;
-    Ok((server, ()))
+    Ok((listen_socket(data_dir, vault, queue, options).await?, ()))
+}
+
+#[cfg(target_os = "linux")]
+async fn listen_ui(
+    data_dir: &Path,
+    vault: Arc<Vault>,
+    queue: mpsc::Receiver<DaemonEvent>,
+    options: ServeOptions,
+    inherit: bool,
+) -> anyhow::Result<(ServerHandle, UiLink)> {
+    if inherit {
+        let (server, sink) = vk_ipc::serve_inherited(vault, queue, options);
+        return Ok((server, Some(sink)));
+    }
+    Ok((listen_socket(data_dir, vault, queue, options).await?, None))
 }
 
 #[cfg(windows)]
@@ -187,11 +224,12 @@ async fn listen_ui(
     vault: Arc<Vault>,
     queue: mpsc::Receiver<DaemonEvent>,
     options: ServeOptions,
+    _inherit: bool,
 ) -> anyhow::Result<(ServerHandle, UiLink)> {
     Ok(vk_ipc::serve_inherited(vault, queue, options))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn launcher(ui_exe: Option<PathBuf>, (): UiLink) -> Launcher {
     Launcher::new(ui_exe)
 }
@@ -199,6 +237,25 @@ fn launcher(ui_exe: Option<PathBuf>, (): UiLink) -> Launcher {
 #[cfg(windows)]
 fn launcher(ui_exe: Option<PathBuf>, sink: UiLink) -> Launcher {
     Launcher::new(ui_exe).with_ui_sink(sink)
+}
+
+#[cfg(target_os = "linux")]
+fn launcher(ui_exe: Option<PathBuf>, sink: UiLink) -> Launcher {
+    let launcher = Launcher::new(ui_exe);
+    match sink {
+        Some(sink) => launcher.with_ui_sink(sink),
+        None => launcher,
+    }
+}
+
+fn updater(data_dir: &Path) -> Option<Arc<update::Updater>> {
+    match update::Updater::new(data_dir) {
+        Ok(updater) => Some(Arc::new(updater)),
+        Err(error) => {
+            tracing::warn!(error = format!("{error:#}"), "updates are off");
+            None
+        }
+    }
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -220,6 +277,7 @@ impl Daemon {
             ui_hang_after,
             frontmost,
             self_update,
+            inherit_ui_channel,
         } = config;
         let runtime = Handle::current();
         let device = device::load_or_create(&data_dir).context("read the device id")?;
@@ -249,19 +307,16 @@ impl Daemon {
                 vault: Arc::clone(&vault),
                 store: Arc::clone(&generated),
             }));
-        let (server, ui_link) = listen_ui(&data_dir, Arc::clone(&vault), queue, options).await?;
+        let (server, ui_link) = listen_ui(
+            &data_dir,
+            Arc::clone(&vault),
+            queue,
+            options,
+            inherit_ui_channel,
+        )
+        .await?;
         let settings = read_settings(data_dir.join(SETTINGS_FILE)).await;
-        let updater = if self_update {
-            match update::Updater::new(&data_dir) {
-                Ok(updater) => Some(Arc::new(updater)),
-                Err(error) => {
-                    tracing::warn!(error = format!("{error:#}"), "updates are off");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let updater = self_update.then(|| updater(&data_dir)).flatten();
         let (approvals, approvals_rx) = mpsc::channel(APPROVAL_QUEUE);
         let browser = browser_glue::BrowserState::new(&data_dir, generated);
         let daemon = Arc::new(Self {
@@ -292,6 +347,8 @@ impl Daemon {
             cli_access: cli_access::CliAccessState::default(),
             site_icons,
             updater,
+            #[cfg(target_os = "linux")]
+            self_update,
             restart: Mutex::new(None),
         });
         if daemon.settings().ssh_agent
@@ -327,6 +384,13 @@ impl Daemon {
             let task = self
                 .runtime
                 .spawn(update::run(Arc::clone(self), Arc::clone(updater)));
+            guard(&self.tasks).push(task);
+        }
+        #[cfg(target_os = "linux")]
+        if self.self_update {
+            let task = self
+                .runtime
+                .spawn(update::upgraded::watch(Arc::clone(self)));
             guard(&self.tasks).push(task);
         }
     }

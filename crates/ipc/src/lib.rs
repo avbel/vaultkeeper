@@ -42,7 +42,7 @@ pub mod frame;
 mod generated;
 mod peer;
 #[cfg(target_os = "linux")]
-mod pidfd;
+pub mod pidfd;
 pub mod protocol;
 mod server;
 mod site_icons;
