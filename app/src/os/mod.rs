@@ -85,7 +85,7 @@ impl Hooks {
                 }
             },
             browsers: Arc::new(browser::BrowserFiles {
-                app_support: data_dir.parent().unwrap_or(data_dir).to_owned(),
+                app_support: crate::daemon::browser::manifests::root(data_dir),
                 store: data_dir.join(layout::BROWSER_PAIRINGS_FILE),
                 notify: Arc::clone(notify),
             }),

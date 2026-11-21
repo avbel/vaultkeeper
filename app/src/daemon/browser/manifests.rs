@@ -1,6 +1,7 @@
 //! Native messaging host manifests, one per supported browser.
 //!
-//! Every function takes the `Application Support` root explicitly so tests can use a temp dir.
+//! Every function takes the manifest root explicitly so tests can use a temp dir: `Application
+//! Support` on macOS, the data dir on Windows, the home directory on Linux ([`root`]).
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -17,11 +18,32 @@ use super::ids;
 pub const HOST_NAME: &str = "org.vaultkeeper.browser";
 pub const MANIFEST_FILE: &str = "org.vaultkeeper.browser.json";
 const HOSTS_DIR: &str = "NativeMessagingHosts";
+/// Firefox on Linux spells it in lower case.
+#[cfg(target_os = "linux")]
+const FIREFOX_LINUX_HOSTS_DIR: &str = "native-messaging-hosts";
 /// Subdirectory of the data dir holding the per-user Windows manifests; the registry keys point at
 /// a file inside it (§7.8).
 pub const WINDOWS_MANIFESTS_DIR: &str = "native-messaging";
 #[cfg(unix)]
 const MANIFEST_MODE: u32 = 0o644;
+
+/// Where the manifests of `data_dir`'s user go: the data dir itself on Windows (the registry
+/// points there), `$HOME` on Linux, the data dir's parent (`Application Support`) on macOS. An
+/// e2e build keeps them inside its own data dir.
+#[must_use]
+pub fn root(data_dir: &Path) -> PathBuf {
+    let isolated = || data_dir.join("app-support");
+    if cfg!(windows) {
+        return data_dir.to_path_buf();
+    }
+    if cfg!(feature = "vw-it") {
+        return isolated();
+    }
+    if cfg!(target_os = "linux") {
+        return std::env::var_os("HOME").map_or_else(isolated, PathBuf::from);
+    }
+    data_dir.parent().map_or_else(isolated, Path::to_path_buf)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ManifestBrowser {
@@ -52,6 +74,34 @@ impl ManifestBrowser {
         }
     }
 
+    /// The browser's own per-user directory, under the manifest root.
+    #[cfg(target_os = "linux")]
+    const fn parent_dir(self) -> &'static str {
+        match self {
+            Self::Chrome => ".config/google-chrome",
+            Self::Chromium => ".config/chromium",
+            Self::Brave => ".config/BraveSoftware/Brave-Browser",
+            Self::Edge => ".config/microsoft-edge",
+            Self::Firefox => ".mozilla",
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const fn hosts_dir(self) -> &'static str {
+        if self.is_firefox() {
+            FIREFOX_LINUX_HOSTS_DIR
+        } else {
+            HOSTS_DIR
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    const fn hosts_dir(self) -> &'static str {
+        let _ = self;
+        HOSTS_DIR
+    }
+
+    #[cfg(not(target_os = "linux"))]
     const fn parent_dir(self) -> &'static str {
         match self {
             Self::Chrome => "Google/Chrome",
@@ -62,9 +112,15 @@ impl ManifestBrowser {
         }
     }
 
+    /// The browser's own per-user directory; it exists once the browser has run.
+    #[must_use]
+    pub fn profile_dir(self, root: &Path) -> PathBuf {
+        root.join(self.parent_dir())
+    }
+
     #[must_use]
     pub fn dir_under(self, app_support: &Path) -> PathBuf {
-        app_support.join(self.parent_dir()).join(HOSTS_DIR)
+        app_support.join(self.parent_dir()).join(self.hosts_dir())
     }
 
     #[must_use]
@@ -75,7 +131,7 @@ impl ManifestBrowser {
     #[must_use]
     #[cfg(not(windows))]
     pub fn installed(self, app_support: &Path) -> bool {
-        app_support.join(self.parent_dir()).is_dir()
+        self.profile_dir(app_support).is_dir()
     }
 
     /// Browsers keep their profiles in the per-user app-data trees, not under our data dir.
@@ -205,6 +261,9 @@ pub fn current_exe_path() -> io::Result<PathBuf> {
     // on Windows, which does not belong in a manifest `path` a browser will spawn.
     #[cfg(not(windows))]
     let exe = fs::canonicalize(exe)?;
+    // Homebrew's Cellar path is deleted by the next upgrade; its `opt` symlink is not.
+    #[cfg(target_os = "linux")]
+    let exe = vk_platform::install_kind::stable_path(&exe);
     Ok(exe)
 }
 
@@ -380,7 +439,7 @@ mod tests {
     #[cfg(not(windows))]
     fn root_with(browser: ManifestBrowser) -> tempfile::TempDir {
         let root = tempfile::tempdir().expect("directory");
-        fs::create_dir_all(root.path().join(browser.parent_dir())).expect("browser dir");
+        fs::create_dir_all(browser.profile_dir(root.path())).expect("browser dir");
         root
     }
 
@@ -389,6 +448,28 @@ mod tests {
         serde_json::from_slice(&fs::read(path).expect("manifest")).expect("json")
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_directories_follow_each_browser() {
+        let home = Path::new("/home/me");
+        let dirs: Vec<_> = ManifestBrowser::ALL
+            .iter()
+            .map(|browser| browser.dir_under(home))
+            .collect();
+        assert_eq!(
+            dirs,
+            [
+                "/home/me/.config/google-chrome/NativeMessagingHosts",
+                "/home/me/.config/chromium/NativeMessagingHosts",
+                "/home/me/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+                "/home/me/.config/microsoft-edge/NativeMessagingHosts",
+                "/home/me/.mozilla/native-messaging-hosts",
+            ]
+            .map(PathBuf::from)
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn directory_table_matches_the_plan() {
         let root = Path::new("/s");
@@ -544,7 +625,7 @@ mod tests {
         let root = root_with(ManifestBrowser::Chrome);
         install(root.path(), ManifestBrowser::Chrome, exe(), &IDS).expect("install");
         assert!(ManifestBrowser::Chrome.dir_under(root.path()).is_dir());
-        assert!(!root.path().join("Mozilla").exists());
+        assert!(!ManifestBrowser::Firefox.profile_dir(root.path()).exists());
         let leftovers: Vec<_> = fs::read_dir(ManifestBrowser::Chrome.dir_under(root.path()))
             .expect("read")
             .map(|entry| entry.expect("entry").file_name())
@@ -605,7 +686,7 @@ mod tests {
     #[test]
     fn check_and_restore_covers_each_enabled_browser() {
         let root = root_with(ManifestBrowser::Chrome);
-        fs::create_dir_all(root.path().join("Mozilla")).expect("firefox dir");
+        fs::create_dir_all(ManifestBrowser::Firefox.profile_dir(root.path())).expect("firefox dir");
         install(root.path(), ManifestBrowser::Chrome, exe(), &IDS).expect("install");
         fs::write(ManifestBrowser::Chrome.manifest_path(root.path()), b"x").expect("tamper");
 

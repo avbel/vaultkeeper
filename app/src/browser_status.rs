@@ -80,13 +80,16 @@ mod tests {
     // Windows detects browsers from %APPDATA%/%LOCALAPPDATA%, not from the data dir.
     #[cfg(not(windows))]
     #[test]
-    fn only_browsers_with_an_application_support_directory_are_listed() {
+    fn only_browsers_with_a_profile_directory_are_listed() {
         let dir = tempfile::tempdir().expect("directory");
         assert_eq!(installed_browsers(dir.path()).len(), 0);
-        std::fs::create_dir_all(dir.path().join("Mozilla")).expect("mozilla");
+        let create = |browser: ManifestBrowser| {
+            std::fs::create_dir_all(browser.profile_dir(dir.path())).expect("browser dir");
+        };
+        create(ManifestBrowser::Firefox);
         assert_eq!(installed_browsers(dir.path()), [ManifestBrowser::Firefox]);
-        std::fs::create_dir_all(dir.path().join("Google/Chrome")).expect("chrome");
-        std::fs::create_dir_all(dir.path().join("Chromium")).expect("chromium");
+        create(ManifestBrowser::Chrome);
+        create(ManifestBrowser::Chromium);
         assert_eq!(
             installed_browsers(dir.path()),
             [ManifestBrowser::Chrome, ManifestBrowser::Firefox]
