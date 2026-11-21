@@ -307,7 +307,12 @@ fn only_the_footer_legend_shows_the_shortcut() {
         ),
         "a hint on the selected row overlaps its copy buttons"
     );
-    assert!(exists(&panel, "auto-type"), "the footer legend");
+    let legend = if cfg!(not(target_os = "macos")) {
+        "type"
+    } else {
+        "auto-type"
+    };
+    assert!(exists(&panel, legend), "the footer legend");
 }
 
 #[test]
