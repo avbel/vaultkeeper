@@ -6,6 +6,8 @@ pub mod clipboard;
 pub mod code_signature;
 #[cfg(unix)]
 pub mod creds;
+#[cfg(target_os = "linux")]
+pub mod dbus_names;
 pub mod desktop_file;
 #[cfg(windows)]
 pub mod dpapi;

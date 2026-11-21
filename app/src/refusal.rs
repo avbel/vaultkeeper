@@ -76,13 +76,76 @@ pub fn refused_items(text: &str) -> String {
         .join("\n")
 }
 
-/// Through `notify-send` until the D-Bus registry (3a) can call `org.freedesktop.Notifications`
-/// itself; a session without it still has the window and the file.
+const SUMMARY: &str = "Vaultkeeper did not start";
+
+/// Straight to `org.freedesktop.Notifications`, then `notify-send` if that call fails; a session
+/// with neither still has the window and the file.
 fn notify(text: &str) {
+    let body = refused_items(text);
+    #[cfg(target_os = "linux")]
+    match dbus_notify(&body) {
+        Ok(()) => return,
+        Err(error) => tracing::debug!(%error, "no D-Bus notification, trying notify-send"),
+    }
+    notify_send(&body);
+}
+
+/// Runs on its own thread because `zbus::block_on` must not start inside another runtime, and
+/// the wait is bounded so a stalled bus cannot hold the refusal path.
+#[cfg(target_os = "linux")]
+fn dbus_notify(body: &str) -> Result<(), String> {
+    let body = body.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("refusal-notify".to_owned())
+        .spawn(move || {
+            let _ = tx.send(zbus::block_on(post(&body)).map_err(|error| error.to_string()));
+        })
+        .map_err(|error| error.to_string())?;
+    rx.recv_timeout(NOTIFY_TIMEOUT * 2)
+        .map_err(|_| "the notification call timed out".to_owned())?
+}
+
+#[cfg(target_os = "linux")]
+const NOTIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(target_os = "linux")]
+async fn post(body: &str) -> zbus::Result<()> {
+    use std::collections::HashMap;
+    use zbus::Variant;
+
+    const CRITICAL: u8 = 2;
+    let connection = zbus::connection::Builder::session()
+        .method_timeout(NOTIFY_TIMEOUT)
+        .build()
+        .await?;
+    let hints = HashMap::from([("urgency", Variant::U8(CRITICAL))]);
+    connection
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &(
+                "Vaultkeeper",
+                0_u32,
+                vk_platform::desktop_file::APP_ID,
+                SUMMARY,
+                body,
+                Vec::<&str>::new(),
+                hints,
+                0_i32,
+            ),
+        )
+        .await?;
+    Ok(())
+}
+
+fn notify_send(body: &str) {
     let posted = std::process::Command::new("notify-send")
         .args(["--app-name=Vaultkeeper", "--urgency=critical"])
-        .arg("Vaultkeeper did not start")
-        .arg(refused_items(text))
+        .arg(SUMMARY)
+        .arg(body)
         .stdin(std::process::Stdio::null())
         .status();
     match posted {
