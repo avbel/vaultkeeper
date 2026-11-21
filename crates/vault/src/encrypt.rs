@@ -214,8 +214,8 @@ fn prepare_keyed(
     }
     let base_key = keys.base_key(organization_id)?;
     let item = match base {
-        Some(base) => ItemKeys::for_update(base, keys, base_key)?,
-        None => ItemKeys::new_item(base_key)?,
+        Some(base) => ItemKeys::for_update(base, keys, &base_key)?,
+        None => ItemKeys::new_item(&base_key)?,
     };
     let prepared = Prepared {
         request: build(draft, base, &item, organization_id)?,
@@ -243,7 +243,7 @@ pub(crate) fn prepare_share(
     }
     check_update(draft, base, type_of(&draft.data))?;
     let org_key = keys.base_key(Some(organization_id))?;
-    let item = ItemKeys::for_share(base, keys, org_key)?;
+    let item = ItemKeys::for_share(base, keys, &org_key)?;
     build(draft, Some(base), &item, Some(organization_id))
 }
 
@@ -679,13 +679,13 @@ mod tests {
         let item = SymmetricKey::from_bytes(
             &crate::keys::parse(wrapped)
                 .unwrap()
-                .decrypt(keys.user())
+                .decrypt(&keys.user())
                 .unwrap(),
         )
         .unwrap();
         assert_ne!(item.to_bytes(), keys.user().to_bytes());
         // Fields are under the item key, not the user key.
-        assert!(decrypt_text(Some(&request.name), keys.user()).is_err());
+        assert!(decrypt_text(Some(&request.name), &keys.user()).is_err());
         assert_eq!(
             &*decrypt_text(Some(&request.name), &item).unwrap(),
             "New login"
@@ -828,7 +828,7 @@ mod tests {
         let keys = ring();
         let mut base = legacy_login("l1", "Old", "pw", &keys);
         base.password_history = Some(vec![PasswordHistory {
-            password: testutil::enc("ancient", keys.user()).unwrap(),
+            password: testutil::enc("ancient", &keys.user()).unwrap(),
             last_used_date: "2025-01-01T00:00:00.000Z".into(),
             ..PasswordHistory::default()
         }]);
@@ -848,14 +848,14 @@ mod tests {
             "ancient"
         );
 
-        base.attachments = Some(vec![attachment("a1", "file.txt", keys.user())]);
+        base.attachments = Some(vec![attachment("a1", "file.txt", &keys.user())]);
         let kept = prepare(&draft, Some(&base), &keys).unwrap().request;
         assert!(
             kept.key.is_none(),
             "attachment keys are wrapped by the user key"
         );
         assert_eq!(
-            &*decrypt_text(Some(&kept.name), keys.user()).unwrap(),
+            &*decrypt_text(Some(&kept.name), &keys.user()).unwrap(),
             "Old"
         );
     }
@@ -868,14 +868,14 @@ mod tests {
         base.fields = Some(vec![
             Field {
                 r#type: FIELD_HIDDEN,
-                name: crate::testutil::enc("first", keys.user()),
-                value: crate::testutil::enc("first secret", keys.user()),
+                name: crate::testutil::enc("first", &keys.user()),
+                value: crate::testutil::enc("first secret", &keys.user()),
                 ..Field::default()
             },
             Field {
                 r#type: FIELD_HIDDEN,
-                name: crate::testutil::enc("second", keys.user()),
-                value: crate::testutil::enc("second secret", keys.user()),
+                name: crate::testutil::enc("second", &keys.user()),
+                value: crate::testutil::enc("second secret", &keys.user()),
                 ..Field::default()
             },
         ]);
@@ -887,7 +887,7 @@ mod tests {
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].r#type, FIELD_HIDDEN);
         assert_eq!(
-            &*decrypt_text(saved[0].value.as_deref(), keys.user()).unwrap(),
+            &*decrypt_text(saved[0].value.as_deref(), &keys.user()).unwrap(),
             "second secret"
         );
 

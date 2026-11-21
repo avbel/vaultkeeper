@@ -60,7 +60,7 @@ pub struct Facts {
     pub pidfd_get_info: Result<(), String>,
     pub wayland: Result<(), String>,
     pub runtime_dir: Result<(), String>,
-    /// The SSH agent key store's backend name: "memfd_secret", "keyctl" or "mlock".
+    /// The secure_memory backend name: "memfd_secret", "keyctl" or "mlock".
     pub key_backend: &'static str,
 }
 
@@ -142,9 +142,9 @@ pub fn chains(facts: &Facts, role: Role) -> Vec<Chain> {
             }
         };
         chains.push(Chain {
-            // secure_memory holds the SSH agent's keys; the vault key does not use it yet.
+            // secure_memory holds the vault's user and organization keys and the SSH agent's keys.
             id: "key-memory",
-            name: "SSH keys in memory",
+            name: "Keys in memory",
             required: Required::Refuse,
             minimum: 0,
             links: vec![

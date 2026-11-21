@@ -134,7 +134,7 @@ impl Vault {
     /// while the vault is locked. Returns the account it is bound to and the encrypted text.
     pub fn seal_local(&self, plaintext: &[u8]) -> Result<(Arc<str>, String)> {
         self.inner.read_unlocked(|active, unlocked| {
-            let sealed = vk_crypto::EncString::encrypt(plaintext, unlocked.keys.user())?;
+            let sealed = vk_crypto::EncString::encrypt(plaintext, &unlocked.keys.user())?;
             Ok((Arc::clone(&active.id), sealed.to_string()))
         })
     }
@@ -145,7 +145,7 @@ impl Vault {
             if &*active.id != account {
                 return Err(crate::Error::Locked);
             }
-            Ok(crate::keys::parse(sealed)?.decrypt(unlocked.keys.user())?)
+            Ok(crate::keys::parse(sealed)?.decrypt(&unlocked.keys.user())?)
         })
     }
 

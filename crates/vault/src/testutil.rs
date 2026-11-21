@@ -33,7 +33,7 @@ pub(crate) fn keyed(id: &str, kind: u8, name: &str, ring: &KeyRing) -> (Cipher, 
         r#type: kind,
         name: enc(name, &item),
         key: Some(
-            EncString::encrypt(&item.to_bytes(), ring.user())
+            EncString::encrypt(&item.to_bytes(), &ring.user())
                 .unwrap()
                 .to_string(),
         ),
@@ -99,7 +99,7 @@ pub(crate) fn login(
 
 /// Encrypted directly with the user key, the way items made before per-item keys are.
 pub(crate) fn legacy_login(id: &str, name: &str, password: &str, ring: &KeyRing) -> Cipher {
-    let user = ring.user();
+    let user = &ring.user();
     Cipher {
         id: id.into(),
         r#type: 1,
@@ -187,7 +187,7 @@ pub(crate) fn attachment(id: &str, file_name: &str, key: &SymmetricKey) -> Attac
 pub(crate) fn folder(id: &str, name: &str, ring: &KeyRing) -> Folder {
     Folder {
         id: id.into(),
-        name: enc(name, ring.user()).unwrap(),
+        name: enc(name, &ring.user()).unwrap(),
         revision_date: "2026-11-08T17:00:59.321Z".into(),
     }
 }

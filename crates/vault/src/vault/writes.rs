@@ -181,7 +181,7 @@ impl Inner {
 
     pub(crate) async fn create_folder(self: &Arc<Self>, name: &str) -> Result<FolderView> {
         let ctx = self.writable_ctx()?;
-        let encrypted = encrypt_text(name, ctx.keys.user())?;
+        let encrypted = encrypt_text(name, &ctx.keys.user())?;
         let serial = self.sync_lock.lock().await;
         let encrypted = encrypted.as_str();
         let folder = self
@@ -202,7 +202,7 @@ impl Inner {
     pub(crate) async fn rename_folder(self: &Arc<Self>, id: &str, name: &str) -> Result<()> {
         let ctx = self.writable_ctx()?;
         self.existing_folder(id)?;
-        let encrypted = encrypt_text(name, ctx.keys.user())?;
+        let encrypted = encrypt_text(name, &ctx.keys.user())?;
         let serial = self.sync_lock.lock().await;
         let encrypted = encrypted.as_str();
         let folder = self

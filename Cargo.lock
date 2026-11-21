@@ -7739,6 +7739,7 @@ dependencies = [
  "rand 0.10.3",
  "regex",
  "reqwest",
+ "secure_memory",
  "serde",
  "serde_json",
  "sha2 0.11.1",

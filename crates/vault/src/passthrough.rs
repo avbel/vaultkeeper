@@ -211,7 +211,7 @@ mod tests {
     }
 
     fn wrap(item: &SymmetricKey, keys: &KeyRing) -> String {
-        EncString::encrypt(&item.to_bytes(), keys.user())
+        EncString::encrypt(&item.to_bytes(), &keys.user())
             .unwrap()
             .to_string()
     }
@@ -311,21 +311,22 @@ mod tests {
     #[test]
     fn an_upgraded_legacy_item_re_encrypts_every_passkey_string() {
         let keys = ring();
-        let raw = raw_login(keys.user(), None);
+        let raw = raw_login(&keys.user(), None);
         let base: Cipher = serde_json::from_value(raw.clone()).unwrap();
         let body = serde_json::to_value(renamed(&base, &keys).unwrap()).unwrap();
         let wrapped = body["key"]
             .as_str()
             .expect("a legacy item gets its own key");
-        let item = SymmetricKey::from_bytes(&parse(wrapped).unwrap().decrypt(keys.user()).unwrap())
-            .unwrap();
+        let item =
+            SymmetricKey::from_bytes(&parse(wrapped).unwrap().decrypt(&keys.user()).unwrap())
+                .unwrap();
 
         let credential = &body["login"]["fido2Credentials"][0];
         for (name, plain) in PASSKEY {
             let text = credential[name].as_str().unwrap();
             assert_eq!(&*decrypt_text(Some(text), &item).unwrap(), plain, "{name}");
             assert!(
-                decrypt_text(Some(text), keys.user()).is_err(),
+                decrypt_text(Some(text), &keys.user()).is_err(),
                 "{name} is still under the user key"
             );
         }
@@ -358,12 +359,12 @@ mod tests {
         let keys = ring();
         let foreign = json!(enc("x", &SymmetricKey::generate()));
 
-        let mut legacy = raw_login(keys.user(), None);
+        let mut legacy = raw_login(&keys.user(), None);
         legacy["login"]["fido2Credentials"][0]["keyValue"] = foreign.clone();
         let base: Cipher = serde_json::from_value(legacy).unwrap();
         assert!(refused_as_undecryptable(renamed(&base, &keys)));
 
-        let mut unreadable_type = raw_login(keys.user(), None);
+        let mut unreadable_type = raw_login(&keys.user(), None);
         unreadable_type["futureSecret"] = json!(UNREADABLE_TYPE);
         let base: Cipher = serde_json::from_value(unreadable_type).unwrap();
         assert!(refused_as_undecryptable(renamed(&base, &keys)));

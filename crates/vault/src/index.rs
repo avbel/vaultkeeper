@@ -614,7 +614,7 @@ impl Drop for VaultData {
 }
 
 fn folder_view(folder: &Folder, keys: &KeyRing, ids: &mut Interner) -> FolderView {
-    let name = decrypt_text(Some(&folder.name), keys.user()).unwrap_or_else(|error| {
+    let name = decrypt_text(Some(&folder.name), &keys.user()).unwrap_or_else(|error| {
         tracing::warn!(%error, "could not decrypt a folder name");
         Zeroizing::new(UNDECRYPTABLE.to_owned())
     });
@@ -628,7 +628,7 @@ fn collection_view(collection: &Collection, keys: &KeyRing, ids: &mut Interner) 
     let name = keys
         .org(&collection.organization_id)
         .ok_or(crate::Error::Crypto(vk_crypto::Error::Decrypt))
-        .and_then(|key| decrypt_text(Some(&collection.name), key))
+        .and_then(|key| decrypt_text(Some(&collection.name), &key))
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "could not decrypt a collection name");
             Zeroizing::new(UNDECRYPTABLE.to_owned())

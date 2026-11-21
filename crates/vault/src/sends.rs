@@ -115,7 +115,7 @@ pub(crate) const fn kind_of(raw: u8) -> SendKind {
 
 /// Sends are always the owner's, so the seed is wrapped by the user key, never an org key.
 pub(crate) fn send_key(send: &SendItem, keys: &KeyRing) -> Result<SendKey> {
-    let wrapped_seed = parse(&send.key)?.decrypt(keys.user())?;
+    let wrapped_seed = parse(&send.key)?.decrypt(&keys.user())?;
     Ok(SendKey::from_seed(&wrapped_seed)?)
 }
 
@@ -231,7 +231,7 @@ fn prepare_request(
         (send_key(base, keys)?, base.key.clone())
     } else {
         let key = SendKey::generate();
-        let wrapped = EncString::encrypt(key.seed(), keys.user())?.to_string();
+        let wrapped = EncString::encrypt(key.seed(), &keys.user())?.to_string();
         (key, wrapped)
     };
     let password = draft
@@ -332,7 +332,7 @@ mod tests {
                 hidden: true,
                 ..SendText::default()
             }),
-            key: EncString::encrypt(key.seed(), keys.user())
+            key: EncString::encrypt(key.seed(), &keys.user())
                 .unwrap()
                 .to_string(),
             max_access_count: Some(2),
@@ -423,7 +423,7 @@ mod tests {
         let mut draft = new_draft();
         draft.password = Some(Zeroizing::new("open sesame".into()));
         let request = prepare(&draft, None, &keys, NOW).unwrap();
-        let seed = parse(&request.key).unwrap().decrypt(keys.user()).unwrap();
+        let seed = parse(&request.key).unwrap().decrypt(&keys.user()).unwrap();
         let key = SendKey::from_seed(&seed).unwrap();
         assert_eq!(decrypt(Some(&request.name), &key), "Wi-Fi");
         assert_eq!(
