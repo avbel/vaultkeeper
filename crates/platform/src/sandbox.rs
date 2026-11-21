@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 pub struct Rules {
     pub read: Vec<PathBuf>,
     pub write: Vec<PathBuf>,
+    /// Directories whose Unix sockets may be connected to. Landlock ABI 9+ guards `connect(2)`
+    /// on a path socket as its own right, which neither the read nor the write set carries; an
+    /// older kernel does not restrict it, and the rule is dropped there.
+    pub connect: Vec<PathBuf>,
 }
 
 /// The directories this user's Vaultkeeper works with.
@@ -31,6 +35,10 @@ pub struct Dirs<'a> {
     pub data_home: &'a Path,
     pub cache_home: &'a Path,
 }
+
+/// Sockets outside the session's runtime directory: the system bus (`/var/run` is a link to
+/// `/run`). `systemd-creds` needs nothing more; it only failed to start for lack of this right.
+const SYSTEM_SOCKET_DIRS: [&str; 1] = ["/run/dbus"];
 
 /// Read-only: the system, the install and the session's sockets. Read-write: our own state,
 /// the files we keep up to date for the desktop, and caches the GPU and font stacks fill.
@@ -51,8 +59,10 @@ pub fn rules(dirs: &Dirs<'_>) -> Rules {
     read.push(dirs.install_prefix.to_owned());
     read.push(dirs.data_home.join("fonts"));
     read.push(dirs.home.join(".fonts"));
+    let mut connect: Vec<PathBuf> = SYSTEM_SOCKET_DIRS.iter().map(PathBuf::from).collect();
     if let Some(runtime) = dirs.runtime_dir {
         read.push(runtime.to_owned());
+        connect.push(runtime.to_owned());
     }
     let config = |relative: &str| dirs.config_home.join(relative);
     let write = vec![
@@ -70,7 +80,11 @@ pub fn rules(dirs: &Dirs<'_>) -> Rules {
         dirs.data_home.join("icons"),
         dirs.cache_home.to_owned(),
     ];
-    Rules { read, write }
+    Rules {
+        read,
+        write,
+        connect,
+    }
 }
 
 /// Whether the user turned the sandbox on for this start.
@@ -96,6 +110,7 @@ pub fn restrict(rules: &Rules) -> Result<String, landlock::RulesetError> {
         .create()?
         .add_rules(path_beneath_rules(&rules.read, AccessFs::from_read(abi)))?
         .add_rules(path_beneath_rules(&rules.write, AccessFs::from_all(abi)))?
+        .add_rules(path_beneath_rules(&rules.connect, AccessFs::ResolveUnix))?
         .restrict_self()?;
     Ok(match status.ruleset {
         RulesetStatus::FullyEnforced => "Landlock fully enforced".to_owned(),
@@ -157,6 +172,18 @@ mod tests {
             ..dirs()
         });
         assert!(!rules.read.contains(&PathBuf::from("/run/user/1000")));
+        assert!(!rules.connect.contains(&PathBuf::from("/run/user/1000")));
+    }
+
+    #[test]
+    fn sockets_are_reachable_in_the_session_and_system_dirs_only() {
+        let rules = rules(&dirs());
+        let expected: Vec<PathBuf> = ["/run/dbus", "/run/user/1000"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(rules.connect, expected);
+        assert!(rules.connect.iter().all(|path| !path.starts_with("/home")));
     }
 
     /// Runs only as the child of the test below (`VK_SANDBOX_CHILD` names its base dir): it
@@ -171,6 +198,7 @@ mod tests {
         let rules = Rules {
             read: vec![PathBuf::from("/usr"), PathBuf::from("/proc")],
             write: vec![base.join("allowed")],
+            connect: vec![base.join("sock")],
         };
         let status = restrict(&rules).expect("ruleset");
         if status.starts_with("Landlock not enforced") {
@@ -181,6 +209,17 @@ mod tests {
             std::fs::write(base.join("denied/b"), b"b").is_err(),
             "sibling write refused"
         );
+        let connected = std::os::unix::net::UnixStream::connect(base.join("sock/s"));
+        assert!(
+            connected.is_ok(),
+            "socket in the connect dir: {connected:?}"
+        );
+        if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi >= 9) {
+            assert!(
+                std::os::unix::net::UnixStream::connect(base.join("denied/s")).is_err(),
+                "socket elsewhere refused"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -189,6 +228,10 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(base.path().join("allowed")).expect("allowed");
         std::fs::create_dir(base.path().join("denied")).expect("denied");
+        std::fs::create_dir(base.path().join("sock")).expect("sock");
+        let listeners = ["sock/s", "denied/s"].map(|name| {
+            std::os::unix::net::UnixListener::bind(base.path().join(name)).expect("listener")
+        });
         let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args([
                 "--exact",
@@ -198,6 +241,7 @@ mod tests {
             .env("VK_SANDBOX_CHILD", base.path())
             .status()
             .expect("child");
+        drop(listeners);
         if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi > 0) {
             assert!(status.success(), "the sandboxed child failed: {status}");
             assert!(base.path().join("allowed/a").exists());
