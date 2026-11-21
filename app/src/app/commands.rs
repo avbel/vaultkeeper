@@ -4,6 +4,8 @@
 use vk_vault::{VaultService, model::SessionState};
 
 use super::{App, BrowserPromptRequest, SshApprovalRequest, Target};
+use slint::{ComponentHandle as _, winit_030::WinitWindowAccessor as _};
+
 use crate::hooks::TypingTarget;
 
 /// What the daemon can ask the UI process to show.
@@ -70,8 +72,11 @@ impl<S: VaultService> App<S> {
         let closes_panel =
             matches!(command, UiCommand::ToggleQuickPanel { .. }) && self.quick.borrow().is_some();
         if command.shows_a_window() && !closes_panel {
-            self.typing_target
-                .replace(command.typing_target().and_then(not_vaultkeeper));
+            let own_focused = cfg!(target_os = "linux") && self.own_window_focused();
+            self.typing_target.replace(usable_target(
+                command.typing_target().and_then(not_vaultkeeper),
+                own_focused,
+            ));
             self.hooks.dock.activate();
         }
         match command {
@@ -174,6 +179,33 @@ impl<S: VaultService> App<S> {
         *self.on_last_window_closed.borrow_mut() = Some(Box::new(callback));
     }
 
+    /// Whether one of vaultkeeper's windows has the keyboard focus. Wayland cannot tell which app
+    /// was in front, so this is the only way to know the panel was asked for from inside
+    /// vaultkeeper, where auto-type would type into one of its own fields.
+    fn own_window_focused(&self) -> bool {
+        fn focused(window: &slint::Window) -> bool {
+            window
+                .with_winit_window(slint::winit_030::winit::window::Window::has_focus)
+                .unwrap_or(false)
+        }
+        let manager = self.manager.borrow();
+        let login = self.login.borrow();
+        let lock = self.lock_window.borrow();
+        let settings = self.settings_window.borrow();
+        let generator = self.generator_window.borrow();
+        manager
+            .as_ref()
+            .is_some_and(|open| focused(open.window.window()))
+            || login
+                .as_ref()
+                .is_some_and(|open| focused(open.window.window()))
+            || lock.as_ref().is_some_and(|open| focused(open.window()))
+            || settings.as_ref().is_some_and(|open| focused(open.window()))
+            || generator
+                .as_ref()
+                .is_some_and(|open| focused(open.window()))
+    }
+
     #[must_use]
     pub fn open_window_count(&self) -> usize {
         [
@@ -221,6 +253,11 @@ fn not_vaultkeeper(target: TypingTarget) -> Option<TypingTarget> {
     (target.pid > 0 && Some(target.pid) != own).then_some(target)
 }
 
+/// `target`, unless one of our own windows had the focus when the panel was asked for.
+fn usable_target(target: Option<TypingTarget>, own_window_focused: bool) -> Option<TypingTarget> {
+    target.filter(|_| !own_window_focused)
+}
+
 impl UiCommand {
     fn typing_target(&self) -> Option<TypingTarget> {
         match self {
@@ -248,6 +285,29 @@ impl UiCommand {
                     ..
                 })
         )
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    fn target() -> TypingTarget {
+        TypingTarget {
+            pid: 1,
+            name: "the previous window".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_focused_vaultkeeper_window_leaves_no_typing_target() {
+        assert_eq!(usable_target(Some(target()), true), None);
+    }
+
+    #[test]
+    fn without_own_focus_the_requested_target_is_kept() {
+        assert_eq!(usable_target(Some(target()), false), Some(target()));
+        assert_eq!(usable_target(None, false), None);
     }
 }
 

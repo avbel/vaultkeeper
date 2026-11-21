@@ -107,6 +107,13 @@ futures-util = { version = "0.3", default-features = false }
 zbus = { version = "6.0.0", default-features = false, features = ["tokio"] }
 # File dialogs through the FileChooser portal, no GTK (3h).
 rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
+# Auto-type on wlroots compositors: zwp_virtual_keyboard_v1 (3i). Already in the tree through
+# Slint's Wayland backend.
+wayland-client = "0.31.15"
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
+# Character to legacy keysym (xkb_utf32_to_keysym) for the portal route; pure Rust, already in the
+# tree through xkbcommon.
+xkeysym = "0.2.1"
 
 [target.'cfg(windows)'.dependencies]
 # Native open/save panels for attachments; IFileDialog, no portal or Wayland backends.

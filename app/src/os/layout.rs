@@ -18,6 +18,8 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const DEVICE_FILE: &str = "device.json";
 /// The GNOME clipboard portal's restore token (Linux).
 pub const CLIPBOARD_PORTAL_TOKEN_FILE: &str = "clipboard-portal-token";
+/// The auto-type RemoteDesktop portal's restore token (Linux).
+pub const AUTOTYPE_PORTAL_TOKEN_FILE: &str = "autotype-portal-token";
 const ACCOUNTS_DIR: &str = "accounts";
 const TOUCH_ID_FILE: &str = "touchid.bin";
 /// Server user ids are UUIDs (36 chars); anything else must not become a path component.

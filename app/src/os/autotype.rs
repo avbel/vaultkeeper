@@ -8,6 +8,10 @@ use std::time::Duration;
 
 #[cfg(any(windows, test))]
 mod keys;
+#[cfg(any(target_os = "linux", test))]
+mod keysym;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(windows)]
 mod windows;
 
@@ -98,7 +102,11 @@ pub fn frontmost_any() -> Option<TypingTarget> {
     {
         windows::frontmost_any()
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        Some(linux::previous_window())
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         None
     }
@@ -128,7 +136,11 @@ impl AutoType for SystemAutoType {
         {
             windows::frontmost()
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(target_os = "linux")]
+        {
+            Some(linux::previous_window())
+        }
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             None
         }
@@ -145,10 +157,26 @@ impl AutoType for SystemAutoType {
             let _ = prompt;
             true
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(target_os = "linux")]
+        {
+            let _ = prompt;
+            linux::session_problem().is_none()
+        }
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             let _ = prompt;
             false
+        }
+    }
+
+    fn not_trusted_text(&self) -> Option<&'static str> {
+        #[cfg(target_os = "linux")]
+        {
+            linux::session_problem()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
         }
     }
 
@@ -157,7 +185,9 @@ impl AutoType for SystemAutoType {
         macos::start(target, strokes, done);
         #[cfg(windows)]
         windows::start(target, strokes, done);
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(target_os = "linux")]
+        linux::start(&target, strokes, done);
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             drop((target, strokes));
             done(Err(HookError::Unavailable("Auto-type")));
@@ -169,6 +199,8 @@ impl AutoType for SystemAutoType {
         macos::cancel();
         #[cfg(windows)]
         windows::cancel();
+        #[cfg(target_os = "linux")]
+        linux::cancel();
     }
 
     fn give_focus_back(&self, target: &TypingTarget) {
@@ -176,6 +208,8 @@ impl AutoType for SystemAutoType {
         macos::give_focus_back(target);
         #[cfg(windows)]
         windows::give_focus_back(target);
+        // Wayland cannot refocus another app; the compositor focuses the window below the closed
+        // panel by itself.
         #[cfg(not(any(target_os = "macos", windows)))]
         let _ = target;
     }

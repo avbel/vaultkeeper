@@ -1,6 +1,6 @@
 //! Quick Panel: search-first pop-up, 8 rows, copy and dismiss.
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use slint::{ComponentHandle, ModelRc, SharedString};
 use vk_vault::{
@@ -27,6 +27,9 @@ pub(super) struct Quick {
     query: SharedString,
     /// Where auto-type goes: the app in front when the hotkey or tray asked for the panel.
     pub(super) typing_target: Option<TypingTarget>,
+    /// A modifier key is down in this window (Linux only; elsewhere never set). Auto-type waits
+    /// for the release because the desktop applies held modifiers to the keys it injects.
+    pub(super) modifiers_held: Rc<Cell<bool>>,
 }
 
 impl<S: VaultService> App<S> {
@@ -63,6 +66,7 @@ impl<S: VaultService> App<S> {
             window.invoke_focus_search();
             return;
         }
+        let modifiers_held = Rc::new(Cell::new(false));
         let window = match QuickPanel::new() {
             Ok(window) => window,
             Err(error) => {
@@ -88,11 +92,14 @@ impl<S: VaultService> App<S> {
             rows,
             query: SharedString::new(),
             typing_target,
+            modifiers_held: Rc::clone(&modifiers_held),
         });
         if !locked {
             self.refresh_quick();
         }
         show(&window, "quick panel");
+        #[cfg(target_os = "linux")]
+        watch_modifiers(&window, modifiers_held);
         window.invoke_focus_search();
         if !locked && self.vault.is_offline() {
             self.toast(OFFLINE_TOAST, false);
@@ -339,4 +346,17 @@ impl<S: VaultService> App<S> {
             Command::ToggleFavorite | Command::FilterKind(_) | Command::ToggleSidebar => false,
         }
     }
+}
+
+/// Wayland creates the winit window when the Slint window is shown, so this runs after `show`.
+#[cfg(target_os = "linux")]
+fn watch_modifiers(window: &QuickPanel, held: Rc<Cell<bool>>) {
+    use slint::winit_030::{EventResult, WinitWindowAccessor as _, winit::event::WindowEvent};
+
+    window.window().on_winit_window_event(move |_, event| {
+        if let WindowEvent::ModifiersChanged(modifiers) = event {
+            held.set(!modifiers.state().is_empty());
+        }
+        EventResult::Propagate
+    });
 }

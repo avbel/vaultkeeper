@@ -7669,8 +7669,11 @@ dependencies = [
  "vk-vault",
  "vk-webauthn",
  "vk-win",
+ "wayland-client",
+ "wayland-protocols-misc",
  "windows-sys 0.61.2",
  "wiremock",
+ "xkeysym",
  "zbus 6.3.0",
  "zeroize",
 ]

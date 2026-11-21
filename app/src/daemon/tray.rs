@@ -19,6 +19,7 @@ use super::{
     routing::{self, Effect, TrayAction},
 };
 use crate::{
+    hooks::TypingTarget,
     os::taskbar::{self, Glyph},
     settings::TrayIconChoice,
     ui::TrayIcon,
@@ -100,10 +101,17 @@ impl DoubleClick {
     }
 }
 
+/// On Linux the tray menu is a desktop popup that holds the keyboard focus, so "the window that
+/// had the focus" is unknowable here and may be one of Vaultkeeper's own, which would get the
+/// typed password once the menu closes. The Quick Panel from the tray has no auto-type target.
+fn tray_typing_target(front: Option<TypingTarget>) -> Option<TypingTarget> {
+    front.filter(|_| !cfg!(target_os = "linux"))
+}
+
 fn run(daemon: &Arc<Daemon>, action: TrayAction) {
     let vault = daemon.vault();
     let effects = routing::tray(action, &vault.state(), &vault.accounts(), || {
-        daemon.typing_target()
+        tray_typing_target(daemon.typing_target())
     });
     for effect in effects {
         if effect == Effect::Quit {
@@ -348,5 +356,21 @@ mod tests {
         assert!(!clicks.click(start, WINDOW));
         assert!(clicks.click(start + Duration::from_millis(100), WINDOW));
         assert!(!clicks.click(start + Duration::from_millis(200), WINDOW));
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    #[test]
+    fn a_tray_opened_panel_has_no_typing_target_on_linux_only() {
+        let front = TypingTarget {
+            pid: 42,
+            name: "Safari".to_owned(),
+        };
+        let kept = tray_typing_target(Some(front.clone()));
+        assert_eq!(kept, (!cfg!(target_os = "linux")).then_some(front));
+        assert_eq!(tray_typing_target(None), None);
     }
 }

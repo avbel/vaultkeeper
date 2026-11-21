@@ -170,6 +170,11 @@ pub trait AutoType: Send + Sync {
     /// Whether macOS lets this process post keystrokes (Accessibility). With `prompt`, macOS
     /// shows its own permission dialog when it does not.
     fn is_trusted(&self, prompt: bool) -> bool;
+    /// What to tell the user when [`AutoType::is_trusted`] says no; `None` keeps the macOS
+    /// Accessibility text.
+    fn not_trusted_text(&self) -> Option<&'static str> {
+        None
+    }
     /// Brings `target` back to the front, waits for it and types `strokes` without blocking the
     /// UI thread. Stops when `target` does not come forward or another app takes the front.
     fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone);

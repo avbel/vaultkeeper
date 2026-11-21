@@ -124,6 +124,38 @@ allowed. macOS ties the permission to the app's code signature: a build signed w
 ad-hoc signed build is a new app to macOS after each rebuild, so remove the old Vaultkeeper entry
 from the list and allow it again.
 
+## Auto-type on Linux
+
+Auto-type works in Wayland sessions only; the shortcut is Ctrl+Shift+Enter. Vaultkeeper tries two
+routes and the first that works types:
+
+1. **GNOME and KDE:** the RemoteDesktop portal. The first use shows the desktop's "allow keyboard
+   control" dialog; the grant is stored (`autotype-portal-token` in the data directory) and later
+   uses ask nothing. Revoke it in the desktop's privacy settings. Closing the dialog stops that
+   attempt, and Vaultkeeper does not ask again for five minutes.
+2. **Sway and Hyprland:** a virtual keyboard (`zwp_virtual_keyboard_v1`, served by wlroots-based
+   compositors only), with a keymap generated for the text, so the keyboard layout does not matter
+   there and non-ASCII characters work. There is nothing to allow.
+
+On GNOME and KDE the desktop looks each character up in the keyboard layout that is active, and
+drops one the layout lacks without telling Vaultkeeper, so a password with characters outside the
+current layout (for example `€` or Cyrillic letters on a US layout) can come out incomplete. Switch
+to a layout that has them first.
+
+Where neither exists the window says why (for example that the compositor has no virtual keyboard).
+X11 sessions are not supported.
+
+Wayland does not let an app focus another app's window, so the previous window cannot be brought
+back as on macOS. Vaultkeeper closes the Quick Panel first, waits a moment for the compositor to
+focus the window that was in front, and then types. If you moved the focus meanwhile (a click, a
+new window), the text goes to whatever has the focus, so wait for the panel to close before
+touching anything. Held modifier keys would be applied to the typed keys (Ctrl+Shift turns Tab
+into Ctrl+Tab), so Vaultkeeper keeps the panel open until it sees the keys released and gives up
+after two seconds with "Release the shortcut keys and try again". (This wait watches the panel's own
+modifier state and has not been verified on a live session yet.) If a Vaultkeeper window has the
+focus when you open the panel there is no target and nothing is typed. Typing stops, and the next window says why, when the vault locks. The panel
+cannot know which window will receive the text, so it never says "typing into <app>".
+
 ## Touch ID
 
 Settings → Security → Touch ID → *Enrol* (while unlocked).
