@@ -335,6 +335,8 @@ mod tests {
         );
     }
 
+    // Fixtures are Unix paths; "/run/..." is not absolute on Windows, where the sandbox does not exist.
+    #[cfg(unix)]
     #[test]
     fn the_runtime_dir_is_neither_readable_nor_connectable_as_a_whole() {
         let session = session();
@@ -379,6 +381,7 @@ mod tests {
         assert_eq!(rules.connect, paths(&SYSTEM_SOCKETS));
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_sockets_follow_the_environment() {
         let defaults = Session {
@@ -413,6 +416,7 @@ mod tests {
         assert!(relative.sockets().is_empty(), "{:?}", relative.sockets());
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_install_with_its_own_prefix_is_granted_whole() {
         let home = Path::new("/home/me");
@@ -428,6 +432,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_install_inside_home_never_grants_a_shared_prefix() {
         let home = Path::new("/home/me");

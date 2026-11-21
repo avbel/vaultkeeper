@@ -364,7 +364,17 @@ mod unix {
                 return;
             };
             // accept() only returns on a connection; without one the thread would block forever.
-            match send(&self.socket, WAKE_CODE, None) {
+            // A single refused connect (seen on macOS under load) must not leave the socket file
+            // behind, so the wake is retried.
+            let mut woken = send(&self.socket, WAKE_CODE, None);
+            for _ in 1..CONNECT_ATTEMPTS {
+                if woken.is_ok() {
+                    break;
+                }
+                std::thread::sleep(CONNECT_RETRY_DELAY);
+                woken = send(&self.socket, WAKE_CODE, None);
+            }
+            match woken {
                 Ok(()) => {
                     if thread.join().is_err() {
                         tracing::error!("single-instance listener panicked");
@@ -372,6 +382,9 @@ mod unix {
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "could not wake single-instance listener");
+                    if let Err(err) = std::fs::remove_file(&self.socket) {
+                        tracing::debug!(error = %err, "single-instance socket not removed");
+                    }
                 }
             }
         }
