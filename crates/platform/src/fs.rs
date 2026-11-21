@@ -126,9 +126,23 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
         builder.recursive(true);
         #[cfg(unix)]
         builder.mode(DIR_MODE);
+        #[cfg(unix)]
+        let previous_mode = fs::metadata(path)
+            .ok()
+            .map(|meta| meta.permissions().mode() & 0o7777);
         builder.create(path)?;
         #[cfg(unix)]
-        fs::set_permissions(path, fs::Permissions::from_mode(DIR_MODE))?;
+        {
+            fs::set_permissions(path, fs::Permissions::from_mode(DIR_MODE))?;
+            // The startup check runs after this and then finds nothing to repair, so this is the
+            // only place that can name the old mode.
+            if let Some(mode) = previous_mode.filter(|mode| *mode != DIR_MODE) {
+                tracing::warn!(
+                    path = %path.display(),
+                    "repaired the permissions of a private directory: {mode:04o} -> {DIR_MODE:04o}"
+                );
+            }
+        }
         Ok(())
     }
 }

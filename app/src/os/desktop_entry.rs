@@ -10,6 +10,28 @@ use std::{
 use vk_platform::desktop_file::{APP_ID, exec_quote};
 
 const ICON_SVG: &str = include_str!("../../../packaging/macos/icon.svg");
+const ICON_SVG_SIZE: &str = r#"width="1024" height="1024""#;
+/// The raster sizes of the hicolor theme the icon is also installed at: notifications and hosts
+/// that do not read SVG look for these.
+const PNG_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+
+fn icon_png(px: u32) -> Option<Vec<u8>> {
+    let svg = ICON_SVG.replacen(ICON_SVG_SIZE, &format!(r#"width="{px}" height="{px}""#), 1);
+    let pixels = slint::Image::load_from_svg_data(svg.as_bytes())
+        .ok()?
+        .to_rgba8()?;
+    let mut png = Vec::new();
+    image::write_buffer_with_format(
+        &mut std::io::Cursor::new(&mut png),
+        pixels.as_bytes(),
+        pixels.width(),
+        pixels.height(),
+        image::ExtendedColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .ok()?;
+    Some(png)
+}
 
 /// The `.desktop` text for `exe`, which must be the stable install path (Homebrew's `opt` path),
 /// never a versioned Cellar path that the next upgrade deletes.
@@ -43,17 +65,28 @@ pub fn render(exe: &Path) -> String {
 }
 
 /// The files the entry consists of, relative to `$XDG_DATA_HOME`.
-fn files(exe: &Path) -> [(PathBuf, String); 2] {
-    [
+fn files(exe: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = vec![
         (
             PathBuf::from(format!("applications/{APP_ID}.desktop")),
-            render(exe),
+            render(exe).into_bytes(),
         ),
         (
             PathBuf::from(format!("icons/hicolor/scalable/apps/{APP_ID}.svg")),
-            ICON_SVG.to_owned(),
+            ICON_SVG.as_bytes().to_vec(),
         ),
-    ]
+    ];
+    for px in PNG_SIZES {
+        if let Some(png) = icon_png(px) {
+            files.push((
+                PathBuf::from(format!("icons/hicolor/{px}x{px}/apps/{APP_ID}.png")),
+                png,
+            ));
+        } else {
+            tracing::warn!(px, "cannot render the {px}px launcher icon");
+        }
+    }
+    files
 }
 
 /// Writes whatever differs from what is on disk; `Ok(true)` when something changed. Idempotent,
@@ -62,13 +95,13 @@ pub fn ensure(data_home: &Path, exe: &Path) -> io::Result<bool> {
     let mut changed = false;
     for (relative, content) in files(exe) {
         let path = data_home.join(relative);
-        if std::fs::read_to_string(&path).ok().as_deref() == Some(content.as_str()) {
+        if std::fs::read(&path).ok().as_deref() == Some(content.as_slice()) {
             continue;
         }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        vk_platform::fs::write_private_atomic(&path, content.as_bytes())?;
+        vk_platform::fs::write_private_atomic(&path, &content)?;
         changed = true;
     }
     if changed {
@@ -126,5 +159,13 @@ mod tests {
                 .join("icons/hicolor/scalable/apps/io.github.avbel.Vaultkeeper.svg")
                 .exists()
         );
+        for px in PNG_SIZES {
+            let png = std::fs::read(home.path().join(format!(
+                "icons/hicolor/{px}x{px}/apps/io.github.avbel.Vaultkeeper.png"
+            )))
+            .expect("png icon");
+            let decoded = image::load_from_memory(&png).expect("decode");
+            assert_eq!((decoded.width(), decoded.height()), (px, px));
+        }
     }
 }

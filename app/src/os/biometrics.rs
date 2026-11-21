@@ -17,6 +17,8 @@ use crate::hooks::{Biometrics, HookError, HookResult};
 /// What the user sees for the system biometric: "Touch ID" on macOS, "Windows Hello" on Windows.
 pub const LABEL: &str = if cfg!(windows) {
     "Windows Hello"
+} else if cfg!(target_os = "linux") {
+    "Security key"
 } else {
     "Touch ID"
 };

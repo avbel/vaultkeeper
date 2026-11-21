@@ -119,7 +119,13 @@ async fn post(body: &str) -> zbus::Result<()> {
         .method_timeout(NOTIFY_TIMEOUT)
         .build()
         .await?;
-    let hints = HashMap::from([("urgency", Variant::U8(CRITICAL))]);
+    let hints = HashMap::from([
+        ("urgency", Variant::U8(CRITICAL)),
+        (
+            "desktop-entry",
+            Variant::from(vk_platform::desktop_file::APP_ID),
+        ),
+    ]);
     connection
         .call_method(
             Some("org.freedesktop.Notifications"),
@@ -144,6 +150,11 @@ async fn post(body: &str) -> zbus::Result<()> {
 fn notify_send(body: &str) {
     let posted = std::process::Command::new("notify-send")
         .args(["--app-name=Vaultkeeper", "--urgency=critical"])
+        .arg(format!("--icon={}", vk_platform::desktop_file::APP_ID))
+        .arg(format!(
+            "--hint=string:desktop-entry:{}",
+            vk_platform::desktop_file::APP_ID
+        ))
         .arg(SUMMARY)
         .arg(body)
         .stdin(std::process::Stdio::null())

@@ -51,8 +51,12 @@ export component SettingsWindow inherits Window {
     in-out property <bool> require-master-password;
     in property <bool> biometric-available;
     in property <bool> biometric-enrolled;
-    // Windows hides the enrol rows when Hello is missing; macOS keeps saying "Touch ID is not available".
+    // Windows and Linux hide the enrol rows when quick unlock is missing; macOS keeps saying "Touch ID is not available".
     in property <bool> hide-missing-biometric;
+    // Linux has no quick unlock yet (security key and fingerprint come later), so rows that only
+    // make sense with one stay out.
+    in property <bool> no-biometric-platform;
+    in property <string> auto-update-description: "Checks GitHub daily and installs once the vault is locked";
     property <bool> biometric-row-visible: root.biometric-available || root.biometric-enrolled || !root.hide-missing-biometric;
     in property <bool> unlocked;
     in-out property <bool> ssh-agent;
@@ -286,7 +290,7 @@ export component SettingsWindow inherits Window {
                 Toggle { text: "Start at login"; checked <=> root.start-at-login; toggled(v) => { root.start-at-login-toggled(v); } }
                 if root.updates-managed-note == "": Toggle {
                     text: "Update automatically";
-                    description: "Checks GitHub daily and installs once the vault is locked";
+                    description: root.auto-update-description;
                     checked <=> root.auto-update;
                     toggled(v) => { root.auto-update-toggled(v); }
                 }
@@ -300,7 +304,7 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 Toggle { text: "Ask to unlock on start"; checked <=> root.ask-unlock-on-start; toggled(v) => { root.ask-unlock-toggled(v); } }
-                Toggle {
+                if !root.no-biometric-platform: Toggle {
                     text: "Require master password on app start";
                     description: "Off: " + Theme.biometric-label + " alone unlocks after a restart";
                     checked <=> root.require-master-password;

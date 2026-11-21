@@ -109,9 +109,15 @@ impl<S: VaultService> App<S> {
             .collect();
         window.set_clipboard_options(ModelRc::new(VecModel::from(clip_labels)));
         window.set_clipboard_index(option_index(&CLIPBOARD_OPTIONS, &settings.clipboard_clear));
-        window.set_start_at_login(settings.start_at_login);
+        window.set_start_at_login(self.reconcile_start_at_login(settings.start_at_login));
         window.set_auto_update(settings.auto_update);
         window.set_updates_managed_note(updates_managed_note().into());
+        if cfg!(target_os = "linux") {
+            window.set_auto_update_description(
+                "Checks GitHub daily and links to the release page when a new version is out"
+                    .into(),
+            );
+        }
         window.set_ask_unlock_on_start(settings.ask_unlock_on_start);
         window.set_require_master_password(settings.require_master_password_on_start);
         self.fill_biometric(window);
@@ -152,7 +158,8 @@ impl<S: VaultService> App<S> {
             .accounts()
             .into_iter()
             .find(|account| account.active);
-        window.set_hide_missing_biometric(cfg!(windows));
+        window.set_hide_missing_biometric(cfg!(not(target_os = "macos")));
+        window.set_no_biometric_platform(cfg!(target_os = "linux"));
         window.set_biometric_available(biometrics.is_available());
         window.set_biometric_enrolled(
             account
@@ -288,6 +295,18 @@ impl<S: VaultService> App<S> {
             .map(ComponentHandle::clone_strong);
         if let Some(window) = window {
             self.fill_settings(&window);
+        }
+    }
+
+    /// The desktop's own startup settings can switch the entry off (`Hidden=true`); the stored
+    /// flag follows, and the entry the user turned off is left as it is.
+    fn reconcile_start_at_login(&self, stored: bool) -> bool {
+        match self.hooks.autostart.is_enabled() {
+            Some(actual) if actual != stored => {
+                self.update_settings(|settings| settings.start_at_login = actual);
+                actual
+            }
+            _ => stored,
         }
     }
 

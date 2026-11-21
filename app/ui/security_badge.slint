@@ -1,0 +1,24 @@
+import { Theme } from "theme.slint";
+
+// Set per window by the app: the process started past a refused protection (`--skip-security-issues`
+// or an accepted set), which the plan wants visible on the first screens.
+export global SecurityNotice {
+    in-out property <bool> overridden;
+}
+
+export component SecurityBadge inherits Rectangle {
+    height: 20px * Theme.scale;
+    width: label.preferred-width + 16px;
+    border-radius: self.height / 2;
+    background: Theme.warn.with-alpha(0.16);
+    accessible-role: text;
+    accessible-label: "Started with security issues skipped";
+    label := Text {
+        text: "Security issues skipped";
+        color: Theme.warn-text;
+        font-size: Theme.font-hint;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

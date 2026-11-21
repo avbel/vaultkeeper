@@ -58,6 +58,12 @@ pub trait Biometrics: Send + Sync {
 
 pub trait Autostart: Send + Sync {
     fn set_enabled(&self, enabled: bool) -> HookResult<()>;
+
+    /// What the system says, for platforms where the user can switch the entry off outside the
+    /// app; `None` leaves the stored setting as the truth.
+    fn is_enabled(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Registers the Quick Panel accelerator. The integration calls `App::toggle_quick_panel` when it

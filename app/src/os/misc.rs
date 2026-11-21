@@ -25,6 +25,15 @@ impl Autostart for LaunchAgent {
         vk_platform::autostart::set_enabled(enabled)
             .map_err(|error| HookError::Failed(error.to_string()))
     }
+
+    fn is_enabled(&self) -> Option<bool> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        vk_platform::autostart::is_enabled()
+            .inspect_err(|error| tracing::warn!(%error, "cannot read the autostart entry"))
+            .ok()
+    }
 }
 
 pub struct Generator;

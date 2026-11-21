@@ -2,6 +2,7 @@ import { Theme } from "theme.slint";
 import { Keys } from "keys.slint";
 import { Btn, BtnKind, Check, Field, Icon, IconBtn, InlineConfirm, MenuRow, PopupPanel, Segmented, Spinner } from "kit.slint";
 import { AccountRow, AccountSwitcher } from "accounts.slint";
+import { SecurityBadge, SecurityNotice } from "security_badge.slint";
 
 component LinkText inherits Text {
     callback clicked();
@@ -188,6 +189,11 @@ export component LockWindow inherits Window {
             }
             cancelled => { root.confirm-logout = false; }
         }
+    }
+
+    if SecurityNotice.overridden: SecurityBadge {
+        x: parent.width - self.width - Theme.s2;
+        y: Theme.s1;
     }
 }
 
@@ -455,5 +461,10 @@ export component LoginWindow inherits Window {
                 clicked => { root.cancel(); }
             }
         }
+    }
+
+    if SecurityNotice.overridden: SecurityBadge {
+        x: parent.width - self.width - Theme.s2;
+        y: Theme.s1;
     }
 }

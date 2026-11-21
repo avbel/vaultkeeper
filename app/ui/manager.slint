@@ -8,6 +8,7 @@ import { GeneratorView, GeneratorState } from "generator.slint";
 import { Sidebar, SidebarEntry } from "sidebar.slint";
 import { SendDetail, SendDetailView, SendEditForm } from "send.slint";
 import { AccountRow, AccountSwitcher } from "accounts.slint";
+import { SecurityBadge, SecurityNotice } from "security_badge.slint";
 
 component NewMenu inherits Rectangle {
     callback new-item(int);
@@ -608,5 +609,10 @@ export component ManagerWindow inherits Window {
         error: root.toast-error;
         shown: root.toast-shown;
         dismissed => { root.toast-dismissed(); }
+    }
+
+    if SecurityNotice.overridden: SecurityBadge {
+        x: parent.width - self.width - Theme.s2;
+        y: Theme.s1;
     }
 }

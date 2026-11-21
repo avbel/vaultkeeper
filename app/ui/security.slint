@@ -77,7 +77,9 @@ export component SecuritySummary inherits Rectangle {
     in property <string> text;
     in property <bool> open;
     callback clicked();
-    height: 36px * Theme.scale;
+    // Closed it elides to one line; open (the click that also shows the detail) it wraps, so the
+    // full text is always one click away.
+    height: root.open ? max(36px * Theme.scale, summary.preferred-height + 2 * Theme.s2) : 36px * Theme.scale;
     border-radius: Theme.radius-control;
     background: ta.has-hover ? Theme.hover : Theme.surface-raised;
     accessible-role: button;
@@ -88,12 +90,13 @@ export component SecuritySummary inherits Rectangle {
         padding-left: Theme.s3;
         padding-right: Theme.s3;
         spacing: Theme.gap;
-        Text {
+        summary := Text {
             text: root.text;
             color: Theme.text;
             font-size: Theme.font-body;
             vertical-alignment: center;
-            overflow: elide;
+            overflow: root.open ? TextOverflow.clip : TextOverflow.elide;
+            wrap: root.open ? TextWrap.word-wrap : TextWrap.no-wrap;
             horizontal-stretch: 1;
         }
         Text {

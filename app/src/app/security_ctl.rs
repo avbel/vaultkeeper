@@ -1,6 +1,8 @@
 //! Settings: the summary line and the protections list (linux-plan.md 3l), filled from the
 //! protection chains the daemon last reported.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use slint::{ModelRc, SharedString, VecModel};
 use vk_vault::VaultService;
 use zeroize::Zeroizing;
@@ -11,6 +13,19 @@ use crate::{
     settings::Settings,
     ui::{AcceptedIssueRow, SecurityChainRow, SettingsWindow},
 };
+
+static START_OVERRIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// Records that this process started although a required protection is missing (a refusal
+/// covered by `--skip-security-issues` or an accepted set), so its windows carry the badge.
+/// `enforce` only returns a report with refusals when the start was overridden.
+pub fn note_start(report: &vk_platform::security::Report) {
+    START_OVERRIDDEN.store(!report.refusals().is_empty(), Ordering::Relaxed);
+}
+
+pub(super) fn start_overridden() -> bool {
+    START_OVERRIDDEN.load(Ordering::Relaxed)
+}
 
 /// The chain whose Install… button prints the privileged helper's command (step 4c).
 const BPF_CHAIN: &str = "bpf";

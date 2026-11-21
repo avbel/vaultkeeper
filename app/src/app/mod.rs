@@ -42,6 +42,7 @@ use vk_vault::{VaultService, model::SessionState};
 
 pub use browser::BrowserPromptRequest;
 pub use commands::UiCommand;
+pub use security_ctl::note_start;
 pub use ssh::SshApprovalRequest;
 
 use crate::{
@@ -50,7 +51,8 @@ use crate::{
     settings::{Settings, ThemeChoice},
     ui::{
         BrowserPairPrompt, BrowserPicker, BrowserSavePrompt, GeneratorWindow, LockWindow,
-        ManagerWindow, QuickPanel, SettingsWindow, SshPrompt, Theme, ThemeMode, TrayIcon,
+        ManagerWindow, QuickPanel, SecurityNotice, SettingsWindow, SshPrompt, Theme, ThemeMode,
+        TrayIcon,
     },
 };
 
@@ -468,6 +470,7 @@ impl<S: VaultService> App<S> {
     where
         C: ComponentHandle,
         for<'a> Theme<'a>: Global<'a, C>,
+        for<'a> SecurityNotice<'a>: Global<'a, C>,
     {
         let settings = self.settings.borrow();
         let theme = component.global::<Theme>();
@@ -475,6 +478,9 @@ impl<S: VaultService> App<S> {
         theme.set_scale(settings.text_scale.factor());
         theme.set_site_icons(settings.show_site_icons);
         theme.set_biometric_label(crate::os::BIOMETRIC_LABEL.into());
+        component
+            .global::<SecurityNotice>()
+            .set_overridden(security_ctl::start_overridden());
     }
 
     fn apply_theme_everywhere(&self) {
