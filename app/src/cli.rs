@@ -116,6 +116,8 @@ pub struct Args {
     /// With `--ui`: the inherited channel to the daemon, a pipe handle on Windows and a socket fd
     /// on Linux.
     pub ui_pipe: Option<usize>,
+    /// With `--ui`: show this refusal report instead of connecting to a daemon.
+    pub refusal: Option<std::path::PathBuf>,
     pub no_activate: bool,
     pub tray: bool,
     pub offline: bool,
@@ -156,6 +158,8 @@ pub enum CliError {
     WaitFor,
     #[error("--ui-pipe needs a handle value")]
     UiPipe,
+    #[error("--refusal needs a report file")]
+    Refusal,
 }
 
 fn parse_size(text: Option<&str>) -> Result<(u32, u32), CliError> {
@@ -206,6 +210,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
                         .filter(|handle: &usize| *handle != 0)
                         .ok_or(CliError::UiPipe)?,
                 );
+            }
+            "--refusal" => {
+                parsed.refusal = Some(args.next().ok_or(CliError::Refusal)?.into());
             }
             "-h" | "--help" => parsed.help = true,
             "--version" => parsed.version = true,
@@ -342,9 +349,11 @@ mod tests {
 }
 
 /// Which process to run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Mock,
+    /// The refusal window of a daemon that did not start ([`crate::refusal`]).
+    Refusal(std::path::PathBuf),
     Ui {
         first_unlock: bool,
         pipe: Option<usize>,
@@ -362,10 +371,12 @@ impl Args {
     }
 
     #[must_use]
-    pub const fn mode(&self) -> Mode {
+    pub fn mode(&self) -> Mode {
         use crate::daemon::routing::Launch;
         if self.mock {
             Mode::Mock
+        } else if let (true, Some(report)) = (self.ui, &self.refusal) {
+            Mode::Refusal(report.clone())
         } else if self.ui {
             Mode::Ui {
                 first_unlock: self.first_unlock,
@@ -392,6 +403,22 @@ mod mode_tests {
         parse(list.iter().map(|arg| (*arg).to_owned()))
             .expect("args")
             .mode()
+    }
+
+    #[test]
+    fn a_refusal_report_opens_the_refusal_window_only_as_a_ui() {
+        assert_eq!(
+            mode(&["--ui", "--refusal", "/run/r.txt"]),
+            Mode::Refusal("/run/r.txt".into())
+        );
+        assert_eq!(
+            mode(&["--refusal", "/run/r.txt"]),
+            Mode::Daemon(Launch::Manager)
+        );
+        assert_eq!(
+            parse(["--ui".to_owned(), "--refusal".to_owned()]),
+            Err(CliError::Refusal)
+        );
     }
 
     #[test]

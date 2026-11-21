@@ -92,11 +92,12 @@ fn main() -> anyhow::Result<()> {
     }
     init_logging(match mode {
         Mode::Daemon(_) => Some("daemon"),
-        Mode::Ui { .. } => Some("ui"),
+        Mode::Ui { .. } | Mode::Refusal(_) => Some("ui"),
         Mode::Mock => None,
     });
     match mode {
         Mode::Mock => run_mock(args),
+        Mode::Refusal(report) => vaultkeeper::refusal::run(&report),
         Mode::Ui { first_unlock, pipe } => {
             vaultkeeper::os::early_log::note("logging initialised");
             let ran = vaultkeeper::ui_process::run(first_unlock, args.no_activate, pipe);

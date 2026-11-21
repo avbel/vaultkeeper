@@ -1,0 +1,58 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, PromptHeader } from "widgets.slint";
+
+// Shown by `vaultkeeper --ui --refusal <file>` when the daemon refused to start
+// (linux-plan.md 1c). It never talks to a daemon and holds no secrets.
+export component RefusalWindow inherits Window {
+    title: "Vaultkeeper did not start";
+    icon: @image-url("icons/tray-blue.svg");
+    width: 560px;
+    min-height: 320px;
+    background: Theme.surface;
+    default-font-size: Theme.font-body;
+
+    in property <string> report;
+
+    callback quit();
+    callback start-anyway();
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.quit();
+                return accept;
+            }
+            return reject;
+        }
+        init => { self.focus(); }
+
+        VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+            PromptHeader {
+                glyph: @image-url("icons/tray-blue.svg");
+                title: "Vaultkeeper did not start";
+            }
+            Text {
+                text: root.report;
+                color: Theme.text;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Btn {
+                    text: "Start anyway (not recommended)";
+                    kind: BtnKind.danger;
+                    clicked => { root.start-anyway(); }
+                }
+                Btn {
+                    text: "Quit";
+                    kind: BtnKind.primary;
+                    clicked => { root.quit(); }
+                }
+            }
+        }
+    }
+}

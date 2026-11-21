@@ -14,7 +14,8 @@ Manual checks that need a real session, one section per risk; run in the four VM
 
 ### 1. Baseline gate (1c) — all; the per-distro fix text on each
 - [ ] `vaultkeeper security status` shows every chain with a status and the active link; no refusal on a stock install.
-- [ ] Break the data dir (`chmod 755 ~/.local/share/vaultkeeper`): start repairs it and logs a warning. Replace it with a symlink: start refuses with the window (desktop launch) or the table and exit 78 (terminal).
+- [ ] Break the data dir (`chmod 755 ~/.local/share/vaultkeeper`): start repairs it and logs a warning. Replace it with a symlink: start refuses (the data-dir check logs and exits; it has no window).
+- [ ] Refusal window: `env -u XDG_RUNTIME_DIR vaultkeeper` refuses ("Runtime directory"). A critical notification "Vaultkeeper did not start" lists the item (record whether it appears: `notify-send` must be installed), `~/.local/state/vaultkeeper/last-refusal.txt` holds the report (mode 0600), and the window shows it. "Quit" closes it; "Start anyway (not recommended)" starts the daemon with `--skip-security-issues` (check `ps`) and the autostart entry still lacks the flag.
 - [ ] `vaultkeeper --skip-security-issues` starts with the warning badge; `vaultkeeper security accept` then lets autostart proceed; a new issue (e.g. `WAYLAND_DISPLAY` unset in a terminal) refuses again.
 - [ ] Fedora (Yama 0) without BPF: C3 shows "Reduced" with the ptrace_scope/BPF hint; Ubuntu shows "Standard".
 

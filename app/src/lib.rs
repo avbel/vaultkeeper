@@ -21,6 +21,7 @@ pub mod keymap;
 pub mod last_login;
 pub mod mock;
 pub mod os;
+pub mod refusal;
 pub mod rows;
 pub mod run;
 pub mod send_view;

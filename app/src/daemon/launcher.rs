@@ -426,9 +426,9 @@ mod tests {
         let (launcher, _streams) = unix_launcher(PathBuf::from("/usr/bin/true"));
         let launcher = std::sync::Arc::new(launcher);
         let (done, exited) = tokio::sync::oneshot::channel();
-        let reaper = std::sync::Arc::clone(&launcher);
+        // The reaper's own `exited()` call is left to the test: `true` can be gone and reaped
+        // before the first assertion runs.
         launcher.ensure(false, false, false, move |ran| {
-            reaper.exited();
             let _ = done.send(ran);
         });
         assert!(launcher.is_running());
@@ -440,6 +440,11 @@ mod tests {
             .expect("exits")
             .expect("reaped");
         assert!(ran < Duration::from_secs(5));
+        assert!(
+            launcher.is_running(),
+            "tracked until the reaper reports the exit"
+        );
+        launcher.exited();
         assert!(!launcher.is_running());
     }
 

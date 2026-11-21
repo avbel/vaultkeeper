@@ -98,7 +98,8 @@ fn write_desktop_entry() {
 fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     crate::os::startup_check::enforce(&data_dir)?;
-    crate::os::security_gate::enforce(crate::os::security_gate::Role::Daemon, &data_dir)?;
+    crate::os::security_gate::enforce(crate::os::security_gate::Role::Daemon, &data_dir)
+        .inspect_err(|refusal| crate::refusal::present(&data_dir, &refusal.to_string()))?;
     // Nothing reads the daemon's exe: clients check it through daemon_check instead.
     vk_platform::hardening::harden_after_handshake();
     let socket_dir = crate::os::layout::socket_dir(&data_dir);
