@@ -146,6 +146,8 @@ pub fn run_ui<S: VaultService>(
     options: UiOptions,
     on_last_window_closed: impl Fn(&Weak<App<S>>) + 'static,
 ) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    let scheme_changes = crate::os::linux::color_scheme::start(&runtime);
     let app = App::new(vault, Exec::event_loop(runtime), hooks);
     let weak = Rc::downgrade(&app);
     let on_closed = Rc::new(on_last_window_closed);
@@ -156,6 +158,8 @@ pub fn run_ui<S: VaultService>(
     if options.host_tray {
         app.install_tray();
     }
+    #[cfg(target_os = "linux")]
+    follow_system_scheme(&app, scheme_changes)?;
     watch_vault(&app)?;
     if let Some(commands) = commands {
         forward_commands(&app, commands)?;
@@ -170,6 +174,26 @@ pub fn run_ui<S: VaultService>(
     }
     app.show_pending_notices();
     slint::run_event_loop_until_quit().context("run the event loop")?;
+    Ok(())
+}
+
+/// Linux/Wayland winit reports no theme until the first change, so the portal's scheme is read
+/// before any window exists and then kept in step.
+#[cfg(target_os = "linux")]
+fn follow_system_scheme<S: VaultService>(
+    app: &Rc<App<S>>,
+    mut changes: tokio::sync::watch::Receiver<crate::system_scheme::SystemScheme>,
+) -> anyhow::Result<()> {
+    let weak = Rc::downgrade(app);
+    slint::spawn_local(async move {
+        while changes.changed().await.is_ok() {
+            match weak.upgrade() {
+                Some(app) => app.apply_theme_everywhere(),
+                None => break,
+            }
+        }
+    })
+    .context("follow the system colour scheme")?;
     Ok(())
 }
 

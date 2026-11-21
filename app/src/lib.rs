@@ -30,6 +30,7 @@ pub mod settings;
 pub mod shortcut_syntax;
 pub mod sidebar;
 pub mod site_icon;
+pub mod system_scheme;
 pub mod ui_process;
 pub mod viewmodel;
 

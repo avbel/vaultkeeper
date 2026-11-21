@@ -181,6 +181,13 @@ pub fn run(path: &Path) -> anyhow::Result<()> {
         .split_once("\n\n")
         .map_or(report.as_str(), |(_, rest)| rest);
     window.set_report(body.into());
+    #[cfg(target_os = "linux")]
+    {
+        let scheme = crate::os::linux::color_scheme::read_once();
+        window
+            .global::<crate::ui::Theme>()
+            .set_portal_scheme(scheme.slint_code());
+    }
     window.on_quit(quit);
     window.on_start_anyway(|| {
         start_anyway();

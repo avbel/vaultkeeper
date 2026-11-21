@@ -475,6 +475,7 @@ impl<S: VaultService> App<S> {
         let settings = self.settings.borrow();
         let theme = component.global::<Theme>();
         theme.set_mode(theme_mode(settings.theme));
+        theme.set_portal_scheme(crate::system_scheme::current().slint_code());
         theme.set_scale(settings.text_scale.factor());
         theme.set_site_icons(settings.show_site_icons);
         theme.set_biometric_label(crate::os::BIOMETRIC_LABEL.into());
@@ -483,7 +484,7 @@ impl<S: VaultService> App<S> {
             .set_overridden(security_ctl::start_overridden());
     }
 
-    fn apply_theme_everywhere(&self) {
+    pub(crate) fn apply_theme_everywhere(&self) {
         if let Some(manager) = self.manager.borrow().as_ref() {
             self.apply_theme(&manager.window);
         }

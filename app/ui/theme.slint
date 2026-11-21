@@ -4,10 +4,13 @@ export enum ThemeMode { system, light, dark }
 
 // Every window instance gets its own copy of this global; Rust sets `mode` and `scale` on each.
 // `Palette.color-scheme` is never assigned, so `system-dark` keeps following the OS live (the
-// winit backend updates it on ThemeChanged).
+// winit backend updates it on ThemeChanged). On Linux/Wayland winit learns the scheme only on a
+// later change, so Rust feeds the desktop portal's answer through `portal-scheme`.
 export global Theme {
     in-out property <ThemeMode> mode: ThemeMode.system;
-    in-out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
+    // 0 unknown (use the backend's scheme), 1 light, 2 dark.
+    in-out property <int> portal-scheme: 0;
+    in-out property <bool> system-dark: portal-scheme == 0 ? Palette.color-scheme == ColorScheme.dark : portal-scheme == 2;
     // 1.0, 1.15 or 1.3: multiplies fonts and row heights.
     in-out property <float> scale: 1.0;
     // "Show site icons": rows draw a loaded icon in place of the kind chip.
