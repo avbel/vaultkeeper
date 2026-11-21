@@ -61,6 +61,8 @@ pub struct PowerWatcher {
     _subscription: macos::Subscription,
     #[cfg(windows)]
     _subscription: windows::Subscription,
+    #[cfg(target_os = "linux")]
+    _subscription: linux::Subscription,
 }
 
 /// Sends every event to `tx` until the returned watcher is dropped. Sending never blocks the
@@ -78,7 +80,13 @@ pub fn subscribe(tx: Sender<PowerEvent>) -> Result<PowerWatcher> {
             _subscription: windows::Subscription::new(tx)?,
         })
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(PowerWatcher {
+            _subscription: linux::Subscription::new(tx)?,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         drop(tx);
         Err(crate::Error::Unsupported)
@@ -95,6 +103,11 @@ pub fn session_end_handled() {
 
 #[cfg(windows)]
 mod windows;
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+mod signal;
 
 #[cfg(target_os = "macos")]
 mod macos {

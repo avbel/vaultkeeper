@@ -301,6 +301,28 @@ window at launch. With no account added yet, the sign-in window opens instead.
 - After a crash macOS starts Vaultkeeper again (`KeepAlive` on a failed exit); *Quit* from the tray
   stays quit. An agent written by an older version is updated on its next start at login.
 
+## Lock on Linux
+
+Vaultkeeper follows `systemd-logind` and the desktop's screensaver service, so sleep, logout and a
+screen lock from GNOME, KDE, Omarchy or `loginctl lock-session` lock the vault. Sway and Hyprland
+have no screensaver service: make the idle daemon lock through logind, so Vaultkeeper hears it.
+
+```
+# sway: ~/.config/sway/config (the `lock` hook fires on logind's Lock signal)
+exec swayidle -w lock 'swaylock -f' before-sleep 'loginctl lock-session' \
+    timeout 300 'loginctl lock-session'
+
+# hyprland: ~/.config/hypr/hypridle.conf
+general {
+    lock_cmd = pidof hyprlock || hyprlock
+    before_sleep_cmd = loginctl lock-session
+}
+listener {
+    timeout = 300
+    on-timeout = loginctl lock-session
+}
+```
+
 ## Updates
 
 The tray item above *Quit* checks for a new release on GitHub. Settings → Security → *Update automatically*
