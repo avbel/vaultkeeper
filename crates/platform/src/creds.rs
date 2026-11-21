@@ -331,7 +331,18 @@ impl Backend {
     #[must_use]
     pub fn link(&self) -> Link {
         let probe = self.probe();
-        Link::new("systemd-creds", "systemd-creds", move || probe.clone()).stacking()
+        Link::new("systemd-creds", self.mechanism(), move || probe.clone()).stacking()
+    }
+
+    /// Names the key, so the Security row says what protects the files and not only the tool.
+    #[must_use]
+    pub const fn mechanism(&self) -> &'static str {
+        match self {
+            Self::TpmAndHost => "systemd-creds (TPM2 + host key)",
+            Self::Tpm => "systemd-creds (TPM2 key)",
+            Self::Host => "systemd-creds (host key only)",
+            Self::Unknown(_) | Self::Unavailable(_) => "systemd-creds",
+        }
     }
 
     #[must_use]

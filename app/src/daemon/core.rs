@@ -671,6 +671,15 @@ impl Daemon {
             self.replay_setup_issues();
         }
         #[cfg(target_os = "linux")]
+        {
+            if command != UiCommand::ShowSettings
+                && opens_a_window(&command)
+                && !self.ui_connected()
+            {
+                self.replay_hotkey_state();
+            }
+        }
+        #[cfg(target_os = "linux")]
         let queue = {
             let ui_alive = self.ui_connected() || self.launcher.is_running();
             with_activation_token(command, ui_alive, crate::os::linux::activation::take)
@@ -830,24 +839,27 @@ impl Daemon {
 
     /// Settings is about to open in a UI that may have started after the failure.
     fn replay_setup_issues(self: &Arc<Self>) {
-        let (ssh_agent, hotkeys, bindings) = {
+        let ssh_agent = guard(&self.setup_issues).ssh_agent.clone();
+        self.replay_hotkey_state();
+        if let Some(message) = ssh_agent {
+            self.send(|seq| DaemonEvent::Command {
+                seq,
+                command: UiCommand::SshAgentFailed { message },
+            });
+        }
+    }
+
+    /// A UI that started after the shortcuts were bound has not heard how, and its windows open
+    /// Settings on their own (the lock screen's link, Ctrl+,) without asking the daemon.
+    fn replay_hotkey_state(self: &Arc<Self>) {
+        let (hotkeys, bindings) = {
             let issues = guard(&self.setup_issues);
-            (
-                issues.ssh_agent.clone(),
-                issues.hotkeys,
-                issues.bindings.clone(),
-            )
+            (issues.hotkeys, issues.bindings.clone())
         };
         if let Some(bindings) = bindings {
             self.send(|seq| DaemonEvent::Command {
                 seq,
                 command: hotkey_bindings_command(bindings),
-            });
-        }
-        if let Some(message) = ssh_agent {
-            self.send(|seq| DaemonEvent::Command {
-                seq,
-                command: UiCommand::SshAgentFailed { message },
             });
         }
         if hotkeys.any() {

@@ -83,6 +83,16 @@ fn system_view(bindings: &Bindings, settings: &Settings, compositor: Compositor)
             configurable: true,
             ..SystemView::default()
         },
+        HotkeyMode::PortalPending => SystemView {
+            quick_panel_note: PENDING_NOTE.to_owned(),
+            generator_note: if settings.generator_hotkey.trim().is_empty() {
+                String::new()
+            } else {
+                PENDING_NOTE.to_owned()
+            },
+            configurable: true,
+            ..SystemView::default()
+        },
         HotkeyMode::Manual => {
             let lines = compositor_lines(compositor, &settings.hotkey, &settings.generator_hotkey);
             SystemView {
@@ -94,11 +104,42 @@ fn system_view(bindings: &Bindings, settings: &Settings, compositor: Compositor)
     }
 }
 
+const PENDING_NOTE: &str = "Waiting for you to confirm the shortcut in your desktop's dialog (it may be behind other windows).";
+
+/// GNOME describes a trigger as "Press <Shift><Control>space"; show it like the recorders do.
+fn friendly_trigger(description: &str) -> String {
+    let rest = description
+        .strip_prefix("Press ")
+        .unwrap_or(description)
+        .trim();
+    if !rest.starts_with('<') {
+        return rest.to_owned();
+    }
+    let mut parts = Vec::new();
+    let mut remaining = rest;
+    while let Some(after) = remaining.strip_prefix('<') {
+        let Some((modifier, tail)) = after.split_once('>') else {
+            return rest.to_owned();
+        };
+        parts.push(match modifier {
+            "Control" => "Ctrl".to_owned(),
+            other => other.to_owned(),
+        });
+        remaining = tail;
+    }
+    let mut key = remaining.chars();
+    let Some(first) = key.next() else {
+        return rest.to_owned();
+    };
+    parts.push(first.to_uppercase().chain(key).collect());
+    parts.join("+")
+}
+
 fn assigned_note(trigger: &str) -> String {
     if trigger.is_empty() {
         "Not assigned by your desktop yet. Use \"Change in system settings…\".".to_owned()
     } else {
-        format!("Your desktop uses: {trigger}")
+        format!("Your desktop uses: {}", friendly_trigger(trigger))
     }
 }
 
@@ -487,6 +528,35 @@ mod tests {
             Compositor::Other,
         );
         assert!(unassigned.quick_panel_note.starts_with("Not assigned"));
+    }
+
+    #[test]
+    fn gnome_trigger_text_reads_like_the_recorder() {
+        assert_eq!(
+            friendly_trigger("Press <Shift><Control>space"),
+            "Shift+Ctrl+Space"
+        );
+        assert_eq!(
+            friendly_trigger("Press Ctrl+Shift+Space"),
+            "Ctrl+Shift+Space"
+        );
+        assert_eq!(friendly_trigger("<Super"), "<Super");
+    }
+
+    #[test]
+    fn an_unanswered_portal_dialog_reads_as_pending_and_still_offers_the_dialog() {
+        let settings = Settings {
+            generator_hotkey: String::new(),
+            ..Settings::default()
+        };
+        let view = system_view(
+            &bindings(HotkeyMode::PortalPending, ""),
+            &settings,
+            Compositor::Other,
+        );
+        assert!(view.quick_panel_note.starts_with("Waiting for you"));
+        assert_eq!(view.generator_note, "");
+        assert!(view.configurable);
     }
 
     #[test]

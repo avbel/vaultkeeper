@@ -861,7 +861,7 @@ mod tests {
             .iter()
             .find(|chain| chain.id == "secret-files")
             .expect("secret files chain");
-        assert_eq!(files.stacked, ["systemd-creds"]);
+        assert_eq!(files.stacked, ["systemd-creds (host key only)"]);
     }
 
     #[test]

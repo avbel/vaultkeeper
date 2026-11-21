@@ -263,7 +263,7 @@ fn the_chain_link_follows_the_backend() {
         fix: None,
     };
     let tpm = chain(&Detection::probe_creds(creds)).evaluate();
-    assert_eq!(tpm.stacked, ["systemd-creds"]);
+    assert_eq!(tpm.stacked, ["systemd-creds (TPM2 + host key)"]);
     let none = chain(&Detection::probe(None)).evaluate();
     assert_eq!(none.stacked.len(), 0);
     assert_eq!(none.skipped.len(), 1);

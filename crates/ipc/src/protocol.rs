@@ -247,6 +247,9 @@ pub enum HotkeyMode {
     Portal,
     /// No portal backend: the user binds `vaultkeeper --search` in the compositor.
     Manual,
+    /// The portal holds a session but its dialog for the shortcuts is not answered yet. Last,
+    /// because the wire format carries the variant index.
+    PortalPending,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

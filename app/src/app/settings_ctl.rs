@@ -114,7 +114,7 @@ impl<S: VaultService> App<S> {
         window.set_updates_managed_note(updates_managed_note().into());
         if cfg!(target_os = "linux") {
             window.set_auto_update_description(
-                "Checks GitHub daily and links to the release page when a new version is out"
+                "Checks daily for a new version and links to the release page when one is out"
                     .into(),
             );
         }

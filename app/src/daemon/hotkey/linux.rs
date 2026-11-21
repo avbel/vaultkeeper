@@ -38,8 +38,6 @@ use crate::{
 
 /// A portal call that answers on its own: the portal is stuck when it takes longer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
-/// Binding may wait on a dialog the user has to answer (GNOME asks once per shortcut).
-const BIND_TIMEOUT: Duration = Duration::from_secs(180);
 /// Before another attempt after the portal was unreachable or its session ended.
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
 /// After a portal restart a hardened process is refused until it restarts too; asking again
@@ -48,6 +46,7 @@ const REFUSALS_BEFORE_GIVING_UP: u8 = 3;
 /// A burst of binds (one per slot) is folded into one portal call.
 const COALESCE: Duration = Duration::from_millis(50);
 const ACTIVATION_TOKEN_KEY: &str = "activation_token";
+const WAITING_FOR_DIALOG: &str = "waiting for you to confirm the shortcuts in the desktop's dialog";
 const PORTAL_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
 
 type Wanted = Vec<(HotkeySlot, String)>;
@@ -161,6 +160,22 @@ struct Link {
     session: Arc<Session<GlobalShortcuts>>,
 }
 
+enum Bound {
+    Done(Result<Listed, PortalError>),
+    SessionEnded,
+    ControlsClosed,
+}
+
+fn absorb(request: Control, wanted: &mut Wanted, paused: &mut bool, configure_pending: &mut bool) {
+    match request {
+        Control::Wanted(fresh, now_paused) => {
+            *wanted = fresh;
+            *paused = now_paused;
+        }
+        Control::Configure => *configure_pending = true,
+    }
+}
+
 enum Backend {
     /// Not contacted yet, or waiting to try again.
     Idle,
@@ -182,6 +197,8 @@ struct Task {
     /// "Change in system settings…" was clicked while no session could take it yet.
     configure_pending: bool,
     refusals: u8,
+    /// Wanted shortcuts changed while a bind waited on the desktop's dialog.
+    resync: bool,
 }
 
 async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>) {
@@ -193,6 +210,7 @@ async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>
         retry: false,
         configure_pending: false,
         refusals: 0,
+        resync: false,
     };
     loop {
         let event = async {
@@ -223,7 +241,10 @@ async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>
             () = reconnect => {}
         }
         task.flush_configure().await;
-        task.retry = task.sync().await;
+        task.retry = task.sync(&mut requests).await;
+        while std::mem::take(&mut task.resync) {
+            task.retry = task.sync(&mut requests).await;
+        }
     }
     close(&mut task.backend).await;
 }
@@ -237,13 +258,12 @@ impl Task {
     }
 
     fn take(&mut self, request: Control) {
-        match request {
-            Control::Wanted(fresh, paused) => {
-                self.wanted = fresh;
-                self.paused = paused;
-            }
-            Control::Configure => self.configure_pending = true,
-        }
+        absorb(
+            request,
+            &mut self.wanted,
+            &mut self.paused,
+            &mut self.configure_pending,
+        );
     }
 
     /// Opens the desktop's dialog once a session exists; until then the click waits.
@@ -304,7 +324,7 @@ impl Task {
 
     /// Brings the portal in line with the wanted shortcuts. `true` when the portal could not be
     /// reached this time and another attempt is due.
-    async fn sync(&mut self) -> bool {
+    async fn sync(&mut self, requests: &mut mpsc::UnboundedReceiver<Control>) -> bool {
         if matches!(self.backend, Backend::Missing | Backend::Refused) {
             return false;
         }
@@ -327,21 +347,93 @@ impl Task {
         if matches!(self.backend, Backend::Idle) && !self.connect_backend().await {
             return !matches!(self.backend, Backend::Missing | Backend::Refused);
         }
-        let Backend::Live(live) = &mut self.backend else {
-            return false;
-        };
-        match bind(&live.link, &desired).await {
-            Ok(listed) => {
-                live.bound = desired;
+        match self.bind_waiting(&desired, requests).await {
+            Bound::Done(Ok(listed)) => {
+                if let Backend::Live(live) = &mut self.backend {
+                    live.bound = desired;
+                }
                 hotkey_status::set(Ok(()));
                 report(&self.daemon, &listed);
             }
-            Err(error) => {
+            Bound::Done(Err(error)) => {
                 tracing::warn!(%error, "the GlobalShortcuts portal refused the shortcuts");
                 hotkey_status::set(Err(error.to_string()));
+                report(&self.daemon, &Listed::new());
             }
+            Bound::SessionEnded => {
+                self.on_event(Some(Event::Closed), requests).await;
+                report(&self.daemon, &Listed::new());
+                // GNOME keeps the dialog of a closed session on screen, so a timed retry would
+                // stack another one; only a user action (Configure, a changed shortcut) rebinds.
+                return false;
+            }
+            Bound::ControlsClosed => {}
         }
         false
+    }
+
+    /// The desktop may keep the bind open for as long as its dialog is unanswered, so Settings
+    /// is told it is pending, and "Change in system settings…" and a lost session still get
+    /// through meanwhile. Nothing is abandoned and re-asked: GNOME keeps the old dialog open
+    /// (neither `Request.Close` nor closing the session dismisses it), so another bind would
+    /// only stack a second one.
+    async fn bind_waiting(
+        &mut self,
+        desired: &Wanted,
+        requests: &mut mpsc::UnboundedReceiver<Control>,
+    ) -> Bound {
+        let Task {
+            daemon,
+            wanted,
+            paused,
+            backend,
+            configure_pending,
+            resync,
+            ..
+        } = self;
+        let Backend::Live(live) = backend else {
+            return Bound::Done(Err(PortalError::NoResponse));
+        };
+        let Live {
+            link,
+            events,
+            bound,
+            ..
+        } = &mut **live;
+        if bound.is_empty() {
+            daemon.report_hotkey_bindings(bindings(
+                HotkeyMode::PortalPending,
+                String::new(),
+                String::new(),
+            ));
+            hotkey_status::set(Err(WAITING_FOR_DIALOG.to_owned()));
+        }
+        let call = bind(link, desired);
+        tokio::pin!(call);
+        loop {
+            tokio::select! {
+                result = &mut call => return Bound::Done(result),
+                request = requests.recv() => match request {
+                    Some(Control::Configure) => configure(link).await,
+                    Some(other) => {
+                        absorb(other, wanted, paused, configure_pending);
+                        *resync = true;
+                    }
+                    None => return Bound::ControlsClosed,
+                },
+                event = events.recv() => match event {
+                    Some(Event::Activated(id, token)) => press(daemon, wanted, *paused, &id, token),
+                    Some(Event::Changed(listed)) => {
+                        // An empty list during the wait would flip "waiting" to "not assigned"
+                        // while the dialog is still open.
+                        if !(bound.is_empty() && listed.is_empty()) {
+                            report(daemon, &listed);
+                        }
+                    }
+                    Some(Event::Closed) | None => return Bound::SessionEnded,
+                },
+            }
+        }
     }
 
     /// `false` when there is no session; `Missing` then says whether a retry could help.
@@ -519,16 +611,15 @@ async fn bind(link: &Link, desired: &Wanted) -> Result<Listed, PortalError> {
                 .preferred_trigger(trigger.as_str())
         })
         .collect();
-    let request = within(
-        BIND_TIMEOUT,
-        link.portal.bind_shortcuts(
+    let request = link
+        .portal
+        .bind_shortcuts(
             &link.session,
             &shortcuts,
             None,
             BindShortcutsOptions::default(),
-        ),
-    )
-    .await?;
+        )
+        .await?;
     let bound = request.response()?;
     let relisted = within(
         CALL_TIMEOUT,
