@@ -44,6 +44,48 @@ pub fn needs_bind(bound: &[(HotkeySlot, String)], desired: &[(HotkeySlot, String
     desired.iter().any(|entry| !bound.contains(entry))
 }
 
+/// What to do with the portal session after the wanted shortcuts changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plan {
+    Nothing,
+    /// Only new or changed triggers: send them again on the same session.
+    Bind,
+    /// A shortcut was dropped. The portal cannot unbind one, so the session is closed and made
+    /// again with what remains.
+    Rebuild,
+}
+
+/// A recorder pause empties every slot for a moment; the session stays as it is then, and
+/// [`is_active`] keeps the presses out.
+pub fn plan(
+    bound: &[(HotkeySlot, String)],
+    desired: &[(HotkeySlot, String)],
+    paused: bool,
+) -> Plan {
+    if paused {
+        return Plan::Nothing;
+    }
+    let dropped = bound
+        .iter()
+        .any(|(slot, _)| !desired.iter().any(|(wanted, _)| wanted == slot));
+    if dropped {
+        Plan::Rebuild
+    } else if needs_bind(bound, desired) {
+        Plan::Bind
+    } else {
+        Plan::Nothing
+    }
+}
+
+/// Whether a press of `slot` should open anything: the slot has a trigger the portal was given,
+/// and no recorder is waiting for a key.
+pub fn is_active(accelerators: &[(HotkeySlot, String)], slot: HotkeySlot, paused: bool) -> bool {
+    !paused
+        && desired(accelerators)
+            .iter()
+            .any(|(wanted, _)| *wanted == slot)
+}
+
 /// The desktop's own wording of the Quick Panel and Generator triggers, from `(id, description)`
 /// pairs; a shortcut the desktop does not list has none.
 pub fn trigger_descriptions<'a>(
@@ -103,6 +145,33 @@ mod tests {
         assert!(needs_bind(&quick_only, &both));
         let moved = desired(&wanted("Ctrl+Shift+K", ""));
         assert!(needs_bind(&quick_only, &moved));
+    }
+
+    #[test]
+    fn a_dropped_shortcut_rebuilds_the_session_unless_a_recorder_paused_everything() {
+        let both = desired(&wanted("Ctrl+Shift+Space", "Ctrl+Alt+G"));
+        let quick_only = desired(&wanted("Ctrl+Shift+Space", ""));
+        assert_eq!(plan(&both, &quick_only, false), Plan::Rebuild);
+        assert_eq!(
+            plan(&both, &[], true),
+            Plan::Nothing,
+            "paused: keep the session"
+        );
+        assert_eq!(plan(&both, &[], false), Plan::Rebuild);
+        assert_eq!(plan(&quick_only, &both, false), Plan::Bind);
+        assert_eq!(plan(&both, &both, false), Plan::Nothing);
+        assert_eq!(plan(&[], &quick_only, false), Plan::Bind);
+    }
+
+    #[test]
+    fn a_press_opens_something_only_for_a_slot_with_a_portal_trigger_and_no_pause() {
+        let quick = HotkeySlot::QuickPanel;
+        let generator = HotkeySlot::Generator;
+        let saved = wanted("Ctrl+Shift+Space", "Hyper+G");
+        assert!(is_active(&saved, quick, false));
+        assert!(!is_active(&saved, generator, false), "no portal spelling");
+        assert!(!is_active(&saved, quick, true), "recorder pause");
+        assert!(!is_active(&wanted("", ""), quick, false), "all cleared");
     }
 
     #[test]

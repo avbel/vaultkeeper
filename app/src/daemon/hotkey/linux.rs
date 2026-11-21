@@ -6,7 +6,6 @@
 use std::{
     cell::RefCell,
     future::Future,
-    pin::Pin,
     sync::{Arc, Mutex, OnceLock, PoisonError},
     time::{Duration, Instant},
 };
@@ -17,15 +16,16 @@ use ashpd::{
         Session,
         global_shortcuts::{
             BindShortcutsOptions, ConfigureShortcutsOptions, GlobalShortcuts, ListShortcutsOptions,
-            NewShortcut, Shortcut,
+            NewShortcut,
         },
     },
+    zbus,
 };
 use futures_util::{Stream, StreamExt as _};
 use tokio::{sync::mpsc, task::JoinHandle};
 use vk_ipc::HotkeyMode;
 
-use super::portal_plan::{self, desired, needs_bind, shortcut_id};
+use super::portal_plan::{self, Plan, desired, plan, shortcut_id};
 use crate::{
     daemon::{
         Daemon,
@@ -42,7 +42,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const BIND_TIMEOUT: Duration = Duration::from_secs(180);
 /// Before another attempt after the portal was unreachable or its session ended.
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
+/// A burst of binds (one per slot) is folded into one portal call.
+const COALESCE: Duration = Duration::from_millis(50);
 const ACTIVATION_TOKEN_KEY: &str = "activation_token";
+const PORTAL_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
 
 type Wanted = Vec<(HotkeySlot, String)>;
 
@@ -55,7 +58,9 @@ const fn description(slot: HotkeySlot) -> &'static str {
 }
 
 enum Control {
-    Wanted(Wanted),
+    /// The saved accelerators and whether a recorder has paused them, sampled together so the
+    /// session never sees an unpaused state with still-empty slots.
+    Wanted(Wanted, bool),
     Configure,
 }
 
@@ -67,6 +72,7 @@ const TOKEN_LIFETIME: Duration = Duration::from_secs(10);
 /// The `Hotkey` the daemon shell holds: `bind` only records what is wanted, and a task on the
 /// daemon's runtime talks to the portal.
 pub struct Hotkey {
+    daemon: Arc<Daemon>,
     wanted: RefCell<Wanted>,
     control: mpsc::UnboundedSender<Control>,
     task: JoinHandle<()>,
@@ -84,6 +90,7 @@ impl Hotkey {
             .runtime_handle()
             .spawn(run(Arc::clone(daemon), requests));
         Ok(Self {
+            daemon: Arc::clone(daemon),
             wanted: RefCell::new(Vec::new()),
             control,
             task,
@@ -97,7 +104,10 @@ impl HotkeyBinder for Hotkey {
         wanted.retain(|(bound, _)| *bound != slot);
         wanted.push((slot, accelerator.trim().to_owned()));
         self.control
-            .send(Control::Wanted(wanted.clone()))
+            .send(Control::Wanted(
+                wanted.clone(),
+                self.daemon.hotkeys_paused(),
+            ))
             .map_err(|_| anyhow::anyhow!("the shortcut task has stopped"))
     }
 }
@@ -132,19 +142,40 @@ fn store_activation_token(token: Option<String>) {
         token.map(|token| (Instant::now(), token));
 }
 
-type Activations = Pin<Box<dyn Stream<Item = (String, Option<String>)> + Send>>;
+/// `(shortcut id, the desktop's description of its trigger)`.
+type Listed = Vec<(String, String)>;
+
+enum Event {
+    Activated(String, Option<String>),
+    Changed(Listed),
+    /// The desktop closed the session, the portal restarted, or the bus went away: nothing will
+    /// be delivered on this session any more.
+    Closed,
+}
+
+/// Stops the signal watchers of a session when it is dropped.
+struct Watchers(Vec<JoinHandle<()>>);
+
+impl Drop for Watchers {
+    fn drop(&mut self) {
+        for watcher in &self.0 {
+            watcher.abort();
+        }
+    }
+}
 
 /// A live session and what it has bound so far.
 struct Live {
     link: Link,
-    activations: Activations,
+    events: mpsc::UnboundedReceiver<Event>,
     bound: Wanted,
+    _watchers: Watchers,
 }
 
-/// What the calls need; kept apart from the activation stream, which is not `Sync`.
+/// What the calls need.
 struct Link {
     portal: GlobalShortcuts,
-    session: Session<GlobalShortcuts>,
+    session: Arc<Session<GlobalShortcuts>>,
 }
 
 enum Backend {
@@ -155,100 +186,202 @@ enum Backend {
     Missing,
 }
 
+struct Task {
+    daemon: Arc<Daemon>,
+    wanted: Wanted,
+    /// A Settings recorder is waiting for a key: nothing is bound or dropped meanwhile.
+    paused: bool,
+    backend: Backend,
+    /// The portal could not be reached or its session ended; another attempt is due.
+    retry: bool,
+    /// "Change in system settings…" was clicked while no session could take it yet.
+    configure_pending: bool,
+}
+
 async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>) {
-    let mut wanted = Wanted::new();
-    let mut backend = Backend::Idle;
-    let mut retry = false;
+    let mut task = Task {
+        daemon,
+        wanted: Wanted::new(),
+        paused: false,
+        backend: Backend::Idle,
+        retry: false,
+        configure_pending: false,
+    };
     loop {
-        let activation = async {
-            match &mut backend {
-                Backend::Live(live) => live.activations.next().await,
+        let event = async {
+            match &mut task.backend {
+                Backend::Live(live) => live.events.recv().await,
                 Backend::Idle | Backend::Missing => std::future::pending().await,
             }
         };
         let reconnect = async {
-            if retry {
+            if task.retry {
                 tokio::time::sleep(RECONNECT_DELAY).await;
             } else {
                 std::future::pending::<()>().await;
             }
         };
         tokio::select! {
-            request = requests.recv() => match request {
-                Some(Control::Wanted(fresh)) => wanted = fresh,
-                Some(Control::Configure) => {
-                    let link = match &backend {
-                        Backend::Live(live) => Some(&live.link),
-                        Backend::Idle | Backend::Missing => None,
-                    };
-                    configure(link).await;
+            request = requests.recv() => {
+                let Some(first) = request else { break };
+                task.on_request(first, &mut requests).await;
+            }
+            event = event => {
+                if !task.on_event(event, &mut requests).await {
+                    // A session that ended is retried by the timer or a new request, never at
+                    // once: a desktop that keeps closing it must not be hammered with dialogs.
                     continue;
                 }
-                None => break,
-            },
-            pressed = activation => {
-                if let Some((id, token)) = pressed {
-                    press(&daemon, &wanted, &id, token);
-                } else {
-                    tracing::warn!("the GlobalShortcuts Activated stream ended; the global shortcuts are off until the portal is back");
-                    close(&mut backend).await;
-                    hotkey_status::set(Err("the portal's shortcut session ended".to_owned()));
-                    retry = true;
-                }
-                continue;
             }
             () = reconnect => {}
         }
-        retry = sync(&daemon, &wanted, &mut backend).await;
+        task.flush_configure().await;
+        task.retry = task.sync().await;
     }
-    close(&mut backend).await;
+    close(&mut task.backend).await;
 }
 
-/// `true` when the portal could not be reached this time and another attempt is due.
-async fn sync(daemon: &Arc<Daemon>, wanted: &Wanted, backend: &mut Backend) -> bool {
-    let desired = desired(wanted);
-    if desired.is_empty() || matches!(backend, Backend::Missing) {
-        return false;
+impl Task {
+    /// Folds every queued request in; a "Change in system settings…" among them is kept.
+    fn drain(&mut self, requests: &mut mpsc::UnboundedReceiver<Control>) {
+        while let Ok(request) = requests.try_recv() {
+            self.take(request);
+        }
     }
-    if matches!(backend, Backend::Idle) {
+
+    fn take(&mut self, request: Control) {
+        match request {
+            Control::Wanted(fresh, paused) => {
+                self.wanted = fresh;
+                self.paused = paused;
+            }
+            Control::Configure => self.configure_pending = true,
+        }
+    }
+
+    /// Opens the desktop's dialog once a session exists; until then the click waits.
+    async fn flush_configure(&mut self) {
+        if !self.configure_pending {
+            return;
+        }
+        let Backend::Live(live) = &self.backend else {
+            tracing::info!("no shortcut session to configure yet");
+            return;
+        };
+        self.configure_pending = false;
+        configure(&live.link).await;
+    }
+}
+
+impl Task {
+    async fn on_request(
+        &mut self,
+        first: Control,
+        requests: &mut mpsc::UnboundedReceiver<Control>,
+    ) {
+        let wanted_changed = matches!(first, Control::Wanted(..));
+        self.take(first);
+        if wanted_changed {
+            tokio::time::sleep(COALESCE).await;
+        }
+        self.drain(requests);
+    }
+
+    /// `false` when the session ended and the portal must not be contacted again straight away.
+    async fn on_event(
+        &mut self,
+        event: Option<Event>,
+        requests: &mut mpsc::UnboundedReceiver<Control>,
+    ) -> bool {
+        match event {
+            Some(Event::Activated(id, token)) => {
+                self.drain(requests);
+                press(&self.daemon, &self.wanted, self.paused, &id, token);
+                true
+            }
+            Some(Event::Changed(listed)) => {
+                report(&self.daemon, &listed);
+                true
+            }
+            Some(Event::Closed) | None => {
+                tracing::warn!(
+                    "the GlobalShortcuts session ended; the global shortcuts are off until the portal is back"
+                );
+                close(&mut self.backend).await;
+                hotkey_status::set(Err("the portal's shortcut session ended".to_owned()));
+                self.retry = true;
+                false
+            }
+        }
+    }
+
+    /// Brings the portal in line with the wanted shortcuts. `true` when the portal could not be
+    /// reached this time and another attempt is due.
+    async fn sync(&mut self) -> bool {
+        if matches!(self.backend, Backend::Missing) {
+            return false;
+        }
+        let desired = desired(&self.wanted);
+        if let Backend::Live(live) = &self.backend {
+            match plan(&live.bound, &desired, self.paused) {
+                Plan::Nothing => return false,
+                Plan::Bind => {}
+                Plan::Rebuild => {
+                    // A session that may still be alive must not get a twin: try again later.
+                    if !close(&mut self.backend).await {
+                        return true;
+                    }
+                }
+            }
+        }
+        if desired.is_empty() {
+            return false;
+        }
+        if matches!(self.backend, Backend::Idle) && !self.connect_backend().await {
+            return !matches!(self.backend, Backend::Missing);
+        }
+        let Backend::Live(live) = &mut self.backend else {
+            return false;
+        };
+        match bind(&live.link, &desired).await {
+            Ok(listed) => {
+                live.bound = desired;
+                hotkey_status::set(Ok(()));
+                report(&self.daemon, &listed);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the GlobalShortcuts portal refused the shortcuts");
+                hotkey_status::set(Err(error.to_string()));
+            }
+        }
+        false
+    }
+
+    /// `false` when there is no session; `Missing` then says whether a retry could help.
+    async fn connect_backend(&mut self) -> bool {
         match connect().await {
-            Ok(live) => *backend = Backend::Live(Box::new(live)),
+            Ok(live) => {
+                self.backend = Backend::Live(Box::new(live));
+                true
+            }
             Err(PortalError::PortalNotFound(interface)) => {
                 tracing::info!(%interface, "no GlobalShortcuts portal; shortcuts are bound in the compositor");
-                *backend = Backend::Missing;
+                self.backend = Backend::Missing;
                 hotkey_status::set(Err("this desktop has no GlobalShortcuts portal".to_owned()));
-                daemon.report_hotkey_bindings(bindings(
+                self.daemon.report_hotkey_bindings(bindings(
                     HotkeyMode::Manual,
                     String::new(),
                     String::new(),
                 ));
-                return false;
+                false
             }
             Err(error) => {
                 tracing::warn!(%error, "cannot reach the GlobalShortcuts portal");
                 hotkey_status::set(Err(error.to_string()));
-                return true;
+                false
             }
         }
     }
-    let Backend::Live(live) = backend else {
-        return false;
-    };
-    if !needs_bind(&live.bound, &desired) {
-        return false;
-    }
-    match bind(&live.link, &desired).await {
-        Ok(listed) => {
-            live.bound = desired;
-            hotkey_status::set(Ok(()));
-            report(daemon, &listed);
-        }
-        Err(error) => {
-            tracing::warn!(%error, "the GlobalShortcuts portal refused the shortcuts");
-            hotkey_status::set(Err(error.to_string()));
-        }
-    }
-    false
 }
 
 #[allow(
@@ -259,24 +392,108 @@ async fn connect() -> Result<Live, PortalError> {
     portal::ensure_registered().await;
     let portal = within(CALL_TIMEOUT, GlobalShortcuts::new()).await?;
     let session = within(CALL_TIMEOUT, portal.create_session(Default::default())).await?;
-    let activations = within(CALL_TIMEOUT, portal.receive_activated()).await?;
-    let activations: Activations = Box::pin(activations.map(|activated| {
-        let token = activated
-            .options()
-            .get(ACTIVATION_TOKEN_KEY)
-            .and_then(|value| <&str>::try_from(value).ok())
-            .map(str::to_owned);
-        (activated.shortcut_id().to_owned(), token)
-    }));
+    let session = Arc::new(session);
+    let activated = within(CALL_TIMEOUT, portal.receive_activated()).await?;
+    let changed = within(CALL_TIMEOUT, portal.receive_shortcuts_changed()).await?;
+    let (events_tx, events) = mpsc::unbounded_channel();
+    let watchers = Watchers(vec![
+        forward(activated, events_tx.clone(), |activated| {
+            let token = activated
+                .options()
+                .get(ACTIVATION_TOKEN_KEY)
+                .and_then(|value| <&str>::try_from(value).ok())
+                .map(str::to_owned);
+            Event::Activated(activated.shortcut_id().to_owned(), token)
+        }),
+        forward(changed, events_tx.clone(), |changed| {
+            Event::Changed(listed(changed.shortcuts().iter()))
+        }),
+        tokio::spawn(watch_session_closed(
+            Arc::clone(&session),
+            events_tx.clone(),
+        )),
+        tokio::spawn(watch_portal_owner(events_tx)),
+    ]);
     Ok(Live {
         link: Link { portal, session },
-        activations,
+        events,
         bound: Wanted::new(),
+        _watchers: watchers,
     })
 }
 
+fn listed<'a>(
+    shortcuts: impl Iterator<Item = &'a ashpd::desktop::global_shortcuts::Shortcut>,
+) -> Listed {
+    shortcuts
+        .map(|shortcut| {
+            (
+                shortcut.id().to_owned(),
+                shortcut.trigger_description().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Sends every item as an event; a stream that ends means the bus connection is gone.
+fn forward<S>(
+    mut stream: S,
+    events: mpsc::UnboundedSender<Event>,
+    into_event: impl Fn(S::Item) -> Event + Send + 'static,
+) -> JoinHandle<()>
+where
+    S: Stream + Send + Unpin + 'static,
+    S::Item: Send,
+{
+    tokio::spawn(async move {
+        while let Some(item) = stream.next().await {
+            if events.send(into_event(item)).is_err() {
+                return;
+            }
+        }
+        let _ = events.send(Event::Closed);
+    })
+}
+
+/// `Session.Closed`: the desktop ended the session on its own.
+async fn watch_session_closed(
+    session: Arc<Session<GlobalShortcuts>>,
+    events: mpsc::UnboundedSender<Event>,
+) {
+    let mut closed = match session.receive_closed().await {
+        Ok(closed) => Box::pin(closed),
+        Err(error) => {
+            tracing::warn!(%error, "cannot watch the shortcut session for closing");
+            return;
+        }
+    };
+    if closed.next().await.is_some() {
+        let _ = events.send(Event::Closed);
+    }
+}
+
+/// A restarted portal has lost every session without a signal.
+async fn watch_portal_owner(events: mpsc::UnboundedSender<Event>) {
+    let watched = async {
+        let connection = zbus::Connection::session().await?;
+        let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut changes = dbus
+            .receive_name_owner_changed_with_args(&[(0, PORTAL_BUS_NAME)])
+            .await?;
+        while changes.next().await.is_some() {
+            if events.send(Event::Closed).is_err() {
+                break;
+            }
+        }
+        Ok::<(), zbus::Error>(())
+    };
+    if let Err(error) = watched.await {
+        tracing::warn!(%error, "cannot watch the portal for restarts");
+    }
+}
+
 /// Binds every desired shortcut and returns what the desktop lists afterwards.
-async fn bind(link: &Link, desired: &Wanted) -> Result<Vec<Shortcut>, PortalError> {
+async fn bind(link: &Link, desired: &Wanted) -> Result<Listed, PortalError> {
     let shortcuts: Vec<NewShortcut> = desired
         .iter()
         .map(|(slot, trigger)| {
@@ -295,24 +512,24 @@ async fn bind(link: &Link, desired: &Wanted) -> Result<Vec<Shortcut>, PortalErro
     )
     .await?;
     let bound = request.response()?;
-    let listed = within(
+    let relisted = within(
         CALL_TIMEOUT,
         link.portal
             .list_shortcuts(&link.session, ListShortcutsOptions::default()),
     )
     .await
     .and_then(|request| request.response());
-    Ok(listed.map_or_else(
-        |_| bound.shortcuts().to_vec(),
-        |list| list.shortcuts().to_vec(),
+    Ok(relisted.map_or_else(
+        |_| listed(bound.shortcuts().iter()),
+        |list| listed(list.shortcuts().iter()),
     ))
 }
 
-fn report(daemon: &Arc<Daemon>, shortcuts: &[Shortcut]) {
+fn report(daemon: &Arc<Daemon>, shortcuts: &Listed) {
     let (quick_panel, generator) = portal_plan::trigger_descriptions(
         shortcuts
             .iter()
-            .map(|shortcut| (shortcut.id(), shortcut.trigger_description())),
+            .map(|(id, trigger)| (id.as_str(), trigger.as_str())),
     );
     daemon.report_hotkey_bindings(bindings(HotkeyMode::Portal, quick_panel, generator));
 }
@@ -325,16 +542,13 @@ fn bindings(mode: HotkeyMode, quick_panel: String, generator: String) -> HotkeyB
     }
 }
 
-/// A press of a shortcut that is no longer wanted (paused for a recorder, or cleared) is dropped:
-/// the portal cannot unbind, so it still delivers it.
-fn press(daemon: &Arc<Daemon>, wanted: &Wanted, id: &str, token: Option<String>) {
+/// Presses of a shortcut that is paused for a recorder, or has no trigger the portal was given,
+/// are dropped.
+fn press(daemon: &Arc<Daemon>, wanted: &Wanted, paused: bool, id: &str, token: Option<String>) {
     let Some(slot) = portal_plan::slot_for_id(id) else {
         return;
     };
-    let active = wanted
-        .iter()
-        .any(|(wanted, accelerator)| *wanted == slot && !accelerator.is_empty());
-    if !active {
+    if !portal_plan::is_active(wanted, slot, paused || daemon.hotkeys_paused()) {
         return;
     }
     tracing::debug!(?slot, token = token.is_some(), "global shortcut pressed");
@@ -346,11 +560,7 @@ fn press(daemon: &Arc<Daemon>, wanted: &Wanted, id: &str, token: Option<String>)
     });
 }
 
-async fn configure(link: Option<&Link>) {
-    let Some(link) = link else {
-        tracing::info!("no shortcut session to configure");
-        return;
-    };
+async fn configure(link: &Link) {
     let configured = within(
         CALL_TIMEOUT,
         link.portal
@@ -362,10 +572,14 @@ async fn configure(link: Option<&Link>) {
     }
 }
 
-async fn close(backend: &mut Backend) {
-    if let Backend::Live(live) = std::mem::replace(backend, Backend::Idle) {
-        let _ = within(CALL_TIMEOUT, live.link.session.close()).await;
-    }
+/// `false` when the portal did not answer `Close` in time, so the session may still be alive; any
+/// other answer (including "no such session") means it is gone.
+async fn close(backend: &mut Backend) -> bool {
+    let Backend::Live(live) = std::mem::replace(backend, Backend::Idle) else {
+        return true;
+    };
+    let closed = within(CALL_TIMEOUT, live.link.session.close()).await;
+    !matches!(closed, Err(PortalError::IO(error)) if error.kind() == std::io::ErrorKind::TimedOut)
 }
 
 /// Maps a timeout to the portal error type the callers already handle.
