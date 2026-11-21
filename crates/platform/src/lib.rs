@@ -4,6 +4,8 @@ pub mod autostart;
 pub mod biometric;
 pub mod clipboard;
 pub mod code_signature;
+#[cfg(unix)]
+pub mod creds;
 pub mod desktop_file;
 #[cfg(windows)]
 pub mod dpapi;
