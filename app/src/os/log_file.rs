@@ -35,7 +35,11 @@ pub fn log_dir() -> Option<PathBuf> {
     {
         windows_log_dir(std::env::var_os("LOCALAPPDATA"))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        vk_platform::desktop_file::state_home().map(|state| state.join("vaultkeeper/logs"))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
         Some(PathBuf::from(home).join("Library/Logs/vaultkeeper"))

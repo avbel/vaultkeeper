@@ -3536,6 +3536,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "landlock"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03795bb5dba9d001e861618f7301289e3ad0bb146d0a8192ff5fd8b06d069087"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7686,6 +7697,7 @@ dependencies = [
  "directories",
  "hkdf 0.13.0",
  "interprocess",
+ "landlock",
  "libc",
  "p256 0.14.0",
  "rand 0.10.3",

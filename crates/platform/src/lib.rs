@@ -15,6 +15,7 @@ pub mod keychain;
 pub mod network;
 pub mod paths;
 pub mod power;
+pub mod sandbox;
 pub mod security;
 pub mod single_instance;
 

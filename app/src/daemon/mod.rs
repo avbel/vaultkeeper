@@ -93,7 +93,8 @@ fn write_desktop_entry() {
     }
 }
 
-/// The data dir after its startup check, and the socket dir (the runtime dir on Linux).
+/// The data dir after its startup check, and the socket dir (the runtime dir on Linux). On Linux
+/// the process is then non-dumpable and, when requested, sandboxed.
 fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
     crate::os::startup_check::enforce(&data_dir)?;
@@ -102,7 +103,54 @@ fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     vk_platform::hardening::harden_after_handshake();
     let socket_dir = crate::os::layout::socket_dir(&data_dir);
     vk_platform::fs::ensure_private_dir(&socket_dir).context("create the socket directory")?;
+    #[cfg(target_os = "linux")]
+    if vk_platform::sandbox::requested() {
+        sandbox(&data_dir, &socket_dir);
+    }
     Ok((data_dir, socket_dir))
+}
+
+/// The UI the daemon starts later inherits the same rule set.
+#[cfg(target_os = "linux")]
+fn sandbox(data_dir: &Path, socket_dir: &Path) {
+    use vk_platform::desktop_file;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let config_home = desktop_file::config_home().unwrap_or_else(|| home.join(".config"));
+    let data_home = desktop_file::data_home().unwrap_or_else(|| home.join(".local/share"));
+    let cache_home = desktop_file::cache_home().unwrap_or_else(|| home.join(".cache"));
+    let log_dir = crate::os::log_file::log_dir().unwrap_or_else(|| data_dir.join("logs"));
+    let install = vk_platform::install_kind::current_install_path().unwrap_or_default();
+    // Under Homebrew the whole prefix: `opt/vaultkeeper` resolves to a versioned Cellar directory,
+    // and the next upgrade's binary lives in another one. Elsewhere `<prefix>/bin/vaultkeeper`.
+    let install_text = install.to_string_lossy();
+    let install_prefix = install_text.split_once("/opt/vaultkeeper/").map_or_else(
+        || {
+            install
+                .ancestors()
+                .nth(2)
+                .unwrap_or(Path::new("/"))
+                .to_owned()
+        },
+        |(prefix, _)| PathBuf::from(prefix),
+    );
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let rules = vk_platform::sandbox::rules(&vk_platform::sandbox::Dirs {
+        home: &home,
+        data_dir,
+        socket_dir,
+        log_dir: &log_dir,
+        install_prefix: &install_prefix,
+        runtime_dir: runtime_dir.as_deref(),
+        config_home: &config_home,
+        data_home: &data_home,
+        cache_home: &cache_home,
+    });
+    match vk_platform::sandbox::restrict(&rules) {
+        Ok(status) => tracing::info!(%status, "sandbox"),
+        Err(error) => tracing::warn!(%error, "the Landlock sandbox could not be applied"),
+    }
 }
 
 pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {

@@ -38,6 +38,18 @@ pub fn config_home() -> Option<PathBuf> {
     base_dir("XDG_CONFIG_HOME", ".config")
 }
 
+/// `$XDG_STATE_HOME`, or `~/.local/state`.
+#[must_use]
+pub fn state_home() -> Option<PathBuf> {
+    base_dir("XDG_STATE_HOME", ".local/state")
+}
+
+/// `$XDG_CACHE_HOME`, or `~/.cache`.
+#[must_use]
+pub fn cache_home() -> Option<PathBuf> {
+    base_dir("XDG_CACHE_HOME", ".cache")
+}
+
 /// A relative or empty value is ignored, as the spec requires.
 fn base_dir(variable: &str, fallback: &str) -> Option<PathBuf> {
     std::env::var_os(variable)

@@ -22,8 +22,8 @@ Manual checks that need a real session, one section per risk; run in the four VM
 - [ ] `cat /proc/<daemon pid>/status | grep -i dumpable`-equivalent: `ls -l /proc/<pid>/exe` as the same user fails (EACCES) for daemon, UI, CLI after the handshake.
 - [ ] `gdb -p <daemon pid>` as the user fails; `sudo gdb -p` works (root is out of scope).
 - [ ] "Keys in memory" shows `memfd_secret`; `grep SecretMem /proc/meminfo` is non-zero while the daemon runs and the vault is unlocked (the vault's user and organization keys and the SSH agent's keys rest encrypted under a memfd_secret key). `mseal` is not used: the store frees its page on drop.
-- [ ] Landlock active (C6 Full, ABI 11): the daemon cannot read `~/Documents` (check with the `security verify` self-test); fonts, GPU, portals, tray and D-Bus still work on all four desktops; MDWE on: no crash in Slint/Mesa (else record and flip decision 11).
-- [ ] UI runs under the same ruleset; file dialogs (portal) still open and save.
+- [ ] Landlock is opt-in until this section passes: start with `VAULTKEEPER_LANDLOCK=1 vaultkeeper` and check the log line `sandbox status=Landlock fully enforced` (or partly, with the kernel's ABI). Then the daemon cannot read `~/Documents` or `~/.ssh`; fonts, GPU, portals, tray and D-Bus still work on all four desktops; `brew upgrade` followed by a restart still starts the new binary. MDWE on: no crash in Slint/Mesa (else record and flip decision 11). When all four VMs pass, Landlock becomes the default.
+- [ ] UI runs under the same ruleset (it inherits it). File dialogs: exporting an attachment to `~/Downloads` and importing from `~/Documents` are expected to fail under the current rules (the portal returns real paths outside the allowed directories); record the behaviour, so the rule set or the dialog handling can be chosen.
 
 ### 3. App id and portals (3a) — `vm-fedora-gnome`, `vm-kubuntu`, `vm-omarchy`
 - [ ] GNOME/KDE GlobalShortcuts dialog and the RemoteDesktop prompt show "Vaultkeeper" with the icon, not the binary name.

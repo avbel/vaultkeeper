@@ -25,6 +25,8 @@ zeroize.workspace = true
 libc = "0.2.191"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Self-sandbox of the daemon and UI (sandbox.rs).
+landlock = "0.4.8"
 vk-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
