@@ -5,6 +5,9 @@
 #
 #   scripts/e2e.sh                 # all scenarios
 #   scripts/e2e.sh websocket       # extra args go to both `cargo test` runs (name filter, ...)
+#   scripts/e2e.sh --linux         # the vk-vault and browser daemon scenarios on Linux, in Docker
+#                                  # (scripts/check-linux.sh) inside Vaultwarden's network
+#                                  # E2E_SKIP_VAULT=1 runs only the browser daemon ones
 #
 # VW_PORT / MAILPIT_PORT pick the host ports (defaults 8098 / 8025, or a free port when taken).
 # KEEP_E2E_STACK=1 leaves the containers running for debugging.
@@ -31,6 +34,15 @@ s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
 pick_port() {
     if port_is_free "$1"; then echo "$1"; else free_port; fi
 }
+
+LINUX=0
+if [[ "${1:-}" == "--linux" ]]; then
+    LINUX=1
+    shift
+    # The tests reach Vaultwarden as localhost:80 from inside its network namespace, and the
+    # attachment URLs it builds must name that same origin.
+    export VW_DOMAIN_PORT=80
+fi
 
 export VW_PORT="${VW_PORT:-$(pick_port 8098)}"
 export MAILPIT_PORT="${MAILPIT_PORT:-$(pick_port 8025)}"
@@ -72,6 +84,18 @@ wait_for vaultwarden "http://localhost:$VW_PORT/alive"
 wait_for mailpit "http://localhost:$MAILPIT_PORT/api/v1/info"
 
 cd "$ROOT"
+if [[ "$LINUX" == "1" ]]; then
+    # e2e_daemon is left out: it starts the real daemon, whose security gate refuses a session
+    # without Wayland, and it needs ssh-add.
+    export VW_URL="http://localhost"
+    export MAILPIT_URL="http://mailpit:8025"
+    export VW_ADMIN_TOKEN
+    export VK_LINUX_DOCKER_ARGS="--network container:$(compose ps -q vaultwarden) \
+        -e VW_URL -e MAILPIT_URL -e VW_ADMIN_TOKEN"
+    [[ "${E2E_SKIP_VAULT:-0}" == "1" ]] || scripts/check-linux.sh --test -p vk-vault --features vw-it "$@"
+    scripts/check-linux.sh --test -p vaultkeeper --features vw-it --test browser_daemon "$@"
+    exit 0
+fi
 export VW_URL="http://localhost:$VW_PORT"
 export MAILPIT_URL="http://localhost:$MAILPIT_PORT"
 export VW_ADMIN_TOKEN

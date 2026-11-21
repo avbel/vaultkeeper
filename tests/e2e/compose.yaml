@@ -11,7 +11,8 @@ services:
   vaultwarden:
     image: vaultwarden/server:1.37.5
     environment:
-      DOMAIN: "http://localhost:${VW_PORT:-8098}"
+      # scripts/e2e.sh --linux runs the tests inside this container's network, where it is port 80.
+      DOMAIN: "http://localhost:${VW_DOMAIN_PORT:-${VW_PORT:-8098}}"
       SIGNUPS_ALLOWED: "true"
       ADMIN_TOKEN: "${VW_ADMIN_TOKEN:-e2e-admin-token}"
       I_REALLY_WANT_VOLATILE_STORAGE: "true"

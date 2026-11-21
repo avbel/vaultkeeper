@@ -4,6 +4,7 @@
 # equivalent of the CI `linux` job. The arm64 image on Apple silicon is fine
 # for a check: no code here is x86-specific.
 #   scripts/check-linux.sh [--test] [cargo args]
+# VK_LINUX_DOCKER_ARGS adds `docker run` arguments, such as the network scripts/e2e.sh joins.
 set -e
 
 cd "$(dirname "$0")/.."
@@ -45,6 +46,7 @@ exec docker run --rm --security-opt seccomp=unconfined \
     -v vaultkeeper-linux-target:/target -e CARGO_TARGET_DIR=/target \
     -e CARGO_PROFILE_DEV_DEBUG=0 -e CARGO_PROFILE_TEST_DEBUG=0 -e CARGO_INCREMENTAL=0 \
     -e CARGO_BUILD_JOBS="${VK_LINUX_JOBS:-2}" \
+    ${VK_LINUX_DOCKER_ARGS:-} \
     "$IMAGE" sh -c '
         mode=$1; shift
         if [ "$mode" = test ]; then

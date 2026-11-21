@@ -57,9 +57,8 @@ pub fn socket_dir(data_dir: &Path) -> PathBuf {
     vk_platform::paths::socket_dir(data_dir)
 }
 
-/// Daemon to UI process channel.
-// Windows: the UI channel has no name; the daemon hands it to the UI process it spawns
-// (plan step 2e), so this stays the Unix path until then.
+/// Daemon to UI process channel on macOS, and on Linux for a daemon that hands out no channel
+/// (tests). Windows and the real Linux daemon give each UI process its own channel instead.
 #[must_use]
 pub fn ui_endpoint(data_dir: &Path) -> Endpoint {
     Endpoint::path(socket_dir(data_dir).join(UI_SOCKET))

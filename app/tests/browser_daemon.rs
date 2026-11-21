@@ -30,7 +30,11 @@ use harness::{
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use vaultkeeper::{
-    daemon::browser::{ids, manifests::MANIFEST_FILE, pairing::PairingStore},
+    daemon::browser::{
+        ids,
+        manifests::{MANIFEST_FILE, ManifestBrowser},
+        pairing::PairingStore,
+    },
     settings::Settings,
 };
 use vk_ipc::{BrowserPrompt, BrowserReply, UiCommand, UiNotice};
@@ -665,12 +669,12 @@ fn manifests_are_written_for_installed_browsers_only_and_restored_when_changed()
     run(async {
         let mut rig = Rig::start_with(&Settings::default(), &items()).await;
         let support = rig.dir.app_support();
-        std::fs::create_dir_all(support.join("Google/Chrome")).unwrap();
+        std::fs::create_dir_all(ManifestBrowser::Chrome.profile_dir(&support)).unwrap();
         write_settings(&rig.dir, &integration_on());
         rig.ui.remote.notify(UiNotice::SettingsChanged).unwrap();
 
-        let chrome = support
-            .join("Google/Chrome/NativeMessagingHosts")
+        let chrome = ManifestBrowser::Chrome
+            .dir_under(&support)
             .join(MANIFEST_FILE);
         eventually(|| chrome.exists()).await;
         let written = std::fs::read(&chrome).unwrap();
@@ -698,15 +702,24 @@ fn manifests_are_written_for_installed_browsers_only_and_restored_when_changed()
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
+        // `Google` on macOS, `.config` (shared by every Chromium browser) on Linux.
+        let chrome_top = ManifestBrowser::Chrome
+            .profile_dir(&support)
+            .strip_prefix(&support)
+            .unwrap()
+            .components()
+            .next()
+            .unwrap()
+            .as_os_str()
+            .to_owned();
         assert_eq!(
             created,
-            ["Google"],
+            [chrome_top],
             "no directory for a browser that is not installed"
         );
 
         std::fs::write(&chrome, br#"{"name":"evil"}"#).unwrap();
-        let firefox_dir = support.join("Mozilla");
-        std::fs::create_dir_all(&firefox_dir).unwrap();
+        std::fs::create_dir_all(ManifestBrowser::Firefox.profile_dir(&support)).unwrap();
         let socket = rig.dir.socket();
         eventually(|| socket.exists()).await;
         let _connection = rig.connect(&Extension::chrome(22)).await;
@@ -723,7 +736,9 @@ fn manifests_are_written_for_installed_browsers_only_and_restored_when_changed()
                 error: true,
             }
         );
-        let firefox = firefox_dir.join("NativeMessagingHosts").join(MANIFEST_FILE);
+        let firefox = ManifestBrowser::Firefox
+            .dir_under(&support)
+            .join(MANIFEST_FILE);
         eventually(|| firefox.exists()).await;
         let manifest: Value = serde_json::from_slice(&std::fs::read(&firefox).unwrap()).unwrap();
         assert_eq!(
