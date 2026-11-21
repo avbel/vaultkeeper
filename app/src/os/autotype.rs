@@ -180,6 +180,11 @@ impl AutoType for SystemAutoType {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn before_focus_leaves(&self, focused: &slint::Window, strokes: &[Stroke]) -> Option<String> {
+        linux::read_keyboard(focused, strokes)
+    }
+
     fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone) {
         #[cfg(target_os = "macos")]
         macos::start(target, strokes, done);

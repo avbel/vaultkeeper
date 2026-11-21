@@ -108,12 +108,16 @@ futures-util = { version = "0.3", default-features = false }
 # Same major as ashpd, for session-bus calls outside the portals (notifications).
 zbus = { version = "6.0.0", default-features = false, features = ["tokio"] }
 # Auto-type on wlroots compositors: zwp_virtual_keyboard_v1. Already in the tree through
-# Slint's Wayland backend.
-wayland-client = "0.31.15"
+# Slint's Wayland backend. `system` (libwayland, which winit already uses) lets the portal route
+# read the keyboard layout on the window's own connection.
+wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 # Character to legacy keysym (xkb_utf32_to_keysym) for the portal route; pure Rust, already in the
 # tree through xkbcommon.
 xkeysym = "0.2.1"
+# The session's keymap, to check that the active layout can type a text before the portal route
+# types it. Loads libxkbcommon at run time; already in the tree, and loaded, through winit.
+xkbcommon-dl = "0.4.2"
 
 [target.'cfg(windows)'.dependencies]
 # Native open/save panels for attachments; IFileDialog, no portal or Wayland backends.

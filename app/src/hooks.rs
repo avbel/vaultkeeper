@@ -194,6 +194,13 @@ pub trait AutoType: Send + Sync {
     /// Brings `target` back to the front, waits for it and types `strokes` without blocking the
     /// UI thread. Stops when `target` does not come forward or another app takes the front.
     fn start(&self, target: TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone);
+    /// `focused`, a window of ours that has the keyboard focus, is about to close so that
+    /// [`AutoType::start`] can type `strokes`. Wayland tells a client the active keyboard layout
+    /// only while it has the focus, so this is the last moment Linux can read it. Returns why
+    /// typing cannot work when that is already certain; the window then stays open and says so.
+    fn before_focus_leaves(&self, _focused: &slint::Window, _strokes: &[Stroke]) -> Option<String> {
+        None
+    }
     /// Stops typing that is still running (the vault locked); `done` reports it as cancelled.
     fn cancel(&self) {}
     /// The Quick Panel was dismissed without typing: bring `target` back to the front, like

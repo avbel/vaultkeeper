@@ -7666,6 +7666,7 @@ dependencies = [
  "wayland-protocols-misc",
  "windows-sys 0.61.2",
  "wiremock",
+ "xkbcommon-dl",
  "xkeysym",
  "zbus 6.3.0",
  "zeroize",

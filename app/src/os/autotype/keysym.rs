@@ -38,11 +38,9 @@ xkb_compatibility "vk" {
 xkb_symbols "vk" {
 "#;
 
-/// The keysym the portal route sends for a keysym from [`keysyms_of`]. Mutter and KWin look it
-/// up in the layout that is active, and layouts carry the legacy keysym of a character
-/// (`EuroSign`, `Cyrillic_ZHE`), so characters outside Latin-1 take it when it exists
-/// (`xkb_utf32_to_keysym`). A character the active layout lacks is dropped by the desktop and
-/// cannot be detected from here.
+/// The legacy keysym of the character of a keysym from [`keysyms_of`], when it has one
+/// (`xkb_utf32_to_keysym`): layouts mostly carry that one (`EuroSign`, `Cyrillic_ZHE`), and Mutter
+/// and KWin look a keysym up in the active layout as it is.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn portal_keysym(keysym: u32) -> u32 {
@@ -67,6 +65,16 @@ pub fn keysym_of(ch: char) -> Option<u32> {
         _ if ch.is_control() => None,
         ' '..='\u{7e}' | '\u{a0}'..='\u{ff}' => Some(code),
         _ => Some(UNICODE_BASE + code),
+    }
+}
+
+/// The character a keysym from [`keysym_of`] types; `None` for Tab and Return.
+#[must_use]
+pub fn char_of(keysym: u32) -> Option<char> {
+    match keysym {
+        TAB | RETURN => None,
+        _ if keysym >= UNICODE_BASE => char::from_u32(keysym - UNICODE_BASE),
+        _ => char::from_u32(keysym),
     }
 }
 
@@ -201,6 +209,15 @@ mod tests {
         assert_eq!(keysym_of('€'), Some(0x0100_20ac));
         assert_eq!(keysym_of('Ж'), Some(0x0100_0416));
         assert_eq!(keysym_of('😀'), Some(0x0101_f600));
+    }
+
+    #[test]
+    fn a_keysym_names_its_character_again() {
+        for ch in ['a', '~', ' ', 'é', '\u{a0}', '€', 'Ж', '😀'] {
+            assert_eq!(keysym_of(ch).and_then(char_of), Some(ch));
+        }
+        assert_eq!(char_of(TAB), None);
+        assert_eq!(char_of(RETURN), None);
     }
 
     #[cfg(target_os = "linux")]

@@ -101,6 +101,15 @@ impl<S: VaultService> App<S> {
                 KeysWait::Type => {}
             }
         }
+        let refusal = self.quick.borrow().as_ref().and_then(|quick| {
+            self.hooks
+                .autotype
+                .before_focus_leaves(quick.window.window(), &strokes)
+        });
+        if let Some(refusal) = refusal {
+            self.panel_toast(&refusal);
+            return;
+        }
         self.close_quick_panel();
         self.autotyping.set(true);
         self.hooks.autotype.start(

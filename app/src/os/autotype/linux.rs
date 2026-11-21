@@ -1,7 +1,9 @@
 //! Auto-type on Linux (chain C-autotype). Wayland offers no way to type into another app or to
 //! hand the focus back to it, so the chain is:
 //!
-//! 1. the RemoteDesktop portal's `NotifyKeyboardKeysym` on a persisted grant (GNOME, KDE),
+//! 1. the RemoteDesktop portal's `NotifyKeyboardKeysym` on a persisted grant (GNOME, KDE), after
+//!    a check that the active keyboard layout can type the text (`typeable`): the desktop drops
+//!    characters the layout lacks, and the portal cannot choose the layout,
 //! 2. `zwp_virtual_keyboard_v1` with a keymap generated for the text (wlroots: Sway, Hyprland),
 //! 3. unavailable, with the reason shown in the window.
 //!
@@ -11,8 +13,11 @@
 //! reports back through a timer on the UI thread, which is where the completion callback must run.
 //! Typed text is never logged.
 
+mod focused_keyboard;
 mod remote_desktop;
+mod typeable;
 mod virtual_keyboard;
+mod xkb;
 
 use std::{
     cell::RefCell,
@@ -52,6 +57,9 @@ pub const NEEDS_WAYLAND: &str = "Auto-type needs a Wayland session; it cannot ty
 pub(super) enum Failure {
     /// This link cannot work here; the next one is tried.
     Unavailable(String),
+    /// The portal would type the text wrong with this keyboard layout. Nothing was typed or asked
+    /// for yet, so a link that brings its own keymap may type instead.
+    Refused(String),
     Stopped(String),
     /// The user closed the permission dialog.
     Dismissed,
@@ -61,7 +69,9 @@ pub(super) enum Failure {
 impl Failure {
     fn reason(&self) -> String {
         match self {
-            Self::Unavailable(reason) | Self::Stopped(reason) => reason.clone(),
+            Self::Unavailable(reason) | Self::Refused(reason) | Self::Stopped(reason) => {
+                reason.clone()
+            }
             Self::Dismissed => "the keyboard permission dialog was dismissed".to_owned(),
             Self::Cancelled => "cancelled".to_owned(),
         }
@@ -72,7 +82,9 @@ impl Failure {
             Self::Unavailable(reason) => {
                 HookError::Failed(format!("Auto-type is unavailable: {reason}"))
             }
-            Self::Stopped(reason) => HookError::Failed(format!("Auto-type stopped: {reason}")),
+            Self::Refused(reason) | Self::Stopped(reason) => {
+                HookError::Failed(format!("Auto-type stopped: {reason}"))
+            }
             Self::Dismissed => HookError::Failed(
                 "Auto-type stopped: the keyboard permission dialog was dismissed".to_owned(),
             ),
@@ -90,6 +102,47 @@ struct Session {
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    /// The keyboard as the Quick Panel last saw it, for the typing job that follows.
+    static KEYBOARD: RefCell<Option<Result<typeable::Seen, String>>> = const { RefCell::new(None) };
+}
+
+const KEYBOARD_NOT_READ: &str = "it was not read before the Quick Panel closed";
+
+/// Reads the keyboard for the typing job that follows, and answers at once when the job is
+/// certain to be refused, so the Quick Panel can say so while it is still open.
+pub(super) fn read_keyboard(focused: &slint::Window, strokes: &[Stroke]) -> Option<String> {
+    let reading = focused_keyboard::read(focused);
+    if let Err(reason) = &reading.keyboard {
+        tracing::warn!(reason, "cannot read the keyboard layout");
+    }
+    let refusal = keysym::keysyms_of(strokes).ok().and_then(|keysyms| {
+        early_refusal(
+            reading.portal_only,
+            reading.keyboard.as_ref().map_err(String::as_str),
+            &keysyms,
+        )
+    });
+    // A refused job never starts, so nothing is kept for one.
+    KEYBOARD.set(refusal.is_none().then_some(reading.keyboard));
+    refusal
+}
+
+/// Only the portal route depends on the layout; where the compositor also offers a virtual
+/// keyboard, which of the two types is known only once the portal was tried.
+fn early_refusal(
+    portal_only: bool,
+    keyboard: Result<&typeable::Seen, &str>,
+    keysyms: &[u32],
+) -> Option<String> {
+    if !portal_only {
+        return None;
+    }
+    match typeable::examine(keyboard, keysyms) {
+        typeable::Verdict::Refuse(refusal) => {
+            Some(refusal_failure(&refusal).into_hook().to_string())
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn previous_window() -> TypingTarget {
@@ -125,13 +178,16 @@ pub(super) fn start(target: &TypingTarget, strokes: Vec<Stroke>, done: AutoTypeD
         )));
         return;
     };
+    let keyboard = KEYBOARD
+        .take()
+        .unwrap_or_else(|| Err(KEYBOARD_NOT_READ.to_owned()));
     let cancel = Arc::new(AtomicBool::new(false));
     let (sender, results) = mpsc::channel();
     let worker_cancel = Arc::clone(&cancel);
     let spawned = std::thread::Builder::new()
         .name("vaultkeeper-autotype".to_owned())
         .spawn(move || {
-            drop(sender.send(run(&keysyms, &worker_cancel)));
+            drop(sender.send(run(&keysyms, &keyboard, &worker_cancel)));
         });
     if let Err(error) = spawned {
         tracing::warn!(%error, target = target.name, "cannot start the typing thread");
@@ -187,7 +243,11 @@ fn finish(session: Session, outcome: Result<(), Failure>) {
     done(outcome);
 }
 
-fn run(keysyms: &Zeroizing<Vec<u32>>, cancel: &AtomicBool) -> Result<(), Failure> {
+fn run(
+    keysyms: &Zeroizing<Vec<u32>>,
+    keyboard: &Result<typeable::Seen, String>,
+    cancel: &AtomicBool,
+) -> Result<(), Failure> {
     std::thread::sleep(FOCUS_SETTLE);
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);
@@ -199,6 +259,7 @@ fn run(keysyms: &Zeroizing<Vec<u32>>, cancel: &AtomicBool) -> Result<(), Failure
             remote_desktop::type_keysyms(
                 &TokenStore::new(data_dir.join(layout::AUTOTYPE_PORTAL_TOKEN_FILE)),
                 keysyms,
+                keyboard.as_ref().map_err(String::as_str),
                 cancel,
             )
         },
@@ -206,8 +267,20 @@ fn run(keysyms: &Zeroizing<Vec<u32>>, cancel: &AtomicBool) -> Result<(), Failure
     )
 }
 
-/// Only a link that cannot work here hands over to the next; a dismissed dialog, a failure
-/// half-way or a cancel must not be answered by typing through another route.
+/// A layout the portal cannot type with hands over to a link with a keymap of its own. A locked
+/// modifier does not: the focused app's libxkbcommon still capitalizes one-level keys while Lock
+/// is set, and compositors may merge the physical keyboard's modifier state into a virtual one
+/// (Hyprland's `virtualkeyboard:share_states`, a seat-wide XKB state), so no route is safe.
+fn refusal_failure(refusal: &typeable::Refusal) -> Failure {
+    match refusal {
+        typeable::Refusal::LockedModifier => Failure::Stopped(refusal.reason()),
+        _ => Failure::Refused(refusal.reason()),
+    }
+}
+
+/// Only a link that cannot work here, or that refused before doing anything, hands over to the
+/// next; a dismissed dialog, a failure half-way or a cancel must not be answered by typing through
+/// another route.
 fn chain(
     portal: impl FnOnce() -> Result<(), Failure>,
     wlroots: impl FnOnce() -> Result<(), Failure>,
@@ -217,6 +290,11 @@ fn chain(
             Err(Failure::Unavailable(wlroots)) => {
                 Err(Failure::Unavailable(both_unavailable(&portal, &wlroots)))
             }
+            other => other,
+        },
+        Err(Failure::Refused(refusal)) => match wlroots() {
+            // The user can act on the layout, not on a compositor without a virtual keyboard.
+            Err(Failure::Unavailable(_)) => Err(Failure::Refused(refusal)),
             other => other,
         },
         other => other,
@@ -262,6 +340,49 @@ mod tests {
     }
 
     #[test]
+    fn a_text_the_portal_refuses_is_typed_by_the_virtual_keyboard_when_there_is_one() {
+        let refused = || Err(Failure::Refused("the layout lacks characters".to_owned()));
+        assert!(chain(refused, || Ok(())).is_ok());
+        let alone = chain(refused, || unavailable("no keyboard"));
+        assert_eq!(
+            alone.map_err(|failure| failure.into_hook().to_string()),
+            Err("Auto-type stopped: the layout lacks characters".to_owned())
+        );
+        let broke = chain(refused, || Err(Failure::Stopped("half-way".to_owned())));
+        assert!(matches!(broke, Err(Failure::Stopped(text)) if text == "half-way"));
+    }
+
+    #[test]
+    fn a_locked_modifier_stops_every_route_and_other_refusals_hand_over() {
+        use typeable::Refusal;
+
+        let called = std::cell::Cell::new(false);
+        let next = || {
+            called.set(true);
+            Ok(())
+        };
+        let locked = chain(|| Err(refusal_failure(&Refusal::LockedModifier)), next);
+        assert_eq!(
+            locked.map_err(|failure| failure.into_hook().to_string()),
+            Err(
+                "Auto-type stopped: a locked modifier such as Caps Lock would change the text; turn it off"
+                    .to_owned()
+            )
+        );
+        assert!(!called.get());
+        for refusal in [
+            Refusal::Missing,
+            Refusal::LayoutUnknown,
+            Refusal::LayoutPerWindow,
+            Refusal::Unchecked("no keyboard".to_owned()),
+        ] {
+            called.set(false);
+            assert!(chain(|| Err(refusal_failure(&refusal)), next).is_ok());
+            assert!(called.get(), "{refusal:?}");
+        }
+    }
+
+    #[test]
     fn a_portal_that_got_as_far_as_failing_is_final() {
         let called = std::cell::Cell::new(false);
         let next = || {
@@ -278,6 +399,30 @@ mod tests {
         assert!(!called.get());
         assert!(chain(|| Ok(()), next).is_ok());
         assert!(!called.get());
+    }
+
+    #[test]
+    fn a_text_the_layout_lacks_is_refused_while_the_panel_is_open_on_portal_desktops() {
+        let seen = typeable::Seen {
+            keymap: xkb::tests::US.to_vec(),
+            layout: Some(0),
+            locked_modifiers: 0,
+        };
+        let cyrillic = [keysym::keysym_of('Ж').expect("typeable")];
+        assert_eq!(
+            early_refusal(true, Ok(&seen), &cyrillic).as_deref(),
+            Some(
+                "Auto-type stopped: the active keyboard layout lacks some characters; switch it or copy"
+            )
+        );
+        // A virtual keyboard brings its own keymap, so the layout may not matter at all.
+        assert_eq!(early_refusal(false, Ok(&seen), &cyrillic), None);
+        assert_eq!(early_refusal(false, Err("no keyboard"), &cyrillic), None);
+        assert_eq!(early_refusal(true, Ok(&seen), &[0x61, keysym::TAB]), None);
+        assert!(
+            early_refusal(true, Err("no keyboard"), &cyrillic)
+                .is_some_and(|text| text.ends_with("copy instead (no keyboard)"))
+        );
     }
 
     #[test]
