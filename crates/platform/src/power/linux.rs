@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{debug, warn};
+use tracing::warn;
 use zbus::{
     Connection, MatchRule, Message, MessageStream, OwnedFd, OwnedObjectPath, OwnedVariant, Variant,
     export::futures_core::Stream, message::Type,
@@ -30,6 +30,7 @@ use super::{
     signal::{self, BusSignal, Tracker},
 };
 
+const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
 const SLEEP_GRACE: Duration = Duration::from_millis(300);
 const LOGIND_NAME: &str = "org.freedesktop.login1";
 const LOGIND_PATH: &str = "/org/freedesktop/login1";
@@ -44,6 +45,10 @@ struct Stop {
 impl Stop {
     fn is_requested(&self, waker: &Waker) -> bool {
         *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker.clone());
+        self.requested.load(Ordering::Acquire)
+    }
+
+    fn is_requested_now(&self) -> bool {
         self.requested.load(Ordering::Acquire)
     }
 
@@ -110,7 +115,11 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
     let _ = ready.send(Ok(()));
     let mut tracker = Tracker::default();
     let mut inhibitor = take_inhibitor(system.as_ref()).await;
+    let mut inhibit_wanted = true;
     while let Some(message) = next_message(&mut streams, stop).await {
+        if inhibit_wanted && inhibitor.is_none() {
+            inhibitor = take_inhibitor(system.as_ref()).await;
+        }
         let message = match message {
             Ok(message) => message,
             Err(error) => {
@@ -131,12 +140,17 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
                 // period to lock before logind may suspend.
                 thread::sleep(SLEEP_GRACE);
                 inhibitor = None;
+                inhibit_wanted = false;
             }
-            Some(BusSignal::PrepareForSleep(false)) if inhibitor.is_none() => {
+            Some(BusSignal::PrepareForSleep(false)) => {
+                inhibit_wanted = true;
                 inhibitor = take_inhibitor(system.as_ref()).await;
             }
             _ => {}
         }
+    }
+    if !stop.is_requested_now() {
+        warn!("power watcher: every bus connection ended; sleep and lock events stopped");
     }
 }
 
@@ -160,12 +174,21 @@ async fn take_inhibitor(system: Option<&Connection>) -> Option<OwnedFd> {
         .await
         .inspect_err(|error| warn!(%error, "no sleep inhibitor; locking may race suspend"))
         .ok()?;
-    reply.body().deserialize::<OwnedFd>().ok()
+    reply
+        .body()
+        .deserialize::<OwnedFd>()
+        .inspect_err(|error| warn!(%error, "sleep inhibitor reply had no fd"))
+        .ok()
+}
+
+/// Bounds every method call so a stalled logind cannot hang startup or the shutdown join.
+async fn connect(builder: zbus::connection::Builder<'_>) -> zbus::Result<Connection> {
+    builder.method_timeout(METHOD_TIMEOUT).build().await
 }
 
 async fn open_streams() -> (Vec<MessageStream>, Option<Connection>) {
     let mut streams = Vec::new();
-    let system = match Connection::system().await {
+    let system = match connect(zbus::connection::Builder::system()).await {
         Ok(connection) => {
             streams.extend(logind_streams(&connection).await);
             Some(connection)
@@ -175,7 +198,7 @@ async fn open_streams() -> (Vec<MessageStream>, Option<Connection>) {
             None
         }
     };
-    match Connection::session().await {
+    match connect(zbus::connection::Builder::session()).await {
         Ok(connection) => streams.extend(screensaver_streams(&connection).await),
         Err(error) => warn!(%error, "no session bus; screensaver lock events are off"),
     }
@@ -271,7 +294,7 @@ async fn next_message(
             match Pin::new(&mut streams[index]).poll_next(cx) {
                 Poll::Ready(Some(message)) => return Poll::Ready(Some(message)),
                 Poll::Ready(None) => {
-                    debug!("power watcher: a bus stream ended");
+                    warn!("power watcher: a bus connection ended; its events stopped");
                     drop(streams.swap_remove(index));
                 }
                 Poll::Pending => index += 1,

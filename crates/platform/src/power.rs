@@ -107,6 +107,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(any(target_os = "linux", test))]
 mod signal;
 
 #[cfg(target_os = "macos")]

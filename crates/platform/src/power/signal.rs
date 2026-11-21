@@ -9,7 +9,6 @@ pub(super) const KDE_SCREENSAVER: &str = "org.freedesktop.ScreenSaver";
 pub(super) const GNOME_SCREENSAVER: &str = "org.gnome.ScreenSaver";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) enum BusSignal {
     PrepareForSleep(bool),
     PrepareForShutdown(bool),
@@ -20,7 +19,6 @@ pub(super) enum BusSignal {
 }
 
 /// `flag` is the signal's single boolean argument, when it carries one.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) fn classify(interface: &str, member: &str, flag: Option<bool>) -> Option<BusSignal> {
     match (interface, member) {
         (LOGIND_MANAGER, "PrepareForSleep") => flag.map(BusSignal::PrepareForSleep),
@@ -37,12 +35,10 @@ pub(super) fn classify(interface: &str, member: &str, flag: Option<bool>) -> Opt
 /// Collapses the several signals one lock produces (logind `Lock`, `LockedHint`, the screensaver's
 /// `ActiveChanged`) into one event per transition.
 #[derive(Debug, Default)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) struct Tracker {
     locked: bool,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl Tracker {
     pub(super) fn apply(&mut self, signal: BusSignal) -> Option<PowerEvent> {
         match signal {
@@ -50,7 +46,12 @@ impl Tracker {
             BusSignal::PrepareForSleep(false) => Some(PowerEvent::DidWake),
             BusSignal::PrepareForShutdown(true) => Some(PowerEvent::SessionEnding),
             BusSignal::PrepareForShutdown(false) => None,
-            BusSignal::SessionLock => self.set_locked(true),
+            BusSignal::SessionLock => {
+                // A request, not a state: swaylock and hyprlock never report an unlock, so a
+                // later lock must not be swallowed as "already locked".
+                self.locked = true;
+                Some(PowerEvent::ScreenLocked)
+            }
             BusSignal::SessionUnlock => self.set_locked(false),
             BusSignal::LockedHint(locked) | BusSignal::ScreenSaverActive(locked) => {
                 self.set_locked(locked)
@@ -145,6 +146,19 @@ mod tests {
         assert_eq!(tracker.apply(BusSignal::SessionUnlock), None);
         assert_eq!(
             tracker.apply(BusSignal::ScreenSaverActive(true)),
+            Some(PowerEvent::ScreenLocked)
+        );
+    }
+
+    #[test]
+    fn repeated_lock_requests_each_report() {
+        let mut tracker = Tracker::default();
+        assert_eq!(
+            tracker.apply(BusSignal::SessionLock),
+            Some(PowerEvent::ScreenLocked)
+        );
+        assert_eq!(
+            tracker.apply(BusSignal::SessionLock),
             Some(PowerEvent::ScreenLocked)
         );
     }
