@@ -207,7 +207,7 @@ kind: change
 
 ## 2f systemd-creds wrapper for the 2FA-remember token
 files: crates/platform/src/creds.rs, app/src/daemon/secrets.rs
-do: `BlobWrapper` implementation that spawns `systemd-creds --user encrypt --name=vaultkeeper.2fa --with-key=auto -` / `decrypt` (v ≥ 256 [v]); chain C1 link 5: `auto` reports `tpm2+host` when a TPM exists, else `host`; missing `systemd-creds` → no wrapper (warn, token stored sealed only — key-less as today). Portable trait + fake-command tests on macOS.
+do: `BlobWrapper` implementation that spawns `systemd-creds --user encrypt --name=vaultkeeper.2fa --with-key=auto -` / `decrypt` (v ≥ 256 [v]); chain C1 link 5: the reported key (`tpm2+host` → Available, `host` → Degraded) is read from the key-type id in the header of a probe blob, never from `has-tpm2` — without root the encrypt runs in the system service, which ignores `--with-key` and falls back to the host key when TPM sealing fails; missing `systemd-creds` → no wrapper (warn, token stored sealed only — key-less as today). Portable trait + fake-command tests on macOS.
 done-when: `cargo test -p vk-platform creds`; `scripts/check-linux.sh -p vk-platform --all-targets --test` (Docker without systemd: Unavailable with reason)
 needs: 0d, 1a
 difficulty: medium

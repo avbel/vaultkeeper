@@ -4,17 +4,32 @@ use super::*;
 
 const SECRET: &[u8] = b"remember me please";
 
-/// Stands in for systemd-creds: a letter-shift cipher that insists on the exact argv shape.
+/// Stands in for systemd-creds: a letter-shift cipher behind a 24-character header, which
+/// insists on the exact argv shape.
 const FAKE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "systemd 258 (258.1-1)"; exit 0; fi
 [ "$1" = "--user" ] || exit 64
 [ "$3" = "--name=vaultkeeper.2fa" ] || exit 65
 case "$2" in
-  encrypt) [ "$4 $5 $6" = "--with-key=auto - -" ] || exit 66; tr 'a-z' 'b-za' ;;
-  decrypt) [ "$4 $5" = "- -" ] || exit 67; tr 'b-za' 'a-z' ;;
+  encrypt) [ "$4 $5 $6" = "--with-key=auto - -" ] || exit 66; printf '%s' 'HEADER'; tr 'a-z' 'b-za' ;;
+  decrypt) [ "$4 $5" = "- -" ] || exit 67; tail -c +25 | tr 'b-za' 'a-z' ;;
   *) exit 68 ;;
 esac
 "#;
+
+/// `CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK`: what `--user` yields with a TPM2.
+const TPM_AND_HOST_HEADER: &str = "Kh+HekJ1Qxqz+e0fXY9mASAA";
+/// `CRED_AES256_GCM_BY_HOST_SCOPED`: what `--user` yields without one, or when sealing fails.
+const HOST_HEADER: &str = "VbntHThZTUOoMZ0uuzMqxiAA";
+/// `CRED_AES256_GCM_BY_NULL`.
+const NULL_HEADER: &str = "BYRp2vb1QySABUnaD46i+yAA";
+/// `_CRED_AUTO_SCOPED`: an id systemd never writes to a blob.
+const UNWRITTEN_HEADER: &str = "I4iWhW90SIqceG9qsOc7aiAA";
+
+fn fake_with_header(dir: &tempfile::TempDir, name: &str, header: &str) -> Creds {
+    assert_eq!(header.len(), 24);
+    fake(dir, name, &FAKE.replace("HEADER", header))
+}
 
 fn fake(dir: &tempfile::TempDir, name: &str, script: &str) -> Creds {
     let path: PathBuf = dir.path().join(name);
@@ -25,7 +40,7 @@ fn fake(dir: &tempfile::TempDir, name: &str, script: &str) -> Creds {
 
 fn good() -> (tempfile::TempDir, Creds) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let creds = fake(&dir, "systemd-creds", FAKE);
+    let creds = fake_with_header(&dir, "systemd-creds", TPM_AND_HOST_HEADER);
     (dir, creds)
 }
 
@@ -160,28 +175,68 @@ fn a_wrapped_blob_the_tool_refuses_is_a_failure() {
 }
 
 #[test]
-fn detection_reports_the_key_binding() {
-    let (dir, creds) = good();
-    let with_tpm = Detection::probe_creds(creds.clone(), true);
+fn detection_reports_the_key_the_probe_blob_was_sealed_with() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let with_tpm = Detection::probe_creds(fake_with_header(&dir, "tpm", TPM_AND_HOST_HEADER));
     assert_eq!(with_tpm.backend(), &Backend::TpmAndHost);
     assert_eq!(with_tpm.backend().label(), "tpm2+host");
     assert_eq!(with_tpm.backend().probe(), Probe::Available);
-    let host = Detection::probe_creds(creds, false);
+
+    let host = Detection::probe_creds(fake_with_header(&dir, "host", HOST_HEADER));
     assert_eq!(host.backend(), &Backend::Host);
-    assert!(matches!(host.backend().probe(), Probe::Degraded(_)));
+    assert_eq!(host.backend().label(), "host");
+    assert!(matches!(host.backend().probe(), Probe::Degraded(why) if why.contains("host key")));
     assert!(host.into_creds().is_some());
-    drop(dir);
+}
+
+#[test]
+fn an_unreadable_key_type_keeps_the_wrapper_but_never_counts_as_full() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, header) in [
+        ("unwritten", UNWRITTEN_HEADER),
+        ("junk", "not base64 at all !!!!!!"),
+    ] {
+        let detection = Detection::probe_creds(fake_with_header(&dir, name, header));
+        assert!(matches!(detection.backend(), Backend::Unknown(_)), "{name}");
+        assert_eq!(detection.backend().label(), "unknown");
+        assert!(matches!(detection.backend().probe(), Probe::Degraded(why) if !why.is_empty()));
+        assert!(detection.into_creds().is_some());
+    }
+}
+
+#[test]
+fn the_null_key_is_unavailable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let detection = Detection::probe_creds(fake_with_header(&dir, "null", NULL_HEADER));
+    assert!(matches!(detection.backend(), Backend::Unavailable(why) if why.contains("null key")));
+    assert!(detection.into_creds().is_none());
+}
+
+#[test]
+fn the_status_follows_the_backend() {
+    assert_eq!(Backend::TpmAndHost.probe(), Probe::Available);
+    assert_eq!(Backend::Tpm.probe(), Probe::Available);
+    assert_eq!(Backend::Tpm.label(), "tpm2");
+    assert!(matches!(Backend::Host.probe(), Probe::Degraded(_)));
+    assert_eq!(
+        Backend::Unknown("why".to_owned()).probe(),
+        Probe::Degraded("why".to_owned())
+    );
+    assert_eq!(
+        Backend::Unavailable("gone".to_owned()).probe(),
+        Probe::Unavailable("gone".to_owned())
+    );
 }
 
 #[test]
 fn detection_without_a_program_or_with_a_broken_one_is_unavailable_with_a_reason() {
-    let none = Detection::probe(None, true);
+    let none = Detection::probe(None);
     assert!(matches!(none.backend(), Backend::Unavailable(why) if !why.is_empty()));
     assert!(none.into_creds().is_none());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let old = fake(&dir, "old", "#!/bin/sh\necho 'systemd 255 (255.1)'\n");
-    let reason = match Detection::probe_creds(old, true).backend() {
+    let reason = match Detection::probe_creds(old).backend() {
         Backend::Unavailable(why) => why.clone(),
         other => panic!("{other:?}"),
     };
@@ -192,7 +247,7 @@ fn detection_without_a_program_or_with_a_broken_one_is_unavailable_with_a_reason
         "broken",
         "#!/bin/sh\n[ \"$1\" = --version ] && echo 'systemd 258' && exit 0\nexit 1\n",
     );
-    let detection = Detection::probe_creds(broken, true);
+    let detection = Detection::probe_creds(broken);
     assert!(matches!(detection.backend(), Backend::Unavailable(why) if why.contains("encrypt")));
 }
 
@@ -207,9 +262,9 @@ fn the_chain_link_follows_the_backend() {
         links: vec![detection.link()],
         fix: None,
     };
-    let tpm = chain(&Detection::probe_creds(creds.clone(), true)).evaluate();
+    let tpm = chain(&Detection::probe_creds(creds)).evaluate();
     assert_eq!(tpm.stacked, ["systemd-creds"]);
-    let none = chain(&Detection::probe(None, false)).evaluate();
+    let none = chain(&Detection::probe(None)).evaluate();
     assert_eq!(none.stacked.len(), 0);
     assert_eq!(none.skipped.len(), 1);
     assert_ne!(none.skipped[0].why, "");
@@ -222,11 +277,26 @@ fn finds_the_program_on_the_given_path() {
     assert_eq!(found, Some(dir.path().join(PROGRAM)));
 }
 
-/// Where there is no systemd (Docker), the real probe must say so instead of failing.
+/// Where there is no systemd (Docker), the real probe must say so instead of failing; where
+/// there is one, the reported key is the one in a real blob's header.
 #[test]
-fn the_system_probe_never_panics_and_explains_unavailability() {
-    if let Backend::Unavailable(why) = Detection::system().backend() {
-        assert_ne!(why, "");
+fn the_system_probe_explains_unavailability_or_matches_a_real_blob() {
+    let detection = Detection::system();
+    let Some(creds) = detection.creds() else {
+        assert!(matches!(detection.backend(), Backend::Unavailable(why) if !why.is_empty()));
+        return;
+    };
+    let blob = creds.encrypt(SECRET).expect("encrypt");
+    let expected = match header::sealing(&blob).expect("a key type systemd documents") {
+        Sealing::TpmAndHost => Backend::TpmAndHost,
+        Sealing::Tpm => Backend::Tpm,
+        Sealing::Host => Backend::Host,
+        Sealing::Null => panic!("null key"),
+    };
+    assert_eq!(detection.backend(), &expected);
+    // Asserted only where asked for, since the key depends on the machine's TPM2.
+    if let Ok(wanted) = std::env::var("VK_TEST_CREDS_KEY") {
+        assert_eq!(detection.backend().label(), wanted);
     }
 }
 
@@ -242,15 +312,6 @@ fn relative_path_entries_are_ignored() {
 }
 
 #[test]
-fn has_tpm2_follows_the_exit_status() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let yes = fake(&dir, "yes", "#!/bin/sh\nexit 0\n");
-    let no = fake(&dir, "no", "#!/bin/sh\nexit 1\n");
-    assert!(yes.has_tpm2());
-    assert!(!no.has_tpm2());
-}
-
-#[test]
 fn output_larger_than_the_cap_never_passes_as_valid_even_if_the_tool_exits_first() {
     let dir = tempfile::tempdir().expect("tempdir");
     let creds = fake(
@@ -263,3 +324,5 @@ fn output_larger_than_the_cap_never_passes_as_valid_even_if_the_tool_exits_first
         assert!(matches!(error, CredsError::TooLarge(_)), "{error:?}");
     }
 }
+
+mod key_type;

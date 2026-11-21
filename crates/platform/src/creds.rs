@@ -1,7 +1,8 @@
 //! Machine binding for the 2FA-remember token through `systemd-creds --user` (systemd >= 256),
 //! chain C1 link 5 (linux-ideas.md §11). The credential key is the TPM2 and/or the root-only host
 //! key plus uid and machine id, so a copied disk alone cannot open the blob; any process of the
-//! same user still can, which is all the token needs.
+//! same user still can, which is all the token needs. Which of the two keys was used is read from
+//! the blob ([`header`]), never assumed from the presence of a TPM2.
 //!
 //! The tool is a subprocess: the secret goes over stdin and the result comes back over stdout,
 //! never through argv or the environment. Its output is untrusted, so it is size-bounded, the exit
@@ -30,6 +31,10 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::security::{Link, Probe};
+
+pub mod header;
+
+use header::Sealing;
 
 const PROGRAM: &str = "systemd-creds";
 const CREDENTIAL_NAME: &str = "vaultkeeper.2fa";
@@ -98,6 +103,8 @@ impl Creds {
         if plaintext.len() > MAX_INPUT {
             return Err(CredsError::TooLarge(MAX_INPUT));
         }
+        // Advisory at best: without root the request goes to the system service, which picks
+        // its own automatic key (see `header`).
         let output = self.run(&["--user", "encrypt"], &["--with-key=auto"], plaintext)?;
         Ok(output.to_vec())
     }
@@ -107,11 +114,6 @@ impl Creds {
             return Err(CredsError::TooLarge(MAX_OUTPUT));
         }
         self.run(&["--user", "decrypt"], &[], blob)
-    }
-
-    /// `systemd-creds has-tpm2` exits 0 only when the TPM2 is fully usable (firmware, driver, device).
-    fn has_tpm2(&self) -> bool {
-        self.run_args(&["has-tpm2"], &[]).is_ok()
     }
 
     fn version(&self) -> Result<u32, CredsError> {
@@ -304,11 +306,14 @@ impl BlobCodec {
     }
 }
 
-/// Which key the credential is bound to.
+/// Which key the credential is bound to, as the header of a probe blob states it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
     TpmAndHost,
+    Tpm,
     Host,
+    /// The round trip works but the blob's key type could not be read; carries why.
+    Unknown(String),
     Unavailable(String),
 }
 
@@ -316,8 +321,9 @@ impl Backend {
     #[must_use]
     pub fn probe(&self) -> Probe {
         match self {
-            Self::TpmAndHost => Probe::Available,
-            Self::Host => Probe::Degraded("host key only, no TPM2".to_owned()),
+            Self::TpmAndHost | Self::Tpm => Probe::Available,
+            Self::Host => Probe::Degraded("host key only, not sealed to a TPM2".to_owned()),
+            Self::Unknown(why) => Probe::Degraded(why.clone()),
             Self::Unavailable(why) => Probe::Unavailable(why.clone()),
         }
     }
@@ -332,7 +338,9 @@ impl Backend {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::TpmAndHost => "tpm2+host",
+            Self::Tpm => "tpm2",
             Self::Host => "host",
+            Self::Unknown(_) => "unknown",
             Self::Unavailable(_) => "none",
         }
     }
@@ -354,9 +362,7 @@ impl Detection {
         let Some(program) = program else {
             return Self::unavailable("systemd-creds is not installed".to_owned());
         };
-        let creds = Creds::with_program(program);
-        let tpm = creds.has_tpm2();
-        Self::probe_creds(creds, tpm)
+        Self::probe_creds(Creds::with_program(program))
     }
 
     /// The process-wide result, so the security gate and the token store pay for one probe.
@@ -367,23 +373,19 @@ impl Detection {
     }
 
     #[must_use]
-    pub fn probe(program: Option<&Path>, tpm_present: bool) -> Self {
+    pub fn probe(program: Option<&Path>) -> Self {
         let Some(program) = program else {
             return Self::unavailable("systemd-creds is not installed".to_owned());
         };
-        Self::probe_creds(Creds::with_program(program), tpm_present)
+        Self::probe_creds(Creds::with_program(program))
     }
 
     #[must_use]
-    pub fn probe_creds(creds: Creds, tpm_present: bool) -> Self {
+    pub fn probe_creds(creds: Creds) -> Self {
         match check(&creds) {
-            Ok(()) => Self {
+            Ok(backend) => Self {
                 creds: Some(creds),
-                backend: if tpm_present {
-                    Backend::TpmAndHost
-                } else {
-                    Backend::Host
-                },
+                backend,
             },
             Err(why) => Self::unavailable(why),
         }
@@ -418,7 +420,7 @@ impl Detection {
     }
 }
 
-fn check(creds: &Creds) -> Result<(), String> {
+fn check(creds: &Creds) -> Result<Backend, String> {
     let version = creds
         .version()
         .map_err(|error| format!("systemd-creds --version failed: {error}"))?;
@@ -433,10 +435,17 @@ fn check(creds: &Creds) -> Result<(), String> {
     let back = creds
         .decrypt(&blob)
         .map_err(|error| format!("systemd-creds cannot decrypt: {error}"))?;
-    if back.as_slice() == PROBE_PAYLOAD {
-        Ok(())
-    } else {
-        Err("systemd-creds round trip returned different data".to_owned())
+    if back.as_slice() != PROBE_PAYLOAD {
+        return Err("systemd-creds round trip returned different data".to_owned());
+    }
+    match header::sealing(&blob) {
+        Ok(Sealing::TpmAndHost) => Ok(Backend::TpmAndHost),
+        Ok(Sealing::Tpm) => Ok(Backend::Tpm),
+        Ok(Sealing::Host) => Ok(Backend::Host),
+        Ok(Sealing::Null) => {
+            Err("systemd-creds used the null key, which protects nothing".to_owned())
+        }
+        Err(error) => Ok(Backend::Unknown(error.to_string())),
     }
 }
 
