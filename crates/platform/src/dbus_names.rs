@@ -17,6 +17,8 @@ pub const PORTAL: &str = "org.freedesktop.portal.Desktop";
 pub const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 pub const TRAY_WATCHER: &str = "org.kde.StatusNotifierWatcher";
 pub const LOGIND: &str = "org.freedesktop.login1";
+pub const SCREENSAVER_KDE: &str = "org.freedesktop.ScreenSaver";
+pub const SCREENSAVER_GNOME: &str = "org.gnome.ScreenSaver";
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 /// The whole run, covering a connection handshake that `method_timeout` does not bound.
@@ -28,9 +30,11 @@ pub struct DesktopNames {
     pub notifications: Probe,
     pub tray_watcher: Probe,
     pub logind: Probe,
+    /// Either lock-signal source power/linux.rs listens to on the session bus (KDE or GNOME).
+    pub screensaver: Probe,
 }
 
-/// The four probes, run on the first call only.
+/// The probes, run on the first call only.
 #[must_use]
 pub fn desktop_names() -> &'static DesktopNames {
     static CACHE: OnceLock<DesktopNames> = OnceLock::new();
@@ -58,7 +62,8 @@ fn all_unavailable(why: &str) -> DesktopNames {
         portal: probe.clone(),
         notifications: probe.clone(),
         tray_watcher: probe.clone(),
-        logind: probe,
+        logind: probe.clone(),
+        screensaver: probe,
     }
 }
 
@@ -75,7 +80,20 @@ async fn ask() -> DesktopNames {
         notifications,
         tray_watcher,
         logind: owner(&system, LOGIND).await,
+        screensaver: screensaver(&session).await,
     }
+}
+
+async fn screensaver(session: &Result<Connection, String>) -> Probe {
+    let kde = owner(session, SCREENSAVER_KDE).await;
+    if kde == Probe::Available {
+        return kde;
+    }
+    let gnome = owner(session, SCREENSAVER_GNOME).await;
+    if gnome == Probe::Available {
+        return gnome;
+    }
+    kde
 }
 
 async fn connect(builder: Builder<'_>, bus: &str) -> Result<Connection, String> {

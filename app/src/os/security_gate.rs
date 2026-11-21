@@ -66,6 +66,48 @@ pub struct Facts {
     pub creds: vk_platform::creds::Backend,
     /// The GlobalShortcuts portal's state as the daemon found it; `None` while unknown.
     pub global_shortcuts: Option<Result<(), String>>,
+    pub desktop: Desktop,
+}
+
+/// What the D-Bus name probes found; only the daemon asks (the CLI never pays for a bus round
+/// trip, and the UI reads the daemon's report).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Desktop {
+    pub portal: Result<(), String>,
+    pub notifications: Result<(), String>,
+    pub tray_watcher: Result<(), String>,
+    pub logind: Result<(), String>,
+    pub screensaver: Result<(), String>,
+}
+
+impl Desktop {
+    #[must_use]
+    pub fn not_probed() -> Self {
+        let skipped = || Err("not probed in this process".to_owned());
+        Self {
+            portal: skipped(),
+            notifications: skipped(),
+            tray_watcher: skipped(),
+            logind: skipped(),
+            screensaver: skipped(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn probe() -> Self {
+        let names = vk_platform::dbus_names::desktop_names();
+        let unit = |probe: &Probe| match probe {
+            Probe::Available => Ok(()),
+            Probe::Degraded(why) | Probe::Unavailable(why) => Err(why.clone()),
+        };
+        Self {
+            portal: unit(&names.portal),
+            notifications: unit(&names.notifications),
+            tray_watcher: unit(&names.tray_watcher),
+            logind: unit(&names.logind),
+            screensaver: unit(&names.screensaver),
+        }
+    }
 }
 
 /// The issues a user accepted with `vaultkeeper security accept`, stored in settings.json.
@@ -144,6 +186,7 @@ pub fn chains(facts: &Facts, role: Role) -> Vec<Chain> {
                 links: vec![always("sealing", "AES-256-GCM sealing"), facts.creds.link()],
                 fix: None,
             });
+            chains.extend(desktop_chains(&facts.desktop, facts.distro));
         }
         let backend = facts.key_backend;
         let key_link = |id, mechanism| {
@@ -192,8 +235,82 @@ fn hotkey_chain(facts: &Facts) -> Option<Chain> {
     })
 }
 
+/// The Status chains for the desktop services behind the D-Bus names: they only describe what
+/// the session lacks and never refuse a start.
+fn desktop_chains(desktop: &Desktop, distro: Distro) -> Vec<Chain> {
+    vec![
+        tray_chain(&desktop.tray_watcher, distro),
+        lock_sleep_chain(desktop, distro),
+        portal_chain(&desktop.portal, distro),
+        notifications_chain(&desktop.notifications, distro),
+    ]
+}
+
+/// C14: logind carries sleep, shutdown and the session lock; the ScreenSaver names carry the lock
+/// alone. With neither, Sway and Hyprland lockers reach us only through `loginctl lock-session`.
+fn lock_sleep_chain(desktop: &Desktop, distro: Distro) -> Chain {
+    Chain {
+        id: "lock-sleep",
+        name: "Lock and sleep events",
+        required: Required::Status,
+        minimum: 0,
+        links: vec![
+            link(
+                "logind",
+                "logind (sleep, shutdown, session lock)",
+                &desktop.logind,
+            ),
+            link(
+                "screensaver",
+                "ScreenSaver (screen lock only)",
+                &desktop.screensaver,
+            ),
+        ],
+        fix: Some(fix(distro, Item::LockSleep)),
+    }
+}
+
+/// The portal serves the global shortcut, link opening, the GNOME clipboard and file dialogs.
+fn portal_chain(portal: &Result<(), String>, distro: Distro) -> Chain {
+    Chain {
+        id: "portal",
+        name: "Desktop portal",
+        required: Required::Status,
+        minimum: 0,
+        links: vec![link(
+            "portal",
+            "xdg-desktop-portal (links, shortcuts, clipboard on GNOME, file dialogs)",
+            portal,
+        )],
+        fix: Some(fix(distro, Item::Portal)),
+    }
+}
+
+/// The refusal notification needs a notification daemon; without one it shows in the window and
+/// the log only.
+fn notifications_chain(notifications: &Result<(), String>, distro: Distro) -> Chain {
+    Chain {
+        id: "notifications",
+        name: "Notifications",
+        required: Required::Status,
+        minimum: 0,
+        links: vec![
+            link(
+                "notification-daemon",
+                "Notification daemon (refusal notice)",
+                notifications,
+            ),
+            always("window-and-log", "Window and log only"),
+        ],
+        fix: Some(fix(distro, Item::Notifications)),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Item {
+    LockSleep,
+    Portal,
+    Notifications,
     Kernel,
     RuntimeDir,
     Wayland,
@@ -245,6 +362,18 @@ fn fix(distro: Distro, item: Item) -> String {
         }
         (Item::Tray, _) => {
             "no tray on this desktop; use the shortcut or the launcher entry, or run a StatusNotifierItem host (a panel tray module or the GNOME AppIndicator extension)"
+        }
+        (Item::LockSleep, _) => {
+            "no lock or sleep events reach Vaultkeeper; on Sway or Hyprland run `loginctl lock-session` from swayidle or hypridle (see \"Lock on Linux\" in docs/USAGE.md)"
+        }
+        (Item::Portal, _) => {
+            "start xdg-desktop-portal with your desktop's backend (xdg-desktop-portal-gnome, -kde, -hyprland or -wlr); links, shortcuts, the GNOME clipboard and file dialogs need it"
+        }
+        (Item::Notifications, Distro::Omarchy) => {
+            "no notification daemon; refusals show only in the window and the log; restart the Omarchy shell, which hosts it"
+        }
+        (Item::Notifications, _) => {
+            "no notification daemon; refusals show only in the window and the log; run one (mako or dunst on Sway and Hyprland, stock on GNOME and KDE)"
         }
         (Item::SecretMem, Distro::Omarchy | Distro::OtherArch) => {
             "remove secretmem.enable=0 from KERNEL_CMDLINE in /etc/default/limine and run sudo omarchy-refresh-limine"
@@ -345,6 +474,11 @@ impl Facts {
                 vk_platform::creds::Backend::Unavailable("not probed in this process".to_owned())
             },
             global_shortcuts: crate::os::linux::hotkey_status::get(),
+            desktop: if role == Role::Daemon {
+                Desktop::probe()
+            } else {
+                Desktop::not_probed()
+            },
         }
     }
 }
@@ -447,7 +581,27 @@ mod tests {
             key_backend: "memfd_secret",
             creds: vk_platform::creds::Backend::Host,
             global_shortcuts: None,
+            desktop: Desktop {
+                portal: Ok(()),
+                notifications: Ok(()),
+                tray_watcher: Ok(()),
+                logind: Ok(()),
+                screensaver: Ok(()),
+            },
         }
+    }
+
+    fn chain_of(report: &Report, id: &str) -> vk_platform::security::ChainReport {
+        report
+            .chains
+            .iter()
+            .find(|chain| chain.id == id)
+            .cloned()
+            .expect("chain present")
+    }
+
+    fn gone() -> Result<(), String> {
+        Err("nothing owns the name".to_owned())
     }
 
     fn evaluate(facts: &Facts, role: Role) -> Report {
@@ -640,6 +794,151 @@ mod tests {
             .find(|chain| chain.id == "secret-files")
             .expect("secret files chain");
         assert_eq!(files.stacked, ["systemd-creds"]);
+    }
+
+    #[test]
+    fn a_full_desktop_makes_every_desktop_chain_full_with_one_tray_row() {
+        use vk_platform::security::ChainStatus::Full;
+        let report = evaluate(&good(), Role::Daemon);
+        for id in ["tray", "lock-sleep", "portal", "notifications"] {
+            assert_eq!(chain_of(&report, id).status, Full, "{id}");
+        }
+        assert_eq!(report.chains.iter().filter(|c| c.id == "tray").count(), 1);
+        assert_eq!(
+            chain_of(&report, "lock-sleep").active.as_deref(),
+            Some("logind (sleep, shutdown, session lock)")
+        );
+    }
+
+    #[test]
+    fn only_the_daemon_gets_desktop_chains() {
+        for role in [Role::Cli, Role::Ui] {
+            let report = evaluate(&good(), role);
+            assert!(
+                !report.chains.iter().any(|chain| [
+                    "tray",
+                    "lock-sleep",
+                    "portal",
+                    "notifications"
+                ]
+                .contains(&chain.id.as_str())),
+                "{role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_tray_watcher_probe_reduces_the_one_tray_row() {
+        let facts = Facts {
+            desktop: Desktop {
+                tray_watcher: gone(),
+                ..good().desktop
+            },
+            ..good()
+        };
+        let report = evaluate(&facts, Role::Daemon);
+        let tray = chain_of(&report, "tray");
+        assert_eq!(tray.status, vk_platform::security::ChainStatus::Reduced);
+        assert_eq!(tray.active.as_deref(), Some("No tray"));
+        assert_eq!(report.chains.iter().filter(|c| c.id == "tray").count(), 1);
+    }
+
+    #[test]
+    fn lock_and_sleep_falls_from_logind_to_screensaver_to_off() {
+        use vk_platform::security::ChainStatus::{Off, Reduced};
+        let screensaver_only = Facts {
+            desktop: Desktop {
+                logind: gone(),
+                ..good().desktop
+            },
+            ..good()
+        };
+        let chain = chain_of(&evaluate(&screensaver_only, Role::Daemon), "lock-sleep");
+        assert_eq!(chain.status, Reduced);
+        assert_eq!(
+            chain.active.as_deref(),
+            Some("ScreenSaver (screen lock only)")
+        );
+        assert_eq!(chain.skipped[0].link, "logind");
+
+        let none = Facts {
+            desktop: Desktop {
+                logind: gone(),
+                screensaver: gone(),
+                ..good().desktop
+            },
+            ..good()
+        };
+        let report = evaluate(&none, Role::Daemon);
+        let chain = chain_of(&report, "lock-sleep");
+        assert_eq!(chain.status, Off);
+        assert!(chain.active.is_none());
+        let fix = chain.fix.expect("fix text");
+        assert!(fix.contains("loginctl lock-session") && fix.contains("swayidle"));
+        assert!(fix.contains("Lock on Linux"));
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
+    }
+
+    #[test]
+    fn a_missing_portal_is_off_and_names_what_needs_it() {
+        let facts = Facts {
+            desktop: Desktop {
+                portal: gone(),
+                ..good().desktop
+            },
+            ..good()
+        };
+        let report = evaluate(&facts, Role::Daemon);
+        let portal = chain_of(&report, "portal");
+        assert_eq!(portal.status, vk_platform::security::ChainStatus::Off);
+        let fix = portal.fix.expect("fix text");
+        for needs in ["links", "shortcuts", "GNOME clipboard", "file dialogs"] {
+            assert!(fix.contains(needs), "{needs}");
+        }
+        let full = chain_of(&evaluate(&good(), Role::Daemon), "portal");
+        let mechanism = full.active.expect("active");
+        assert!(mechanism.contains("shortcuts") && mechanism.contains("file dialogs"));
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
+    }
+
+    #[test]
+    fn a_missing_notification_daemon_reduces_to_window_and_log_and_never_refuses() {
+        let facts = Facts {
+            desktop: Desktop {
+                notifications: gone(),
+                ..good().desktop
+            },
+            ..good()
+        };
+        let report = evaluate(&facts, Role::Daemon);
+        let chain = chain_of(&report, "notifications");
+        assert_eq!(chain.status, vk_platform::security::ChainStatus::Reduced);
+        assert_eq!(chain.active.as_deref(), Some("Window and log only"));
+        assert!(chain.fix.is_some_and(|fix| fix.contains("mako")));
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
+    }
+
+    #[test]
+    fn nothing_probed_still_never_refuses() {
+        let facts = Facts {
+            desktop: Desktop::not_probed(),
+            ..good()
+        };
+        let report = evaluate(&facts, Role::Daemon);
+        assert_eq!(report.refusals().len(), 0);
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
     }
 
     #[test]
