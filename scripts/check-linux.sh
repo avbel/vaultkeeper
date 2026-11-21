@@ -21,7 +21,8 @@ if [ "$1" = "--test" ]; then
 fi
 
 BASE=rust:1.99.1-bookworm
-IMAGE=vaultkeeper-linux-check:1.99.1
+SCCACHE=v0.10.0
+IMAGE=vaultkeeper-linux-check:1.99.1-sccache
 
 # The apt step costs a minute, so it is baked into a local image once.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -31,6 +32,12 @@ RUN apt-get -qq update && apt-get -qq install -y libfontconfig1-dev libxkbcommon
     libwayland-dev libdbus-1-dev libudev-dev clang libelf-dev zlib1g-dev bpftool \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup component add clippy rustfmt
+RUN set -e; name=sccache-$SCCACHE-\$(uname -m)-unknown-linux-musl; \
+    url=https://github.com/mozilla/sccache/releases/download/$SCCACHE/\$name.tar.gz; \
+    curl -fsSL -o /tmp/s.tgz "\$url"; \
+    echo "\$(curl -fsSL "\$url.sha256")  /tmp/s.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/s.tgz -C /tmp; install -m 0755 /tmp/\$name/sccache /usr/local/bin/sccache; \
+    rm -rf /tmp/s.tgz /tmp/\$name
 DOCKERFILE
 fi
 
@@ -40,9 +47,13 @@ fi
 # the secure_memory tests exercise; a desktop session has them.
 # Two jobs by default: parallel test links run the Docker VM out of memory. No debug info: with
 # it, and with incremental caches, the target volume grew past 50 GB.
+# sccache shares compiled dependencies between the per-task target dirs that parallel checks use
+# (VK_LINUX_DOCKER_ARGS="-e CARGO_TARGET_DIR=/target/<task>"), so each crate builds once.
 exec docker run --rm --security-opt seccomp=unconfined \
     -v "$PWD":/src -w /src \
     -v vaultkeeper-linux-cargo:/usr/local/cargo/registry \
+    -v vaultkeeper-linux-sccache:/sccache -e SCCACHE_DIR=/sccache -e SCCACHE_CACHE_SIZE=20G \
+    -e RUSTC_WRAPPER=sccache \
     -v vaultkeeper-linux-target:/target -e CARGO_TARGET_DIR=/target \
     -e CARGO_PROFILE_DEV_DEBUG=0 -e CARGO_PROFILE_TEST_DEBUG=0 -e CARGO_INCREMENTAL=0 \
     -e CARGO_BUILD_JOBS="${VK_LINUX_JOBS:-2}" \
