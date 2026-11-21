@@ -114,24 +114,19 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
     }
     let _ = ready.send(Ok(()));
     let mut tracker = Tracker::default();
-    let mut inhibitor = take_inhibitor(system.as_ref()).await;
-    let mut inhibit_wanted = true;
+    let mut inhibitor = Inhibitor::default();
+    inhibitor.acquire(system.as_ref()).await;
     while let Some(message) = next_message(&mut streams, stop).await {
-        if inhibit_wanted && inhibitor.is_none() {
-            inhibitor = take_inhibitor(system.as_ref()).await;
-        }
-        let message = match message {
-            Ok(message) => message,
+        let signal = match message {
+            Ok(message) => signal_of(&message),
             Err(error) => {
                 warn!(%error, "power watcher: bus message error");
-                continue;
+                None
             }
         };
-        let signal = signal_of(&message);
-        let Some(event) = signal.and_then(|signal| tracker.apply(signal)) else {
-            continue;
-        };
-        if tx.send(event).is_err() {
+        if let Some(event) = signal.and_then(|signal| tracker.apply(signal))
+            && tx.send(event).is_err()
+        {
             return;
         }
         match signal {
@@ -139,14 +134,13 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
                 // The event API has no acknowledgement, so the consumer only gets this grace
                 // period to lock before logind may suspend.
                 thread::sleep(SLEEP_GRACE);
-                inhibitor = None;
-                inhibit_wanted = false;
+                inhibitor.release();
             }
             Some(BusSignal::PrepareForSleep(false)) => {
-                inhibit_wanted = true;
-                inhibitor = take_inhibitor(system.as_ref()).await;
+                inhibitor.wanted = true;
+                inhibitor.acquire(system.as_ref()).await;
             }
-            _ => {}
+            _ => inhibitor.retry(system.as_ref()).await,
         }
     }
     if !stop.is_requested_now() {
@@ -156,8 +150,55 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
 
 /// A logind delay inhibitor holds the suspend back (up to `InhibitDelayMaxSec`) until the fd is
 /// closed, so the vault can lock first. Without it the watcher still works, only racing suspend.
-async fn take_inhibitor(system: Option<&Connection>) -> Option<OwnedFd> {
-    let connection = system?;
+struct Inhibitor {
+    fd: Option<OwnedFd>,
+    wanted: bool,
+    failing: bool,
+}
+
+impl Default for Inhibitor {
+    fn default() -> Self {
+        Self {
+            fd: None,
+            wanted: true,
+            failing: false,
+        }
+    }
+}
+
+impl Inhibitor {
+    fn release(&mut self) {
+        self.fd = None;
+        self.wanted = false;
+    }
+
+    async fn retry(&mut self, system: Option<&Connection>) {
+        if self.wanted && self.fd.is_none() {
+            self.acquire(system).await;
+        }
+    }
+
+    /// Warns on the first failure of a run only, so a refusing logind does not flood the log.
+    async fn acquire(&mut self, system: Option<&Connection>) {
+        let Some(connection) = system else {
+            return;
+        };
+        match request_inhibitor(connection).await {
+            Ok(fd) => {
+                self.fd = Some(fd);
+                self.failing = false;
+            }
+            Err(error) => {
+                if !self.failing {
+                    warn!(%error, "no sleep inhibitor; locking may race suspend");
+                }
+                self.failing = true;
+            }
+        }
+    }
+}
+
+async fn request_inhibitor(connection: &Connection) -> zbus::Result<OwnedFd> {
     let reply = connection
         .call_method(
             Some(LOGIND_NAME),
@@ -171,14 +212,8 @@ async fn take_inhibitor(system: Option<&Connection>) -> Option<OwnedFd> {
                 "delay",
             ),
         )
-        .await
-        .inspect_err(|error| warn!(%error, "no sleep inhibitor; locking may race suspend"))
-        .ok()?;
-    reply
-        .body()
-        .deserialize::<OwnedFd>()
-        .inspect_err(|error| warn!(%error, "sleep inhibitor reply had no fd"))
-        .ok()
+        .await?;
+    reply.body().deserialize::<OwnedFd>()
 }
 
 /// Bounds every method call so a stalled logind cannot hang startup or the shutdown join.

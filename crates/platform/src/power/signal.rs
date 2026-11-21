@@ -33,7 +33,7 @@ pub(super) fn classify(interface: &str, member: &str, flag: Option<bool>) -> Opt
 }
 
 /// Collapses the several signals one lock produces (logind `Lock`, `LockedHint`, the screensaver's
-/// `ActiveChanged`) into one event per transition.
+/// `ActiveChanged`) into one event: logind `Lock` always emits, the others only on a change.
 #[derive(Debug, Default)]
 pub(super) struct Tracker {
     locked: bool,
