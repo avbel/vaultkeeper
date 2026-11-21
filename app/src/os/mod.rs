@@ -7,6 +7,8 @@ mod biometrics;
 pub mod browser;
 mod clipboard;
 pub mod console;
+#[cfg(any(target_os = "linux", test))]
+pub mod desktop_entry;
 pub mod detached;
 pub mod early_log;
 pub mod fs;

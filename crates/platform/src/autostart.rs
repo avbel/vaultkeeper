@@ -1,6 +1,7 @@
 //! Launch at login with `--tray`.
 //!
-//! macOS uses `~/Library/LaunchAgents/vaultkeeper.plist`; Windows uses the per-user Run key under
+//! macOS uses `~/Library/LaunchAgents/vaultkeeper.plist`; Linux an XDG autostart entry
+//! (`autostart/linux.rs`); Windows uses the per-user Run key under
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, where Settings → Apps → Startup records a
 //! user's "off" in `Explorer\StartupApproved\Run`.
 //!
@@ -12,7 +13,7 @@
 
 use crate::Result;
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const TRAY_ARG: &str = "--tray";
 
 /// The Run key command: the exe quoted because its path may contain spaces, then `--tray`.
@@ -511,7 +512,11 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+#[path = "autostart/linux.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use crate::{Error, Result};
 

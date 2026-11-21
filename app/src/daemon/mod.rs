@@ -69,6 +69,30 @@ const RESTART_EXIT: i32 = 75;
 #[cfg(unix)]
 const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
 
+/// Points the login item (tray launches) and, on Linux, the launcher entry at this install.
+fn refresh_shell_entries(launch: Launch) {
+    if launch == Launch::Tray {
+        refresh_login_agent();
+    }
+    #[cfg(target_os = "linux")]
+    write_desktop_entry();
+}
+
+/// Keeps the launcher entry pointing at this install; a failure costs only the launcher icon.
+#[cfg(target_os = "linux")]
+fn write_desktop_entry() {
+    use crate::os::desktop_entry;
+    let (Some(home), Some(exe)) = (
+        vk_platform::desktop_file::data_home(),
+        vk_platform::install_kind::current_install_path(),
+    ) else {
+        return;
+    };
+    if let Err(error) = desktop_entry::ensure(&home, &exe) {
+        tracing::warn!(%error, "cannot write the launcher entry");
+    }
+}
+
 /// The data dir after its startup check, and the socket dir (the runtime dir on Linux).
 fn prepare_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let data_dir = crate::os::layout::data_dir().context("create the data directory")?;
@@ -92,9 +116,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     }
     #[cfg(not(unix))]
     let _ = wait_for;
-    if launch == Launch::Tray {
-        refresh_login_agent();
-    }
+    refresh_shell_entries(launch);
     let (data_dir, socket_dir) = prepare_dirs()?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
     let instance = match single_instance::acquire_in(&socket_dir, routing::forwarded(launch), {

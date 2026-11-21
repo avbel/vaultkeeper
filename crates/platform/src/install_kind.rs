@@ -93,6 +93,28 @@ pub fn classify(probe: &Probe) -> InstallKind {
     InstallKind::Direct
 }
 
+/// The path launchers and autostart entries should run: for Homebrew the `opt` symlink, which
+/// survives upgrades (`<prefix>/Cellar/vaultkeeper/<version>/bin/x` → `<prefix>/opt/vaultkeeper/bin/x`),
+/// otherwise `exe` itself.
+#[must_use]
+pub fn stable_path(exe: &Path) -> PathBuf {
+    let text = exe.to_string_lossy();
+    let Some((prefix, rest)) = text.split_once("/Cellar/vaultkeeper/") else {
+        return exe.to_owned();
+    };
+    match rest.split_once('/') {
+        Some((_version, inner)) => PathBuf::from(format!("{prefix}/opt/vaultkeeper/{inner}")),
+        None => exe.to_owned(),
+    }
+}
+
+/// The stable install path of this running copy.
+#[must_use]
+pub fn current_install_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    Some(stable_path(&exe))
+}
+
 /// The kind of this running copy. Only Linux has managed installs so far.
 #[must_use]
 pub fn detect() -> InstallKind {
@@ -183,6 +205,20 @@ mod tests {
         assert_eq!(
             classify(&exe("/home/me/vaultkeeper/vaultkeeper")),
             InstallKind::Direct
+        );
+    }
+
+    #[test]
+    fn cellar_paths_map_to_the_opt_symlink() {
+        assert_eq!(
+            stable_path(Path::new(
+                "/home/linuxbrew/.linuxbrew/Cellar/vaultkeeper/0.2.0/bin/vaultkeeper"
+            )),
+            Path::new("/home/linuxbrew/.linuxbrew/opt/vaultkeeper/bin/vaultkeeper")
+        );
+        assert_eq!(
+            stable_path(Path::new("/usr/bin/vaultkeeper")),
+            Path::new("/usr/bin/vaultkeeper")
         );
     }
 
