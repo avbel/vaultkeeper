@@ -274,6 +274,27 @@ pub fn error_text(error: &Error) -> String {
     }
 }
 
+/// Error text for opening a file the user chose. Under the Landlock sandbox the kernel refuses
+/// files outside its folders with a bare EACCES, which says nothing about why.
+#[must_use]
+pub fn file_error_text(error: &Error) -> String {
+    sandboxed_file_error_text(
+        error,
+        cfg!(target_os = "linux") && vk_platform::sandbox::requested(),
+    )
+}
+
+fn sandboxed_file_error_text(error: &Error, sandboxed: bool) -> String {
+    match error {
+        Error::Io(io) if sandboxed && io.kind() == std::io::ErrorKind::PermissionDenied => {
+            SANDBOX_FILE_REFUSED.to_owned()
+        }
+        _ => error_text(error),
+    }
+}
+
+const SANDBOX_FILE_REFUSED: &str = "Vaultkeeper's sandbox (VAULTKEEPER_LANDLOCK) can't read files outside its own folders: move the file to ~/.cache or restart without the sandbox";
+
 fn api_error_text(error: &vk_api::Error) -> String {
     if error.is_offline() && !matches!(error, vk_api::Error::Server { .. }) {
         return CANT_REACH.to_owned();
@@ -632,6 +653,21 @@ mod tests {
             message: "Not Found".to_owned(),
         }));
         assert_eq!(probe_text(&not_found), (NOT_COMPATIBLE.to_owned(), false));
+    }
+
+    #[test]
+    fn a_refused_file_under_the_sandbox_names_the_sandbox() {
+        let denied = || Error::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            sandboxed_file_error_text(&denied(), true),
+            SANDBOX_FILE_REFUSED
+        );
+        assert_eq!(
+            sandboxed_file_error_text(&denied(), false),
+            error_text(&denied())
+        );
+        let other = Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(sandboxed_file_error_text(&other, true), error_text(&other));
     }
 
     #[test]

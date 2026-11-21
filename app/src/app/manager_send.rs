@@ -645,7 +645,7 @@ impl<S: VaultService> App<S> {
                     manager.window.set_send_saving(false);
                     manager
                         .window
-                        .set_send_edit_error(viewmodel::error_text(&error).into());
+                        .set_send_edit_error(viewmodel::file_error_text(&error).into());
                 }
                 return;
             }

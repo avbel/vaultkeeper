@@ -592,7 +592,7 @@ impl<S: VaultService> App<S> {
     fn attachment_done(&self, result: vk_vault::Result<()>) {
         self.set_attach_busy(None);
         if let Err(error) = result {
-            self.toast(&viewmodel::error_text(&error), true);
+            self.toast(&viewmodel::file_error_text(&error), true);
             return;
         }
         self.on_vault_changed();
