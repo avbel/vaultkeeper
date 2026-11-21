@@ -146,12 +146,18 @@ impl Inner {
     }
 
     /// A remember token the current key cannot open (DPAPI profile reset, key rotation) is only a
-    /// convenience: drop the file and fall back to a fresh two-factor prompt.
+    /// convenience: drop the file and fall back to a fresh two-factor prompt. One that is only
+    /// unreadable for now (its wrapper is missing) is kept and skipped; the next successful
+    /// two-factor login overwrites it.
     fn read_remember_token(&self, user_id: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
         let key = remember_token_key(user_id);
         match self.secrets.get(&key) {
             Err(error) if error.is_undecryptable() => {
                 self.secrets.delete(&key).map_err(secret_error)?;
+                Ok(None)
+            }
+            Err(error) if error.is_unreadable() => {
+                tracing::warn!(%error, "the remembered two-factor token cannot be read; asking again");
                 Ok(None)
             }
             other => other.map_err(secret_error),

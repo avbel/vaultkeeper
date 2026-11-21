@@ -231,6 +231,31 @@ async fn a_token_sealed_under_another_user_key_is_deleted_and_sync_asks_to_log_i
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_refresh_token_asks_to_log_in_again_and_is_kept() {
+    let fake = Fake::start().await;
+    let dir = temp_dir();
+    let store = Arc::new(
+        SealedFileStore::new(dir.clone(), |path, bytes| std::fs::write(path, bytes))
+            .with_wrapper(Arc::new(UnwrapUnreadable)),
+    );
+    let harness = harness_in(
+        dir.clone(),
+        slow_timings(),
+        Some(Arc::clone(&store) as Arc<dyn SecretStore>),
+    );
+    login(&harness, &fake).await;
+
+    fake.server.reset().await;
+    fake.mount_status("GET", "/api/sync", 401).await;
+    let error = harness.vault.sync().await.unwrap_err();
+    assert!(
+        matches!(error, Error::Api(vk_api::Error::Unauthorized)),
+        "{error:?}"
+    );
+    assert!(token_path(&dir, USER_ID).is_file(), "the file is kept");
+}
+
 /// Wraps like the identity but can never unwrap, like a DPAPI blob from another profile.
 struct UnwrapFails;
 
@@ -242,6 +267,55 @@ impl BlobWrapper for UnwrapFails {
     fn unwrap(&self, _user_id: &str, _blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
         Err(SecretStoreError::undecryptable())
     }
+}
+
+struct UnwrapUnreadable;
+
+impl BlobWrapper for UnwrapUnreadable {
+    fn wrap(&self, _user_id: &str, plaintext: &[u8]) -> Result<Vec<u8>, SecretStoreError> {
+        Ok(plaintext.to_vec())
+    }
+
+    fn unwrap(&self, _user_id: &str, _blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
+        Err(SecretStoreError::unreadable("wrapper is gone"))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_remember_token_is_kept_and_login_asks_for_two_factor_again() {
+    let fake = Fake::start().await;
+    let dir = temp_dir();
+    let store = Arc::new(
+        SealedFileStore::new(dir.clone(), |path, bytes| std::fs::write(path, bytes))
+            .with_wrapper(Arc::new(UnwrapUnreadable)),
+    );
+    let harness = harness_in(
+        dir.clone(),
+        slow_timings(),
+        Some(Arc::clone(&store) as Arc<dyn SecretStore>),
+    );
+    login(&harness, &fake).await;
+
+    store
+        .set(&format!("{USER_ID}.two_factor_remember"), b"remembered")
+        .unwrap();
+    let remember_path = dir
+        .join("accounts")
+        .join(USER_ID)
+        .join("two_factor_remember.enc");
+
+    harness.vault.begin_add_account();
+    fake.mount_sync(Vec::new()).await;
+    let step = harness
+        .vault
+        .login(fake.request(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(step, LoginStep::Done);
+    assert!(
+        remember_path.is_file(),
+        "the unreadable file is not deleted"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

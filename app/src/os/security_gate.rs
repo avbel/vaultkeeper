@@ -62,6 +62,8 @@ pub struct Facts {
     pub runtime_dir: Result<(), String>,
     /// The secure_memory backend name: "memfd_secret", "keyctl" or "mlock".
     pub key_backend: &'static str,
+    /// Which key `systemd-creds` binds the stored tokens to, or why it is unavailable (C1 link 5).
+    pub creds: vk_platform::creds::Backend,
 }
 
 /// The issues a user accepted with `vaultkeeper security accept`, stored in settings.json.
@@ -131,6 +133,16 @@ pub fn chains(facts: &Facts, role: Role) -> Vec<Chain> {
             links: vec![link("wayland", "Wayland", &facts.wayland)],
             fix: Some(fix(facts.distro, Item::Wayland)),
         });
+        if role == Role::Daemon {
+            chains.push(Chain {
+                id: "secret-files",
+                name: "Secret files at rest",
+                required: Required::Status,
+                minimum: 0,
+                links: vec![always("sealing", "AES-256-GCM sealing"), facts.creds.link()],
+                fix: None,
+            });
+        }
         let backend = facts.key_backend;
         let key_link = |id, mechanism| {
             if backend == mechanism {
@@ -294,7 +306,7 @@ pub fn tray_report() -> Option<vk_platform::security::ChainReport> {
 impl Facts {
     #[cfg(target_os = "linux")]
     #[must_use]
-    pub fn probe() -> Self {
+    pub fn probe(role: Role) -> Self {
         use vk_linux::probes;
         let unit = |result: vk_linux::ProbeResult| result.map(drop);
         Self {
@@ -304,6 +316,12 @@ impl Facts {
             wayland: unit(probes::wayland()),
             runtime_dir: probes::runtime_dir().map(drop),
             key_backend: secure_memory::backend().name(),
+            // Only the daemon stores tokens, so only it pays for the systemd-creds round trip.
+            creds: if role == Role::Daemon {
+                vk_platform::creds::Detection::cached().backend().clone()
+            } else {
+                vk_platform::creds::Backend::Unavailable("not probed in this process".to_owned())
+            },
         }
     }
 }
@@ -313,7 +331,7 @@ impl Facts {
 pub fn report(role: Role) -> Report {
     #[cfg(target_os = "linux")]
     {
-        Report::evaluate(&chains(&Facts::probe(), role))
+        Report::evaluate(&chains(&Facts::probe(role), role))
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -381,6 +399,7 @@ mod tests {
             wayland: Ok(()),
             runtime_dir: Ok(()),
             key_backend: "memfd_secret",
+            creds: vk_platform::creds::Backend::Host,
         }
     }
 
@@ -508,6 +527,41 @@ mod tests {
             .expect("key chain");
         assert_eq!(key.active.as_deref(), Some("keyctl"));
         assert_eq!(key.fallback.as_deref(), Some("mlock"));
+    }
+
+    #[test]
+    fn the_secret_files_chain_lists_systemd_creds_and_never_warns_without_it() {
+        let facts = Facts {
+            creds: vk_platform::creds::Backend::Unavailable("not installed".to_owned()),
+            ..good()
+        };
+        let report = evaluate(&facts, Role::Daemon);
+        let files = report
+            .chains
+            .iter()
+            .find(|chain| chain.id == "secret-files")
+            .expect("secret files chain");
+        assert_eq!(files.stacked.len(), 0);
+        assert_eq!(files.skipped[0].link, "systemd-creds");
+        assert_eq!(
+            decide(&report, false, None),
+            Decision::Proceed { warn: false }
+        );
+
+        assert!(
+            !evaluate(&facts, Role::Ui)
+                .chains
+                .iter()
+                .any(|chain| chain.id == "secret-files")
+        );
+
+        let with = evaluate(&good(), Role::Daemon);
+        let files = with
+            .chains
+            .iter()
+            .find(|chain| chain.id == "secret-files")
+            .expect("secret files chain");
+        assert_eq!(files.stacked, ["systemd-creds"]);
     }
 
     #[test]

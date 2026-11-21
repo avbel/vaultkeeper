@@ -99,16 +99,19 @@ fn sealed_store(data_dir: &Path) -> SealedFileStore {
 
 #[cfg(target_os = "linux")]
 fn linux_creds() -> Option<vk_platform::creds::Creds> {
-    let detection = vk_platform::creds::Detection::system();
+    let detection = vk_platform::creds::Detection::cached();
     if let vk_platform::creds::Backend::Unavailable(why) = detection.backend() {
-        tracing::warn!(%why, "systemd-creds is unavailable; the 2FA remember token is stored sealed only");
+        tracing::warn!(
+            %why,
+            "systemd-creds is unavailable; the 2FA remember token is stored without encryption and the refresh token sealed only"
+        );
     } else {
         tracing::info!(
             key = detection.backend().label(),
             "systemd-creds wraps stored tokens"
         );
     }
-    detection.into_creds()
+    detection.creds().cloned()
 }
 
 /// `systemd-creds` as the blob wrapper. Without the tool it writes blobs unwrapped and still reads
@@ -135,9 +138,21 @@ impl BlobWrapper for CredsWrapper {
     }
 
     fn unwrap(&self, _user_id: &str, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretStoreError> {
-        self.0
-            .unwrap(blob)
-            .map_err(|error| SecretStoreError::other(error.to_string()))
+        self.0.unwrap(blob).map_err(unwrap_error)
+    }
+}
+
+/// A wrapped blob that the tool is missing for or refuses is unreadable, not undecryptable: the
+/// file stays, the caller logs in again, and the file reads again if the tool and machine key
+/// return. Timeouts and spawn or io failures may be transient and stay plain errors.
+#[cfg(any(target_os = "linux", test))]
+fn unwrap_error(error: vk_platform::creds::CredsError) -> SecretStoreError {
+    use vk_platform::creds::CredsError;
+    match error {
+        CredsError::Failed(_) | CredsError::Unavailable => {
+            SecretStoreError::unreadable(error.to_string())
+        }
+        other => SecretStoreError::other(other.to_string()),
     }
 }
 
@@ -411,7 +426,7 @@ mod creds_tests {
             let error = without
                 .get(&key)
                 .expect_err("wrapped blob without the tool");
-            assert!(!error.is_undecryptable(), "{error:?}");
+            assert!(error.is_unreadable(), "{error:?}");
         }
 
         let back = store(dir.path(), Some(creds));

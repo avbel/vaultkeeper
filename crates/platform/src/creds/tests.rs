@@ -218,7 +218,7 @@ fn the_chain_link_follows_the_backend() {
 #[test]
 fn finds_the_program_on_the_given_path() {
     let (dir, _creds) = good();
-    let found = find_program(Some(&dir.path().as_os_str().to_owned()));
+    let found = find_program(Some(&dir.path().as_os_str().to_owned()), &[]);
     assert_eq!(found, Some(dir.path().join(PROGRAM)));
 }
 
@@ -227,5 +227,39 @@ fn finds_the_program_on_the_given_path() {
 fn the_system_probe_never_panics_and_explains_unavailability() {
     if let Backend::Unavailable(why) = Detection::system().backend() {
         assert_ne!(why, "");
+    }
+}
+
+#[test]
+fn relative_path_entries_are_ignored() {
+    let (dir, _creds) = good();
+    let relative = OsString::from(format!(":relative:{}", dir.path().display()));
+    assert_eq!(
+        find_program(Some(&relative), &[]),
+        Some(dir.path().join(PROGRAM))
+    );
+    assert_eq!(find_program(Some(&OsString::from("")), &[]), None);
+}
+
+#[test]
+fn has_tpm2_follows_the_exit_status() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let yes = fake(&dir, "yes", "#!/bin/sh\nexit 0\n");
+    let no = fake(&dir, "no", "#!/bin/sh\nexit 1\n");
+    assert!(yes.has_tpm2());
+    assert!(!no.has_tpm2());
+}
+
+#[test]
+fn output_larger_than_the_cap_never_passes_as_valid_even_if_the_tool_exits_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let creds = fake(
+        &dir,
+        "burst",
+        "#!/bin/sh\nhead -c 70000 /dev/zero\nexit 0\n",
+    );
+    for _ in 0..20 {
+        let error = creds.encrypt(SECRET).expect_err("too large");
+        assert!(matches!(error, CredsError::TooLarge(_)), "{error:?}");
     }
 }

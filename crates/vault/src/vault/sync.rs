@@ -192,6 +192,11 @@ impl Inner {
                 self.secrets.delete(key).map_err(secret_error)?;
                 Err(Error::Api(vk_api::Error::Unauthorized))
             }
+            Err(error) if error.is_unreadable() => {
+                // Kept on disk: the wrapper may come back; logging in again overwrites the file.
+                tracing::warn!(%error, "the stored refresh token cannot be read; log in again");
+                Err(Error::Api(vk_api::Error::Unauthorized))
+            }
             Err(error) if error.is_locked() => {
                 // Refresh runs only while unlocked, so this is a bug; treat it like a rejected
                 // token instead of leaving the session half alive.

@@ -16,6 +16,9 @@ pub enum SecretStoreErrorKind {
     Locked,
     /// A stored secret no longer decrypts because the user key rotated elsewhere.
     Undecryptable,
+    /// The stored secret cannot be opened right now (its machine-bound wrapper is missing or
+    /// refuses it) but the file may open again later, so it must not be deleted.
+    Unreadable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -51,6 +54,14 @@ impl SecretStoreError {
     }
 
     #[must_use]
+    pub fn unreadable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: SecretStoreErrorKind::Unreadable,
+        }
+    }
+
+    #[must_use]
     pub const fn kind(&self) -> SecretStoreErrorKind {
         self.kind
     }
@@ -58,6 +69,11 @@ impl SecretStoreError {
     #[must_use]
     pub const fn is_locked(&self) -> bool {
         matches!(self.kind, SecretStoreErrorKind::Locked)
+    }
+
+    #[must_use]
+    pub const fn is_unreadable(&self) -> bool {
+        matches!(self.kind, SecretStoreErrorKind::Unreadable)
     }
 
     #[must_use]

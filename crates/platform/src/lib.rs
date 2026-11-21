@@ -4,7 +4,6 @@ pub mod autostart;
 pub mod biometric;
 pub mod clipboard;
 pub mod code_signature;
-#[cfg(unix)]
 pub mod creds;
 #[cfg(target_os = "linux")]
 pub mod dbus_names;

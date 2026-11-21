@@ -18,7 +18,10 @@ use std::{
     io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -35,11 +38,11 @@ const MAGIC: &[u8] = b"VKCRED1\0";
 /// Tokens are a few hundred bytes; the cap only stops a misbehaving tool from filling memory.
 const MAX_INPUT: usize = 32 * 1024;
 const MAX_OUTPUT: usize = 64 * 1024;
-/// A TPM-backed encrypt can take seconds on slow hardware; a hung tool must not hang the daemon.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Calls block the caller, so a hung tool gets a short leash; a TPM-backed encrypt takes well under it.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
-const TPM_NODES: [&str; 2] = ["/dev/tpmrm0", "/sys/class/tpm/tpm0"];
-const FALLBACK_DIRS: [&str; 2] = ["/usr/bin", "/bin"];
+/// Searched before `$PATH`, so a writable directory early on the path cannot shadow the tool.
+const TRUSTED_DIRS: [&str; 2] = ["/usr/bin", "/bin"];
 const PROBE_PAYLOAD: &[u8] = b"vaultkeeper probe";
 /// A just-written fake or freshly installed binary can be briefly "text file busy" while another
 /// thread's fork still holds its write descriptor.
@@ -106,6 +109,11 @@ impl Creds {
         self.run(&["--user", "decrypt"], &[], blob)
     }
 
+    /// `systemd-creds has-tpm2` exits 0 only when the TPM2 is fully usable (firmware, driver, device).
+    fn has_tpm2(&self) -> bool {
+        self.run_args(&["has-tpm2"], &[]).is_ok()
+    }
+
     fn version(&self) -> Result<u32, CredsError> {
         let output = self.run_args(&["--version"], &[])?;
         parse_version(&output).ok_or(CredsError::Failed(None))
@@ -152,6 +160,10 @@ impl Creds {
                 Err(_) => return Err(CredsError::Io(io::Error::other("writer panicked"))),
             }
             match read {
+                // The reader can finish after `wait` looked at the flag, so the size is rechecked.
+                Ok(Ok(output)) if output.len() > MAX_OUTPUT => {
+                    Err(CredsError::TooLarge(MAX_OUTPUT))
+                }
                 Ok(Ok(output)) => Ok(output),
                 Ok(Err(error)) => Err(CredsError::Io(error)),
                 Err(_) => Err(CredsError::Io(io::Error::other("reader panicked"))),
@@ -162,12 +174,15 @@ impl Creds {
     fn spawn(&self, args: &[&str]) -> Result<Child, CredsError> {
         let mut attempt = 0;
         loop {
-            let spawned = Command::new(&self.program)
+            let mut command = Command::new(&self.program);
+            command
                 .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn();
+                .stderr(Stdio::null());
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::process_group(&mut command, 0);
+            let spawned = command.spawn();
             match spawned {
                 Err(error) if error.raw_os_error() == Some(ETXTBSY) && attempt < SPAWN_RETRIES => {
                     attempt += 1;
@@ -236,6 +251,15 @@ fn wait(
 }
 
 fn reap(child: &mut Child) {
+    // The tool runs in its own process group, so helpers it forked die with it and cannot keep
+    // the output pipe open.
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: `kill` takes plain integers; the negative pid names the group created at spawn.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -299,6 +323,12 @@ impl Backend {
     }
 
     #[must_use]
+    pub fn link(&self) -> Link {
+        let probe = self.probe();
+        Link::new("systemd-creds", "systemd-creds", move || probe.clone()).stacking()
+    }
+
+    #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
             Self::TpmAndHost => "tpm2+host",
@@ -320,9 +350,20 @@ impl Detection {
     /// proves it works with a round trip, so a container without a systemd manager reports why.
     #[must_use]
     pub fn system() -> Self {
-        let tpm = TPM_NODES.iter().any(|node| Path::new(node).exists());
-        let program = find_program(std::env::var_os("PATH").as_ref());
-        Self::probe(program.as_deref(), tpm)
+        let program = find_program(std::env::var_os("PATH").as_ref(), &TRUSTED_DIRS);
+        let Some(program) = program else {
+            return Self::unavailable("systemd-creds is not installed".to_owned());
+        };
+        let creds = Creds::with_program(program);
+        let tpm = creds.has_tpm2();
+        Self::probe_creds(creds, tpm)
+    }
+
+    /// The process-wide result, so the security gate and the token store pay for one probe.
+    #[must_use]
+    pub fn cached() -> &'static Self {
+        static DETECTION: OnceLock<Detection> = OnceLock::new();
+        DETECTION.get_or_init(Self::system)
     }
 
     #[must_use]
@@ -361,6 +402,11 @@ impl Detection {
     }
 
     #[must_use]
+    pub const fn creds(&self) -> Option<&Creds> {
+        self.creds.as_ref()
+    }
+
+    #[must_use]
     pub fn into_creds(self) -> Option<Creds> {
         self.creds
     }
@@ -368,8 +414,7 @@ impl Detection {
     /// Link 5 of chain C1. It stacks: it protects one token on top of the file-level links.
     #[must_use]
     pub fn link(&self) -> Link {
-        let backend = self.backend.clone();
-        Link::new("systemd-creds", "systemd-creds", move || backend.probe()).stacking()
+        self.backend.link()
     }
 }
 
@@ -395,17 +440,19 @@ fn check(creds: &Creds) -> Result<(), String> {
     }
 }
 
-fn find_program(path: Option<&OsString>) -> Option<PathBuf> {
+fn find_program(path: Option<&OsString>, trusted: &[&str]) -> Option<PathBuf> {
     let from_path = path
         .into_iter()
         .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute())
         .collect::<Vec<_>>();
-    from_path
-        .into_iter()
-        .chain(FALLBACK_DIRS.iter().map(PathBuf::from))
+    trusted
+        .iter()
+        .map(PathBuf::from)
+        .chain(from_path)
         .map(|dir| dir.join(PROGRAM))
         .find(|candidate| candidate.is_file())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
