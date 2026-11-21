@@ -101,12 +101,12 @@ impl DaemonConfig {
     pub fn new(data_dir: PathBuf, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             touch_id: Arc::new(TouchId::new(data_dir.clone())),
+            clipboard: Keeper::system(&data_dir),
             data_dir,
             secrets,
             timings: Timings::default(),
             ui_exe: None,
             peers: Peers::SameExecutable,
-            clipboard: Keeper::system(),
             ui_hang_after: UI_HANG_AFTER,
             frontmost: Arc::new(SystemFrontmost),
             self_update: false,

@@ -3,7 +3,7 @@
 //! timer ([`Keeper`]). A UI that exits or is killed therefore leaves no secret behind, and the
 //! daemon clears on lock, logout, account switch and quit, whichever UI process made the copy.
 
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use vk_ipc::{ClipboardHost, RemoteVault};
 use vk_platform::clipboard::{ClipboardBackend, SecretClipboard, SystemClipboard as Pasteboard};
@@ -49,14 +49,36 @@ pub struct Keeper<B: ClipboardBackend = Pasteboard> {
 impl Keeper {
     /// The system pasteboard, or a keeper that refuses every copy when there is none.
     #[must_use]
-    pub fn system() -> Arc<dyn ClipboardKeeper> {
-        match SecretClipboard::new() {
+    pub fn system(data_dir: &Path) -> Arc<dyn ClipboardKeeper> {
+        match Self::open_system(data_dir) {
             Ok(inner) => Arc::new(Self { inner }),
             Err(error) => {
                 tracing::error!(%error, "no clipboard; copy buttons will report it");
                 Arc::new(NoClipboard)
             }
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Keeper {
+    /// Linux probes the clipboard links; the portal link keeps its grant under `data_dir`.
+    fn open_system(data_dir: &Path) -> vk_platform::Result<SecretClipboard> {
+        let portal = crate::os::linux::clipboard_portal::spawn(data_dir);
+        let backend = Pasteboard::with_portal(portal)?;
+        tracing::info!(
+            link = backend.chain_report().active.as_deref().unwrap_or("none"),
+            status = backend.chain_report().status.label(),
+            "clipboard chain"
+        );
+        SecretClipboard::with_backend(backend)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Keeper {
+    fn open_system(_data_dir: &Path) -> vk_platform::Result<SecretClipboard> {
+        SecretClipboard::new()
     }
 }
 

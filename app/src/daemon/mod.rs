@@ -193,6 +193,8 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
         .context("start the async runtime")?;
     select_backend(Backend::Daemon)?;
     let secrets = secrets::open(&data_dir, overrides.keychain_prefix.as_deref());
+    // The Linux clipboard portal task is spawned on the runtime that is current here.
+    let _runtime_guard = runtime.enter();
     let mut config = DaemonConfig::new(data_dir, secrets);
     if overrides.any_peer {
         config.peers = Peers::AnyOfThisUser;

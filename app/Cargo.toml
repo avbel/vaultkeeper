@@ -66,7 +66,7 @@ slint = { workspace = true, features = [
 ] }
 thiserror.workspace = true
 # `process` spawns and reaps the UI process, `signal` turns SIGTERM into a graceful quit.
-tokio = { workspace = true, features = ["io-std", "process", "signal"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "net", "process", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true

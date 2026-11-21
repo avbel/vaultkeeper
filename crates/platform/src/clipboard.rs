@@ -18,9 +18,19 @@ use std::{
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::{Error, Result};
+#[cfg(not(target_os = "linux"))]
+use crate::Error;
+use crate::Result;
+
+#[cfg(any(target_os = "linux", test))]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{Capabilities, LinkKind, PortalClipboard};
 
 type Digest = [u8; 32];
+
+/// How often the clearer looks again while a copy holds the backend.
+const COPY_IN_FLIGHT_RECHECK: Duration = Duration::from_millis(100);
 
 /// What [`SecretClipboard`] needs from a clipboard; [`SystemClipboard`] in production.
 pub trait ClipboardBackend: Send + 'static {
@@ -31,10 +41,12 @@ pub trait ClipboardBackend: Send + 'static {
     fn clear(&mut self) -> Result<()>;
 }
 
-/// The general pasteboard via arboard (macOS and Windows).
+/// The general pasteboard: arboard on macOS and Windows, the C8 chain on Linux.
 pub struct SystemClipboard {
     #[cfg(any(target_os = "macos", windows))]
     inner: arboard::Clipboard,
+    #[cfg(target_os = "linux")]
+    inner: linux::LinuxClipboard,
 }
 
 impl SystemClipboard {
@@ -45,10 +57,30 @@ impl SystemClipboard {
                 inner: arboard::Clipboard::new().map_err(|err| clipboard_error(&err))?,
             })
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(target_os = "linux")]
+        {
+            Self::with_portal(None)
+        }
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             Err(Error::Unsupported)
         }
+    }
+
+    /// Probes the links and uses the strongest that works; `portal` is the GNOME link the app
+    /// provides.
+    #[cfg(target_os = "linux")]
+    pub fn with_portal(portal: Option<Box<dyn PortalClipboard>>) -> Result<Self> {
+        Ok(Self {
+            inner: linux::open(portal)?,
+        })
+    }
+
+    /// Which link is active and why the others were skipped.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub const fn chain_report(&self) -> &crate::security::ChainReport {
+        self.inner.report()
     }
 }
 
@@ -107,7 +139,22 @@ impl ClipboardBackend for SystemClipboard {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+impl ClipboardBackend for SystemClipboard {
+    fn set_secret(&mut self, text: &str) -> Result<()> {
+        self.inner.set_secret(text)
+    }
+
+    fn text(&mut self) -> Result<Option<Zeroizing<String>>> {
+        self.inner.text()
+    }
+
+    fn clear(&mut self) -> Result<()> {
+        self.inner.clear()
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 impl ClipboardBackend for SystemClipboard {
     fn set_secret(&mut self, _text: &str) -> Result<()> {
         Err(Error::Unsupported)
@@ -211,7 +258,11 @@ fn clear_if_holds(backend: &mut impl ClipboardBackend, ours: &Digest) -> Result<
 }
 
 struct State<B> {
-    backend: B,
+    /// Taken out while a copy is in flight: a copy can wait on a permission dialog (the GNOME
+    /// portal), and lock-time clears must not queue behind it.
+    backend: Option<B>,
+    /// A clear was asked for while a copy was in flight; the copy clears itself when it lands.
+    clear_requested: bool,
     schedule: Schedule,
     shutdown: bool,
 }
@@ -219,6 +270,8 @@ struct State<B> {
 struct Shared<B> {
     state: Mutex<State<B>>,
     wake: Condvar,
+    /// Signalled when an in-flight copy hands the backend back.
+    idle: Condvar,
     wall: WallClock,
 }
 
@@ -254,11 +307,13 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
     pub fn with_clock(backend: B, wall: WallClock) -> Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                backend,
+                backend: Some(backend),
+                clear_requested: false,
                 schedule: Schedule::default(),
                 shutdown: false,
             }),
             wake: Condvar::new(),
+            idle: Condvar::new(),
             wall,
         });
         let worker = Arc::clone(&shared);
@@ -273,29 +328,92 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
 
     /// Replaces any pending clear from a previous copy. With `clear_after = None` the text stays
     /// until replaced or until [`Self::clear_if_ours`].
+    ///
+    /// The lock is not held while the backend copies. A [`Self::clear_if_ours`] that arrives
+    /// meanwhile is applied as soon as the copy lands.
     pub fn copy(&self, text: &str, clear_after: Option<Duration>) -> Result<()> {
+        let mut held = self.take_backend();
+        let result = held.get().set_secret(text);
         let mut state = self.shared.lock();
-        state.backend.set_secret(text)?;
-        state.schedule.copied(text, clear_after, self.shared.now());
+        let clear_requested = std::mem::take(&mut state.clear_requested);
+        if result.is_ok() {
+            state.schedule.copied(text, clear_after, self.shared.now());
+        }
+        if clear_requested && let Some(ours) = state.schedule.take_now() {
+            clear_logged(held.get(), &ours);
+        }
+        held.restore(&mut state);
         drop(state);
+        self.shared.idle.notify_all();
         self.shared.wake.notify_one();
-        Ok(())
+        result
+    }
+
+    fn take_backend(&self) -> HeldBackend<'_, B> {
+        let mut state = self.shared.lock();
+        loop {
+            if let Some(backend) = state.backend.take() {
+                state.clear_requested = false;
+                return HeldBackend {
+                    shared: &self.shared,
+                    backend: Some(backend),
+                };
+            }
+            state = self
+                .shared
+                .idle
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     /// Clears the clipboard now if it still holds our last copy and cancels the pending clear.
-    /// Returns whether it cleared.
+    /// Returns whether it cleared; while a copy is in flight it is cleared when that lands.
     pub fn clear_if_ours(&self) -> Result<bool> {
-        let mut state = self.shared.lock();
+        let mut guard = self.shared.lock();
+        let state = &mut *guard;
+        let Some(backend) = state.backend.as_mut() else {
+            state.clear_requested = true;
+            return Ok(false);
+        };
         let Some(ours) = state.schedule.take_now() else {
             return Ok(false);
         };
-        let outcome = clear_if_holds(&mut state.backend, &ours)?;
+        let outcome = clear_if_holds(backend, &ours)?;
         Ok(outcome == ClearOutcome::Cleared)
     }
 
     /// Makes the clearer look at the clocks again; call it after the system woke from sleep.
     pub fn recheck(&self) {
         self.shared.wake.notify_one();
+    }
+}
+
+/// The backend while a copy has it. Dropping it, as an unwinding panic in the backend does,
+/// hands it back; otherwise later copies would wait for it forever.
+struct HeldBackend<'a, B> {
+    shared: &'a Shared<B>,
+    backend: Option<B>,
+}
+
+impl<B> HeldBackend<'_, B> {
+    fn get(&mut self) -> &mut B {
+        self.backend
+            .as_mut()
+            .expect("the backend is held until restore")
+    }
+
+    fn restore(mut self, state: &mut State<B>) {
+        state.backend = self.backend.take();
+    }
+}
+
+impl<B> Drop for HeldBackend<'_, B> {
+    fn drop(&mut self) {
+        if let Some(backend) = self.backend.take() {
+            self.shared.lock().backend = Some(backend);
+            self.shared.idle.notify_all();
+        }
     }
 }
 
@@ -327,9 +445,18 @@ fn run_clearer<B: ClipboardBackend>(shared: &Shared<B>) {
                     .unwrap_or_else(PoisonError::into_inner);
                 state
             }
+            Some(_) if state.backend.is_none() => {
+                let (state, _) = shared
+                    .wake
+                    .wait_timeout(state, COPY_IN_FLIGHT_RECHECK)
+                    .unwrap_or_else(PoisonError::into_inner);
+                state
+            }
             Some(_) => {
-                if let Some(ours) = state.schedule.take_due(now) {
-                    clear_logged(&mut state.backend, &ours);
+                if let Some(ours) = state.schedule.take_due(now)
+                    && let Some(backend) = state.backend.as_mut()
+                {
+                    clear_logged(backend, &ours);
                 }
                 state
             }
@@ -338,8 +465,9 @@ fn run_clearer<B: ClipboardBackend>(shared: &Shared<B>) {
     // A secret with a pending clear must not outlive the app.
     if state.schedule.next_deadline().is_some()
         && let Some(ours) = state.schedule.take_now()
+        && let Some(backend) = state.backend.as_mut()
     {
-        clear_logged(&mut state.backend, &ours);
+        clear_logged(backend, &ours);
     }
 }
 
@@ -354,6 +482,7 @@ fn clear_logged(backend: &mut impl ClipboardBackend, ours: &Digest) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Error;
 
     #[derive(Clone, Default)]
     struct FakeClipboard {
@@ -447,6 +576,20 @@ mod tests {
             "cleared by the clearer thread"
         );
         drop(clipboard);
+    }
+
+    /// Prints what the probes find in the current session:
+    /// `cargo test -p vk-platform live_chain_report -- --ignored --nocapture`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "probes the real session"]
+    #[allow(
+        clippy::print_stdout,
+        reason = "the output is the point of this manual probe"
+    )]
+    fn live_chain_report() {
+        let clipboard = SystemClipboard::new().expect("a clipboard link");
+        println!("{:#?}", clipboard.chain_report());
     }
 
     #[test]
@@ -645,6 +788,91 @@ mod tests {
         assert_eq!(fake.content(), None);
         assert_eq!(clipboard.shared.lock().schedule.next_deadline(), None);
         assert!(!clipboard.clear_if_ours().expect("nothing left to clear"));
+    }
+
+    struct GatedFake {
+        inner: FakeClipboard,
+        entered: std::sync::mpsc::Sender<()>,
+        gate: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl ClipboardBackend for GatedFake {
+        fn set_secret(&mut self, text: &str) -> Result<()> {
+            self.entered.send(()).expect("test is listening");
+            self.gate.recv().expect("test opens the gate");
+            self.inner.set_secret(text)
+        }
+
+        fn text(&mut self) -> Result<Option<Zeroizing<String>>> {
+            self.inner.text()
+        }
+
+        fn clear(&mut self) -> Result<()> {
+            self.inner.clear()
+        }
+    }
+
+    #[test]
+    fn a_clear_during_a_slow_copy_does_not_wait_and_wins_when_the_copy_lands() {
+        let fake = FakeClipboard::default();
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (open, gate) = std::sync::mpsc::channel();
+        let clipboard = SecretClipboard::with_backend(GatedFake {
+            inner: fake.clone(),
+            entered,
+            gate,
+        })
+        .expect("clipboard");
+        std::thread::scope(|scope| {
+            let copy = scope.spawn(|| clipboard.copy("hunter2", Some(THIRTY_SECONDS)));
+            entered_rx.recv().expect("copy started");
+            assert!(!clipboard.clear_if_ours().expect("returns at once"));
+            open.send(()).expect("open gate");
+            copy.join().expect("copy thread").expect("copy");
+        });
+        assert_eq!(fake.content(), None);
+        assert_eq!(clipboard.shared.lock().schedule.next_deadline(), None);
+    }
+
+    struct PanicsOnce {
+        inner: FakeClipboard,
+        armed: bool,
+    }
+
+    impl ClipboardBackend for PanicsOnce {
+        fn set_secret(&mut self, text: &str) -> Result<()> {
+            assert!(!std::mem::take(&mut self.armed), "backend panicked");
+            self.inner.set_secret(text)
+        }
+
+        fn text(&mut self) -> Result<Option<Zeroizing<String>>> {
+            self.inner.text()
+        }
+
+        fn clear(&mut self) -> Result<()> {
+            self.inner.clear()
+        }
+    }
+
+    #[test]
+    fn a_panicking_backend_is_handed_back_for_the_next_copy() {
+        let fake = FakeClipboard::default();
+        let clipboard = SecretClipboard::with_backend(PanicsOnce {
+            inner: fake.clone(),
+            armed: true,
+        })
+        .expect("clipboard");
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            clipboard.copy("hunter2", Some(SHORT))
+        }));
+        assert!(first.is_err());
+        clipboard
+            .copy("second", Some(SHORT))
+            .expect("copy after the panic");
+        assert!(
+            wait_until(|| fake.content().is_none()),
+            "the clearer still works"
+        );
     }
 
     #[test]

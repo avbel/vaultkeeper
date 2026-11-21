@@ -6,16 +6,20 @@ use std::path::{Path, PathBuf};
 
 use vk_platform::fs::{self, Refusal, Repair};
 
-use crate::os::layout::{BROWSER_CHOICES_FILE, BROWSER_PAIRINGS_FILE, DEVICE_FILE, SETTINGS_FILE};
+use crate::os::layout::{
+    BROWSER_CHOICES_FILE, BROWSER_PAIRINGS_FILE, CLIPBOARD_PORTAL_TOKEN_FILE, DEVICE_FILE,
+    SETTINGS_FILE,
+};
 
 const ACCOUNTS_FILE: &str = "accounts.json";
 const ACCOUNTS_DIR: &str = "accounts";
-const DATA_DIR_FILES: [&str; 5] = [
+const DATA_DIR_FILES: [&str; 6] = [
     ACCOUNTS_FILE,
     BROWSER_PAIRINGS_FILE,
     BROWSER_CHOICES_FILE,
     SETTINGS_FILE,
     DEVICE_FILE,
+    CLIPBOARD_PORTAL_TOKEN_FILE,
 ];
 /// The files of one account directory that carry secrets or the key to them: the cache header,
 /// the sealed tokens and the Windows Hello enrolment.
