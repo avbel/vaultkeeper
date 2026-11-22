@@ -98,9 +98,11 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     /// A 64-bit ELF with a `PT_LOAD` and a `PT_INTERP` naming `loader`.
+    #[cfg(unix)]
     fn elf(loader: &[u8]) -> Vec<u8> {
         let mut file = vec![0_u8; ELF64_HEADER + 2 * ELF64_PROGRAM_HEADER];
         file[..6].copy_from_slice(b"\x7fELF\x02\x01");
@@ -118,6 +120,8 @@ mod tests {
         file
     }
 
+    // A Unix loader path is not absolute on Windows, where the sandbox does not exist.
+    #[cfg(unix)]
     #[test]
     fn the_loader_is_read_from_the_program_headers() {
         let dir = tempfile::tempdir().expect("tempdir");
