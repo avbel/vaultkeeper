@@ -59,6 +59,7 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
   const interaction = new WeakMap<Element, number>();
   const emitted = new WeakSet<Element>();
   const watched = new WeakSet<Element>();
+  const rescanned = new WeakSet<Element>();
   const generated = new WeakMap<Element, { value: string; fields: HTMLInputElement[] }>();
   let known: LoginForm[] = [];
   let lastUsername = "";
@@ -134,11 +135,19 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
     }
     emitted.add(form.container);
     deps.emit(candidate);
+    generated.delete(form.container);
   };
 
+  // A full scan per keystroke in every search box would be too slow; a field that turns into
+  // part of a login form later is picked up by the page's own rescan.
   const formOf = (el: Element): LoginForm | undefined => {
     const match = (forms: LoginForm[]) => forms.find((f) => composedContains(f.container, el));
-    return match(deps.forms()) ?? match(deps.rescan());
+    const found = match(deps.forms());
+    if (found || rescanned.has(el)) {
+      return found;
+    }
+    rescanned.add(el);
+    return match(deps.rescan());
   };
 
   const touch = (map: WeakMap<Element, number>, form: LoginForm): void => {
@@ -233,9 +242,17 @@ export function createCapture(deps: CaptureDeps, doc: Document = document): Capt
         emitFor(form);
       }
     }
-    for (const el of model.keys()) {
-      if (!el.isConnected) {
+    // Text the field no longer holds can never be saved; keeping it would only hold on to a
+    // password the page already cleared, and garble whatever the user types next.
+    for (const [el, text] of model) {
+      if (!el.isConnected || (text !== null && el.value !== text)) {
         model.delete(el);
+      }
+    }
+    for (const form of forms) {
+      const mark = generated.get(form.container);
+      if (mark && !mark.fields.every((el) => el.value === mark.value)) {
+        generated.delete(form.container);
       }
     }
     known = forms;

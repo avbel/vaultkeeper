@@ -17,15 +17,20 @@ let capture: Capture | undefined;
 let forms: LoginForm[] = [];
 let emitted: SaveCandidate[] = [];
 let clock = 0;
+let rescans = 0;
 
 function start(html: string): void {
   render(html);
   emitted = [];
   clock = 0;
+  rescans = 0;
   forms = detect();
   capture = createCapture({
     forms: () => forms,
-    rescan: () => (forms = detect()),
+    rescan: () => {
+      rescans += 1;
+      return (forms = detect());
+    },
     emit: (c) => emitted.push(c),
     isTrusted: () => true,
     path: () => "/login",
@@ -94,6 +99,43 @@ describe("capture", () => {
     typeInto(input("#p"), "pw");
     input("#p").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(emitted).toHaveLength(1);
+  });
+
+  test("typing in a field outside any login form rescans the page once, not per keystroke", () => {
+    start(`<input id="q" type="search">${LOGIN}`);
+    typeInto(input("#q"), "how to bake");
+    expect(rescans).toBe(1);
+  });
+
+  test("a login form rendered after the last scan is found on the first keystroke", () => {
+    start("");
+    document.body.innerHTML = LOGIN;
+    typeInto(input("#p"), "hunter2");
+    expect(rescans).toBe(1);
+    pressEnter(input("#p"));
+    expect(emitted).toMatchObject([{ password: "hunter2" }]);
+  });
+
+  test("a password extended after a failed attempt is offered again", () => {
+    start(LOGIN);
+    typeInto(input("#p"), "pw");
+    pressEnter(input("#p"));
+    keystroke(input("#p"), "x");
+    pressEnter(input("#p"));
+    expect(emitted.map((c) => c.password)).toEqual(["pw", "pwx"]);
+  });
+
+  test("a password the page cleared after a failed attempt is dropped, so the retype is offered", () => {
+    start(LOGIN);
+    typeInto(input("#p"), "wrong");
+    pressEnter(input("#p"));
+    input("#p").value = "";
+    capture!.refresh(forms);
+    for (const char of "right") {
+      keystroke(input("#p"), char);
+    }
+    pressEnter(input("#p"));
+    expect(emitted.map((c) => c.password)).toEqual(["wrong", "right"]);
   });
 
   test("untrusted events do not count as typing", () => {

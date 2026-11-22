@@ -31,6 +31,8 @@ export interface RouterDeps {
     ): Promise<RequestMap[T]["result"]>;
     readonly theme: Theme;
     readonly status: { phase: string; state?: string | null };
+    /** Connects and pairs when needed. */
+    ensureReady(): Promise<void>;
     /** Resolves when a handshake that is already running is done. */
     settled(): Promise<void>;
   };
@@ -64,6 +66,8 @@ function toBeginFillResult(reply: unknown): BeginFillResult {
 
 export function createRouter(deps: RouterDeps) {
   const inFlight = new Set<Promise<void>>();
+  /** Passkey requests waiting for the app, by `passkeyKey`. */
+  const passkeysInFlight = new Set<string>();
 
   function verify(sender: SenderLike): VerifiedSender | null {
     if (sender.id !== deps.runtimeId || !sender.tab || sender.tab.id === undefined) {
@@ -132,12 +136,12 @@ export function createRouter(deps: RouterDeps) {
     }
   }
 
-  async function waitForHandshake(): Promise<void> {
+  async function waitForHandshake(handshake = deps.session.settled()): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, HANDSHAKE_WAIT_MS);
     });
-    await Promise.race([deps.session.settled(), timeout]);
+    await Promise.race([handshake.catch(() => undefined), timeout]);
     clearTimeout(timer);
   }
 
@@ -214,7 +218,13 @@ export function createRouter(deps: RouterDeps) {
     from: VerifiedSender,
     message: Extract<ToBackground, { kind: "passkey_request" }>,
   ): Promise<void> {
-    const outcome = await passkeyOutcome(from, message);
+    const key = passkeyKey(from, message.nonce);
+    let outcome: PasskeyOutcome;
+    try {
+      outcome = await passkeyOutcome(from, message);
+    } finally {
+      passkeysInFlight.delete(key);
+    }
     const tab = await deps.getTab(from.tabId).catch(() => null);
     if (webOrigin(tab?.url) !== from.origin) {
       return;
@@ -229,8 +239,17 @@ export function createRouter(deps: RouterDeps) {
     from: VerifiedSender,
     message: Extract<ToBackground, { kind: "passkey_request" }>,
   ): Promise<PasskeyOutcome> {
-    const phase = deps.session.status.phase;
-    if (phase === "denied" || phase === "unavailable") {
+    // Read afresh after each await: the probe changes it.
+    const phase = (): string => deps.session.status.phase;
+    if (phase() === "unavailable") {
+      // The app may have started since it was last seen; a short probe finds out without holding
+      // the site's ceremony up for long.
+      await waitForHandshake(deps.session.ensureReady());
+      if (phase() !== "ready") {
+        return { outcome: "fallback" };
+      }
+    }
+    if (phase() === "denied") {
       return { outcome: "fallback" };
     }
     try {
@@ -249,7 +268,12 @@ export function createRouter(deps: RouterDeps) {
     }
   }
 
-  async function cancelPasskey(from: VerifiedSender): Promise<void> {
+  // The app cancels whatever passkey request is open for the origin, so only the frame whose
+  // own request is still waiting may cancel: another tab on the same site would abort that one.
+  async function cancelPasskey(from: VerifiedSender, nonce: string): Promise<void> {
+    if (!passkeysInFlight.has(passkeyKey(from, nonce))) {
+      return;
+    }
     try {
       await deps.session.request("passkey_cancel", { origin: from.origin });
     } catch {
@@ -286,22 +310,24 @@ export function createRouter(deps: RouterDeps) {
           track(runGenerate(from, parsed));
           break;
         case "passkey_request":
+          passkeysInFlight.add(passkeyKey(from, parsed.nonce));
           track(runPasskey(from, parsed));
           break;
         case "passkey_cancel":
-          track(cancelPasskey(from));
+          track(cancelPasskey(from, parsed.nonce));
           break;
       }
       return { accepted: true };
     },
 
-    async beginFill(tabId: number, choose: boolean): Promise<BeginFillResult> {
-      const send = () => deps.sendToTab(tabId, { kind: "begin_fill", choose }, 0);
+    async beginFill(tabId: number, choose: boolean, frameId = 0): Promise<BeginFillResult> {
+      const send = () => deps.sendToTab(tabId, { kind: "begin_fill", choose }, frameId);
       try {
         return toBeginFillResult(await send());
       } catch (error) {
-        // Only a missing receiver justifies injecting; any other failure would double-load the script.
-        if (!NO_RECEIVER.test(messageOf(error))) {
+        // Only a missing receiver justifies injecting; any other failure would double-load the
+        // script. Injection covers only the top frame.
+        if (frameId !== 0 || !NO_RECEIVER.test(messageOf(error))) {
           return { reached: false };
         }
       }
@@ -321,6 +347,10 @@ export function createRouter(deps: RouterDeps) {
       await Promise.all(inFlight);
     },
   };
+}
+
+function passkeyKey(from: VerifiedSender, nonce: string): string {
+  return `${from.tabId}:${from.frameId}:${nonce}`;
 }
 
 function isFillFields(value: unknown): value is FillFields {

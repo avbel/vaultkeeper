@@ -1,10 +1,9 @@
 import type { FieldLimits, ToBackground, ToContent } from "../shared/messages.ts";
 import { isVisible, type LoginForm } from "./detect.ts";
-import { setNativeValue } from "./fill.ts";
+import { NONCE_TTL_MS, setNativeValue } from "./fill.ts";
 
 /** Shorter fields cannot hold a strong password; the app refuses them too. */
 const MIN_STRONG_LENGTH = 5;
-const REQUEST_TTL_MS = 130_000;
 
 type ResultMessage = Extract<ToContent, { kind: "generate_result" }>;
 type ErrorMessage = Extract<ToContent, { kind: "generate_error" }>;
@@ -26,6 +25,8 @@ export interface Generator {
   request: (form: LoginForm, anchor: HTMLInputElement) => GenerateRequest;
   applyResult: (message: ResultMessage) => GenerateOutcome;
   applyError: (message: ErrorMessage) => boolean;
+  /** Drops the pending request with `nonce`; true when it was still pending. */
+  cancel: (nonce: string) => boolean;
 }
 
 interface Pending {
@@ -59,7 +60,7 @@ export function createGenerator(deps: GeneratorDeps): Generator {
   const origin = deps.origin ?? (() => location.origin);
   let pending: Pending | null = null;
 
-  const live = (p: Pending): boolean => now() - p.createdAt < REQUEST_TTL_MS;
+  const live = (p: Pending): boolean => now() - p.createdAt < NONCE_TTL_MS;
 
   const claim = (nonce: string): Pending | null => {
     const current = pending;
@@ -122,6 +123,14 @@ export function createGenerator(deps: GeneratorDeps): Generator {
 
     applyError(message) {
       return claim(message.nonce) !== null;
+    },
+
+    cancel(nonce) {
+      if (pending?.nonce !== nonce) {
+        return false;
+      }
+      pending = null;
+      return true;
     },
   };
 }

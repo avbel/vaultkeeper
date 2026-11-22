@@ -1,5 +1,6 @@
 import { api } from "../shared/api.ts";
-import type { PopupFillReply, PopupPush, PopupRequest, PopupStatus } from "../shared/popup.ts";
+import type { PopupPush, PopupRequest, PopupStatus } from "../shared/popup.ts";
+import { NOTICE_NO_RESPONSE, replyNotice } from "./notice.ts";
 
 const SITE_ORIGINS = ["https://*/*", "http://*/*"];
 
@@ -30,10 +31,6 @@ let siteAccess = true;
 let status: PopupStatus | null = null;
 let busy = false;
 let notice: string | null = null;
-
-const NOTICE_NO_FORM = "No login form found on this page.";
-const NOTICE_UNREACHABLE = "Vaultkeeper cannot reach this page. Reload it and try again.";
-const NOTICE_NO_RESPONSE = "Vaultkeeper did not respond. Try again.";
 
 const root = document.getElementById("root") as HTMLElement;
 
@@ -84,16 +81,6 @@ async function refresh(): Promise<void> {
   }
 }
 
-function fillNotice(reply: PopupFillReply | undefined): string | null {
-  if (!reply) {
-    return NOTICE_NO_RESPONSE;
-  }
-  if (!reply.ok) {
-    return NOTICE_UNREACHABLE;
-  }
-  return reply.found ? null : NOTICE_NO_FORM;
-}
-
 // The popup closes only when the request succeeded; otherwise it stays open and says why.
 async function runBusy(request: PopupRequest, closeAfter: boolean): Promise<void> {
   busy = true;
@@ -101,11 +88,8 @@ async function runBusy(request: PopupRequest, closeAfter: boolean): Promise<void
   render();
   let closeNow = closeAfter;
   try {
-    const reply = await send(request);
-    if (request.kind === "popup_fill") {
-      notice = fillNotice(reply as PopupFillReply | undefined);
-      closeNow = closeAfter && notice === null;
-    }
+    notice = replyNotice(request, await send(request));
+    closeNow = closeAfter && notice === null;
   } catch {
     notice = NOTICE_NO_RESPONSE;
     closeNow = false;
@@ -230,6 +214,7 @@ function render(): void {
   const nodes: Node[] = [
     el("header", {}, [icon("shield"), el("span", { text: "Vaultkeeper" })]),
     ...body(status),
+    ...(notice ? [message("warn", "warning", notice)] : []),
   ];
   if (status?.fingerprint) {
     nodes.push(

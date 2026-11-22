@@ -1,7 +1,10 @@
 import type { ToBackground, ToContent } from "../shared/messages.ts";
+import { NATIVE_REQUEST_TIMEOUT_MS } from "../shared/protocol.ts";
 import { autocompleteTokens, isPasswordField, isVisible, type LoginForm } from "./detect.ts";
 
-export const NONCE_TTL_MS = 130_000;
+// The content clock starts before the background's, so a request the app times out on must still
+// find its pending entry when that error arrives.
+export const NONCE_TTL_MS = NATIVE_REQUEST_TIMEOUT_MS + 5_000;
 
 type FillResultMessage = Extract<ToContent, { kind: "fill_result" }>;
 type FillErrorMessage = Extract<ToContent, { kind: "fill_error" }>;
@@ -20,7 +23,8 @@ export interface Filler {
   request: (form: LoginForm, choose: boolean, auto?: boolean) => boolean;
   applyResult: (message: FillResultMessage) => FillOutcome;
   applyError: (message: FillErrorMessage) => boolean;
-  cancel: () => void;
+  /** Drops the pending request, or only the one with `nonce`; true when one was dropped. */
+  cancel: (nonce?: string) => boolean;
   isPending: () => boolean;
 }
 
@@ -148,8 +152,12 @@ export function createFiller(deps: FillDeps): Filler {
       return claim(message.nonce) !== null;
     },
 
-    cancel() {
+    cancel(nonce) {
+      if (!pending || (nonce !== undefined && pending.nonce !== nonce)) {
+        return false;
+      }
       pending = null;
+      return true;
     },
 
     isPending() {

@@ -3,13 +3,11 @@
 
 import { api } from "../shared/api.ts";
 import type { ToBackground } from "../shared/messages.ts";
+import { forwardToBackground } from "../shared/send.ts";
 import { CANCEL, type Outcome, parseOutcome, parseRequest } from "./bridge.ts";
 
 function forward(message: ToBackground): Promise<boolean> {
-  return Promise.resolve(api.runtime.sendMessage(message)).then(
-    (answer: { accepted?: boolean } | undefined) => answer?.accepted === true,
-    () => false,
-  );
+  return forwardToBackground((m: ToBackground) => api.runtime.sendMessage(m), message);
 }
 
 function main(): void {

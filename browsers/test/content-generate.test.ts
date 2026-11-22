@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import { createGenerator, fieldLimits } from "../src/content/generate.ts";
 import type { ToBackground } from "../src/shared/messages.ts";
+import { NATIVE_REQUEST_TIMEOUT_MS } from "../src/shared/protocol.ts";
 import { detect, input, render, visible } from "./content-dom.ts";
 
 const SIGN_UP = `<form><input type="email"><input id="a" type="password" maxlength="20"><input id="b" type="password" minlength="10" maxlength="32"></form>`;
@@ -91,6 +92,26 @@ describe("generator", () => {
       true,
     );
     expect(g.applyResult(result(n))).toBe("ignored");
+  });
+
+  test("the app's timeout error, which arrives after the native timeout, is still claimed", () => {
+    render(SIGN_UP);
+    const g = generator();
+    g.request(detect()[0]!, input("#a"));
+    clock += NATIVE_REQUEST_TIMEOUT_MS + 1_000;
+    expect(
+      g.applyError({ kind: "generate_error", nonce: nonce(), code: "timeout", theme: "dark" }),
+    ).toBe(true);
+  });
+
+  test("a cancelled request lets the next click ask again; another nonce cancels nothing", () => {
+    render(SIGN_UP);
+    const g = generator();
+    g.request(detect()[0]!, input("#a"));
+    expect(g.cancel("other")).toBe(false);
+    expect(g.request(detect()[0]!, input("#a"))).toBe("pending");
+    expect(g.cancel(nonce())).toBe(true);
+    expect(g.request(detect()[0]!, input("#a"))).toBe("sent");
   });
 
   test("a field too short for a strong password is not asked for", () => {

@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import { createFiller, NONCE_TTL_MS } from "../src/content/fill.ts";
 import type { ToBackground } from "../src/shared/messages.ts";
+import { NATIVE_REQUEST_TIMEOUT_MS } from "../src/shared/protocol.ts";
 import { detect, input, render } from "./content-dom.ts";
 import { visible } from "./content-dom.ts";
 
@@ -100,6 +101,15 @@ describe("fill", () => {
     filler.request(form, false);
     now += NONCE_TTL_MS;
     expect(filler.applyResult(result(nonceOf(sent), "alice", "pw")).claimed).toBe(false);
+  });
+
+  test("the app's timeout error, which arrives after the native timeout, is still claimed", () => {
+    let now = 1_000;
+    const { filler, form, sent } = setup({ now: () => now });
+    filler.request(form, false);
+    now += NATIVE_REQUEST_TIMEOUT_MS + 1_000;
+    const error = { kind: "fill_error", nonce: nonceOf(sent), code: "timeout", theme: "system" };
+    expect(filler.applyError(error as Parameters<typeof filler.applyError>[0])).toBe(true);
   });
 
   test("a second request is blocked while one is pending", () => {
@@ -223,6 +233,17 @@ describe("fill", () => {
       const late = result((auto as { nonce: string }).nonce, "alice", "pw");
       expect(filler.applyResult(late).claimed).toBe(false);
       expect(input("#p").value).toBe("");
+    });
+
+    test("cancelling the replaced automatic request leaves the click's request pending", () => {
+      const { filler, form, sent } = setup();
+      filler.request(form, false, true);
+      filler.request(form, false);
+      const [auto, click] = sent as { nonce: string }[];
+      expect(filler.cancel(auto!.nonce)).toBe(false);
+      expect(filler.isPending()).toBe(true);
+      expect(filler.cancel(click!.nonce)).toBe(true);
+      expect(filler.isPending()).toBe(false);
     });
 
     test("a manual request still blocks a second manual one", () => {

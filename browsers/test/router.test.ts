@@ -24,6 +24,7 @@ function setup(
     state?: string | null;
     sendToTab?: RouterDeps["sendToTab"];
     settled?: () => Promise<void>;
+    ensureReady?: (status: { phase: string; state?: string | null }) => Promise<void>;
   } = {},
 ) {
   const request = vi.fn(
@@ -32,6 +33,11 @@ function setup(
   );
   const sent: { tabId: number; message: ToContent; frameId: number }[] = [];
   const injectContent = vi.fn(async (_tabId: number) => undefined);
+  const status = {
+    phase: options.phase ?? "ready",
+    state: options.state === undefined ? "unlocked" : options.state,
+  };
+  const ensureReady = vi.fn(async () => options.ensureReady?.(status));
   const deps: RouterDeps = {
     runtimeId: RUNTIME_ID,
     getTab: async () => ({ url: options.tabUrl ?? PAGE }),
@@ -44,14 +50,12 @@ function setup(
     session: {
       request: request as unknown as RouterDeps["session"]["request"],
       theme: "dark",
-      status: {
-        phase: options.phase ?? "ready",
-        state: options.state === undefined ? "unlocked" : options.state,
-      },
+      status,
+      ensureReady,
       settled: options.settled ?? (async () => undefined),
     },
   };
-  return { router: createRouter(deps), request, sent, injectContent, status: deps.session.status };
+  return { router: createRouter(deps), request, sent, injectContent, status, ensureReady };
 }
 
 const FILL = {
@@ -433,6 +437,21 @@ describe("begin_fill", () => {
     expect(injectContent).not.toHaveBeenCalled();
   });
 
+  it("targets the frame the context menu was opened in, without injecting there", async () => {
+    const { router, sent } = setup();
+    expect(await router.beginFill(9, false, 4)).toEqual({ reached: true, found: true });
+    expect(sent).toEqual([
+      { tabId: 9, frameId: 4, message: { kind: "begin_fill", choose: false } },
+    ]);
+    const missing = setup({
+      sendToTab: async () => {
+        throw NO_RECEIVER;
+      },
+    });
+    expect(await missing.router.beginFill(9, false, 4)).toEqual({ reached: false });
+    expect(missing.injectContent).not.toHaveBeenCalled();
+  });
+
   it("passes on found: false from the content script", async () => {
     const { router } = setup({ sendToTab: async () => ({ found: false }) });
     expect(await router.beginFill(9, false)).toEqual({ reached: true, found: false });
@@ -555,18 +574,41 @@ describe("router passkeys", () => {
     }
   });
 
-  it("does not wake an app the user refused or that is not installed", async () => {
-    for (const phase of ["denied", "unavailable"]) {
-      const { router, request, sent } = setup({ phase });
-      await router.handleContentMessage(GET, sender());
-      await router.idle();
-      expect(request).not.toHaveBeenCalled();
-      expect(sent[0]?.message).toEqual({
-        kind: "passkey_result",
-        nonce: "p1",
-        outcome: "fallback",
-      });
-    }
+  it("does not wake an app the user refused", async () => {
+    const { router, request, sent, ensureReady } = setup({ phase: "denied" });
+    await router.handleContentMessage(GET, sender());
+    await router.idle();
+    expect(ensureReady).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(sent[0]?.message).toEqual({ kind: "passkey_result", nonce: "p1", outcome: "fallback" });
+  });
+
+  it("probes an app last seen unavailable once, and falls back while it is still away", async () => {
+    const { router, request, sent, ensureReady } = setup({
+      phase: "unavailable",
+      ensureReady: async () => {
+        throw new NativeError("unavailable");
+      },
+    });
+    await router.handleContentMessage(GET, sender());
+    await router.idle();
+    expect(ensureReady).toHaveBeenCalledOnce();
+    expect(request).not.toHaveBeenCalled();
+    expect(sent[0]?.message).toEqual({ kind: "passkey_result", nonce: "p1", outcome: "fallback" });
+  });
+
+  it("uses the app again once the probe finds it restarted", async () => {
+    const { router, request, sent } = setup({
+      phase: "unavailable",
+      request: async () => ({ credential: { id: "AQ" } }),
+      ensureReady: async (status) => {
+        status.phase = "ready";
+      },
+    });
+    await router.handleContentMessage(GET, sender());
+    await router.idle();
+    expect(request).toHaveBeenCalledWith("passkey_get", expect.anything());
+    expect(sent[0]?.message).toMatchObject({ outcome: "credential" });
   });
 
   it("drops the answer when the tab moved to another site meanwhile", async () => {
@@ -579,10 +621,56 @@ describe("router passkeys", () => {
     expect(sent).toEqual([]);
   });
 
-  it("forwards a cancel for the sender's origin", async () => {
-    const { router, request } = setup();
-    await router.handleContentMessage({ kind: "passkey_cancel", nonce: "p1" }, sender());
-    await router.idle();
-    expect(request).toHaveBeenCalledWith("passkey_cancel", { origin: "https://shop.example" });
+  describe("cancel", () => {
+    const CANCEL = { kind: "passkey_cancel", nonce: "p1" };
+
+    function pending() {
+      let finish: () => void = () => undefined;
+      const answered = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const harness = setup({
+        request: async (type: string) => {
+          if (type === "passkey_get") {
+            await answered;
+            throw new NativeError("not_allowed");
+          }
+          return {};
+        },
+      });
+      const cancels = () =>
+        harness.request.mock.calls.filter(([type]) => type === "passkey_cancel");
+      return { ...harness, finish, cancels };
+    }
+
+    it("is forwarded for the sender's origin while the frame's own request waits", async () => {
+      const { router, request, finish, cancels } = pending();
+      await router.handleContentMessage(GET, sender());
+      await router.handleContentMessage(CANCEL, sender());
+      finish();
+      await router.idle();
+      expect(cancels()).toHaveLength(1);
+      expect(request).toHaveBeenCalledWith("passkey_cancel", { origin: "https://shop.example" });
+    });
+
+    it("from another tab or frame on the same site leaves the waiting request alone", async () => {
+      const { router, finish, cancels } = pending();
+      await router.handleContentMessage(GET, sender());
+      await router.handleContentMessage(CANCEL, sender({ tab: { id: 6, url: PAGE } }));
+      await router.handleContentMessage(CANCEL, sender({ frameId: 2 }));
+      finish();
+      await router.idle();
+      expect(cancels()).toEqual([]);
+    });
+
+    it("is not forwarded once the request has been answered", async () => {
+      const { router, finish, cancels } = pending();
+      await router.handleContentMessage(GET, sender());
+      finish();
+      await router.idle();
+      await router.handleContentMessage(CANCEL, sender());
+      await router.idle();
+      expect(cancels()).toEqual([]);
+    });
   });
 });

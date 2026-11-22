@@ -93,11 +93,15 @@ api.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   return true;
 });
 
-async function fillActiveTab(tabId: number | undefined, choose: boolean): Promise<void> {
+async function fillActiveTab(
+  tabId: number | undefined,
+  choose: boolean,
+  frameId = 0,
+): Promise<void> {
   if (tabId === undefined) {
     return;
   }
-  await router.beginFill(tabId, choose).catch(() => undefined);
+  await router.beginFill(tabId, choose, frameId).catch(() => undefined);
 }
 
 api.commands.onCommand.addListener((command, tab) => {
@@ -107,10 +111,11 @@ api.commands.onCommand.addListener((command, tab) => {
 });
 
 api.contextMenus.onClicked.addListener((info, tab) => {
+  const frameId = info.frameId ?? 0;
   if (info.menuItemId === MENU_FILL) {
-    void fillActiveTab(tab?.id, false);
+    void fillActiveTab(tab?.id, false, frameId);
   } else if (info.menuItemId === MENU_CHOOSE) {
-    void fillActiveTab(tab?.id, true);
+    void fillActiveTab(tab?.id, true, frameId);
   }
 });
 
