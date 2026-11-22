@@ -128,6 +128,11 @@ fn losing_focus_hides_the_panel() {
         .window()
         .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
     pump();
+    assert!(
+        h.app.quick_panel().is_some(),
+        "the dismissal is deferred out of the focus change handler"
+    );
+    pump();
     assert!(h.app.quick_panel().is_none());
 }
 

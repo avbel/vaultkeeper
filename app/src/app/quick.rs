@@ -1,6 +1,6 @@
 //! Quick Panel: search-first pop-up, 8 rows, copy and dismiss.
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use slint::{ComponentHandle, ModelRc, SharedString};
 use vk_vault::{
@@ -155,26 +155,34 @@ impl<S: VaultService> App<S> {
             keymap::command(&text, Mods { cmd, shift, alt })
                 .is_some_and(|command| app.quick_command(command))
         }));
-        // The change handler can run after this panel was replaced by a new one; only close
-        // the panel that actually lost focus.
+        // The change handler fires while the window is being drawn (a focus change is applied
+        // when the tree is next instantiated), and hiding then re-enters the software
+        // renderer's surface borrow and panics. Dismiss from a later event-loop turn instead.
         let sender = window.as_weak();
         window.on_focus_lost(handler!(self, |app| {
-            // The Hello dialog takes the activation while it is up; closing the panel under it
-            // would drop the window it is parented to.
-            if cfg!(windows) && app.touch_id_in_flight.get() {
-                return;
-            }
-            let current = app
-                .quick
-                .borrow()
-                .as_ref()
-                .map(|quick| quick.window.as_weak());
-            if let (Some(sender), Some(current)) =
-                (sender.upgrade(), current.and_then(|weak| weak.upgrade()))
-                && std::ptr::eq(sender.window(), current.window())
-            {
-                app.dismiss_quick_panel();
-            }
+            let weak = std::rc::Weak::clone(&app.me);
+            let sender = sender.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                // The panel may have been replaced or closed by now; only close the one that
+                // actually lost focus.
+                let same_panel = {
+                    let current = app
+                        .quick
+                        .borrow()
+                        .as_ref()
+                        .map(|quick| quick.window.as_weak());
+                    matches!(
+                        (sender.upgrade(), current.and_then(|weak| weak.upgrade())),
+                        (Some(sender), Some(current)) if std::ptr::eq(sender.window(), current.window())
+                    )
+                };
+                if focus_loss_dismisses(app.touch_id_in_flight.get(), same_panel) {
+                    app.dismiss_quick_panel();
+                }
+            });
         }));
         window.on_toast_dismissed(handler!(self, |app| {
             if let Some(quick) = app.quick.borrow().as_ref() {
@@ -348,6 +356,12 @@ impl<S: VaultService> App<S> {
     }
 }
 
+/// The Hello dialog takes the activation while it is up; closing the panel under it would drop
+/// the window it is parented to.
+fn focus_loss_dismisses(touch_id_in_flight: bool, same_panel: bool) -> bool {
+    same_panel && !(cfg!(windows) && touch_id_in_flight)
+}
+
 /// Wayland creates the winit window when the Slint window is shown, so this runs after `show`.
 #[cfg(target_os = "linux")]
 fn watch_modifiers(window: &QuickPanel, held: Rc<Cell<bool>>) {
@@ -359,4 +373,24 @@ fn watch_modifiers(window: &QuickPanel, held: Rc<Cell<bool>>) {
         }
         EventResult::Propagate
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::focus_loss_dismisses;
+
+    #[test]
+    fn a_replaced_or_closed_panel_is_not_dismissed_by_a_late_focus_loss() {
+        assert!(!focus_loss_dismisses(false, false));
+    }
+
+    #[test]
+    fn the_focused_panel_is_dismissed() {
+        assert!(focus_loss_dismisses(false, true));
+    }
+
+    #[test]
+    fn hello_dialog_keeps_the_panel_on_windows_only() {
+        assert_eq!(focus_loss_dismisses(true, true), !cfg!(windows));
+    }
 }
