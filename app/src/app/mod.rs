@@ -481,6 +481,7 @@ impl<S: VaultService> App<S> {
         theme.set_portal_scheme(crate::system_scheme::current().slint_code());
         theme.set_scale(settings.text_scale.factor());
         theme.set_site_icons(settings.show_site_icons);
+        theme.set_show_shortcuts(settings.show_shortcuts);
         theme.set_biometric_label(crate::os::BIOMETRIC_LABEL.into());
         component
             .global::<SecurityNotice>()

@@ -164,6 +164,8 @@ pub struct Settings {
     pub text_scale: TextScale,
     /// Website icons on login rows, fetched through the account's server.
     pub show_site_icons: bool,
+    /// Shortcut hints next to buttons, in menus and in fields; the shortcuts themselves always work.
+    pub show_shortcuts: bool,
     /// Windows only: keep Vaultkeeper windows out of screenshots, screen sharing and Recall.
     pub hide_from_capture: bool,
     pub manager_geometry: Option<WindowGeometry>,
@@ -223,6 +225,7 @@ impl Default for Settings {
             tray_icon: TrayIconChoice::default(),
             text_scale: TextScale::Default,
             show_site_icons: true,
+            show_shortcuts: true,
             hide_from_capture: true,
             manager_geometry: None,
             lock_timeout: LockTimeout::Minutes(15),
@@ -785,6 +788,7 @@ mod tests {
             tray_icon: TrayIconChoice::White,
             text_scale: TextScale::Larger,
             show_site_icons: false,
+            show_shortcuts: false,
             hide_from_capture: false,
             manager_geometry: Some(WindowGeometry {
                 x: 10,
@@ -876,6 +880,7 @@ mod tests {
             settings.show_site_icons,
             "site icons are on until switched off"
         );
+        assert!(settings.show_shortcuts, "hints stay visible by default");
         assert_eq!(settings.theme, ThemeChoice::Dark);
     }
 

@@ -15,6 +15,9 @@ export global Theme {
     in-out property <float> scale: 1.0;
     // "Show site icons": rows draw a loaded icon in place of the kind chip.
     in-out property <bool> site-icons: true;
+    // "Show keyboard shortcuts": hides the inline hints (button suffixes, menu hints, field key
+    // caps). The Quick Panel footer legend and accessible descriptions stay.
+    in-out property <bool> show-shortcuts: true;
     // "Touch ID" on macOS, "Windows Hello" on Windows; set once per window by the app.
     in-out property <string> biometric-label: "Touch ID";
     out property <bool> dark: mode == ThemeMode.dark || (mode == ThemeMode.system && system-dark);

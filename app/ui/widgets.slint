@@ -155,7 +155,7 @@ export component Btn inherits Rectangle {
             font-weight: 500;
             vertical-alignment: center;
         }
-        if root.hint != "" && root.text != "": Text {
+        if root.hint != "" && root.text != "" && Theme.show-shortcuts: Text {
             text: root.hint;
             color: root.kind == BtnKind.primary ? root.fg.with-alpha(0.7) : Theme.text-muted;
             font-size: Theme.font-meta;

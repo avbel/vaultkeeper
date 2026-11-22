@@ -139,6 +139,7 @@ impl<S: VaultService> App<S> {
         window.set_ssh_biometric(settings.ssh_touch_id);
         window.set_biometric_right_away(settings.touch_id_right_away);
         window.set_show_site_icons(settings.show_site_icons);
+        window.set_show_shortcuts(settings.show_shortcuts);
         super::settings_hotkeys::show_hotkeys(
             window,
             &settings,
@@ -276,6 +277,10 @@ impl<S: VaultService> App<S> {
             app.update_settings(|settings| settings.show_site_icons = enabled);
             app.apply_theme_everywhere();
             app.site_icons_changed();
+        }));
+        window.on_shortcuts_toggled(handler!(self, |app, shown| {
+            app.update_settings(|settings| settings.show_shortcuts = shown);
+            app.apply_theme_everywhere();
         }));
         self.bind_hotkeys(window);
         self.bind_browser_settings(window);

@@ -71,6 +71,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> ssh-biometric;
     in-out property <bool> biometric-right-away;
     in-out property <bool> show-site-icons: true;
+    in-out property <bool> show-shortcuts: true;
     // Windows only; the row stays hidden elsewhere.
     in property <bool> capture-exclusion-available: false;
     in-out property <bool> hide-from-capture: true;
@@ -145,6 +146,7 @@ export component SettingsWindow inherits Window {
     callback ssh-biometric-toggled(bool);
     callback biometric-right-away-toggled(bool);
     callback site-icons-toggled(bool);
+    callback shortcuts-toggled(bool);
     callback browser-integration-toggled(bool);
     callback browser-chrome-toggled(bool);
     callback browser-edge-toggled(bool);
@@ -257,6 +259,12 @@ export component SettingsWindow inherits Window {
                     description: "Loaded through your server, which learns your sites and may pass them to its icon service";
                     checked <=> root.show-site-icons;
                     toggled(v) => { root.site-icons-toggled(v); }
+                }
+                Toggle {
+                    text: "Show keyboard shortcuts";
+                    description: "Hints next to buttons and in fields; the shortcuts work either way";
+                    checked <=> root.show-shortcuts;
+                    toggled(v) => { root.shortcuts-toggled(v); }
                 }
                 Divider { }
                 SectionLabel { text: "SECURITY"; }
