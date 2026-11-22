@@ -301,6 +301,25 @@ fn the_system_probe_explains_unavailability_or_matches_a_real_blob() {
 }
 
 #[test]
+fn reprobing_needs_only_the_round_trip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = FAKE
+        .replace("HEADER", HOST_HEADER)
+        .replace(r#"echo "systemd 258 (258.1-1)"; exit 0;"#, "exit 70;");
+    let creds = fake(&dir, "no-version", &script);
+    assert_eq!(Detection::reprobe(&creds), Backend::Host);
+    assert!(matches!(
+        Detection::probe_creds(creds).backend(),
+        Backend::Unavailable(_)
+    ));
+    let broken = fake(&dir, "broken", "#!/bin/sh\nexit 3\n");
+    assert!(matches!(
+        Detection::reprobe(&broken),
+        Backend::Unavailable(why) if why.starts_with("systemd-creds cannot encrypt")
+    ));
+}
+
+#[test]
 fn relative_path_entries_are_ignored() {
     let (dir, _creds) = good();
     let relative = OsString::from(format!(":relative:{}", dir.path().display()));

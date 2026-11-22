@@ -33,6 +33,8 @@ pub struct MenuState {
     pub restart_to_update: bool,
     /// The daemon cannot start its replacement itself (see `daemon::relaunch`).
     pub restart_by_hand: bool,
+    /// The restart reconnects a service or program the sandbox pinned; no new version is waiting.
+    pub restart_reconnects: bool,
 }
 
 /// The host reads `_` in a label as an access-key marker, so a literal one is doubled; an
@@ -43,6 +45,7 @@ pub fn escape_label(label: &str) -> String {
 }
 
 const RESTART_BY_HAND: &str = "Quit and start Vaultkeeper again to finish the update";
+const RECONNECT_BY_HAND: &str = "Quit and start Vaultkeeper again to reconnect";
 
 fn item(label: &str, action: TrayAction) -> Entry {
     Entry::Item {
@@ -104,12 +107,19 @@ pub fn build(state: &MenuState) -> Vec<Entry> {
         });
     }
     if state.restart_to_update && state.restart_by_hand {
-        entries.push(Entry::Note(RESTART_BY_HAND.to_owned()));
+        let note = if state.restart_reconnects {
+            RECONNECT_BY_HAND
+        } else {
+            RESTART_BY_HAND
+        };
+        entries.push(Entry::Note(note.to_owned()));
     } else if state.restart_to_update {
-        entries.push(item(
-            "Restart to finish the update",
-            TrayAction::RestartUpdated,
-        ));
+        let label = if state.restart_reconnects {
+            "Restart Vaultkeeper to reconnect"
+        } else {
+            "Restart to finish the update"
+        };
+        entries.push(item(label, TrayAction::RestartUpdated));
     }
     entries.push(item("Quit", TrayAction::Quit));
     entries
@@ -177,6 +187,29 @@ mod tests {
             ..unlocked()
         });
         assert!(!hidden.contains(&Entry::Note(RESTART_BY_HAND.to_owned())));
+    }
+
+    #[test]
+    fn a_restart_that_only_reconnects_does_not_promise_an_update() {
+        let entries = build(&MenuState {
+            restart_to_update: true,
+            restart_reconnects: true,
+            ..unlocked()
+        });
+        let shown = labels(&entries);
+        assert_eq!(
+            shown[shown.len() - 2..],
+            ["Restart Vaultkeeper to reconnect", "Quit"]
+        );
+        let by_hand = build(&MenuState {
+            restart_to_update: true,
+            restart_by_hand: true,
+            restart_reconnects: true,
+            ..unlocked()
+        });
+        assert!(by_hand.contains(&Entry::Note(
+            "Quit and start Vaultkeeper again to reconnect".to_owned()
+        )));
     }
 
     #[test]

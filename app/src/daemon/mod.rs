@@ -186,10 +186,15 @@ fn sandbox(data_dir: &Path, socket_dir: &Path) -> crate::os::self_protection::Sa
     if rules.exec.len() != exec.len() {
         tracing::warn!("a program inside a writable directory is not executable in the sandbox");
     }
+    // Pinned before `restrict`, so a file replaced in between is noticed: the worst case is one
+    // extra restart. Each grant holds for the file it named now; a replaced one needs a restart.
+    update::upgraded::pin(&rules.exec);
+    // A socket rule exists only from Landlock ABI 9; before that a recreated socket stays reachable.
+    if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi >= 9) {
+        vk_platform::pins::pin_sockets(&rules.connect);
+    }
     match sandbox::restrict(&rules) {
         Ok(enforcement) => {
-            // Each grant holds for the file it named now; a replaced one needs a restart.
-            update::upgraded::pin(&rules.exec);
             if enforcement == sandbox::Enforcement::Full {
                 tracing::info!(status = %enforcement, "sandbox");
             } else {

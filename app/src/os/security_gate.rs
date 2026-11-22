@@ -472,6 +472,14 @@ impl Facts {
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn probe(role: Role) -> Self {
+        Self::probe_with(role, false)
+    }
+
+    /// `fresh` probes `systemd-creds` again instead of reporting the startup result: the service
+    /// can be restarted, or gone, since.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn probe_with(role: Role, fresh: bool) -> Self {
         use vk_linux::probes;
         let unit = |result: vk_linux::ProbeResult| result.map(drop);
         Self {
@@ -483,7 +491,18 @@ impl Facts {
             key_backend: secure_memory::backend().name(),
             // Only the daemon stores tokens, so only it pays for the systemd-creds round trip.
             creds: if role == Role::Daemon {
-                vk_platform::creds::Detection::cached().backend().clone()
+                let cached = vk_platform::creds::Detection::cached();
+                if fresh {
+                    creds_backend(
+                        vk_platform::pins::creds_socket_replaced(),
+                        crate::daemon::update::upgraded::restart_by_hand(),
+                        cached.backend(),
+                        cached.creds(),
+                        vk_platform::creds::Detection::reprobe,
+                    )
+                } else {
+                    cached.backend().clone()
+                }
             } else {
                 vk_platform::creds::Backend::Unavailable("not probed in this process".to_owned())
             },
@@ -499,6 +518,30 @@ impl Facts {
     }
 }
 
+/// What Settings shows for `systemd-creds` once the daemon runs. The token store keeps the tool
+/// it found at startup, so a fresh probe may only make the report worse: a tool that works now
+/// but was missing then still leaves tokens written without it until the restart. A failing
+/// probe on a recreated socket is the sandbox's doing, which a restart fixes; a probe that
+/// succeeds is never reported as unreachable.
+#[cfg(target_os = "linux")]
+fn creds_backend(
+    socket_replaced: bool,
+    by_hand: bool,
+    cached: &vk_platform::creds::Backend,
+    cached_creds: Option<&vk_platform::creds::Creds>,
+    probe: impl FnOnce(&vk_platform::creds::Creds) -> vk_platform::creds::Backend,
+) -> vk_platform::creds::Backend {
+    use vk_platform::creds::Backend;
+    let Some(creds) = cached_creds else {
+        return cached.clone();
+    };
+    match probe(creds) {
+        Backend::Unavailable(_) if socket_replaced => Backend::Unreachable { by_hand },
+        Backend::Unavailable(why) => Backend::Failing(why),
+        _ => cached.clone(),
+    }
+}
+
 /// The daemon's report from startup, whose activations are already applied.
 static STARTUP: std::sync::OnceLock<Report> = std::sync::OnceLock::new();
 
@@ -509,7 +552,10 @@ pub fn recheck() -> Report {
     #[cfg(target_os = "linux")]
     {
         let startup = STARTUP.get().cloned().unwrap_or_default();
-        Report::reevaluate(&chains(&Facts::probe(Role::Daemon), Role::Daemon), &startup)
+        Report::reevaluate(
+            &chains(&Facts::probe_with(Role::Daemon, true), Role::Daemon),
+            &startup,
+        )
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1027,6 +1073,66 @@ mod tests {
             decide(&report, false, None),
             Decision::Proceed { warn: false }
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    mod creds_report {
+        use vk_platform::creds::{Backend, Creds};
+
+        use super::super::creds_backend;
+
+        fn run(
+            replaced: bool,
+            cached: &Backend,
+            creds: Option<&Creds>,
+            probed: &Backend,
+        ) -> Backend {
+            creds_backend(replaced, false, cached, creds, |_| probed.clone())
+        }
+
+        fn failing() -> Backend {
+            Backend::Unavailable("systemd-creds cannot encrypt: exit status 1".to_owned())
+        }
+
+        #[test]
+        fn a_tool_missing_at_startup_stays_reported_as_missing() {
+            let cached = Backend::Unavailable("systemd-creds is not installed".to_owned());
+            assert_eq!(run(false, &cached, None, &Backend::TpmAndHost), cached);
+        }
+
+        #[test]
+        fn a_working_probe_reports_the_startup_backend() {
+            let tool = Creds::with_program("/usr/bin/systemd-creds");
+            let cached = Backend::Host;
+            assert_eq!(run(false, &cached, Some(&tool), &Backend::Tpm), cached);
+            assert_eq!(
+                run(true, &cached, Some(&tool), &Backend::Tpm),
+                cached,
+                "a recreated socket is not unreachable while the tool works"
+            );
+        }
+
+        #[test]
+        fn a_failing_probe_shows_its_error() {
+            let tool = Creds::with_program("/usr/bin/systemd-creds");
+            assert_eq!(
+                run(false, &Backend::Host, Some(&tool), &failing()),
+                Backend::Failing("systemd-creds cannot encrypt: exit status 1".to_owned())
+            );
+        }
+
+        #[test]
+        fn a_failing_probe_behind_a_recreated_socket_is_unreachable() {
+            let tool = Creds::with_program("/usr/bin/systemd-creds");
+            assert_eq!(
+                run(true, &Backend::Host, Some(&tool), &failing()),
+                Backend::Unreachable { by_hand: false }
+            );
+            assert_eq!(
+                creds_backend(true, true, &Backend::Host, Some(&tool), |_| failing()),
+                Backend::Unreachable { by_hand: true }
+            );
+        }
     }
 
     #[test]

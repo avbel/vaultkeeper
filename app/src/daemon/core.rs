@@ -228,6 +228,8 @@ pub struct Daemon {
     upgraded: watch::Sender<Option<PathBuf>>,
     /// The upgrade is there but this daemon cannot start its replacement (`relaunch::Route`).
     manual_restart: AtomicBool,
+    /// The restart is for a socket or program the sandbox pinned, not for a new Vaultkeeper.
+    restart_reconnects: AtomicBool,
 }
 
 /// What the launcher needs to hand a UI process its channel: nothing on macOS, where the UI
@@ -417,6 +419,7 @@ impl Daemon {
             restart: Mutex::new(None),
             upgraded: watch::Sender::new(None),
             manual_restart: AtomicBool::new(false),
+            restart_reconnects: AtomicBool::new(false),
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -550,6 +553,17 @@ impl Daemon {
     #[cfg(any(target_os = "linux", all(test, unix)))]
     pub(crate) fn set_manual_restart(&self, manual: bool) {
         self.manual_restart.store(manual, Ordering::SeqCst);
+    }
+
+    /// Set before [`Daemon::mark_upgraded`], like [`Daemon::set_manual_restart`].
+    #[cfg(any(target_os = "linux", all(test, unix)))]
+    pub(crate) fn set_restart_reconnects(&self, reconnects: bool) {
+        self.restart_reconnects.store(reconnects, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn restart_reconnects(&self) -> bool {
+        self.restart_reconnects.load(Ordering::SeqCst)
     }
 
     #[must_use]

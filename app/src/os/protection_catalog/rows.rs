@@ -2,7 +2,7 @@
 //! technical name. Strings follow docs/USAGE.md "System protection".
 
 use vk_ipc::ChainDto;
-use vk_platform::creds::Backend;
+use vk_platform::creds::{Backend, FAILING_WHY_PREFIX, UNREACHABLE_BY_HAND_WHY, UNREACHABLE_WHY};
 
 use super::{Group, Level, landlock_abi_label};
 use crate::os::self_protection::{NO_LANDLOCK, NOT_REQUESTED};
@@ -202,6 +202,18 @@ fn secret_files(chain: &ChainDto, why: &str) -> RowText {
             "Encrypted and tied to this computer, but the key type could not be read.",
             why,
         ),
+        None if creds_why(chain) == UNREACHABLE_WHY => {
+            "The system credential service (systemd-creds) restarted; Vaultkeeper can reach it again once Vaultkeeper restarts."
+                .to_owned()
+        }
+        None if creds_why(chain) == UNREACHABLE_BY_HAND_WHY => {
+            "The system credential service (systemd-creds) restarted; Vaultkeeper can reach it again once you restart Vaultkeeper."
+                .to_owned()
+        }
+        None if creds_why(chain).starts_with(FAILING_WHY_PREFIX) => with_why(
+            "Sign-in tokens cannot be read or saved right now.",
+            &creds_why(chain),
+        ),
         None => with_why(
             "Encrypted, but not tied to this computer: systemd-creds is not usable.",
             &creds_why(chain),
@@ -219,7 +231,7 @@ fn secret_files(chain: &ChainDto, why: &str) -> RowText {
     }
 }
 
-fn creds_why(chain: &ChainDto) -> String {
+pub fn creds_why(chain: &ChainDto) -> String {
     skip_why(chain, super::CREDS_LINK)
         .unwrap_or_default()
         .to_owned()

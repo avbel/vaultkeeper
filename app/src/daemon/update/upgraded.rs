@@ -9,6 +9,9 @@
 //! yet cannot be started and the token store's `systemd-creds` calls fail; with the vault
 //! unlocked that lasts until it locks, since the restart waits for quiet.
 //!
+//! A socket the sandbox granted (the `systemd-creds` service, the buses) is held by inode too: one
+//! recreated by a service restart is unreachable until the same quiet restart.
+//!
 //! A sandboxed daemon cannot start its replacement itself (`daemon::relaunch`). With no systemd
 //! user manager to do it, it keeps running and the tray asks for a restart by hand.
 
@@ -24,22 +27,7 @@ use crate::daemon::Daemon;
 /// restart waits for quiet anyway.
 const CHECK_EVERY: Duration = Duration::from_secs(60);
 
-/// Which file a path names: device and inode.
-pub type FileIdentity = (u64, u64);
-
-#[must_use]
-pub fn identity(path: &Path) -> Option<FileIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.dev(), meta.ino()))
-}
-
-/// The install path now names another file than the one this process was started from. A
-/// missing install path (an uninstall in progress) is not an upgrade.
-#[must_use]
-pub fn replaced(running: FileIdentity, installed: Option<FileIdentity>) -> bool {
-    installed.is_some_and(|installed| installed != running)
-}
+pub use vk_platform::pins::{FileIdentity, identity, replaced};
 
 /// The install path to restart from, once it names another file than the running binary.
 #[must_use]
@@ -74,25 +62,35 @@ pub fn pin(executables: &[PathBuf]) {
     }
 }
 
-/// The first pinned path that now names another file. A path that is missing (an upgrade in
-/// progress) or was missing when pinned is not a replacement.
-#[must_use]
-pub fn replaced_pin(pinned: &[(PathBuf, Option<FileIdentity>)]) -> Option<&Path> {
-    pinned
-        .iter()
-        .find(|(path, was)| was.is_some_and(|was| replaced(was, identity(path))))
-        .map(|(path, _)| path.as_path())
+/// Whether a restart is for a new Vaultkeeper or only to reach what the sandbox pinned again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    Updated,
+    Reconnect,
 }
 
-/// The install path to restart from: the binary was replaced, or a program the sandbox pinned.
-fn stale(running: FileIdentity, install: &Path) -> Option<PathBuf> {
+/// The install path to restart from and why: the binary was replaced, or a program or socket the
+/// sandbox pinned.
+fn stale(running: FileIdentity, install: &Path) -> Option<(PathBuf, Cause)> {
     if let Some(updated) = updated_install(running, identity(install), install) {
-        return Some(updated);
+        return Some((updated, Cause::Updated));
+    }
+    if let Some(path) = vk_platform::pins::replaced_socket() {
+        tracing::debug!(path = %path.display(), "a socket the sandbox allows was recreated");
+        return Some((install.to_path_buf(), Cause::Reconnect));
     }
     let pinned = PINNED.get()?;
-    let path = replaced_pin(pinned)?;
+    let path = vk_platform::pins::replaced_path(pinned)?;
     tracing::debug!(path = %path.display(), "a program the sandbox allows was replaced");
-    Some(install.to_path_buf())
+    Some((install.to_path_buf(), Cause::Reconnect))
+}
+
+/// What the Settings report needs to word the fix: no systemd user manager to restart the daemon.
+static BY_HAND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[must_use]
+pub fn restart_by_hand() -> bool {
+    BY_HAND.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Whether this daemon must not quit for the upgrade because nothing would start the new one.
@@ -119,18 +117,20 @@ pub async fn watch(daemon: Arc<Daemon>) {
     };
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
-        let Some(updated) = stale(running, &install) else {
+        let Some((updated, cause)) = stale(running, &install) else {
             continue;
         };
         let manual = restart_is_manual().await;
+        BY_HAND.store(manual, std::sync::atomic::Ordering::SeqCst);
         if daemon.upgraded().is_none() {
             if manual {
-                tracing::warn!(path = %install.display(), "Vaultkeeper or a program it runs was updated, and no systemd user manager can start the new one outside this sandbox; quit and start Vaultkeeper again");
+                tracing::warn!(path = %install.display(), "Vaultkeeper, a program it runs or a service it talks to was updated or restarted, and no systemd user manager can start the new one outside this sandbox; quit and start Vaultkeeper again");
             } else {
-                tracing::info!(path = %install.display(), "Vaultkeeper or a program it runs was updated; restarting once the vault is locked");
+                tracing::info!(path = %install.display(), "Vaultkeeper, a program it runs or a service it talks to was updated or restarted; restarting once the vault is locked");
             }
         }
         daemon.set_manual_restart(manual);
+        daemon.set_restart_reconnects(cause == Cause::Reconnect);
         daemon.mark_upgraded(updated.clone());
         if manual {
             continue;
@@ -145,6 +145,7 @@ pub async fn watch(daemon: Arc<Daemon>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vk_platform::pins::replaced_path;
 
     #[test]
     fn a_new_file_behind_the_install_path_is_an_upgrade() {
@@ -190,17 +191,17 @@ mod tests {
             .into_iter()
             .map(|path| (path.clone(), identity(path)))
             .collect();
-        assert_eq!(replaced_pin(&pinned), None);
+        assert_eq!(replaced_path(&pinned), None);
         std::fs::write(&absent, b"appeared").expect("absent");
-        assert_eq!(replaced_pin(&pinned), None, "nothing was pinned there");
+        assert_eq!(replaced_path(&pinned), None, "nothing was pinned there");
         // What a package manager does: a new file renamed over the path.
         let staged = dir.path().join("staged");
         std::fs::write(&staged, b"v2").expect("staged");
         std::fs::rename(&staged, &tool).expect("replace");
-        assert_eq!(replaced_pin(&pinned), Some(tool.as_path()));
+        assert_eq!(replaced_path(&pinned), Some(tool.as_path()));
         std::fs::remove_file(&tool).expect("remove");
         assert_eq!(
-            replaced_pin(&pinned),
+            replaced_path(&pinned),
             None,
             "a missing file is not an upgrade"
         );

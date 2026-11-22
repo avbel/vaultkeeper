@@ -320,7 +320,19 @@ pub enum Backend {
     /// The round trip works but the blob's key type could not be read; carries why.
     Unknown(String),
     Unavailable(String),
+    /// The sandbox granted the service's old socket, which was recreated since. `by_hand` is
+    /// whether only the user can restart Vaultkeeper (no systemd user manager to do it).
+    Unreachable {
+        by_hand: bool,
+    },
+    /// It worked when Vaultkeeper started and fails now; carries why.
+    Failing(String),
 }
+
+/// The text of the skipped link; the catalog recognises these to word the remedy.
+pub const UNREACHABLE_WHY: &str = "the system credential service (systemd-creds) restarted; Vaultkeeper can reach it again once Vaultkeeper restarts";
+pub const UNREACHABLE_BY_HAND_WHY: &str = "the system credential service (systemd-creds) restarted; Vaultkeeper can reach it again once you restart Vaultkeeper";
+pub const FAILING_WHY_PREFIX: &str = "systemd-creds stopped working since Vaultkeeper started:";
 
 impl Backend {
     #[must_use]
@@ -330,6 +342,15 @@ impl Backend {
             Self::Host => Probe::Degraded("host key only, not sealed to a TPM2".to_owned()),
             Self::Unknown(why) => Probe::Degraded(why.clone()),
             Self::Unavailable(why) => Probe::Unavailable(why.clone()),
+            Self::Unreachable { by_hand } => Probe::Unavailable(
+                if *by_hand {
+                    UNREACHABLE_BY_HAND_WHY
+                } else {
+                    UNREACHABLE_WHY
+                }
+                .to_owned(),
+            ),
+            Self::Failing(why) => Probe::Unavailable(format!("{FAILING_WHY_PREFIX} {why}")),
         }
     }
 
@@ -346,7 +367,10 @@ impl Backend {
             Self::TpmAndHost => "systemd-creds (TPM2 + host key)",
             Self::Tpm => "systemd-creds (TPM2 key)",
             Self::Host => "systemd-creds (host key only)",
-            Self::Unknown(_) | Self::Unavailable(_) => "systemd-creds",
+            Self::Unknown(_)
+            | Self::Unavailable(_)
+            | Self::Unreachable { .. }
+            | Self::Failing(_) => "systemd-creds",
         }
     }
 
@@ -358,6 +382,8 @@ impl Backend {
             Self::Host => "host",
             Self::Unknown(_) => "unknown",
             Self::Unavailable(_) => "none",
+            Self::Unreachable { .. } => "unreachable",
+            Self::Failing(_) => "failing",
         }
     }
 }
@@ -394,6 +420,12 @@ impl Detection {
             return Self::unavailable("systemd-creds is not installed".to_owned());
         };
         Self::probe_creds(Creds::with_program(program))
+    }
+
+    /// The round trip alone, for a tool that already passed the version check at startup.
+    #[must_use]
+    pub fn reprobe(creds: &Creds) -> Backend {
+        round_trip(creds).unwrap_or_else(Backend::Unavailable)
     }
 
     #[must_use]
@@ -445,6 +477,10 @@ fn check(creds: &Creds) -> Result<Backend, String> {
             "systemd {version} is too old for systemd-creds --user (needs {MIN_SYSTEMD_VERSION})"
         ));
     }
+    round_trip(creds)
+}
+
+fn round_trip(creds: &Creds) -> Result<Backend, String> {
     let blob = creds
         .encrypt(PROBE_PAYLOAD)
         .map_err(|error| format!("systemd-creds cannot encrypt: {error}"))?;

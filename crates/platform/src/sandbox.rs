@@ -38,7 +38,9 @@ pub struct Rules {
     /// Landlock ABI 9+ guards `connect(2)` on a path socket as its own right, which the read set
     /// does not carry; an older kernel does not restrict it, and the rule is dropped there. A
     /// rule on a socket holds for that inode: one recreated later (a restarted service) stays
-    /// out of reach until Vaultkeeper restarts.
+    /// out of reach until Vaultkeeper restarts. The daemon pins these inodes
+    /// (`crate::pins`), detects a recreated socket and triggers the same quiet restart as an
+    /// upgrade.
     pub connect: Vec<PathBuf>,
     /// Device nodes opened for writing and driven by ioctl, which the read set refuses.
     pub devices: Vec<PathBuf>,
@@ -142,10 +144,9 @@ pub struct Dirs<'a> {
 /// Sockets outside the session's runtime directory: the system bus (`/var/run` is a link to
 /// `/run`), and the service `systemd-creds --user` hands the token to (measured with strace on
 /// Fedora 45: its only connect, for encrypt and decrypt alike).
-const SYSTEM_SOCKETS: [&str; 2] = [
-    "/run/dbus/system_bus_socket",
-    "/run/systemd/io.systemd.Credentials",
-];
+const SYSTEM_SOCKETS: [&str; 2] = ["/run/dbus/system_bus_socket", CREDS_SOCKET];
+
+pub const CREDS_SOCKET: &str = "/run/systemd/io.systemd.Credentials";
 
 /// What a child's discarded output is opened on: without it `systemd-creds` cannot even be
 /// spawned. No GPU node is granted because Slint draws with its software renderer; a GPU

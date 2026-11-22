@@ -6,13 +6,13 @@ use vk_ipc::ChainDto;
 
 use super::{
     Level,
-    rows::{SandboxKind, creds_mechanism, sandbox_kind, why},
+    rows::{SandboxKind, creds_mechanism, creds_why, sandbox_kind, why},
 };
 use crate::os::{
     security_gate::Distro,
     tray_way::{session_desktop, tray_way},
 };
-use vk_platform::creds::Backend;
+use vk_platform::creds::{Backend, UNREACHABLE_BY_HAND_WHY, UNREACHABLE_WHY};
 
 #[derive(Debug, Default)]
 pub struct Remedy {
@@ -179,6 +179,18 @@ fn sandbox(chain: &ChainDto) -> Remedy {
 }
 
 fn secret_files(chain: &ChainDto) -> Remedy {
+    let why = creds_why(chain);
+    if why == UNREACHABLE_WHY {
+        return Remedy::notes(
+            "How to fix it",
+            &[
+                "Vaultkeeper restarts by itself a few minutes after you lock the vault and close its windows; or quit and start it again.",
+            ],
+        );
+    }
+    if why == UNREACHABLE_BY_HAND_WHY {
+        return Remedy::notes("How to fix it", &["Quit and start Vaultkeeper again."]);
+    }
     if creds_mechanism(chain) != Some(Backend::Host.mechanism()) {
         return Remedy::default();
     }

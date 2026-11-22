@@ -138,6 +138,8 @@ struct Snapshot {
     restart_to_update: bool,
     #[cfg(target_os = "linux")]
     restart_by_hand: bool,
+    #[cfg(target_os = "linux")]
+    restart_reconnects: bool,
 }
 
 /// Empty hides the item: with automatic updates off the menu does not offer update checks.
@@ -182,6 +184,8 @@ fn snapshot(daemon: &Daemon) -> Snapshot {
         restart_to_update: daemon.upgraded().is_some(),
         #[cfg(target_os = "linux")]
         restart_by_hand: daemon.manual_restart(),
+        #[cfg(target_os = "linux")]
+        restart_reconnects: daemon.restart_reconnects(),
     }
 }
 

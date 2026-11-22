@@ -235,6 +235,45 @@ fn stored_secrets_follow_the_key_that_protects_them() {
 }
 
 #[test]
+fn an_unreachable_creds_service_says_it_waits_for_a_restart() {
+    let rows = rows(&facts(Backend::Unreachable { by_hand: false }));
+    let files = row(&rows, "secret-files");
+    assert_eq!(files.level, Level::Limited);
+    assert_eq!(
+        files.detail,
+        "The system credential service (systemd-creds) restarted; Vaultkeeper can reach it again once Vaultkeeper restarts."
+    );
+    assert_eq!(
+        files.notes,
+        [
+            "Vaultkeeper restarts by itself a few minutes after you lock the vault and close its windows; or quit and start it again."
+        ]
+    );
+}
+
+#[test]
+fn without_a_systemd_manager_the_fix_is_to_restart_by_hand() {
+    let rows = rows(&facts(Backend::Unreachable { by_hand: true }));
+    let files = row(&rows, "secret-files");
+    assert_eq!(
+        files.detail,
+        "The system credential service (systemd-creds) restarted; Vaultkeeper can reach it again once you restart Vaultkeeper."
+    );
+    assert_eq!(files.notes, ["Quit and start Vaultkeeper again."]);
+}
+
+#[test]
+fn a_creds_tool_that_fails_at_runtime_says_tokens_cannot_be_read_or_saved() {
+    let rows = rows(&facts(Backend::Failing("exit status 1".to_owned())));
+    let files = row(&rows, "secret-files");
+    assert_eq!(files.level, Level::Limited);
+    assert_eq!(
+        files.detail,
+        "Sign-in tokens cannot be read or saved right now. systemd-creds stopped working since Vaultkeeper started: exit status 1"
+    );
+}
+
+#[test]
 fn a_missing_tray_is_off_and_neutral_and_not_counted() {
     let base = facts(Backend::Host);
     let facts = Facts {

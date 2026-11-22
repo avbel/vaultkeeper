@@ -17,6 +17,8 @@ pub mod install_kind;
 pub mod keychain;
 pub mod network;
 pub mod paths;
+#[cfg(unix)]
+pub mod pins;
 pub mod power;
 pub mod sandbox;
 pub mod security;
