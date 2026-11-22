@@ -16,8 +16,11 @@ export component Toast inherits Rectangle {
     opacity: shown ? 1 : 0;
     animate opacity { duration: root.shown ? 180ms : 220ms; easing: ease-out; }
     animate offset { duration: root.shown ? 180ms : 220ms; easing: ease-out; }
-    height: 36px * Theme.scale;
-    width: min(root.limit-width, label.preferred-width + (root.action != "" ? 120px : 48px));
+    property <length> max-text-height: 8 * Theme.font-body * 1.5;
+    property <length> chrome: root.action != "" ? 120px : 48px;
+    // A long message wraps and the toast grows with it; the cap only guards a runaway text.
+    height: max(36px * Theme.scale, min(label.preferred-height, root.max-text-height) + 2 * Theme.s2);
+    width: min(root.limit-width, label.preferred-width + root.chrome);
     border-radius: Theme.radius-popup;
     background: Theme.surface-popup;
     border-width: 1px;
@@ -55,6 +58,11 @@ export component Toast inherits Rectangle {
             color: Theme.text;
             font-size: Theme.font-body;
             vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+            // Pinning the width gives the wrapped text a height to size the toast by.
+            width: min(self.preferred-width, root.width - root.chrome);
+            max-height: root.max-text-height;
         }
         if root.action != "": Btn {
             y: (parent.height - self.height) / 2;
