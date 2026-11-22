@@ -485,9 +485,13 @@ async fn accept_loop<S: VaultService>(
     }
 }
 
-/// Resolves once a stop is requested or the handle is gone; the watch guard does not escape.
+/// Resolves once a stop is requested; the watch guard does not escape. A dropped handle is not
+/// a stop request: its drop aborts the tasks, and a connection that outran the abort must not
+/// send `Shutdown` into a socket that is being torn down.
 async fn stopped(stop: &mut watch::Receiver<bool>) {
-    let _ = stop.wait_for(|stop| *stop).await;
+    if stop.wait_for(|stop| *stop).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 fn log_join(what: &str, joined: Result<(), JoinError>) {
