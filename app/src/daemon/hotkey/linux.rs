@@ -444,8 +444,8 @@ impl Task {
                 self.refusals = 0;
                 true
             }
-            Err(PortalError::PortalNotFound(interface)) => {
-                tracing::info!(%interface, "no GlobalShortcuts portal; shortcuts are bound in the compositor");
+            Err(error) if lacks_global_shortcuts(&error) => {
+                tracing::info!(%error, "no GlobalShortcuts portal; shortcuts are bound in the compositor");
                 self.backend = Backend::Missing;
                 hotkey_status::set(Err("this desktop has no GlobalShortcuts portal".to_owned()));
                 self.daemon.report_hotkey_bindings(bindings(
@@ -487,6 +487,17 @@ impl Task {
             }
         }
     }
+}
+
+/// The portal answers, but its backends serve no GlobalShortcuts. ashpd reports that as
+/// `PortalNotFound` when its version probe notices; xdg-desktop-portal-wlr and -gtk instead pass
+/// the first real call through as `InvalidArgs: No such interface "...GlobalShortcuts"`.
+fn lacks_global_shortcuts(error: &PortalError) -> bool {
+    if matches!(error, PortalError::PortalNotFound(_)) {
+        return true;
+    }
+    let text = error.to_string();
+    text.contains("No such interface") && text.contains("GlobalShortcuts")
 }
 
 #[allow(
@@ -699,4 +710,36 @@ async fn within<T>(
     tokio::time::timeout(limit, call)
         .await
         .unwrap_or_else(|_| Err(PortalError::IO(std::io::ErrorKind::TimedOut.into())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn invalid_args(text: &str) -> PortalError {
+        PortalError::Zbus(zbus::Error::FDO(Box::new(zbus::fdo::Error::InvalidArgs(
+            text.to_owned(),
+        ))))
+    }
+
+    #[test]
+    fn a_backend_without_global_shortcuts_means_manual_mode() {
+        let missing =
+            invalid_args("No such interface “org.freedesktop.portal.GlobalShortcuts” on object");
+        assert!(lacks_global_shortcuts(&missing));
+        let not_found = PortalError::PortalNotFound(
+            zbus::names::OwnedInterfaceName::try_from("org.freedesktop.portal.GlobalShortcuts")
+                .expect("name"),
+        );
+        assert!(lacks_global_shortcuts(&not_found));
+    }
+
+    #[test]
+    fn other_portal_failures_keep_retrying() {
+        assert!(!lacks_global_shortcuts(&invalid_args("bad option")));
+        assert!(!lacks_global_shortcuts(&invalid_args(
+            "No such interface “org.freedesktop.portal.Settings”"
+        )));
+        assert!(!lacks_global_shortcuts(&PortalError::NoResponse));
+    }
 }

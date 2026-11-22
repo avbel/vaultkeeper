@@ -2,7 +2,7 @@
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-use slint::{ComponentHandle, ModelRc, SharedString};
+use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString};
 use vk_vault::{
     VaultService,
     model::{CopyField, Filter},
@@ -135,6 +135,16 @@ impl<S: VaultService> App<S> {
     }
 
     fn bind_quick(&self, window: &QuickPanel) {
+        // A compositor can close the panel itself (Sway's `kill`, Mod+Shift+q). Slint then hides
+        // the window; without resetting our state the next open would reuse that dead window.
+        window.window().on_close_requested(handler!(
+            self,
+            CloseRequestResponse::HideWindow,
+            |app| {
+                app.dismiss_quick_panel();
+                CloseRequestResponse::HideWindow
+            }
+        ));
         window.on_search_edited(handler!(self, |app, _text| app.refresh_quick()));
         window.on_row_clicked(handler!(self, |app, row| {
             if let Some(quick) = app.quick.borrow().as_ref() {

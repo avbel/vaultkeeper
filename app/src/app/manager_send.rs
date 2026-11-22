@@ -509,9 +509,15 @@ impl<S: VaultService> App<S> {
     }
 
     fn choose_send_file(&self) {
-        let Some(source) = self.hooks.files.open_file() else {
-            return;
-        };
+        self.pick_file(
+            |files| files.open_file(),
+            |app, source| {
+                app.send_file_chosen(source);
+            },
+        );
+    }
+
+    fn send_file_chosen(&self, source: PathBuf) {
         let mut guard = self.manager.borrow_mut();
         let Some(manager) = guard.as_mut() else {
             return;

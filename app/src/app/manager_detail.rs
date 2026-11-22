@@ -542,14 +542,26 @@ impl<S: VaultService> App<S> {
         if !self.attachments_online() {
             return;
         }
-        let Some(dest) = self.hooks.files.save_file(&attachment.file_name) else {
-            return;
-        };
-        self.set_attach_busy(Some(format!("Saving {}…", attachment.file_name)));
-        let vault = Arc::clone(&self.vault);
-        self.exec.spawn(
-            async move { vault.download_attachment(&id, &attachment.id, dest).await },
-            handler!(self, |app, result| app.attachment_done(result)),
+        let name = attachment.file_name.clone();
+        self.pick_file(
+            move |files| files.save_file(&name),
+            move |app, dest| {
+                let still_open = app
+                    .manager
+                    .borrow()
+                    .as_ref()
+                    .and_then(|manager| manager.detail.as_ref())
+                    .is_some_and(|detail| detail.summary.id == id);
+                if !still_open {
+                    return;
+                }
+                app.set_attach_busy(Some(format!("Saving {}…", attachment.file_name)));
+                let vault = Arc::clone(&app.vault);
+                app.exec.spawn(
+                    async move { vault.download_attachment(&id, &attachment.id, dest).await },
+                    handler!(app, |app, result| app.attachment_done(result)),
+                );
+            },
         );
     }
 
@@ -575,17 +587,22 @@ impl<S: VaultService> App<S> {
         if !self.attachments_online() {
             return;
         }
-        let Some(source) = self.hooks.files.open_file() else {
-            return;
-        };
-        let name = source
-            .file_name()
-            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        self.set_attach_busy(Some(format!("Uploading {name}…")));
-        let vault = Arc::clone(&self.vault);
-        self.exec.spawn(
-            async move { vault.upload_attachment(&id, source).await.map(drop) },
-            handler!(self, |app, result| app.attachment_done(result)),
+        self.pick_file(
+            |files| files.open_file(),
+            move |app, source| {
+                if !app.selected_draft().is_some_and(|(open, _)| open == id) {
+                    return;
+                }
+                let name = source
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                app.set_attach_busy(Some(format!("Uploading {name}…")));
+                let vault = Arc::clone(&app.vault);
+                app.exec.spawn(
+                    async move { vault.upload_attachment(&id, source).await.map(drop) },
+                    handler!(app, |app, result| app.attachment_done(result)),
+                );
+            },
         );
     }
 

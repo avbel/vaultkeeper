@@ -23,6 +23,7 @@ use crate::{
         linux::portal,
         security_gate::{Distro, detect_distro, set_tray_report, tray_chain},
         taskbar,
+        tray_way::{bar_is_dark, session_desktop},
     },
     settings::TrayIconChoice,
 };
@@ -61,6 +62,7 @@ impl Handle {
 struct Item {
     daemon: Arc<Daemon>,
     distro: Distro,
+    desktop: String,
     menu: MenuState,
     choice: TrayIconChoice,
     system_dark: Option<bool>,
@@ -76,6 +78,7 @@ impl Item {
         let mut item = Self {
             daemon: Arc::clone(daemon),
             distro,
+            desktop: session_desktop(),
             menu: MenuState::default(),
             choice: daemon.settings().tray_icon,
             system_dark,
@@ -87,7 +90,7 @@ impl Item {
     }
 
     fn render(&self) -> Vec<Icon> {
-        let glyph = taskbar::Glyph::choose(self.choice, self.system_dark);
+        let glyph = glyph_for(self.choice, self.system_dark, self.distro, &self.desktop);
         PIXMAP_SIZES
             .iter()
             .filter_map(|&px| {
@@ -108,6 +111,27 @@ impl Item {
             self.pixmaps = self.render();
         }
     }
+}
+
+/// Omarchy's bar is transparent over the wallpaper and draws dark icons whatever the colour
+/// scheme says, so a scheme-driven white glyph disappears there. Sway and plain Hyprland bars are
+/// dark whatever the scheme says, so Auto must not follow a light scheme to a black glyph.
+fn glyph_for(
+    choice: TrayIconChoice,
+    system_dark: Option<bool>,
+    distro: Distro,
+    desktop: &str,
+) -> taskbar::Glyph {
+    let bar_dark = if choice != TrayIconChoice::Auto {
+        system_dark
+    } else if distro == Distro::Omarchy {
+        Some(false)
+    } else if bar_is_dark(desktop) {
+        Some(true)
+    } else {
+        system_dark
+    };
+    taskbar::Glyph::choose(choice, bar_dark)
 }
 
 fn dispatch(daemon: &Arc<Daemon>, action: TrayAction) {
@@ -185,7 +209,7 @@ impl Tray for Item {
 }
 
 fn publish(watcher: &Result<(), String>, distro: Distro) {
-    let report = tray_chain(watcher, distro).evaluate();
+    let report = tray_chain(watcher, distro, &session_desktop()).evaluate();
     if let (Some(fix), Err(why)) = (&report.fix, watcher) {
         tracing::warn!(%why, %fix, "no tray host");
     } else {
@@ -335,5 +359,78 @@ fn menu_state(snapshot: Snapshot) -> MenuState {
         update_enabled: snapshot.update_enabled,
         restart_to_update: snapshot.restart_to_update,
         restart_by_hand: snapshot.restart_by_hand,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_is_black_on_omarchy_even_with_a_dark_scheme() {
+        assert_eq!(
+            glyph_for(
+                TrayIconChoice::Auto,
+                Some(true),
+                Distro::Omarchy,
+                "Hyprland"
+            ),
+            taskbar::Glyph::Black
+        );
+    }
+
+    #[test]
+    fn auto_follows_the_scheme_elsewhere() {
+        assert_eq!(
+            glyph_for(
+                TrayIconChoice::Auto,
+                Some(true),
+                Distro::Ubuntu,
+                "ubuntu:GNOME"
+            ),
+            taskbar::Glyph::White
+        );
+        assert_eq!(
+            glyph_for(TrayIconChoice::Auto, None, Distro::Fedora, "GNOME"),
+            taskbar::Glyph::Neutral
+        );
+    }
+
+    #[test]
+    fn auto_is_white_on_the_always_dark_bars_of_sway_and_plain_hyprland() {
+        for (distro, desktop) in [
+            (Distro::Ubuntu, "sway"),
+            (Distro::OtherArch, "Hyprland"),
+            (Distro::Fedora, "sway"),
+        ] {
+            for scheme in [Some(false), Some(true), None] {
+                assert_eq!(
+                    glyph_for(TrayIconChoice::Auto, scheme, distro, desktop),
+                    taskbar::Glyph::White,
+                    "{desktop} {scheme:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_explicit_black_stays_black_on_sway() {
+        assert_eq!(
+            glyph_for(TrayIconChoice::Black, Some(true), Distro::Ubuntu, "sway"),
+            taskbar::Glyph::Black
+        );
+    }
+
+    #[test]
+    fn an_explicit_choice_wins_on_omarchy() {
+        assert_eq!(
+            glyph_for(
+                TrayIconChoice::White,
+                Some(false),
+                Distro::Omarchy,
+                "Hyprland"
+            ),
+            taskbar::Glyph::White
+        );
     }
 }

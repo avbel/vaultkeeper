@@ -34,6 +34,15 @@ pub(super) struct LoginState {
     pub(super) key: KeyLogin,
     /// Account to return to on Cancel (adding a further account).
     previous: Option<Arc<str>>,
+    /// Opened by "Add account" from a live session, as opposed to a sign-in with nothing else
+    /// asked for; `previous` cannot tell them apart, since a tray-opened form is cancellable too.
+    adding: bool,
+}
+
+impl LoginState {
+    pub(super) const fn is_add_account(&self) -> bool {
+        self.adding
+    }
 }
 
 const fn provider_label(provider: TwoFactorProvider) -> Option<&'static str> {
@@ -327,6 +336,9 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .map(|account| server_url::display(&account.server));
         self.open_login(server.as_deref(), previous.map(|account| account.id));
+        if let Some(login) = self.login.borrow_mut().as_mut() {
+            login.adding = true;
+        }
         self.update_tray(&SessionState::LoggedOut);
     }
 
@@ -398,6 +410,7 @@ impl<S: VaultService> App<S> {
             providers: Vec::new(),
             key: KeyLogin::default(),
             previous,
+            adding: false,
         });
         if let Some(url) = prefilled {
             self.probe_server(url);

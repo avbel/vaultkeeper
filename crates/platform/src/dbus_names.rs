@@ -1,13 +1,10 @@
 //! Whether the desktop services the Linux chains lean on own their well-known D-Bus names:
 //! the portal, the notification daemon and the tray watcher on the session
-//! bus, logind on the system bus. Asked once through `NameHasOwner` and cached; a missing bus is
-//! `Unavailable` with the reason, never a panic. vk-linux has no D-Bus client, so this lives here.
+//! bus, logind on the system bus. Asked through `NameHasOwner` on every call, never cached: a
+//! daemon that starts before the portal (a fresh login) must see it appear on the next Re-check. A
+//! missing bus is `Unavailable` with the reason, never a panic. vk-linux has no D-Bus client, so this lives here.
 
-use std::{
-    sync::{OnceLock, mpsc},
-    thread,
-    time::Duration,
-};
+use std::{sync::mpsc, thread, time::Duration};
 
 use zbus::{Connection, connection::Builder};
 
@@ -34,14 +31,8 @@ pub struct DesktopNames {
     pub screensaver: Probe,
 }
 
-/// The probes, run on the first call only.
 #[must_use]
-pub fn desktop_names() -> &'static DesktopNames {
-    static CACHE: OnceLock<DesktopNames> = OnceLock::new();
-    CACHE.get_or_init(run)
-}
-
-fn run() -> DesktopNames {
+pub fn desktop_names() -> DesktopNames {
     let (tx, rx) = mpsc::channel();
     let spawned = thread::Builder::new()
         .name("dbus-name-probes".to_owned())
@@ -155,14 +146,13 @@ mod tests {
     }
 
     #[test]
-    fn the_probes_never_panic_and_are_cached() {
-        let first = desktop_names();
-        assert!(std::ptr::eq(first, desktop_names()));
+    fn the_probes_never_panic() {
+        let names = desktop_names();
         for probe in [
-            &first.portal,
-            &first.notifications,
-            &first.tray_watcher,
-            &first.logind,
+            &names.portal,
+            &names.notifications,
+            &names.tray_watcher,
+            &names.logind,
         ] {
             tracing::info!(?probe, "desktop name probe");
         }

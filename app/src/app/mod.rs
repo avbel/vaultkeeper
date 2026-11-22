@@ -9,6 +9,7 @@ mod autotype_ctl;
 mod browser;
 mod commands;
 mod copy;
+mod file_pick;
 mod generated_list;
 mod generator;
 mod manager;
@@ -84,6 +85,19 @@ enum Target {
     QuickPanel,
 }
 
+/// What an unlock opens. A form the tray opened set no target, and someone who just signed in
+/// for the first time wants the Manager; an "Add account" form is excluded because the vault can
+/// become unlocked another way while it is open.
+fn window_after_unlock(target: Target, quick_open: bool, first_sign_in: bool) -> Target {
+    match target {
+        Target::QuickPanel => Target::QuickPanel,
+        _ if quick_open => Target::QuickPanel,
+        Target::Manager => Target::Manager,
+        Target::None if first_sign_in => Target::Manager,
+        Target::None => Target::None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     LoggedOut,
@@ -140,6 +154,8 @@ pub struct App<S: VaultService> {
     first_unlock: Cell<bool>,
     /// A Touch ID prompt runs; a second one is never started next to it.
     touch_id_in_flight: Cell<bool>,
+    /// A native file picker is open; see [`file_pick`].
+    file_dialog: Rc<file_pick::DialogGate>,
     /// A right-away Touch ID prompt runs with no window open, and what to show if it fails.
     right_away: Cell<Option<unlock::UnlockView>>,
     /// A right-away attempt was cancelled or failed and its lock view is still open.
@@ -209,6 +225,7 @@ impl<S: VaultService> App<S> {
             failed_unlocks: Cell::new(0),
             first_unlock: Cell::new(true),
             touch_id_in_flight: Cell::new(false),
+            file_dialog: Rc::default(),
             right_away: Cell::new(None),
             right_away_declined: Cell::new(false),
             login: RefCell::new(None),
@@ -311,11 +328,18 @@ impl<S: VaultService> App<S> {
         self.forget_declined_touch_id();
         self.failed_unlocks.set(0);
         self.close_lock_window();
+        // The daemon announces a new session before the login reply reaches the form, and a form
+        // the tray opened set no target; someone who just signed in wants the Manager. "Add
+        // account" is excluded: the vault can become unlocked another way while that form is open.
+        let first_sign_in = self
+            .login
+            .borrow()
+            .as_ref()
+            .is_some_and(|login| !login.is_add_account());
         self.close_login();
         let quick_open = self.quick.borrow().is_some();
-        match self.target.replace(Target::None) {
+        match window_after_unlock(self.target.replace(Target::None), quick_open, first_sign_in) {
             Target::QuickPanel => self.open_quick_panel(),
-            _ if quick_open => self.open_quick_panel(),
             Target::Manager => self.open_manager(),
             // Nothing asked for a window (unlock at login): stay in the tray.
             Target::None => {}
@@ -686,5 +710,42 @@ fn retry_bring_to_front<C: ComponentHandle + 'static>(
 fn hide<C: ComponentHandle>(component: &C) {
     if let Err(error) = component.hide() {
         tracing::warn!(%error, "cannot hide window");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_first_sign_in_opens_the_manager_when_nothing_else_asked() {
+        assert_eq!(
+            window_after_unlock(Target::None, false, true),
+            Target::Manager
+        );
+    }
+
+    #[test]
+    fn an_add_account_form_alone_opens_nothing_when_the_vault_unlocks_elsewhere() {
+        assert_eq!(
+            window_after_unlock(Target::None, false, false),
+            Target::None
+        );
+    }
+
+    #[test]
+    fn an_explicit_target_or_an_open_panel_wins() {
+        assert_eq!(
+            window_after_unlock(Target::Manager, false, false),
+            Target::Manager
+        );
+        assert_eq!(
+            window_after_unlock(Target::QuickPanel, false, true),
+            Target::QuickPanel
+        );
+        assert_eq!(
+            window_after_unlock(Target::None, true, false),
+            Target::QuickPanel
+        );
     }
 }

@@ -25,6 +25,7 @@ pub mod self_protection;
 pub mod settings_file;
 pub mod startup_check;
 pub mod taskbar;
+pub mod tray_way;
 pub mod ui_window;
 pub mod windows_shell;
 

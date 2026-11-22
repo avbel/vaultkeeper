@@ -12,6 +12,7 @@ use slint::{
     },
 };
 use vk_ipc::HotkeyMode;
+use vk_platform::desktop_file::APP_ID;
 use vk_vault::VaultService;
 
 use super::{App, handler};
@@ -21,8 +22,8 @@ use crate::{
         ALTGR_WARNING, Mods, UNAVAILABLE_NOTICE, accelerator, is_modifier_text, key_from_text,
         physical_accelerator,
     },
-    settings::{Settings, ctrl_alt_only, hotkey_display, hotkey_symbols},
-    shortcut_syntax::{Compositor, compositor_lines},
+    settings::{DEFAULT_HOTKEY, Settings, ctrl_alt_only, hotkey_display, hotkey_symbols},
+    shortcut_syntax::{Compositor, compositor_lines, global_lines},
     ui::SettingsWindow,
 };
 
@@ -73,16 +74,21 @@ struct SystemView {
 fn system_view(bindings: &Bindings, settings: &Settings, compositor: Compositor) -> SystemView {
     match bindings.mode {
         HotkeyMode::Recorder => SystemView::default(),
-        HotkeyMode::Portal => SystemView {
-            quick_panel_note: assigned_note(&bindings.quick_panel),
-            generator_note: if settings.generator_hotkey.trim().is_empty() {
-                String::new()
-            } else {
-                assigned_note(&bindings.generator)
+        HotkeyMode::Portal => with_global_binds(
+            SystemView {
+                quick_panel_note: assigned_note(&bindings.quick_panel),
+                generator_note: if settings.generator_hotkey.trim().is_empty() {
+                    String::new()
+                } else {
+                    assigned_note(&bindings.generator)
+                },
+                configurable: true,
+                ..SystemView::default()
             },
-            configurable: true,
-            ..SystemView::default()
-        },
+            compositor,
+            settings,
+            bindings,
+        ),
         HotkeyMode::PortalPending => SystemView {
             quick_panel_note: PENDING_NOTE.to_owned(),
             generator_note: if settings.generator_hotkey.trim().is_empty() {
@@ -94,12 +100,66 @@ fn system_view(bindings: &Bindings, settings: &Settings, compositor: Compositor)
             ..SystemView::default()
         },
         HotkeyMode::Manual => {
-            let lines = compositor_lines(compositor, &settings.hotkey, &settings.generator_hotkey);
+            let lines = compositor_lines(
+                compositor,
+                &launcher(),
+                &settings.hotkey,
+                &settings.generator_hotkey,
+            );
             SystemView {
                 lines_hint: manual_hint(compositor, lines.is_some()).to_owned(),
                 lines: lines.unwrap_or_default(),
                 ..SystemView::default()
             }
+        }
+    }
+}
+
+/// Hyprland's portal backend has no shortcut dialog, so the portal shortcut stays unassigned
+/// until the user adds a `global` bind to the compositor config; show that exact line instead of
+/// the useless "Change in system settings" button.
+fn with_global_binds(
+    view: SystemView,
+    compositor: Compositor,
+    settings: &Settings,
+    bindings: &Bindings,
+) -> SystemView {
+    let quick_panel = if settings.hotkey.trim().is_empty() {
+        DEFAULT_HOTKEY
+    } else {
+        settings.hotkey.as_str()
+    };
+    let Some(lines) = global_lines(compositor, APP_ID, quick_panel, &settings.generator_hotkey)
+    else {
+        return view;
+    };
+    let unassigned = |note: String, trigger: &str| {
+        if trigger.is_empty() {
+            "Not bound yet. Add the line below to your Hyprland config.".to_owned()
+        } else {
+            note
+        }
+    };
+    SystemView {
+        quick_panel_note: unassigned(view.quick_panel_note, &bindings.quick_panel),
+        generator_note: if view.generator_note.is_empty() {
+            view.generator_note
+        } else {
+            unassigned(view.generator_note, &bindings.generator)
+        },
+        configurable: false,
+        lines_hint: global_hint(compositor).to_owned(),
+        lines,
+    }
+}
+
+const fn global_hint(compositor: Compositor) -> &'static str {
+    match compositor {
+        Compositor::Omarchy => {
+            "Add to ~/.config/hypr/bindings.lua, then run hyprctl reload (Hyprland has no shortcut dialog for apps):"
+        }
+        _ => {
+            "Add to your Hyprland config, then run hyprctl reload (Hyprland has no shortcut dialog for apps):"
         }
     }
 }
@@ -160,11 +220,61 @@ const fn manual_hint(compositor: Compositor, has_lines: bool) -> &'static str {
     }
 }
 
+/// What a compositor binding runs: `vaultkeeper` when the shell finds it on `PATH`, else the
+/// running binary's own path, which the compositor can always start.
+#[cfg(all(target_os = "linux", not(test)))]
+fn launcher() -> String {
+    resolve_launcher(
+        std::env::var_os("PATH").as_deref(),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+#[cfg(any(not(target_os = "linux"), test))]
+fn launcher() -> String {
+    "vaultkeeper".to_owned()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_launcher(path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path>) -> String {
+    const NAME: &str = "vaultkeeper";
+    let on_path = path.is_some_and(|path| {
+        std::env::split_paths(path).any(|dir| {
+            let candidate = dir.join(NAME);
+            candidate.is_file() && is_executable(&candidate)
+        })
+    });
+    match exe {
+        Some(exe) if !on_path => exe.display().to_string(),
+        _ => NAME.to_owned(),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        path.metadata()
+            .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn current_compositor() -> Compositor {
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
     let omarchy = vk_linux::distro::detect() == vk_linux::distro::Distro::Omarchy;
-    Compositor::detect(&desktop, omarchy)
+    let lua = omarchy
+        && std::env::var_os("HOME").is_some_and(|home| {
+            std::path::Path::new(&home)
+                .join(".config/hypr/bindings.lua")
+                .is_file()
+        });
+    Compositor::detect(&desktop, lua)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -584,6 +694,103 @@ mod tests {
         );
         assert_eq!(other.lines, "");
         assert!(other.lines_hint.contains("vaultkeeper --search"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_is_the_bare_name_on_path_and_the_absolute_binary_otherwise() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("dir");
+        let exe = std::path::Path::new("/home/me/target/debug/vaultkeeper");
+        let path = std::env::join_paths([dir.path()]).expect("path");
+        assert_eq!(
+            resolve_launcher(Some(&path), Some(exe)),
+            "/home/me/target/debug/vaultkeeper"
+        );
+        let installed = dir.path().join("vaultkeeper");
+        std::fs::write(&installed, "").expect("file");
+        std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        assert_eq!(resolve_launcher(Some(&path), Some(exe)), "vaultkeeper");
+        assert_eq!(resolve_launcher(None, None), "vaultkeeper");
+    }
+
+    #[test]
+    fn sway_without_a_portal_shows_the_bindsym_line() {
+        let view = system_view(
+            &bindings(HotkeyMode::Manual, ""),
+            &Settings {
+                hotkey: "Ctrl+Shift+Space".to_owned(),
+                generator_hotkey: String::new(),
+                ..Settings::default()
+            },
+            Compositor::Sway,
+        );
+        assert_eq!(
+            view.lines,
+            "bindsym Ctrl+Shift+space exec vaultkeeper --search"
+        );
+        assert!(view.lines_hint.contains("Sway config"));
+    }
+
+    #[test]
+    fn hyprland_shows_the_global_bind_instead_of_the_system_dialog() {
+        let settings = Settings {
+            hotkey: "Ctrl+Shift+Space".to_owned(),
+            ..Settings::default()
+        };
+        let view = system_view(
+            &bindings(HotkeyMode::Portal, ""),
+            &settings,
+            Compositor::Omarchy,
+        );
+        assert_eq!(
+            view.lines,
+            "o.bind(\"CTRL + SHIFT + SPACE\", \"Vaultkeeper\", \
+             hl.dsp.global(\"io.github.avbel.Vaultkeeper:quick-panel\"))"
+        );
+        assert!(!view.configurable);
+        assert!(view.lines_hint.contains("bindings.lua"));
+        assert!(view.quick_panel_note.starts_with("Not bound yet"));
+        let classic = system_view(
+            &bindings(HotkeyMode::Portal, ""),
+            &Settings {
+                hotkey: "Ctrl+Alt+K".to_owned(),
+                ..Settings::default()
+            },
+            Compositor::Hyprland,
+        );
+        assert_eq!(
+            classic.lines,
+            "bind = CTRL ALT, K, global, io.github.avbel.Vaultkeeper:quick-panel"
+        );
+    }
+
+    #[test]
+    fn an_empty_quick_panel_shortcut_falls_back_to_the_default_in_the_bind() {
+        let settings = Settings {
+            hotkey: String::new(),
+            ..Settings::default()
+        };
+        let view = system_view(
+            &bindings(HotkeyMode::Portal, ""),
+            &settings,
+            Compositor::Hyprland,
+        );
+        let expected = global_lines(Compositor::Hyprland, APP_ID, DEFAULT_HOTKEY, "")
+            .expect("default has a line");
+        assert_eq!(view.lines, expected);
+    }
+
+    #[test]
+    fn other_portal_desktops_keep_the_system_dialog() {
+        let view = system_view(
+            &bindings(HotkeyMode::Portal, ""),
+            &Settings::default(),
+            Compositor::Other,
+        );
+        assert!(view.configurable);
+        assert_eq!(view.lines, "");
     }
 
     #[test]

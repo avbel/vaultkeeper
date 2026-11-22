@@ -1,10 +1,8 @@
 //! What the portal backend binds and how it reads the answers: plain functions over the saved
 //! accelerators, so the rules test on any host.
 
+pub use crate::shortcut_syntax::{GENERATOR_ID, QUICK_PANEL_ID};
 use crate::{daemon::routing::HotkeySlot, shortcut_syntax::portal_trigger};
-
-pub const QUICK_PANEL_ID: &str = "quick-panel";
-pub const GENERATOR_ID: &str = "generator";
 
 pub const fn shortcut_id(slot: HotkeySlot) -> &'static str {
     match slot {

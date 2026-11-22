@@ -140,27 +140,32 @@ fn keysym(token: &str) -> Option<String> {
     Some(named.to_owned())
 }
 
+/// The ids the GlobalShortcuts portal registers; a Hyprland `global` bind addresses them as
+/// `<app id>:<id>`.
+pub const QUICK_PANEL_ID: &str = "quick-panel";
+pub const GENERATOR_ID: &str = "generator";
+
 /// What `XDG_CURRENT_DESKTOP` and the distribution say about where a binding line goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compositor {
     Sway,
     Hyprland,
-    /// Hyprland configured through Omarchy's Lua bindings.
+    /// Hyprland configured through Omarchy's Lua bindings (`~/.config/hypr/bindings.lua`).
     Omarchy,
     Other,
 }
 
 impl Compositor {
     /// `current_desktop` is `XDG_CURRENT_DESKTOP`, a colon-separated list; Omarchy is Hyprland, so
-    /// the distribution marker wins.
+    /// the Lua bindings file of an Omarchy install wins.
     #[must_use]
-    pub fn detect(current_desktop: &str, omarchy: bool) -> Self {
+    pub fn detect(current_desktop: &str, omarchy_lua: bool) -> Self {
         let has = |name: &str| {
             current_desktop
                 .split(':')
                 .any(|entry| entry.eq_ignore_ascii_case(name))
         };
-        if omarchy && has("hyprland") {
+        if omarchy_lua && has("hyprland") {
             Self::Omarchy
         } else if has("sway") {
             Self::Sway
@@ -172,21 +177,26 @@ impl Compositor {
     }
 }
 
-/// The two commands a compositor binding runs; the second instance forwards them to the daemon.
-const SEARCH_COMMAND: &str = "vaultkeeper --search";
-const GENERATOR_COMMAND: &str = "vaultkeeper --generator";
+/// The flags a compositor binding passes to `launcher`; the second instance forwards them to the
+/// daemon.
+const SEARCH_FLAG: &str = "--search";
+const GENERATOR_FLAG: &str = "--generator";
 
 /// The binding lines for the saved shortcuts, one per line; an empty accelerator has none.
-/// `None` when the desktop has no line syntax this app knows.
+/// `launcher` is what starts Vaultkeeper from the compositor (`vaultkeeper`, or an absolute path
+/// when it is not on `PATH`). `None` when the desktop has no line syntax this app knows.
 #[must_use]
 pub fn compositor_lines(
     compositor: Compositor,
+    launcher: &str,
     quick_panel: &str,
     generator: &str,
 ) -> Option<String> {
+    let search = format!("{launcher} {SEARCH_FLAG}");
+    let generate = format!("{launcher} {GENERATOR_FLAG}");
     let entries = [
-        (quick_panel, SEARCH_COMMAND, "Vaultkeeper"),
-        (generator, GENERATOR_COMMAND, "Vaultkeeper generator"),
+        (quick_panel, search.as_str(), "Vaultkeeper"),
+        (generator, generate.as_str(), "Vaultkeeper generator"),
     ];
     let lines: Vec<String> = entries
         .iter()
@@ -196,6 +206,58 @@ pub fn compositor_lines(
         })
         .collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// The bind lines for desktops whose portal backend takes no shortcut proposals but does run an
+/// app's shortcut through a `global` bind of the compositor (Hyprland: xdg-desktop-portal-hyprland
+/// ignores `ConfigureShortcuts`). The empty accelerator has no line.
+#[must_use]
+pub fn global_lines(
+    compositor: Compositor,
+    app_id: &str,
+    quick_panel: &str,
+    generator: &str,
+) -> Option<String> {
+    let entries = [
+        (quick_panel, QUICK_PANEL_ID, "Vaultkeeper"),
+        (generator, GENERATOR_ID, "Vaultkeeper generator"),
+    ];
+    let lines: Vec<String> = entries
+        .iter()
+        .filter_map(|(accelerator, id, title)| {
+            let chord = Chord::parse(accelerator)?;
+            global_line(compositor, &chord, &format!("{app_id}:{id}"), title)
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn global_line(compositor: Compositor, chord: &Chord, target: &str, title: &str) -> Option<String> {
+    let name = |modifier| match modifier {
+        Modifier::Ctrl => "CTRL",
+        Modifier::Alt => "ALT",
+        Modifier::Shift => "SHIFT",
+        Modifier::Logo => "SUPER",
+    };
+    match compositor {
+        Compositor::Omarchy => {
+            let keys = chord.joined(" + ", name).to_ascii_uppercase();
+            Some(format!(
+                "o.bind(\"{keys}\", \"{title}\", hl.dsp.global(\"{target}\"))"
+            ))
+        }
+        Compositor::Hyprland => {
+            let modifiers = chord
+                .modifiers()
+                .into_iter()
+                .map(name)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let key = chord.key.to_ascii_uppercase();
+            Some(format!("bind = {modifiers}, {key}, global, {target}"))
+        }
+        Compositor::Sway | Compositor::Other => None,
+    }
 }
 
 fn line(compositor: Compositor, chord: &Chord, command: &str, title: &str) -> Option<String> {
@@ -292,7 +354,13 @@ mod tests {
     #[test]
     fn sway_lines_use_bindsym_and_mod4_for_super() {
         assert_eq!(
-            compositor_lines(Compositor::Sway, "Ctrl+Shift+Space", "Super+Alt+G").as_deref(),
+            compositor_lines(
+                Compositor::Sway,
+                "vaultkeeper",
+                "Ctrl+Shift+Space",
+                "Super+Alt+G"
+            )
+            .as_deref(),
             Some(
                 "bindsym Ctrl+Shift+space exec vaultkeeper --search\n\
                  bindsym Alt+Mod4+g exec vaultkeeper --generator"
@@ -301,9 +369,24 @@ mod tests {
     }
 
     #[test]
+    fn sway_lines_run_the_launcher_it_is_given() {
+        assert_eq!(
+            compositor_lines(
+                Compositor::Sway,
+                "/opt/vk/vaultkeeper",
+                "Ctrl+Shift+Enter",
+                ""
+            )
+            .as_deref(),
+            Some("bindsym Ctrl+Shift+Return exec /opt/vk/vaultkeeper --search")
+        );
+    }
+
+    #[test]
     fn hyprland_lines_use_exec_binds() {
         assert_eq!(
-            compositor_lines(Compositor::Hyprland, "Ctrl+Shift+Space", "").as_deref(),
+            compositor_lines(Compositor::Hyprland, "vaultkeeper", "Ctrl+Shift+Space", "")
+                .as_deref(),
             Some("bind = CTRL SHIFT, space, exec, vaultkeeper --search")
         );
     }
@@ -311,7 +394,13 @@ mod tests {
     #[test]
     fn omarchy_lines_are_the_lua_binding_call() {
         assert_eq!(
-            compositor_lines(Compositor::Omarchy, "Ctrl+Shift+Space", "Ctrl+Alt+G").as_deref(),
+            compositor_lines(
+                Compositor::Omarchy,
+                "vaultkeeper",
+                "Ctrl+Shift+Space",
+                "Ctrl+Alt+G"
+            )
+            .as_deref(),
             Some(
                 "o.bind(\"CTRL + SHIFT + SPACE\", \"Vaultkeeper\", \"vaultkeeper --search\")\n\
                  o.bind(\"CTRL + ALT + G\", \"Vaultkeeper generator\", \"vaultkeeper --generator\")"
@@ -319,12 +408,46 @@ mod tests {
         );
     }
 
+    const APP: &str = "io.github.avbel.Vaultkeeper";
+
+    #[test]
+    fn omarchy_global_lines_are_the_verified_lua_bind() {
+        assert_eq!(
+            global_lines(Compositor::Omarchy, APP, "Ctrl+Shift+Space", "").as_deref(),
+            Some(
+                "o.bind(\"CTRL + SHIFT + SPACE\", \"Vaultkeeper\", \
+                 hl.dsp.global(\"io.github.avbel.Vaultkeeper:quick-panel\"))"
+            )
+        );
+    }
+
+    #[test]
+    fn classic_hyprland_global_lines_use_the_bind_global_form() {
+        assert_eq!(
+            global_lines(Compositor::Hyprland, APP, "Ctrl+Shift+Space", "Super+Alt+G").as_deref(),
+            Some(
+                "bind = CTRL SHIFT, SPACE, global, io.github.avbel.Vaultkeeper:quick-panel\n\
+                 bind = ALT SUPER, G, global, io.github.avbel.Vaultkeeper:generator"
+            )
+        );
+    }
+
+    #[test]
+    fn other_desktops_have_no_global_lines() {
+        assert_eq!(global_lines(Compositor::Sway, APP, "Ctrl+Space", ""), None);
+        assert_eq!(global_lines(Compositor::Other, APP, "Ctrl+Space", ""), None);
+        assert_eq!(global_lines(Compositor::Hyprland, APP, "", ""), None);
+    }
+
     #[test]
     fn an_unknown_desktop_or_no_shortcut_has_no_lines() {
         assert_eq!(
-            compositor_lines(Compositor::Other, "Ctrl+Shift+Space", ""),
+            compositor_lines(Compositor::Other, "vaultkeeper", "Ctrl+Shift+Space", ""),
             None
         );
-        assert_eq!(compositor_lines(Compositor::Sway, "", ""), None);
+        assert_eq!(
+            compositor_lines(Compositor::Sway, "vaultkeeper", "", ""),
+            None
+        );
     }
 }

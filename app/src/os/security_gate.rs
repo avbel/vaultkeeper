@@ -16,6 +16,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use vk_platform::security::{Chain, Link, Probe, Report, Required};
 
+use super::tray_way::{session_desktop, tray_way};
+
 /// `--skip-security-issues`, set once in `main` for every role; the daemon passes it on to the
 /// UI child. Never read from the environment: an inherited variable would skip by accident.
 static SKIP: AtomicBool = AtomicBool::new(false);
@@ -260,7 +262,7 @@ fn hotkey_chain(facts: &Facts) -> Option<Chain> {
 /// the session lacks and never refuse a start.
 fn desktop_chains(desktop: &Desktop, distro: Distro) -> Vec<Chain> {
     vec![
-        tray_chain(&desktop.tray_watcher, distro),
+        tray_chain(&desktop.tray_watcher, distro, &session_desktop()),
         lock_sleep_chain(desktop, distro),
         portal_chain(&desktop.portal, distro),
         notifications_chain(&desktop.notifications, distro),
@@ -337,13 +339,12 @@ enum Item {
     RuntimeDir,
     Wayland,
     SecretMem,
-    Tray,
 }
 
 /// C13: a StatusNotifierWatcher on the session bus, which the tray needs. Never refuses: without
 /// one the shortcut and the launcher entry still work, and Settings shows the fix.
 #[must_use]
-pub fn tray_chain(watcher: &Result<(), String>, distro: Distro) -> Chain {
+pub fn tray_chain(watcher: &Result<(), String>, distro: Distro, desktop: &str) -> Chain {
     Chain {
         id: "tray",
         name: "Tray",
@@ -353,7 +354,10 @@ pub fn tray_chain(watcher: &Result<(), String>, distro: Distro) -> Chain {
             link("status-notifier", "StatusNotifierItem", watcher),
             always("none", "No tray"),
         ],
-        fix: Some(fix(distro, Item::Tray)),
+        fix: Some(format!(
+            "no tray on this desktop; use the shortcut or the launcher entry, or {}",
+            tray_way(distro, desktop)
+        )),
     }
 }
 
@@ -373,18 +377,6 @@ fn fix(distro: Distro, item: Item) -> String {
         (Item::Wayland, Distro::Ubuntu) => "log in to the \"Ubuntu\" (Wayland) session",
         (Item::Wayland, Distro::Omarchy) => "start Hyprland through UWSM (the Omarchy default)",
         (Item::Wayland, _) => "log in to a Wayland session; X11 is not supported",
-        (Item::Tray, Distro::Ubuntu) => {
-            "no tray on this desktop; use the shortcut or the launcher entry, or enable the Ubuntu AppIndicator extension in Extensions"
-        }
-        (Item::Tray, Distro::Fedora) => {
-            "no tray on this desktop; use the shortcut or the launcher entry, or install gnome-shell-extension-appindicator (GNOME) or add Waybar's tray module (Sway)"
-        }
-        (Item::Tray, Distro::Omarchy) => {
-            "no tray on this desktop; use the shortcut or the launcher entry, or restart the Omarchy shell, which hosts the tray"
-        }
-        (Item::Tray, _) => {
-            "no tray on this desktop; use the shortcut or the launcher entry, or run a StatusNotifierItem host (a panel tray module or the GNOME AppIndicator extension)"
-        }
         (Item::LockSleep, _) => {
             "no lock or sleep events reach Vaultkeeper; on Sway or Hyprland run `loginctl lock-session` from swayidle or hypridle (see \"Lock on Linux\" in docs/USAGE.md)"
         }
@@ -637,7 +629,7 @@ mod tests {
     #[test]
     fn a_missing_tray_watcher_is_reduced_with_the_notice_and_never_refuses() {
         let missing = Err("org.kde.StatusNotifierWatcher has no owner".to_owned());
-        let report = Report::evaluate(&[tray_chain(&missing, Distro::Fedora)]);
+        let report = Report::evaluate(&[tray_chain(&missing, Distro::Fedora, "GNOME")]);
         let chain = &report.chains[0];
         assert_eq!(chain.status, vk_platform::security::ChainStatus::Reduced);
         assert_eq!(chain.active.as_deref(), Some("No tray"));
@@ -656,7 +648,7 @@ mod tests {
 
     #[test]
     fn a_tray_watcher_makes_the_tray_chain_full() {
-        let report = Report::evaluate(&[tray_chain(&Ok(()), Distro::Ubuntu)]);
+        let report = Report::evaluate(&[tray_chain(&Ok(()), Distro::Ubuntu, "ubuntu:GNOME")]);
         assert_eq!(
             report.chains[0].status,
             vk_platform::security::ChainStatus::Full

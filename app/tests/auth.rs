@@ -694,3 +694,25 @@ fn require_master_password_hides_touch_id_until_the_first_unlock() {
         "the daemon said an unlock already happened"
     );
 }
+
+/// The daemon announces the new session as soon as it is stored, which can reach the UI before
+/// the login reply does; the form was opened by the tray, so nothing else asked for a Manager.
+#[test]
+fn a_vault_change_that_beats_the_login_reply_still_opens_the_manager() {
+    let h = harness(Setup::default());
+    h.app.start(true);
+    assert!(h.app.manager_window().is_none());
+    h.app.handle(vaultkeeper::UiCommand::ShowLogin);
+    let login = h.app.login_window().expect("login window");
+    type_into(&login, "Email", "grace@example.com");
+    type_into(&login, "Master password", MOCK_MASTER_PASSWORD);
+    let request = vk_vault::model::LoginRequest {
+        server: "https://vault.example.com".parse().expect("url"),
+        email: "grace@example.com".to_owned(),
+        password: MOCK_MASTER_PASSWORD.to_owned().into(),
+    };
+    common::block_on(h.vault.login(request, None, None)).expect("login");
+    h.app.on_vault_changed();
+    assert!(h.app.login_window().is_none());
+    assert!(h.app.manager_window().is_some());
+}

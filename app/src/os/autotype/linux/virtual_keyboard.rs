@@ -73,7 +73,9 @@ pub(super) fn type_keysyms(keysyms: &[u32], cancel: &AtomicBool) -> Result<(), F
             std::thread::sleep(PACE);
         }
     }
-    keyboard.finish()
+    keyboard.finish()?;
+    tracing::info!("auto-type: typed through the compositor's virtual keyboard");
+    Ok(())
 }
 
 fn connect() -> Result<Keyboard, Failure> {

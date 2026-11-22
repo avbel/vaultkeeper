@@ -137,6 +137,21 @@ fn losing_focus_hides_the_panel() {
 }
 
 #[test]
+fn a_close_from_the_compositor_resets_the_panel_so_the_next_open_works() {
+    let (h, panel) = open(true);
+    panel
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+    pump();
+    assert!(h.app.quick_panel().is_none());
+    h.app.toggle_quick_panel();
+    assert!(
+        h.app.quick_panel().is_some(),
+        "the hotkey opens a fresh panel after the compositor closed the old one"
+    );
+}
+
+#[test]
 fn mouse_copy_keeps_the_panel_open() {
     let (h, panel) = open(true);
     assert!(panel.invoke_copy_row(0, 0));

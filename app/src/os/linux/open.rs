@@ -85,15 +85,18 @@ pub fn register_before_hardening(wait: RegistrationWait) {
 /// Runs `work` on the portal runtime and waits for it as long as it takes: a file dialog stays
 /// open for as long as the user needs, so `work` itself must end when the portal goes away. Never
 /// call it from the portal runtime's worker: the wait would block the thread that runs `work`.
+/// Any other thread is fine, including a blocking-pool thread of the app's runtime.
 pub(super) fn run_unbounded<T: Send + 'static>(
     work: impl Future<Output = T> + Send + 'static,
 ) -> Option<T> {
+    let runtime = runtime()?;
     debug_assert!(
-        tokio::runtime::Handle::try_current().is_err(),
-        "run_unbounded blocks, so it must not run inside a tokio runtime"
+        !tokio::runtime::Handle::try_current()
+            .is_ok_and(|current| current.id() == runtime.handle().id()),
+        "run_unbounded blocks, so it must not run on the portal runtime"
     );
     let (tx, rx) = mpsc::channel();
-    runtime()?.spawn(async move {
+    runtime.spawn(async move {
         let _ = tx.send(work.await);
     });
     rx.recv().ok()

@@ -8,7 +8,10 @@ use super::{
     Level,
     rows::{SandboxKind, creds_mechanism, sandbox_kind, why},
 };
-use crate::os::security_gate::Distro;
+use crate::os::{
+    security_gate::Distro,
+    tray_way::{session_desktop, tray_way},
+};
 use vk_platform::creds::Backend;
 
 #[derive(Debug, Default)]
@@ -104,7 +107,7 @@ pub fn remedy(chain: &ChainDto, level: Level, distro: Distro) -> Remedy {
             ],
             "",
         ),
-        "tray" => Remedy::notes("How to get a tray icon", &[tray_sentence(distro)]),
+        "tray" => Remedy::notes("How to get a tray icon", &[&tray_sentence(distro)]),
         "notifications" => Remedy::notes(
             "How to fix it",
             &[if distro == Distro::Omarchy {
@@ -124,17 +127,9 @@ fn capitalised(text: &str) -> String {
     })
 }
 
-fn tray_sentence(distro: Distro) -> &'static str {
-    match distro {
-        Distro::Ubuntu => "Enable the Ubuntu AppIndicator extension in Extensions.",
-        Distro::Fedora => {
-            "Install gnome-shell-extension-appindicator (GNOME) or add Waybar's tray module (Sway)."
-        }
-        Distro::Omarchy => "Restart the Omarchy shell, which hosts the tray.",
-        Distro::OtherArch | Distro::Other => {
-            "Run a StatusNotifierItem host (a panel tray module or the GNOME AppIndicator extension)."
-        }
-    }
+fn tray_sentence(distro: Distro) -> String {
+    let way = tray_way(distro, &session_desktop());
+    format!("{}.", capitalised(way))
 }
 
 fn sandbox(chain: &ChainDto) -> Remedy {
