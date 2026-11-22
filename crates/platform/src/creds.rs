@@ -94,6 +94,11 @@ impl Creds {
     }
 
     #[must_use]
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+
+    #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self

@@ -226,6 +226,8 @@ pub struct Daemon {
     /// The install path once it names another file than the running binary (a package manager
     /// upgraded under this daemon): the state "Updated". Only Linux ever sets it.
     upgraded: watch::Sender<Option<PathBuf>>,
+    /// The upgrade is there but this daemon cannot start its replacement (`relaunch::Route`).
+    manual_restart: AtomicBool,
 }
 
 /// What the launcher needs to hand a UI process its channel: nothing on macOS, where the UI
@@ -414,6 +416,7 @@ impl Daemon {
             self_update,
             restart: Mutex::new(None),
             upgraded: watch::Sender::new(None),
+            manual_restart: AtomicBool::new(false),
         });
         if daemon.settings().ssh_agent
             && let Err(error) = daemon.ssh.set_enabled(true)
@@ -543,12 +546,29 @@ impl Daemon {
             .send_if_modified(|current| update::upgraded::record(current, install));
     }
 
+    /// Set before [`Daemon::mark_upgraded`], whose change is what the tray redraws on.
+    #[cfg(any(target_os = "linux", all(test, unix)))]
+    pub(crate) fn set_manual_restart(&self, manual: bool) {
+        self.manual_restart.store(manual, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn manual_restart(&self) -> bool {
+        self.manual_restart.load(Ordering::SeqCst)
+    }
+
     /// The install path can vanish after the state was set (an uninstall); quitting then would
     /// end in a failed relaunch, so the state is dropped instead.
     fn restart_into_upgrade(&self) {
         let Some(install) = self.upgraded() else {
             return;
         };
+        if self.manual_restart() {
+            tracing::warn!(
+                "this daemon cannot start its replacement; quit and start Vaultkeeper again"
+            );
+            return;
+        }
         if install.exists() {
             self.restart_for_update(install);
         } else {

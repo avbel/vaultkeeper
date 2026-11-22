@@ -136,6 +136,8 @@ struct Snapshot {
     update_enabled: bool,
     #[cfg(target_os = "linux")]
     restart_to_update: bool,
+    #[cfg(target_os = "linux")]
+    restart_by_hand: bool,
 }
 
 fn snapshot(daemon: &Daemon) -> Snapshot {
@@ -172,6 +174,8 @@ fn snapshot(daemon: &Daemon) -> Snapshot {
         update_enabled: update.is_none_or(|status| status.tray_enabled()),
         #[cfg(target_os = "linux")]
         restart_to_update: daemon.upgraded().is_some(),
+        #[cfg(target_os = "linux")]
+        restart_by_hand: daemon.manual_restart(),
     }
 }
 

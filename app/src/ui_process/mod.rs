@@ -42,6 +42,8 @@ pub fn run(first_unlock: bool, no_activate: bool, pipe: Option<usize>) -> anyhow
         "UI process starting (first_unlock={first_unlock} no_activate={no_activate} pipe={pipe:?})"
     ));
     channel::check(pipe)?;
+    #[cfg(target_os = "linux")]
+    vk_platform::install_kind::adopt_from_env();
     let data_dir = crate::os::layout::data_dir().context("locate the data directory")?;
     step("data directory located");
     crate::os::startup_check::enforce(&data_dir)?;

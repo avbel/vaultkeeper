@@ -404,7 +404,7 @@ fn ssh_config_lines(socket: &str) -> String {
 
 /// "Managed by Homebrew — run brew upgrade vaultkeeper" for a package-manager install, else empty.
 fn updates_managed_note() -> String {
-    let kind = vk_platform::install_kind::detect();
+    let kind = vk_platform::install_kind::cached();
     match (kind.manager(), kind.upgrade_command()) {
         (Some(manager), Some(command)) => format!("Managed by {manager} — run {command}"),
         _ => String::new(),

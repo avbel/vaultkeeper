@@ -32,6 +32,11 @@ pub fn spawn(
             usize::try_from(fd).map_err(io::Error::other)?,
         ))
         .stdin(std::process::Stdio::null())
+        // The UI inherits the sandbox, where it could not run `rpm` to find this out itself.
+        .env(
+            vk_platform::install_kind::KIND_ENV,
+            vk_platform::install_kind::cached().label(),
+        )
         .kill_on_drop(false);
     if let Some(token) = crate::os::linux::activation::take() {
         command.env("XDG_ACTIVATION_TOKEN", token);

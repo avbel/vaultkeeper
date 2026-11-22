@@ -113,7 +113,7 @@ impl Updater {
     /// `data_dir` is the app's data directory; updates and their downloads live under it.
     pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
         // A package manager owns a managed install: no update request ever leaves this copy.
-        if let Some(manager) = vk_platform::install_kind::detect().manager() {
+        if let Some(manager) = vk_platform::install_kind::cached().manager() {
             anyhow::bail!("updates are managed by {manager}");
         }
         let work = data_dir.join(if cfg!(windows) { "updates" } else { "update" });

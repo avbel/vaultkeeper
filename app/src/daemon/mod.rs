@@ -9,6 +9,8 @@ mod hotkey;
 mod hotkey_pause;
 pub mod launcher;
 pub mod lock;
+#[cfg(target_os = "linux")]
+mod relaunch;
 pub mod routing;
 pub mod secrets;
 mod security;
@@ -145,9 +147,22 @@ fn sandbox(data_dir: &Path, socket_dir: &Path) -> crate::os::self_protection::Sa
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    let install = vk_platform::install_kind::current_install_path()
-        .and_then(|install| sandbox::install_paths(&install, &home));
-    let Some(install) = install else {
+    let binary = vk_platform::install_kind::current_install_path();
+    let install = binary
+        .as_deref()
+        .and_then(|binary| sandbox::install_paths(binary, &home));
+    // The gate ran the systemd-creds probe already, so this is the tool the token store uses.
+    let creds = vk_platform::creds::Detection::cached().creds();
+    let tools: Vec<PathBuf> = creds
+        .map(|creds| creds.program().to_owned())
+        .into_iter()
+        .collect();
+    let exec = binary
+        .as_deref()
+        .and_then(|binary| sandbox::exec_paths(binary, &tools));
+    // `rpm -qf` cannot run once the sandbox is applied.
+    let _ = vk_platform::install_kind::cached();
+    let (Some(install), Some(exec)) = (install, exec) else {
         let why = "the home directory or the path of the vaultkeeper binary is unknown";
         tracing::warn!(why, "the Landlock sandbox was requested but is not applied");
         return Sandbox::Failed(why.to_owned());
@@ -162,13 +177,19 @@ fn sandbox(data_dir: &Path, socket_dir: &Path) -> crate::os::self_protection::Sa
         socket_dir,
         log_dir: &log_dir,
         install: &install,
+        exec: &exec,
         session: &sandbox::Session::from_env(),
         config_home: &config_home,
         data_home: &data_home,
         cache_home: &cache_home,
     });
+    if rules.exec.len() != exec.len() {
+        tracing::warn!("a program inside a writable directory is not executable in the sandbox");
+    }
     match sandbox::restrict(&rules) {
         Ok(enforcement) => {
+            // Each grant holds for the file it named now; a replaced one needs a restart.
+            update::upgraded::pin(&rules.exec);
             if enforcement == sandbox::Enforcement::Full {
                 tracing::info!(status = %enforcement, "sandbox");
             } else {
@@ -324,7 +345,9 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
                 "the update installer did not start"
             );
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        relaunch::start(&runtime, &bundle);
+        #[cfg(target_os = "macos")]
         relaunch(&bundle);
     }
     drop(instance);
@@ -333,20 +356,6 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
     ran
-}
-
-/// Starts the upgraded binary, which waits for this process to exit before taking the instance
-/// lock. A user unit's `Restart=` does not apply: this exit is a clean one.
-#[cfg(target_os = "linux")]
-fn relaunch(exe: &Path) {
-    let pid = std::process::id().to_string();
-    match std::process::Command::new(exe)
-        .args(["--tray", "--wait-for", &pid])
-        .spawn()
-    {
-        Ok(_) => tracing::info!(exe = %exe.display(), "started the upgraded Vaultkeeper"),
-        Err(error) => tracing::error!(%error, "cannot start the upgraded Vaultkeeper"),
-    }
 }
 
 /// Starts the updated app. When launchd started this process as the login agent's job, a non-zero

@@ -31,6 +31,8 @@ pub struct MenuState {
     pub update_enabled: bool,
     /// A package manager replaced the binary under this daemon (Linux).
     pub restart_to_update: bool,
+    /// The daemon cannot start its replacement itself (see `daemon::relaunch`).
+    pub restart_by_hand: bool,
 }
 
 /// The host reads `_` in a label as an access-key marker, so a literal one is doubled; an
@@ -39,6 +41,8 @@ pub struct MenuState {
 pub fn escape_label(label: &str) -> String {
     label.replace('_', "__")
 }
+
+const RESTART_BY_HAND: &str = "Quit and start Vaultkeeper again to finish the update";
 
 fn item(label: &str, action: TrayAction) -> Entry {
     Entry::Item {
@@ -99,7 +103,9 @@ pub fn build(state: &MenuState) -> Vec<Entry> {
             action: TrayAction::Update,
         });
     }
-    if state.restart_to_update {
+    if state.restart_to_update && state.restart_by_hand {
+        entries.push(Entry::Note(RESTART_BY_HAND.to_owned()));
+    } else if state.restart_to_update {
         entries.push(item(
             "Restart to finish the update",
             TrayAction::RestartUpdated,
@@ -149,6 +155,28 @@ mod tests {
                 "Quit"
             ]
         );
+    }
+
+    #[test]
+    fn a_restart_the_daemon_cannot_do_is_a_note_not_an_action() {
+        let entries = build(&MenuState {
+            restart_to_update: true,
+            restart_by_hand: true,
+            ..unlocked()
+        });
+        assert!(entries.contains(&Entry::Note(RESTART_BY_HAND.to_owned())));
+        assert!(!entries.iter().any(|entry| matches!(
+            entry,
+            Entry::Item {
+                action: TrayAction::RestartUpdated,
+                ..
+            }
+        )));
+        let hidden = build(&MenuState {
+            restart_by_hand: true,
+            ..unlocked()
+        });
+        assert!(!hidden.contains(&Entry::Note(RESTART_BY_HAND.to_owned())));
     }
 
     #[test]

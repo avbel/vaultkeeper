@@ -1,13 +1,16 @@
 //! Landlock self-sandbox of the daemon and, by inheritance, the UI it starts (linux-plan.md 1f,
 //! chain C6). The daemon may only read the system and its own install, write its data, runtime,
-//! log, launcher, autostart and manifest directories, and connect to the sockets it works with.
+//! log, launcher, autostart and manifest directories, connect to the sockets it works with, and
+//! execute itself and the one tool it spawns ([`exec_paths`]). Nothing it can write can be
+//! executed.
 //!
-//! What this is worth: a bug that makes the process open, list or connect to a path of the
+//! What this is worth: a bug that makes the process open, list, run or connect to a path of the
 //! attacker's choosing no longer reaches `~/.ssh`, a browser profile, or the SSH and GPG agent
-//! sockets of the session. It is not a boundary against code running inside the process: the
-//! session bus stays reachable (systemd's `StartTransientUnit` runs anything outside the sandbox),
-//! `/usr/bin/systemd-run` can be executed, and the writable autostart and systemd user unit
-//! directories give persistence. Closing that needs a bus proxy, which is not built.
+//! sockets of the session, and cannot start a file dropped into the data or cache directory. It
+//! is not a boundary against code running inside the process: the session bus stays reachable
+//! (systemd's `StartTransientUnit` runs anything outside the sandbox), a library in a writable
+//! directory can still be mapped, and the writable autostart and systemd user unit directories
+//! give persistence. Closing that needs a bus proxy, which is not built.
 //!
 //! Off unless `VAULTKEEPER_LANDLOCK=1` until the VM runs confirm that fonts, GPU drivers,
 //! portals, the tray and file dialogs work under the rule set: the UI inherits it, and a file
@@ -18,12 +21,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod exec;
+
+pub use exec::{exec_paths, interpreter};
+
 /// Where the rule set allows access. Missing paths are skipped when applied, so one list fits
 /// every distribution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Rules {
     pub read: Vec<PathBuf>,
+    /// Everything but execution: a file the process wrote must not become a program.
     pub write: Vec<PathBuf>,
+    /// Files that may be executed.
+    pub exec: Vec<PathBuf>,
     /// Unix sockets that may be connected to, each by its own path, or a directory of them.
     /// Landlock ABI 9+ guards `connect(2)` on a path socket as its own right, which the read set
     /// does not carry; an older kernel does not restrict it, and the rule is dropped there. A
@@ -119,8 +129,10 @@ pub struct Dirs<'a> {
     pub data_dir: &'a Path,
     pub socket_dir: &'a Path,
     pub log_dir: &'a Path,
-    /// From [`install_paths`]: the binary re-executes itself for the UI and after an update.
+    /// From [`install_paths`].
     pub install: &'a [PathBuf],
+    /// From [`exec_paths`]: the binary re-executes itself for the UI.
+    pub exec: &'a [PathBuf],
     pub session: &'a Session,
     pub config_home: &'a Path,
     pub data_home: &'a Path,
@@ -135,11 +147,12 @@ const SYSTEM_SOCKETS: [&str; 2] = [
     "/run/systemd/io.systemd.Credentials",
 ];
 
-/// `/dev/null` is what a child's discarded output is opened on (without it `systemd-creds` cannot
-/// even be spawned), and the GPU nodes are opened read-write and driven by ioctl.
-const DEVICES: [&str; 2] = ["/dev/null", "/dev/dri"];
+/// What a child's discarded output is opened on: without it `systemd-creds` cannot even be
+/// spawned. No GPU node is granted because Slint draws with its software renderer; a GPU
+/// renderer would need `/dev/dri/renderD*` here (read, write and ioctl) to start.
+const NULL_DEVICE: &str = "/dev/null";
 
-/// What of the install the sandbox may read and execute, given the path of the running binary.
+/// What of the install the sandbox may read, given the path of the running binary.
 /// A prefix of its own (`/usr`, `/opt/vaultkeeper`, Homebrew) is granted whole: under Homebrew
 /// `opt/vaultkeeper` resolves to a versioned Cellar directory, and the next upgrade's binary
 /// lives in another one. A binary inside the home directory gets its own directory and
@@ -180,6 +193,8 @@ pub fn install_paths(install: &Path, home: &Path) -> Option<Vec<PathBuf>> {
 /// Read-only: the system and the install. Read-write: our own state, the files we keep up to
 /// date for the desktop, and caches the GPU and font stacks fill. Nothing in the runtime
 /// directory is readable but our socket directory: Wayland and D-Bus need only the connect.
+/// An executable path inside a writable directory is dropped: what the process can write must
+/// never run.
 #[must_use]
 pub fn rules(dirs: &Dirs<'_>) -> Rules {
     let mut read: Vec<PathBuf> = [
@@ -215,11 +230,18 @@ pub fn rules(dirs: &Dirs<'_>) -> Rules {
         dirs.data_home.join("icons"),
         dirs.cache_home.to_owned(),
     ];
+    let exec = dirs
+        .exec
+        .iter()
+        .filter(|path| !write.iter().any(|dir| path.starts_with(dir)))
+        .cloned()
+        .collect();
     Rules {
         read,
         write,
+        exec,
         connect,
-        devices: DEVICES.iter().map(PathBuf::from).collect(),
+        devices: vec![PathBuf::from(NULL_DEVICE)],
     }
 }
 
@@ -264,8 +286,19 @@ pub fn restrict(rules: &Rules) -> Result<Enforcement, landlock::RulesetError> {
         // Abstract sockets and signals reach only processes inside this sandbox (the UI).
         .scope(Scope::AbstractUnixSocket | Scope::Signal)?
         .create()?
-        .add_rules(path_beneath_rules(&rules.read, AccessFs::from_read(abi)))?
-        .add_rules(path_beneath_rules(&rules.write, AccessFs::from_all(abi)))?
+        .add_rules(path_beneath_rules(
+            &rules.read,
+            AccessFs::ReadFile | AccessFs::ReadDir,
+        ))?
+        .add_rules(path_beneath_rules(
+            &rules.write,
+            AccessFs::from_all(abi) & !AccessFs::Execute,
+        ))?
+        // Opening a file for execution asks for both rights.
+        .add_rules(path_beneath_rules(
+            &rules.exec,
+            AccessFs::Execute | AccessFs::ReadFile,
+        ))?
         .add_rules(path_beneath_rules(&rules.connect, AccessFs::ResolveUnix))?
         .add_rules(path_beneath_rules(
             &rules.devices,
@@ -278,6 +311,9 @@ pub fn restrict(rules: &Rules) -> Result<Enforcement, landlock::RulesetError> {
         RulesetStatus::NotEnforced => Enforcement::None,
     })
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod kernel_tests;
 
 #[cfg(test)]
 mod tests {
@@ -298,6 +334,7 @@ mod tests {
             socket_dir: Path::new("/run/user/1000/vaultkeeper"),
             log_dir: Path::new("/home/me/.local/state/vaultkeeper/logs"),
             install,
+            exec: &[],
             session,
             config_home: Path::new("/home/me/.config"),
             data_home: Path::new("/home/me/.local/share"),
@@ -333,6 +370,26 @@ mod tests {
                 .read
                 .contains(&PathBuf::from("/home/linuxbrew/.linuxbrew"))
         );
+    }
+
+    #[test]
+    fn nothing_writable_is_executable_and_no_gpu_node_is_a_device() {
+        let session = session();
+        let exec = paths(&[
+            "/usr/bin/vaultkeeper",
+            "/usr/lib64/ld-linux-x86-64.so.2",
+            "/home/me/.cache/dropped",
+            "/home/me/.local/share/vaultkeeper/update/vaultkeeper",
+        ]);
+        let rules = rules(&Dirs {
+            exec: &exec,
+            ..dirs(&[], &session)
+        });
+        assert_eq!(
+            rules.exec,
+            paths(&["/usr/bin/vaultkeeper", "/usr/lib64/ld-linux-x86-64.so.2"])
+        );
+        assert_eq!(rules.devices, paths(&["/dev/null"]));
     }
 
     // Fixtures are Unix paths; "/run/..." is not absolute on Windows, where the sandbox does not exist.
@@ -489,212 +546,5 @@ mod tests {
             install_paths(Path::new("/usr/bin/vaultkeeper"), Path::new("")),
             None
         );
-    }
-
-    /// Runs only as the child of the test below (`VK_SANDBOX_CHILD` names its base dir): it
-    /// restricts itself, writes where allowed and must be refused next to it. Exit 2 means the
-    /// kernel has no Landlock.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn sandbox_child() {
-        use std::os::unix::net::UnixStream;
-        let Some(base) = std::env::var_os("VK_SANDBOX_CHILD").map(PathBuf::from) else {
-            return;
-        };
-        let rules = Rules {
-            read: vec![PathBuf::from("/usr"), PathBuf::from("/proc")],
-            write: vec![base.join("allowed")],
-            connect: vec![base.join("sock"), base.join("mixed/granted")],
-            devices: Vec::new(),
-        };
-        if restrict(&rules).expect("ruleset") == Enforcement::None {
-            std::process::exit(2);
-        }
-        std::fs::write(base.join("allowed/a"), b"a").expect("allowed write");
-        assert!(
-            std::fs::write(base.join("denied/b"), b"b").is_err(),
-            "sibling write refused"
-        );
-        for granted in ["sock/s", "mixed/granted"] {
-            let connected = UnixStream::connect(base.join(granted));
-            assert!(connected.is_ok(), "{granted}: {connected:?}");
-        }
-        if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi >= 9) {
-            for refused in ["denied/s", "mixed/other"] {
-                assert!(
-                    UnixStream::connect(base.join(refused)).is_err(),
-                    "{refused} is refused"
-                );
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn run_child(test: &str, variable: &str, base: &Path) -> std::process::ExitStatus {
-        std::process::Command::new(std::env::current_exe().expect("test binary"))
-            .args(["--exact", test, "--test-threads=1"])
-            .env(variable, base)
-            .status()
-            .expect("child")
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_restricted_process_writes_its_dir_but_not_a_sibling() {
-        let base = tempfile::tempdir().expect("tempdir");
-        for dir in ["allowed", "denied", "sock", "mixed"] {
-            std::fs::create_dir(base.path().join(dir)).expect(dir);
-        }
-        // A rule on one socket must not open its neighbours in the same directory.
-        let listeners = ["sock/s", "denied/s", "mixed/granted", "mixed/other"].map(|name| {
-            std::os::unix::net::UnixListener::bind(base.path().join(name)).expect("listener")
-        });
-        let status = run_child(
-            "sandbox::tests::sandbox_child",
-            "VK_SANDBOX_CHILD",
-            base.path(),
-        );
-        drop(listeners);
-        if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi > 0) {
-            assert!(status.success(), "the sandboxed child failed: {status}");
-            assert!(base.path().join("allowed/a").exists());
-            assert!(!base.path().join("denied/b").exists());
-        } else {
-            assert_eq!(
-                status.code(),
-                Some(2),
-                "no Landlock, so the child reports it"
-            );
-        }
-    }
-
-    /// Sockets of the session that the sandbox must keep out of reach when they exist.
-    #[cfg(target_os = "linux")]
-    const FOREIGN_SOCKETS: [&str; 7] = [
-        "gcr/ssh",
-        "keyring/ssh",
-        "gnupg/S.gpg-agent",
-        "systemd/private",
-        "pipewire-0",
-        "podman/podman.sock",
-        "docker.sock",
-    ];
-
-    #[cfg(target_os = "linux")]
-    fn connects(path: &Path) -> bool {
-        std::os::unix::net::UnixStream::connect(path).is_ok()
-    }
-
-    /// Runs only as the child of the test below (`VK_SANDBOX_SESSION_CHILD` names its base dir):
-    /// the production rule set over this machine's real session. What worked before the sandbox
-    /// and is granted must still work; the session's other sockets must not. It leaves a
-    /// `proved` file listing what the machine let it check.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn session_child() {
-        let Some(base) = std::env::var_os("VK_SANDBOX_SESSION_CHILD").map(PathBuf::from) else {
-            return;
-        };
-        let session = Session::from_env();
-        let runtime = session.runtime_dir.clone().unwrap_or_default();
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let rules = rules(&Dirs {
-            home: &home,
-            data_dir: &base.join("data"),
-            socket_dir: &base.join("socket"),
-            log_dir: &base.join("logs"),
-            install: &[],
-            session: &session,
-            config_home: &base.join("config"),
-            data_home: &base.join("share"),
-            cache_home: &base.join("cache"),
-        });
-        let creds = crate::creds::Detection::system();
-        let granted: Vec<PathBuf> = [runtime.join("bus"), runtime.join("wayland-0")]
-            .into_iter()
-            .filter(|socket| rules.connect.contains(socket) && connects(socket))
-            .collect();
-        let foreign: Vec<PathBuf> = FOREIGN_SOCKETS
-            .iter()
-            .map(|name| runtime.join(name))
-            .filter(|socket| connects(socket))
-            .collect();
-        let listed = std::fs::read_dir(&runtime).is_ok();
-
-        if restrict(&rules).expect("ruleset") == Enforcement::None {
-            std::process::exit(2);
-        }
-        let mut proved = Vec::new();
-        if let Some(creds) = creds.creds() {
-            let blob = creds.encrypt(b"token").expect("systemd-creds encrypts");
-            let plain = creds.decrypt(&blob).expect("systemd-creds decrypts");
-            assert_eq!(plain.as_slice(), b"token");
-            proved.push("creds".to_owned());
-        }
-        for socket in &granted {
-            assert!(connects(socket), "{} stays reachable", socket.display());
-            proved.push(format!("granted {}", socket.display()));
-        }
-        if listed {
-            assert!(
-                std::fs::read_dir(&runtime).is_err(),
-                "the runtime directory is not listed"
-            );
-            proved.push("runtime dir unreadable".to_owned());
-        }
-        if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi >= 9) {
-            for socket in &foreign {
-                let refused = std::os::unix::net::UnixStream::connect(socket)
-                    .expect_err("a foreign socket is refused");
-                assert_eq!(
-                    refused.kind(),
-                    std::io::ErrorKind::PermissionDenied,
-                    "{}",
-                    socket.display()
-                );
-                proved.push(format!("refused {}", socket.display()));
-            }
-        }
-        std::fs::write(base.join("data/proved"), proved.join("\n")).expect("report");
-    }
-
-    /// `VK_SANDBOX_EXPECT_SESSION=1` (the VM runs) makes an empty proof a failure: a desktop
-    /// session with systemd-creds, a session bus, a compositor and an SSH agent socket.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_session_rule_set_keeps_creds_and_the_bus_and_refuses_other_sockets() {
-        let base = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(base.path().join("data")).expect("data");
-        let status = run_child(
-            "sandbox::tests::session_child",
-            "VK_SANDBOX_SESSION_CHILD",
-            base.path(),
-        );
-        if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi > 0) {
-            assert!(status.success(), "the sandboxed child failed: {status}");
-        } else {
-            assert_eq!(status.code(), Some(2));
-            return;
-        }
-        let proved = std::fs::read_to_string(base.path().join("data/proved")).expect("report");
-        if std::env::var_os("VK_SANDBOX_EXPECT_SESSION").is_some_and(|value| value == "1") {
-            for expected in ["creds", "granted", "refused", "runtime dir unreadable"] {
-                assert!(
-                    proved.lines().any(|line| line.starts_with(expected)),
-                    "{expected} missing from: {proved}"
-                );
-            }
-            let lines: Vec<&str> = proved.lines().collect();
-            assert!(
-                lines
-                    .iter()
-                    .filter(|line| line.starts_with("granted"))
-                    .count()
-                    == 2,
-                "bus and compositor: {proved}"
-            );
-        }
     }
 }

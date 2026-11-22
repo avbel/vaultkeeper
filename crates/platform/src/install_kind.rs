@@ -2,7 +2,10 @@
 //! updates of a managed install, so the built-in updater stays off for it. The rules are plain
 //! functions over [`Probe`] so they test on any host; [`detect`] feeds them the real files.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallKind {
@@ -53,6 +56,13 @@ impl InstallKind {
             "deb" => Some(Self::Deb),
             "rpm" => Some(Self::Rpm),
             _ => None,
+        }
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "direct" => Some(Self::Direct),
+            other => Self::from_marker(other),
         }
     }
 }
@@ -122,6 +132,31 @@ pub fn detect() -> InstallKind {
         classify(&probe_files())
     } else {
         InstallKind::Direct
+    }
+}
+
+/// How the daemon tells the UI it starts what it found.
+pub const KIND_ENV: &str = "VAULTKEEPER_INSTALL_KIND";
+
+static KIND: OnceLock<InstallKind> = OnceLock::new();
+
+/// [`detect`], once per process. The daemon asks before it sandboxes itself: detection may run
+/// `rpm`, which the sandbox does not let it execute.
+#[must_use]
+pub fn cached() -> InstallKind {
+    *KIND.get_or_init(detect)
+}
+
+/// For the UI process, which inherits the daemon's sandbox and so cannot run `rpm` itself:
+/// takes the kind the daemon put into [`KIND_ENV`]. Without a valid value the UI detects.
+pub fn adopt_from_env() {
+    let kind = std::env::var(KIND_ENV)
+        .ok()
+        .as_deref()
+        .and_then(InstallKind::from_label);
+    if let Some(kind) = kind {
+        // A value set earlier in this process stays: both came from the same daemon.
+        let _ = KIND.set(kind);
     }
 }
 
