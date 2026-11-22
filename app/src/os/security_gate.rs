@@ -291,7 +291,8 @@ fn lock_sleep_chain(desktop: &Desktop, distro: Distro) -> Chain {
     }
 }
 
-/// The portal serves the global shortcut, link opening, the GNOME clipboard and file dialogs.
+/// The portal serves the global shortcut, link opening and file dialogs on every desktop; the
+/// clipboard has its own chain because GNOME reaches it through the portal and KDE does not.
 fn portal_chain(portal: &Result<(), String>, distro: Distro) -> Chain {
     Chain {
         id: "portal",
@@ -300,7 +301,7 @@ fn portal_chain(portal: &Result<(), String>, distro: Distro) -> Chain {
         minimum: 0,
         links: vec![link(
             "portal",
-            "xdg-desktop-portal (links, shortcuts, clipboard on GNOME, file dialogs)",
+            "xdg-desktop-portal (links, shortcuts, file dialogs)",
             portal,
         )],
         fix: Some(fix(distro, Item::Portal)),
@@ -862,6 +863,33 @@ mod tests {
             .find(|chain| chain.id == "secret-files")
             .expect("secret files chain");
         assert_eq!(files.stacked, ["systemd-creds (host key only)"]);
+    }
+
+    #[test]
+    fn the_portal_row_names_no_desktop_specific_clipboard() {
+        let report = evaluate(&good(), Role::Daemon);
+        let portal = chain_of(&report, "portal");
+        let text = portal.active.expect("portal active");
+        assert!(!text.contains("GNOME"), "{text}");
+    }
+
+    #[test]
+    fn a_host_only_key_makes_the_secret_files_row_standard_and_a_tpm_key_full() {
+        use vk_platform::{creds::Backend, security::ChainStatus};
+        let host = evaluate(&good(), Role::Daemon);
+        let files = chain_of(&host, "secret-files");
+        assert_eq!(files.status, ChainStatus::Standard);
+        assert_eq!(
+            files.note.as_deref(),
+            Some("host key only, not sealed to a TPM2")
+        );
+
+        let tpm = Facts {
+            creds: Backend::TpmAndHost,
+            ..good()
+        };
+        let report = evaluate(&tpm, Role::Daemon);
+        assert_eq!(chain_of(&report, "secret-files").status, ChainStatus::Full);
     }
 
     #[test]

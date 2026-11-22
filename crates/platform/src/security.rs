@@ -188,6 +188,7 @@ impl Chain {
         let mut stacked = Vec::new();
         let mut skipped = Vec::new();
         let mut note = None;
+        let mut degraded_stack = false;
 
         for (index, link) in self.links.iter().enumerate() {
             if !link.stacks && active.is_some() {
@@ -231,6 +232,7 @@ impl Chain {
             }
             if link.stacks {
                 stacked.push(link.mechanism.to_owned());
+                degraded_stack |= degraded;
             } else {
                 active = Some(index);
             }
@@ -239,7 +241,9 @@ impl Chain {
 
         let status = match strongest {
             None => ChainStatus::Off,
-            Some((0, false)) => ChainStatus::Full,
+            // A stacked link adds protection on top of the first one, so its caveat must not
+            // be hidden by an earlier link that works without one.
+            Some((0, false)) if !degraded_stack => ChainStatus::Full,
             Some((index, _)) if index <= self.minimum => ChainStatus::Standard,
             Some(_) => ChainStatus::Reduced,
         };
@@ -422,6 +426,18 @@ mod tests {
         .evaluate();
         assert_eq!(degraded.status, ChainStatus::Standard);
         assert_eq!(degraded.note.as_deref(), Some("ABI 7"));
+    }
+
+    #[test]
+    fn a_degraded_stacking_link_keeps_the_chain_from_being_full() {
+        let degraded = || Link::new("s", "s", || Probe::Degraded("host key".to_owned())).stacking();
+        let report = chain(Required::Status, 0, vec![up("a"), degraded()]).evaluate();
+        assert_eq!(report.status, ChainStatus::Standard);
+        assert_eq!(report.note.as_deref(), Some("host key"));
+        assert_eq!(report.stacked, ["s"]);
+
+        let healthy = chain(Required::Status, 0, vec![up("a"), up("s").stacking()]).evaluate();
+        assert_eq!(healthy.status, ChainStatus::Full);
     }
 
     #[test]
