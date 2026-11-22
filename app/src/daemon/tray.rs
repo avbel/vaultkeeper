@@ -140,6 +140,14 @@ struct Snapshot {
     restart_by_hand: bool,
 }
 
+/// Empty hides the item: with automatic updates off the menu does not offer update checks.
+fn update_item_label(auto_update: bool, status: Option<&super::update::Status>) -> String {
+    status
+        .filter(|_| auto_update)
+        .map(super::update::Status::tray_label)
+        .unwrap_or_default()
+}
+
 fn snapshot(daemon: &Daemon) -> Snapshot {
     let vault = daemon.vault();
     let state = vault.state();
@@ -161,16 +169,14 @@ fn snapshot(daemon: &Daemon) -> Snapshot {
     let update = daemon
         .subscribe_update()
         .map(|status| status.borrow().clone());
+    let update_label = update_item_label(daemon.settings().auto_update, update.as_ref());
     Snapshot {
         locked: !matches!(state, SessionState::Unlocked { .. }),
         logged_in: !matches!(state, SessionState::LoggedOut),
         accounts,
         syncing: sync.running,
         sync_label,
-        update_label: update
-            .as_ref()
-            .map(super::update::Status::tray_label)
-            .unwrap_or_default(),
+        update_label,
         update_enabled: update.is_none_or(|status| status.tray_enabled()),
         #[cfg(target_os = "linux")]
         restart_to_update: daemon.upgraded().is_some(),
@@ -366,6 +372,17 @@ mod tests {
 #[cfg(test)]
 mod target_tests {
     use super::*;
+
+    #[test]
+    fn update_item_is_hidden_when_auto_update_is_off() {
+        let status = super::super::update::Status::UpToDate;
+        assert_eq!(update_item_label(false, Some(&status)), "");
+        assert_eq!(
+            update_item_label(true, Some(&status)),
+            "Vaultkeeper Is Up to Date"
+        );
+        assert_eq!(update_item_label(true, None), "");
+    }
 
     #[test]
     fn a_tray_opened_panel_has_no_typing_target_on_linux_only() {
