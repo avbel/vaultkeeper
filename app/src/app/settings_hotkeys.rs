@@ -235,7 +235,7 @@ fn launcher() -> String {
     "vaultkeeper".to_owned()
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 fn resolve_launcher(path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path>) -> String {
     const NAME: &str = "vaultkeeper";
     let on_path = path.is_some_and(|path| {
@@ -250,18 +250,11 @@ fn resolve_launcher(path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 fn is_executable(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        path.metadata()
-            .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        path.is_file()
-    }
+    use std::os::unix::fs::PermissionsExt as _;
+    path.metadata()
+        .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(target_os = "linux")]
