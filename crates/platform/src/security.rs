@@ -123,6 +123,11 @@ pub struct ChainReport {
     /// Mechanism of the exclusive link in use.
     pub active: Option<String>,
     pub stacked: Vec<String>,
+    /// Link ids of `active` and `stacked`: the mechanism texts are not stable keys.
+    #[serde(default)]
+    pub active_id: Option<String>,
+    #[serde(default)]
+    pub stacked_ids: Vec<String>,
     /// The next weaker exclusive link that would take over if `active` went away.
     pub fallback: Option<String>,
     pub skipped: Vec<Skipped>,
@@ -186,6 +191,7 @@ impl Chain {
         let mut strongest: Option<(usize, bool)> = None;
         let mut fallback = None;
         let mut stacked = Vec::new();
+        let mut stacked_ids = Vec::new();
         let mut skipped = Vec::new();
         let mut note = None;
         let mut degraded_stack = false;
@@ -232,6 +238,7 @@ impl Chain {
             }
             if link.stacks {
                 stacked.push(link.mechanism.to_owned());
+                stacked_ids.push(link.id.to_owned());
                 degraded_stack |= degraded;
             } else {
                 active = Some(index);
@@ -254,6 +261,8 @@ impl Chain {
             status,
             active: active.map(|index| self.links[index].mechanism.to_owned()),
             stacked,
+            active_id: active.map(|index| self.links[index].id.to_owned()),
+            stacked_ids,
             fallback,
             skipped,
             note,
@@ -464,6 +473,8 @@ mod tests {
         .evaluate();
         assert_eq!(report.active.as_deref(), Some("memfd"));
         assert_eq!(report.stacked, ["core", "mdwe"]);
+        assert_eq!(report.stacked_ids, ["core", "mdwe"]);
+        assert_eq!(report.active_id.as_deref(), Some("memfd"));
         assert_eq!(activations.load(Ordering::SeqCst), 2);
     }
 
@@ -575,6 +586,8 @@ mod tests {
             status: ChainStatus::Off,
             active: None,
             stacked: Vec::new(),
+            active_id: None,
+            stacked_ids: Vec::new(),
             fallback: None,
             skipped: Vec::new(),
             note: None,

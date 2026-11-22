@@ -2,7 +2,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Btn, BtnKind, CopyBtn, Divider, Segmented, SectionLabel, Select, ShortcutRecorder, Toggle } from "kit.slint";
 import { GeneratorView, GeneratorState } from "generator.slint";
-import { SecurityChainRow, AcceptedIssueRow, SecuritySummary, SecurityDetail } from "security.slint";
+import { ProtectionRow, SummarySegment, AcceptedIssueRow, SystemProtection } from "security.slint";
 
 // `key` is the stored public key, which identifies the pairing to remove.
 export struct PairedBrowserRow { name: string, fingerprint: string, key: string }
@@ -113,14 +113,24 @@ export component SettingsWindow inherits Window {
     in-out property <int> browser-match-index;
     in property <[PairedBrowserRow]> paired-browsers;
     in property <string> error-text;
-    // Empty on macOS and Windows, which have no protection chains: nothing of this shows there.
+    // Empty off Linux, and where no protection chain is reported: nothing of this shows then.
     in property <string> security-summary;
-    in property <[SecurityChainRow]> security-chains;
+    in property <[SummarySegment]> security-segments;
+    in property <string> security-badge-tone;
+    in property <string> security-badge-icon;
+    in property <[ProtectionRow]> security-rows;
     in property <[AcceptedIssueRow]> security-accepted;
+    in property <bool> security-checking;
     in-out property <bool> security-open;
+    property <bool> scroll-to-protection;
+    property <length> protection-y;
 
     callback security-recheck();
+    callback security-copy-details();
+    callback security-learn-more();
+    callback security-open-changed(bool);
     callback security-action(string);
+    callback security-copy(string) -> bool;
     callback security-forget(string);
     callback theme-selected(int);
     callback tray-icon-selected(int);
@@ -172,6 +182,17 @@ export component SettingsWindow inherits Window {
         root.recording-changed(self.recording-slot != 0);
     }
 
+    // The section sits at the bottom, so opening it would otherwise grow off-screen; wait a tick
+    // for the layout to take the new height before scrolling.
+    Timer {
+        interval: 40ms;
+        running: root.scroll-to-protection;
+        triggered => {
+            scroll.content-y = -root.protection-y;
+            root.scroll-to-protection = false;
+        }
+    }
+
     public function stop-recording() {
         quick-recorder.stop();
         generator-recorder.stop();
@@ -191,23 +212,11 @@ export component SettingsWindow inherits Window {
                 vertical-alignment: center;
             }
         }
-        ScrollView {
+        scroll := ScrollView {
             VerticalLayout {
                 padding: Theme.s5;
                 padding-top: Theme.s3;
                 spacing: Theme.s2;
-                if root.security-summary != "": SecuritySummary {
-                    text: root.security-summary;
-                    open: root.security-open;
-                    clicked => { root.security-open = !root.security-open; }
-                }
-                if root.security-summary != "" && root.security-open: SecurityDetail {
-                    chains: root.security-chains;
-                    accepted: root.security-accepted;
-                    recheck => { root.security-recheck(); }
-                    action(id) => { root.security-action(id); }
-                    forget(id) => { root.security-forget(id); }
-                }
                 SectionLabel { text: "ACCOUNT"; }
                 SettingRow {
                     text: "Server";
@@ -637,6 +646,30 @@ export component SettingsWindow inherits Window {
                             }
                         }
                     }
+                }
+                if root.security-summary != "": Divider { }
+                if root.security-summary != "": SectionLabel { text: "SYSTEM PROTECTION"; }
+                if root.security-summary != "": protection := SystemProtection {
+                    summary: root.security-summary;
+                    segments: root.security-segments;
+                    badge-tone: root.security-badge-tone;
+                    badge-icon: root.security-badge-icon;
+                    rows: root.security-rows;
+                    accepted: root.security-accepted;
+                    checking: root.security-checking;
+                    open: root.security-open;
+                    toggled(y) => {
+                        root.security-open = !root.security-open;
+                        root.protection-y = y;
+                        root.scroll-to-protection = root.security-open;
+                        root.security-open-changed(root.security-open);
+                    }
+                    recheck => { root.security-recheck(); }
+                    copy-details => { root.security-copy-details(); }
+                    learn-more => { root.security-learn-more(); }
+                    action(id) => { root.security-action(id); }
+                    copy(text) => { return root.security-copy(text); }
+                    forget(id) => { root.security-forget(id); }
                 }
                 if root.error-text != "": Text {
                     text: root.error-text;

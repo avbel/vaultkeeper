@@ -1,4 +1,4 @@
-//! The GNOME clipboard link (chain C8, link 2): the RemoteDesktop portal with its Clipboard
+//! The GNOME clipboard link (clipboard chain, link 2): the RemoteDesktop portal with its Clipboard
 //! extension. GNOME offers no data-control protocol, so the app owns a RemoteDesktop session whose
 //! only use is `SetSelection`, and serves the text itself when a paste asks for it.
 //!

@@ -38,6 +38,26 @@ pub struct ChainDto {
     pub fallback: Option<String>,
     pub note: Option<String>,
     pub fix: Option<String>,
+    /// Link id of `active`; the mechanism text is not a stable key.
+    pub active_id: Option<String>,
+    pub stacked_ids: Vec<String>,
+    pub required: ChainRequired,
+    pub skipped: Vec<SkippedDto>,
+}
+
+/// Mirrors `vk_platform::security::Required`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChainRequired {
+    Refuse,
+    Warn,
+    Status,
+}
+
+/// A link that did not work, with the probe's reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedDto {
+    pub link: String,
+    pub why: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

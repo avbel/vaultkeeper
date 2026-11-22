@@ -95,13 +95,27 @@ pub fn memory_chain(state: &Result<(), String>) -> Chain {
 
 const NO_SANDBOX: &str = "No sandbox";
 
+/// The Landlock link's skip reasons. The catalog tells "not asked for" from "asked for, kernel
+/// has none" from "asked for, failed" by these, so they live next to where they are produced.
+pub const NOT_REQUESTED: &str = "not requested";
+pub const NO_LANDLOCK: &str = "this kernel has no Landlock";
+
+const PARTIAL_PREFIX: &str = "partly enforced: the kernel's Landlock ABI ";
+
+/// The ABI number inside the note of a partly enforced sandbox.
+#[must_use]
+pub fn landlock_abi(note: &str) -> Option<u32> {
+    let rest = note.strip_prefix(PARTIAL_PREFIX)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 /// C6. Off by default is the documented state and reads Standard; a sandbox that was asked for
 /// and is missing or partial must not look the same, so it reads Reduced with the reason.
 #[must_use]
 pub fn sandbox_chain(state: &Sandbox) -> Chain {
     let (landlock, without, minimum) = match state {
         Sandbox::NotRequested => (
-            Probe::Unavailable("not requested".to_owned()),
+            Probe::Unavailable(NOT_REQUESTED.to_owned()),
             Some("off unless Vaultkeeper starts with VAULTKEEPER_LANDLOCK=1".to_owned()),
             1,
         ),
@@ -114,7 +128,7 @@ pub fn sandbox_chain(state: &Sandbox) -> Chain {
             abi,
         } => (
             Probe::Degraded(format!(
-                "partly enforced: the kernel's Landlock ABI {} lacks some of the rules",
+                "{PARTIAL_PREFIX}{} lacks some of the rules",
                 abi.map_or_else(|| "?".to_owned(), |abi| abi.to_string())
             )),
             None,
@@ -124,7 +138,7 @@ pub fn sandbox_chain(state: &Sandbox) -> Chain {
             enforcement: Enforcement::None,
             ..
         } => (
-            Probe::Unavailable("this kernel has no Landlock".to_owned()),
+            Probe::Unavailable(NO_LANDLOCK.to_owned()),
             Some("requested but not enforced: this kernel has no Landlock".to_owned()),
             0,
         ),
@@ -211,6 +225,13 @@ mod tests {
                 report.note
             );
         }
+    }
+
+    #[test]
+    fn the_abi_is_read_back_from_the_partial_note() {
+        let partial = sandbox_chain(&applied(Enforcement::Partial)).evaluate();
+        assert_eq!(landlock_abi(partial.note.as_deref().unwrap_or("")), Some(7));
+        assert_eq!(landlock_abi("something else"), None);
     }
 
     #[test]

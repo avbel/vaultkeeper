@@ -41,7 +41,7 @@ pub trait ClipboardBackend: Send + 'static {
     fn clear(&mut self) -> Result<()>;
 }
 
-/// The general pasteboard: arboard on macOS and Windows, the C8 chain on Linux.
+/// The general pasteboard: arboard on macOS and Windows, the clipboard chain on Linux.
 pub struct SystemClipboard {
     #[cfg(any(target_os = "macos", windows))]
     inner: arboard::Clipboard,

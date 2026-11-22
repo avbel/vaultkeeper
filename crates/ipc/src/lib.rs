@@ -63,7 +63,10 @@ pub use protocol::{
     ActivationToken, BrowserPrompt, BrowserReply, HotkeyMode, PROTOCOL_VERSION, SshApprovalKind,
     SshDecision, SshPrompt, TouchIdFailure, TypingTarget, UiCommand, UiNotice,
 };
-pub use security::{ChainDto, ChainState, SecurityFuture, SecurityHost, SecurityReportDto};
+pub use security::{
+    ChainDto, ChainRequired, ChainState, SecurityFuture, SecurityHost, SecurityReportDto,
+    SkippedDto,
+};
 pub use server::{
     DaemonEvent, ServeOptions, ServerHandle, UiSink, serve, serve_inherited, serve_with,
 };

@@ -10,7 +10,9 @@ use std::{
 };
 
 use vk_gen::generator::{PassphraseOptions, PasswordOptions};
-pub use vk_ipc::{ChainDto, ChainState, GeneratedDto, SecurityReportDto, SiteIcon};
+pub use vk_ipc::{
+    ChainDto, ChainRequired, ChainState, GeneratedDto, SecurityReportDto, SiteIcon, SkippedDto,
+};
 use zeroize::Zeroizing;
 
 use vk_vault::VaultService;

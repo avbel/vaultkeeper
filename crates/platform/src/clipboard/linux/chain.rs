@@ -82,7 +82,7 @@ impl Capabilities {
     #[must_use]
     pub fn chain(&self) -> Chain {
         Chain {
-            id: "C8",
+            id: "clipboard",
             name: "Clipboard",
             required: Required::Status,
             // The portal route is what works on GNOME, which has no data-control, so it is

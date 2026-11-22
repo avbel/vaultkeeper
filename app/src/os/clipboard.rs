@@ -117,6 +117,7 @@ impl Keeper {
             status = backend.chain_report().status.label(),
             "clipboard chain"
         );
+        crate::daemon::security::set_clipboard_report(backend.chain_report().clone());
         SecretClipboard::with_backend(backend)
     }
 }

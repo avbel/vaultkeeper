@@ -414,12 +414,30 @@ listener {
 }
 ```
 
-## Security checks on Linux
+## System protection
 
-Settings shows a one-line summary of the protections Vaultkeeper found on this system; open it to
-see each protection, its status and the mechanism in use. *Re-check* probes again after you fixed
-something. `vaultkeeper security status` prints the same list and `vaultkeeper security
-requirements` says what Vaultkeeper needs from the system and how to fix it.
+Settings → *System protection* (at the bottom, closed until you open it; Linux only) lists what
+Vaultkeeper uses on this computer to keep your vault away from other programs. The header counts
+the protections: `7 of 9 protections active · 1 limited · 1 off`. Each row says what it protects
+you from, how it is used here and, in small type, the technical name. Anything that needs a look
+is repeated first under *Needs attention*, with a *How to turn it on* list when there is
+something to do. *Re-check* probes again after you fixed something, *Copy details* copies the
+report for a bug report.
+
+| State | Meaning |
+| --- | --- |
+| Active | The strongest mechanism is in use, no caveat. |
+| Limited | It works, with a stated weakness (for example sign-in data sealed by a host key only). |
+| Off | Not in use; Vaultkeeper still runs. The app sandbox is Off until you turn it on. |
+| Missing | A required protection has no working mechanism; the start was overridden. |
+
+The desktop integration rows (tray icon, desktop portal, notifications, global shortcuts) are
+listed but not counted in the header.
+
+`vaultkeeper security status` prints the same rows and header; `vaultkeeper security status
+--technical` prints the raw chain table, and `vaultkeeper security requirements` says what
+Vaultkeeper needs from the system and how to fix it. The sandbox, memory-reading and shortcut rows
+exist only in the running app, so the command names them and points to Settings.
 
 When a required protection is missing, Vaultkeeper refuses to start and prints why. Two ways to
 start anyway:
@@ -431,8 +449,29 @@ start anyway:
 
 A window of a process started this way carries the "Security issues skipped" badge.
 
-The Landlock self-sandbox is off unless you set `VAULTKEEPER_LANDLOCK=1`. With it on, file dialogs
-may fail and a picked file outside Vaultkeeper's own directories cannot be opened.
+### Turning the app sandbox on
+
+The Landlock sandbox is off by default, because it also blocks opening files outside
+Vaultkeeper's own folders. To turn it on for every start:
+
+1. Create `~/.config/environment.d/vaultkeeper.conf` with one line: `VAULTKEEPER_LANDLOCK=1`
+   (`mkdir -p ~/.config/environment.d && echo VAULTKEEPER_LANDLOCK=1 > ~/.config/environment.d/vaultkeeper.conf`).
+2. Log out and back in.
+3. Open System protection again: *App sandbox* should read Active.
+
+`environment.d` reaches programs started by the systemd user manager (GNOME, KDE Plasma, Hyprland
+through UWSM). On plain Sway also add `export VAULTKEEPER_LANDLOCK=1` to `~/.profile`. To try it
+once first, quit Vaultkeeper and run `VAULTKEEPER_LANDLOCK=1 vaultkeeper`. With the sandbox on,
+attach files from inside `~/.cache` or Vaultkeeper's own folders. Do not edit Vaultkeeper's
+`.desktop` files: the app rewrites them.
+
+### Sealing sign-in data to a security chip
+
+*Sign-in data on disk* is Limited when `systemd-creds` has only the host key. Check
+`systemd-creds has-tpm2`; if the firmware has a TPM that is off, enable "TPM 2.0" (fTPM, PTT) in the
+UEFI setup, or add a virtual TPM to a virtual machine. Vaultkeeper looks for the chip only when
+it starts, and data already on disk keeps its old key until it is saved again, so restart
+Vaultkeeper and sign out and in to re-seal it now.
 
 ## Updates
 

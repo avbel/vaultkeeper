@@ -13,7 +13,7 @@ pub mod lock;
 mod relaunch;
 pub mod routing;
 pub mod secrets;
-mod security;
+pub mod security;
 mod site_icons;
 pub mod ssh;
 pub mod target;

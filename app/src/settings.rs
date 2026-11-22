@@ -216,6 +216,8 @@ pub struct Settings {
     /// Linux: the refused security issues the user chose to start with anyway
     /// (`vaultkeeper security accept`); a start with any other issue refuses again.
     pub security_accepted: Option<crate::os::security_gate::Accepted>,
+    /// Linux: whether the System protection section of Settings is open.
+    pub protection_open: bool,
 }
 
 impl Default for Settings {
@@ -256,6 +258,7 @@ impl Default for Settings {
             last_login: None,
             generator: GeneratorPrefs::default(),
             security_accepted: None,
+            protection_open: false,
         }
     }
 }
@@ -827,6 +830,7 @@ mod tests {
                 fingerprint: "0011223344556677".to_owned(),
                 issues: vec!["wayland".to_owned()],
             }),
+            protection_open: true,
             generator: GeneratorPrefs {
                 passphrase_mode: true,
                 length: 40,

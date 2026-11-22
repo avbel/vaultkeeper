@@ -1,4 +1,4 @@
-//! Chain C8 on Linux: the clipboard link that works on this compositor, strongest first.
+//! The clipboard chain on Linux: the clipboard link that works on this compositor, strongest first.
 //!
 //! 1. `ext-data-control-v1` through wl-clipboard-rs (KDE, Sway, Hyprland): offers the secret hint,
 //!    so clipboard history skips the entry.

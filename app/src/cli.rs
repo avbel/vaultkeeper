@@ -46,7 +46,7 @@ pub const USAGE: &str = r#"Usage: vaultkeeper list
        vaultkeeper get_fields <key>
        vaultkeeper get <key> <field> [--allow-private]
        vaultkeeper --help | --version
-       vaultkeeper security status | requirements | accept
+       vaultkeeper security status [--technical] | requirements | accept
        vaultkeeper [--daemon | --tray | --search | --generator]
        vaultkeeper --mock [--tray] [--offline] [--unlocked] [--theme system|light|dark] [--demo-ssh]
                [--size WxH] [--select QUERY] [--search | --generator]
@@ -63,7 +63,8 @@ CLI access
   --version               Show the installed version.
 
 Security (Linux)
-  security status         Print each protection, its status and the mechanism in use.
+  security status         Print each protection, its state (Active, Limited, Off, Missing) and
+                          the mechanism in use. --technical prints the raw chain table.
   security requirements   Print what Vaultkeeper needs from the system and how to fix it.
   security accept         Start despite the protections refused right now; a new
                           issue refuses again.

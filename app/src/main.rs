@@ -123,11 +123,30 @@ fn refuse_cli_if_unsafe() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `vaultkeeper security status | requirements | accept`.
+/// The finished wording on Linux; elsewhere no chain exists, so the table stays as it was.
+#[cfg(target_os = "linux")]
+fn status_text(report: &vk_platform::security::Report) -> String {
+    let dto = vaultkeeper::daemon::security::to_dto(report);
+    let rows = vaultkeeper::os::protection_catalog::describe_all(
+        &dto.chains,
+        security_gate::detect_distro(),
+    );
+    vaultkeeper::os::protection_catalog::status_text(&rows)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn status_text(report: &vk_platform::security::Report) -> String {
+    report.table()
+}
+
+/// `vaultkeeper security status [--technical] | requirements | accept`.
 fn security_command(args: &[String]) -> anyhow::Result<()> {
     let report = security_gate::report(security_gate::Role::Daemon);
     match args {
         [command] if command == "status" => {
+            write!(std::io::stdout(), "{}", status_text(&report))?;
+        }
+        [command, flag] if command == "status" && flag == "--technical" => {
             write!(std::io::stdout(), "{}", report.table())?;
         }
         [command] if command == "requirements" => {
@@ -153,7 +172,9 @@ fn security_command(args: &[String]) -> anyhow::Result<()> {
             vaultkeeper::os::settings_file::SettingsFile::write(&path, &settings)?;
             writeln!(std::io::stdout(), "{message}")?;
         }
-        _ => anyhow::bail!("Usage: vaultkeeper security status | requirements | accept"),
+        _ => anyhow::bail!(
+            "Usage: vaultkeeper security status [--technical] | requirements | accept"
+        ),
     }
     Ok(())
 }

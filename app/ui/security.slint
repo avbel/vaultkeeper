@@ -1,103 +1,290 @@
 import { Theme } from "theme.slint";
-import { Btn, BtnKind, Divider, SectionLabel } from "kit.slint";
+import { Btn, BtnKind, CopyBtn, Divider, SectionLabel } from "kit.slint";
 
-// `state` is the chip text (Full, Standard, Reduced, Off); `using` and `next` are mechanism
-// names; `action` is the button text of the row, empty for none.
-export struct SecurityChainRow { id: string, name: string, state: string, using: string, next: string, note: string, fix: string, action: string }
+// `level` is the state word (Active, Limited, Off, Missing) that picks the icon; `tone` is green, yellow, red or neutral.
+// `section` is set on the first row of each group and names it. `steps` and `notes` fill the
+// "how to turn it on" disclosure; `copy` is what its Copy button copies, `action` the row's own
+// button text. Empty strings mean none.
+export struct ProtectionRow { id: string, section: string, title: string, protects: string, level: string, tone: string, detail: string, technical: string, steps-title: string, steps: [string], notes: [string], copy: string, action: string, label: string }
+export struct SummarySegment { text: string, tone: string }
 export struct AcceptedIssueRow { id: string, name: string }
 
-component StateChip inherits Rectangle {
-    in property <string> state;
-    property <color> tone: state == "Full" ? Theme.success-text
-        : state == "Standard" ? Theme.accent
-        : state == "Reduced" ? Theme.warn-text
-        : Theme.danger-small;
-    height: 20px * Theme.scale;
-    width: label.preferred-width + 16px;
-    border-radius: self.height / 2;
-    background: tone.with-alpha(0.14);
-    label := Text {
-        text: root.state;
-        color: root.tone;
-        font-size: Theme.font-hint;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+global Tones {
+    pure public function color(tone: string) -> color {
+        return tone == "green" ? Theme.success-text
+            : tone == "yellow" ? Theme.warn-text
+            : tone == "red" ? Theme.danger-small
+            : Theme.text-muted;
     }
 }
 
-component ChainEntry inherits VerticalLayout {
-    in property <SecurityChainRow> data;
-    callback action(string);
-    spacing: 2px;
-    HorizontalLayout {
-        spacing: Theme.gap;
-        min-height: 32px;
-        Text {
-            text: root.data.name;
-            color: Theme.text;
-            font-size: Theme.font-body;
-            font-weight: 600;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            wrap: word-wrap;
+// A focusable row-shaped button: Enter and Space toggle it, and a ring shows where the keyboard is.
+component Header inherits Rectangle {
+    in property <bool> open;
+    in property <string> label;
+    callback toggled();
+    forward-focus: scope;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.toggled(); }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            scope.focus();
+            root.toggled();
         }
+    }
+    scope := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if scope.has-focus: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
+        border-radius: root.border-radius + 2px;
+        border-width: Theme.focus-ring;
+        border-color: Theme.accent.with-alpha(0.55);
+    }
+    @children
+}
+
+// The state's icon drawn as shapes, since font glyphs for these are missing on some systems:
+// Active a check, Limited a half-filled circle, Off a ring, Missing a cross.
+component StatusIcon inherits Rectangle {
+    in property <string> kind;
+    in property <color> tint;
+    in property <length> size: 12px * Theme.scale;
+    width: root.size;
+    height: root.size;
+    if root.kind == "Active": Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        commands: "M 1.5 5.5 L 4 8 L 8.5 2";
+        stroke: root.tint;
+        stroke-width: 1.6px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    if root.kind == "Missing": Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        commands: "M 2 2 L 8 8 M 8 2 L 2 8";
+        stroke: root.tint;
+        stroke-width: 1.6px;
+        stroke-line-cap: round;
+    }
+    if root.kind == "Off" || root.kind == "Limited": Rectangle {
+        border-radius: self.width / 2;
+        border-width: 1.5px;
+        border-color: root.tint;
+    }
+    if root.kind == "Limited": Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        commands: "M 5 1 A 4 4 0 0 0 5 9 Z";
+        fill: root.tint;
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <string> tone;
+    height: 20px * Theme.scale;
+    width: row.preferred-width + 20px;
+    border-radius: self.height / 2;
+    background: root.tone == "neutral" ? Theme.surface-raised : Tones.color(root.tone).with-alpha(0.14);
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 5px;
         VerticalLayout {
             alignment: center;
-            StateChip { state: root.data.state; }
+            StatusIcon { kind: root.text; tint: Tones.color(root.tone); }
         }
-        if root.data.action != "": Btn {
-            text: root.data.action;
-            label: root.data.action + " " + root.data.name;
-            clicked => { root.action(root.data.id); }
+        label := Text {
+            text: root.text;
+            color: Tones.color(root.tone);
+            font-size: Theme.font-hint;
+            font-weight: 600;
+            vertical-alignment: center;
         }
     }
-    Text {
-        text: root.data.using == "" ? "Not active" : "Using " + root.data.using + (root.data.next == "" ? "" : " · next: " + root.data.next);
-        color: Theme.text-muted;
-        font-size: Theme.font-hint;
-        wrap: word-wrap;
+}
+
+component Steps inherits VerticalLayout {
+    in property <ProtectionRow> data;
+    callback copy(string) -> bool;
+    spacing: Theme.s1;
+    padding-left: Theme.s2;
+    for step[index] in root.data.steps: HorizontalLayout {
+        spacing: Theme.s2;
+        Text {
+            text: (index + 1) + ".";
+            color: Theme.text-muted;
+            font-size: Theme.font-hint;
+        }
+        Text {
+            text: step;
+            color: Theme.text;
+            font-size: Theme.font-hint;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        if index == 0 && root.data.copy != "": CopyBtn {
+            y: 0px;
+            code: 3;
+            label: "Copy: " + root.data.copy;
+            emphasized: true;
+            copy => { return root.copy(root.data.copy); }
+        }
     }
-    if root.data.note != "": Text {
-        text: root.data.note;
+    for note in root.data.notes: Text {
+        text: note;
         color: Theme.text-muted;
-        font-size: Theme.font-hint;
-        wrap: word-wrap;
-    }
-    if root.data.fix != "": Text {
-        text: root.data.fix;
-        color: Theme.warn-text;
         font-size: Theme.font-hint;
         wrap: word-wrap;
     }
 }
 
-// The one-line summary that opens the detail below it.
-export component SecuritySummary inherits Rectangle {
-    in property <string> text;
-    in property <bool> open;
-    callback clicked();
-    // Closed it elides to one line; open (the click that also shows the detail) it wraps, so the
-    // full text is always one click away.
-    height: root.open ? max(36px * Theme.scale, summary.preferred-height + 2 * Theme.s2) : 36px * Theme.scale;
+component ProtectionEntry inherits VerticalLayout {
+    in property <ProtectionRow> data;
+    callback action(string);
+    callback copy(string) -> bool;
+    property <bool> steps-open: false;
+    property <bool> has-steps: root.data.steps.length > 0 || root.data.notes.length > 0;
+    spacing: Theme.s1;
+    if root.data.section != "": Rectangle { height: Theme.s2; }
+    if root.data.section != "": SectionLabel { text: root.data.section; }
+    Rectangle {
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: root.data.label;
+        HorizontalLayout {
+            spacing: Theme.s2;
+            Rectangle {
+                width: 3px;
+                border-radius: 2px;
+                background: root.data.tone == "yellow" || root.data.tone == "red" ? Tones.color(root.data.tone) : transparent;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 2px;
+                padding-top: Theme.s1;
+                padding-bottom: Theme.s1;
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    min-height: 24px;
+                    Text {
+                        text: root.data.title;
+                        color: Theme.text;
+                        font-size: Theme.font-body;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Chip { text: root.data.level; tone: root.data.tone; }
+                    }
+                    if root.data.action != "": Btn {
+                        text: root.data.action;
+                        label: root.data.action + " " + root.data.title;
+                        clicked => { root.action(root.data.id); }
+                    }
+                }
+                if root.data.protects != "": Text {
+                    text: root.data.protects;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.data.detail;
+                    color: Theme.text;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                }
+                if root.data.technical != "": Text {
+                    text: root.data.technical;
+                    color: Theme.text-muted;
+                    font-family: Theme.mono;
+                    font-size: Theme.font-hint;
+                    wrap: word-wrap;
+                }
+                if root.has-steps: Header {
+                    height: 24px * Theme.scale;
+                    border-radius: Theme.radius-control;
+                    open: root.steps-open;
+                    label: root.data.steps-title;
+                    toggled => { root.steps-open = !root.steps-open; }
+                    Text {
+                        x: 0px;
+                        text: (root.steps-open ? "▾ " : "▸ ") + root.data.steps-title;
+                        color: Theme.accent;
+                        font-size: Theme.font-hint;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.has-steps && root.steps-open: Steps {
+                    data: root.data;
+                    copy(text) => { return root.copy(text); }
+                }
+            }
+        }
+    }
+}
+
+// The header line, a badge and the coloured summary, opening the list below it.
+component SummaryBar inherits Header {
+    in property <[SummarySegment]> segments;
+    in property <string> badge-tone;
+    in property <string> badge-icon;
+    height: 40px * Theme.scale;
     border-radius: Theme.radius-control;
-    background: ta.has-hover ? Theme.hover : Theme.surface-raised;
-    accessible-role: button;
-    accessible-label: root.text;
-    accessible-expanded: root.open;
-    accessible-action-default => { root.clicked(); }
+    background: Theme.surface-raised;
     HorizontalLayout {
         padding-left: Theme.s3;
         padding-right: Theme.s3;
         spacing: Theme.gap;
-        summary := Text {
-            text: root.text;
-            color: Theme.text;
-            font-size: Theme.font-body;
-            vertical-alignment: center;
-            overflow: root.open ? TextOverflow.clip : TextOverflow.elide;
-            wrap: root.open ? TextWrap.word-wrap : TextWrap.no-wrap;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 20px * Theme.scale;
+                height: 20px * Theme.scale;
+                border-radius: self.width / 2;
+                background: Tones.color(root.badge-tone).with-alpha(0.14);
+                StatusIcon {
+                    kind: root.badge-icon;
+                    tint: Tones.color(root.badge-tone);
+                    size: 12px * Theme.scale;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+        HorizontalLayout {
             horizontal-stretch: 1;
+            alignment: start;
+            for segment in root.segments: Text {
+                text: segment.text;
+                color: segment.tone == "neutral" ? Theme.text : Tones.color(segment.tone);
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+            }
         }
         Text {
             text: root.open ? "▾" : "▸";
@@ -105,50 +292,89 @@ export component SecuritySummary inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    ta := TouchArea { clicked => { root.clicked(); } }
 }
 
-export component SecurityDetail inherits VerticalLayout {
-    in property <[SecurityChainRow]> chains;
+export component SystemProtection inherits VerticalLayout {
+    in property <string> summary;
+    in property <[SummarySegment]> segments;
+    in property <string> badge-tone;
+    in property <string> badge-icon;
+    in property <[ProtectionRow]> rows;
     in property <[AcceptedIssueRow]> accepted;
+    in property <bool> checking;
+    in-out property <bool> open;
+    callback toggled(length);
     callback recheck();
+    callback copy-details();
+    callback learn-more();
     callback action(string);
+    callback copy(string) -> bool;
     callback forget(string);
     spacing: Theme.s2;
-    SectionLabel { text: "PROTECTIONS"; }
-    for row in root.chains: ChainEntry {
-        data: row;
-        action(id) => { root.action(id); }
+    SummaryBar {
+        open: root.open;
+        label: "System protection: " + root.summary;
+        segments: root.segments;
+        badge-tone: root.badge-tone;
+        badge-icon: root.badge-icon;
+        toggled => { root.toggled(root.y); }
     }
-    Btn {
-        text: "Re-check";
-        horizontal-stretch: 0;
-        clicked => { root.recheck(); }
-    }
-    if root.accepted.length > 0: VerticalLayout {
+    if root.open: VerticalLayout {
         spacing: Theme.s2;
-        SectionLabel { text: "ACCEPTED ISSUES"; }
         Text {
-            text: "Takes effect at the next start";
+            text: "What Vaultkeeper uses on this computer to keep your vault away from other programs.";
             color: Theme.text-muted;
             font-size: Theme.font-hint;
+            wrap: word-wrap;
         }
-        for issue in root.accepted: HorizontalLayout {
+        for row in root.rows: ProtectionEntry {
+            data: row;
+            action(id) => { root.action(id); }
+            copy(text) => { return root.copy(text); }
+        }
+        HorizontalLayout {
             spacing: Theme.gap;
-            min-height: 32px;
-            Text {
-                text: issue.name;
-                color: Theme.text;
-                font-size: Theme.font-body;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
+            alignment: start;
+            Btn {
+                text: root.checking ? "Checking…" : "Re-check";
+                label: root.checking ? "Checking" : "Re-check";
+                enabled: !root.checking;
+                clicked => { root.recheck(); }
             }
             Btn {
-                text: "Forget";
-                label: "Forget " + issue.name;
-                clicked => { root.forget(issue.id); }
+                text: "Copy details";
+                clicked => { root.copy-details(); }
+            }
+            Btn {
+                text: "Learn more";
+                kind: BtnKind.ghost;
+                clicked => { root.learn-more(); }
+            }
+        }
+        if root.accepted.length > 0: VerticalLayout {
+            spacing: Theme.s2;
+            SectionLabel { text: "ACCEPTED ISSUES"; }
+            Text {
+                text: "Takes effect at the next start";
+                color: Theme.text-muted;
+                font-size: Theme.font-hint;
+            }
+            for issue in root.accepted: HorizontalLayout {
+                spacing: Theme.gap;
+                min-height: 32px;
+                Text {
+                    text: issue.name;
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Btn {
+                    text: "Forget";
+                    label: "Forget " + issue.name;
+                    clicked => { root.forget(issue.id); }
+                }
             }
         }
     }
-    Divider { }
 }

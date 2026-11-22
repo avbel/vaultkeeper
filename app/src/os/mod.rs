@@ -17,6 +17,7 @@ pub mod layout;
 pub mod linux;
 pub mod log_file;
 mod misc;
+pub mod protection_catalog;
 pub mod security_gate;
 mod security_key;
 pub mod security_requirements;

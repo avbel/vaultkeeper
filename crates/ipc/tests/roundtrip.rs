@@ -653,6 +653,13 @@ impl vk_ipc::SecurityHost for FakeSecurity {
                     fallback: Some("mlock".to_owned()),
                     note: None,
                     fix: Some("remove secretmem.enable=0".to_owned()),
+                    active_id: Some("keyctl".to_owned()),
+                    stacked_ids: vec!["mdwe".to_owned()],
+                    required: vk_ipc::ChainRequired::Refuse,
+                    skipped: vec![vk_ipc::SkippedDto {
+                        link: "memfd-secret".to_owned(),
+                        why: "not chosen".to_owned(),
+                    }],
                 }],
             }
         })
@@ -670,6 +677,9 @@ async fn the_security_report_comes_from_the_daemon() {
     assert_eq!(report.chains.len(), 1);
     assert_eq!(report.chains[0].state, vk_ipc::ChainState::Standard);
     assert_eq!(report.chains[0].fallback.as_deref(), Some("mlock"));
+    assert_eq!(report.chains[0].active_id.as_deref(), Some("keyctl"));
+    assert_eq!(report.chains[0].skipped[0].why, "not chosen");
+    assert_eq!(report.chains[0].required, vk_ipc::ChainRequired::Refuse);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

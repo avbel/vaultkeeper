@@ -1,8 +1,11 @@
 //! The IPC side of the protection chains: Settings in the UI process shows what the daemon
 //! probed.
 
-use vk_ipc::{ChainDto, ChainState, SecurityFuture, SecurityHost, SecurityReportDto};
-use vk_platform::security::{ChainReport, ChainStatus, Report};
+use vk_ipc::{
+    ChainDto, ChainRequired, ChainState, SecurityFuture, SecurityHost, SecurityReportDto,
+    SkippedDto,
+};
+use vk_platform::security::{ChainReport, ChainStatus, Report, Required};
 
 use crate::os::security_gate;
 
@@ -22,12 +25,31 @@ impl SecurityHost for SecurityReports {
     }
 }
 
+/// The clipboard chain the daemon's pasteboard reported when it opened: it is probed once, with
+/// the portal grant, so Settings shows that report and does not probe again. The row therefore
+/// appears only once the pasteboard has opened.
+#[cfg(target_os = "linux")]
+static CLIPBOARD_REPORT: std::sync::Mutex<Option<ChainReport>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+pub fn set_clipboard_report(report: ChainReport) {
+    *CLIPBOARD_REPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
+}
+
 /// The chains probed again, with the tray row the shell reports (it tracks the watcher coming
 /// and going) in place of the name-probe row, so Settings shows one C13.
 fn daemon_report() -> Report {
     #[cfg(target_os = "linux")]
     {
-        with_live_tray(security_gate::recheck(), security_gate::tray_report())
+        let mut report = with_live_tray(security_gate::recheck(), security_gate::tray_report());
+        let clipboard = CLIPBOARD_REPORT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        report.chains.extend(clipboard);
+        report
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -62,6 +84,14 @@ fn state(status: ChainStatus) -> ChainState {
     }
 }
 
+const fn required(required: Required) -> ChainRequired {
+    match required {
+        Required::Refuse => ChainRequired::Refuse,
+        Required::Warn => ChainRequired::Warn,
+        Required::Status => ChainRequired::Status,
+    }
+}
+
 fn chain(chain: &ChainReport) -> ChainDto {
     ChainDto {
         id: chain.id.clone(),
@@ -72,6 +102,17 @@ fn chain(chain: &ChainReport) -> ChainDto {
         fallback: chain.fallback.clone(),
         note: chain.note.clone(),
         fix: chain.fix.clone(),
+        active_id: chain.active_id.clone(),
+        stacked_ids: chain.stacked_ids.clone(),
+        required: required(chain.required),
+        skipped: chain
+            .skipped
+            .iter()
+            .map(|skipped| SkippedDto {
+                link: skipped.link.clone(),
+                why: skipped.why.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -96,6 +137,8 @@ mod tests {
                 status: ChainStatus::Reduced,
                 active: Some("mlock".to_owned()),
                 stacked: vec!["MDWE".to_owned()],
+                active_id: Some("mlock".to_owned()),
+                stacked_ids: vec!["mdwe".to_owned()],
                 fallback: None,
                 skipped: Vec::new(),
                 note: Some("swap".to_owned()),
@@ -107,6 +150,9 @@ mod tests {
         assert_eq!(dto.chains[0].active.as_deref(), Some("mlock"));
         assert_eq!(dto.chains[0].stacked, ["MDWE"]);
         assert_eq!(dto.chains[0].fix.as_deref(), Some("fix it"));
+        assert_eq!(dto.chains[0].active_id.as_deref(), Some("mlock"));
+        assert_eq!(dto.chains[0].stacked_ids, ["mdwe"]);
+        assert_eq!(dto.chains[0].required, ChainRequired::Refuse);
     }
 
     #[test]
@@ -118,6 +164,8 @@ mod tests {
             status,
             active: None,
             stacked: Vec::new(),
+            active_id: None,
+            stacked_ids: Vec::new(),
             fallback: None,
             skipped: Vec::new(),
             note: None,
