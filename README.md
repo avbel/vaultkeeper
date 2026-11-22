@@ -8,8 +8,9 @@ Vaultkeeper is a lightweight native desktop client for self-hosted
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden) servers, which speak the Bitwarden API. It is written in Rust with a
 [Slint](https://slint.dev) UI, runs in the system tray, and opens a window only when you need one.
 
-**Supported platforms:** macOS 13+ on Apple silicon and Windows 11 24H2+ on x64 and ARM64.
-Linux support is planned (see the [roadmap](#roadmap-cross-platform)).
+**Supported platforms:** macOS 13+ on Apple silicon, Windows 11 24H2+ on x64 and ARM64, and Linux on Wayland
+(GNOME, KDE Plasma, Sway and Hyprland on the latest Ubuntu and Fedora, and Omarchy) on x86_64 and ARM64. See
+[Linux](#linux) for what differs there.
 
 Vaultkeeper is an independent project. It is **not affiliated with, endorsed by or supported by Bitwarden Inc. or the
 Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/compose.yaml`).
@@ -56,12 +57,22 @@ spike's window was dropped). See the "Step 0 result" section of
 
 ## Requirements
 
-- macOS 13 or newer on Apple silicon, or Windows 11 version 24H2 or newer on x64 or ARM64
+- macOS 13 or newer on Apple silicon, Windows 11 version 24H2 or newer on x64 or ARM64, or a Wayland session of
+  GNOME, KDE Plasma, Sway or Hyprland on the latest Ubuntu or Fedora, or on Omarchy (no X11)
 - A Vaultwarden server, or use `--mock` to try the demo vault
 
 ## Install
 
 ### macOS
+
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask avbel/tap/vaultkeeper
+```
+
+The cask installs `/Applications/Vaultkeeper.app`; step 2 below still applies to the first launch. The app keeps
+updating itself, so `brew upgrade` skips it unless you pass `--greedy`. Or install by hand:
 
 1. Download `Vaultkeeper-<version>-arm64.dmg` from [Releases](https://github.com/avbel/vaultkeeper/releases), open it and
    drag Vaultkeeper to Applications. Do this before the first launch: an app started from Downloads runs from a temporary
@@ -76,6 +87,24 @@ spike's window was dropped). See the "Step 0 result" section of
 Download `Vaultkeeper-v<version>-x64-setup.exe` or `Vaultkeeper-v<version>-arm64-setup.exe` for your PC from
 [Releases](https://github.com/avbel/vaultkeeper/releases), run the installer, and open Vaultkeeper from the Start menu.
 For portable use, extract the matching ZIP and run `vaultkeeper.exe`.
+
+### Linux
+
+With [Homebrew](https://brew.sh) on Linux:
+
+```sh
+brew install avbel/tap/vaultkeeper
+vaultkeeper   # once: writes the launcher entry
+```
+
+Vaultkeeper links the desktop's own libraries; install them if they are missing:
+
+- Ubuntu: `sudo apt install libxkbcommon0 libwayland-client0 libegl1 libfontconfig1 libudev1`
+- Fedora: `sudo dnf install libxkbcommon libwayland-client mesa-libEGL fontconfig systemd-libs`
+
+Updates come from `brew upgrade vaultkeeper`; the app's own updater is off for a Homebrew install. Each release also
+has `vaultkeeper-v<version>-x86_64-unknown-linux-gnu.tar.gz` and `…-aarch64-unknown-linux-gnu.tar.gz`. Debian and RPM
+packages are planned.
 
 ### Browser extension
 
@@ -117,6 +146,20 @@ From the repository root, use PowerShell with the Rust MSVC toolchain and Visual
 .\out\stage\vaultkeeper.exe
 ```
 
+### Build on Linux
+
+Install the development headers, then build:
+
+- Ubuntu: `sudo apt install build-essential pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libdbus-1-dev libudev-dev`
+- Fedora: `sudo dnf install gcc pkgconf-pkg-config fontconfig-devel libxkbcommon-devel wayland-devel dbus-devel systemd-devel`
+
+```sh
+cargo build --release
+target/release/vaultkeeper
+```
+
+From macOS, `scripts/check-linux.sh` runs clippy (or, with `--test`, the tests) for the Linux build in Docker.
+
 ## Usage
 
 Log in with your server URL, email and master password, then use the tray icon or the Quick Panel hotkey. To try the demo
@@ -136,7 +179,7 @@ vaultkeeper --mock       demo vault
 
 1. Keep Vaultkeeper running and turn on **Enable CLI access** in Settings.
 2. Edit each login you want to share, check **Allow CLI access**, and save. Both controls are off by default.
-3. The Windows installer adds Vaultkeeper to the user `PATH` for new terminals. On macOS, copy the terminal setup command
+3. The Windows installer and Homebrew on Linux put Vaultkeeper on the `PATH`. On macOS, copy the terminal setup command
    from Settings or run the following for a standard installation. If an AI agent uses a separate shell, add Vaultkeeper
    to that shell's `PATH`.
 
@@ -174,9 +217,13 @@ Cargo workspace (Rust edition 2024):
 | `crates/crypto` | Bitwarden-compatible key derivation and `EncString` crypto |
 | `crates/gen` | TOTP codes and password/passphrase generation |
 | `crates/ipc` | Daemon to UI process IPC over a local socket, including peer verification |
+| `crates/linux` | Linux kernel and desktop probes for the security chains |
 | `crates/platform` | OS integration: keychain, Touch ID, autostart, clipboard, single instance, hardening |
 | `crates/ssh` | SSH agent adapter over the vendored `ssh_agent` |
 | `crates/vault` | Session state, encrypted cache, decrypted views and vault operations |
+| `crates/webauthn` | WebAuthn client data and the software authenticator for vault passkeys |
+| `crates/win` | Windows security helpers (SDDL, named pipes) |
+| `browsers/` | The Chrome, Edge and Firefox extension (TypeScript) |
 | `vendor/ssh_agent` | Vendored from Bitwarden's clients repository, with patches listed in `vendor/PATCHES.md` |
 | `vendor/secure_memory` | Vendored from Bitwarden's clients repository |
 
@@ -196,7 +243,13 @@ app's own, which start a real daemon process and drive it over IPC. Docker is re
 - Secrets are decrypted on demand and handed out as zeroizing values; only names and other list data are decrypted at
   unlock.
 - The vault cache on disk is encrypted. macOS keeps refresh tokens in the login keychain. Windows seals them with a key
-  derived from the vault's user key and wraps them with DPAPI.
+  derived from the vault's user key and wraps them with DPAPI. Linux seals them with a key derived from the vault's
+  user key and, where it works, `systemd-creds` (tied to the TPM when there is one); no keyring daemon is used.
+- On Linux, Vaultkeeper checks at start which protections the system offers (keys kept out of swap and dumps, no
+  memory reading by other programs, sealed sign-in data, connection peer checks, a private runtime folder and more)
+  and refuses to start when a required one is missing. Settings → *System
+  protection* and `vaultkeeper security status` show what is in use; see "System protection" in
+  [docs/USAGE.md](docs/USAGE.md).
 - On macOS, the daemon and UI process talk over a Unix socket with mode 0600. The daemon checks the peer's uid and code
   signature (audit token plus `SecCode`) and accepts only a UI process with its own signature. On Windows, the daemon
   creates a named pipe and passes the connected client handle to the UI process at launch.
@@ -210,26 +263,23 @@ See the [architecture and threat model](docs/solutions/vaultkeeper-architecture.
 [Windows security design](docs/solutions/windows-support.md).
 Vaultkeeper has not had an independent security audit.
 
-## Roadmap: cross-platform
+## Linux
 
-Linux support is planned for Wayland desktops including GNOME, KDE Plasma, Sway and Hyprland. See the
-[Linux design and support matrix](docs/solutions/linux-support.md).
+Wayland only, on GNOME, KDE Plasma, Sway and Hyprland as the latest Ubuntu and Fedora ship them, and on Omarchy (Arch
+with Hyprland). Other Arch setups run only when the startup checks pass. Details are in [docs/USAGE.md](docs/USAGE.md)
+and the [Linux design](docs/solutions/linux-support.md).
 
-- No keyring daemon: the refresh token is sealed under a key derived from the vault's user key, in an owner-only file.
-- Tray through StatusNotifierItem, with a symbolic icon the panel recolours and a blue fallback. GNOME needs the
-  AppIndicator extension; without a tray host, `--tray` opens the window instead.
-- Global hotkeys through the GlobalShortcuts portal, or `vaultkeeper --search` bound in the compositor (Sway).
-- Clipboard and auto-clear through Wayland data-control. Auto-type through the RemoteDesktop portal (GNOME, KDE) or
-  the virtual-keyboard protocol (Sway, Hyprland).
-- Quick unlock through polkit, so PAM picks the method: fingerprint, Howdy, a security key or the login password.
-  Shown only when Vaultkeeper's polkit action is installed (the packages ship it). The user key stays in non-dumpable
-  `memfd_secret` memory after a master-password unlock, so every restart needs the master password.
-- Lock on screen lock and sleep through the ScreenSaver interfaces and logind.
-- Autostart through XDG autostart or the Background portal; Sway and Hyprland start it from their config.
-- IPC peer check with `SO_PEERCRED`/`SO_PEERPIDFD` and the peer executable's device and inode, plus startup checks of
-  file ownership, modes and symlinks.
-- The Unix-socket SSH agent already works.
-- Linux CI and AppImage, Debian and RPM packages.
+- **Tray:** a StatusNotifierItem icon that follows the panel's colours. GNOME shows it only with the AppIndicator
+  extension (Ubuntu ships it; Fedora does not).
+- **Hotkeys:** Ctrl-based, as on Windows; the Quick Panel is Ctrl+Shift+Space. GNOME and KDE register them through the
+  GlobalShortcuts portal. On Sway and Hyprland, Settings shows the bind lines to add to the compositor's config.
+- **Clipboard:** KDE, Sway and Hyprland take copies through Wayland data-control, marked so clipboard history skips
+  them. GNOME has no data-control, so copies go through its RemoteDesktop portal, which asks once.
+- **Auto-type:** the RemoteDesktop portal on GNOME and KDE, a virtual keyboard on Sway and Hyprland.
+- **Lock:** on screen lock, sleep and logout through logind and the desktop's screensaver service. On Sway and
+  Hyprland, make the idle daemon lock through `loginctl lock-session`.
+- **Not yet:** quick unlock (fingerprint) and Debian/RPM packages. The Landlock app sandbox is available but off by
+  default.
 
 ## License
 

@@ -1,6 +1,6 @@
 # The formula of avbel/homebrew-tap (Formula/vaultkeeper.rb). Committed to the tap by hand once;
 # afterwards the release workflow's `homebrew` job rewrites version and the two sha256 lines with
-# scripts/bump-homebrew.rb. Linux only: macOS keeps the dmg.
+# scripts/bump-homebrew.rb. Linux only: macOS uses the cask (vaultkeeper-cask.rb).
 class Vaultkeeper < Formula
   desc "Bitwarden-compatible password manager for the desktop"
   homepage "https://github.com/avbel/vaultkeeper"
