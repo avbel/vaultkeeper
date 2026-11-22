@@ -31,7 +31,8 @@ use tokio::runtime::Runtime;
 
 use super::{
     FOCUS_SETTLE, Failure, PACE,
-    typeable::{self, Refusal, Seen, Verdict},
+    kde_layout::{Kwin, Restore},
+    typeable::{self, Desktop, Refusal, Seen, Verdict},
 };
 use crate::os::linux::{portal::ensure_registered, portal_token::TokenStore};
 
@@ -47,7 +48,7 @@ const PER_WINDOW: &str = "per-window";
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static DISMISSED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
-fn runtime() -> Result<&'static Runtime, Failure> {
+pub(super) fn runtime() -> Result<&'static Runtime, Failure> {
     if let Some(runtime) = RUNTIME.get() {
         return Ok(runtime);
     }
@@ -65,23 +66,42 @@ pub(super) fn type_keysyms(
     tokens: &TokenStore,
     keysyms: &[u32],
     keyboard: Result<&Seen, &str>,
+    desktop: Desktop,
     cancel: &AtomicBool,
 ) -> Result<(), Failure> {
-    runtime()?.block_on(async {
+    let runtime = runtime()?;
+    // Held until the run is over, whatever way it ends.
+    let _restore = restore_layout(desktop);
+    runtime.block_on(async {
         if tokio::time::timeout(CALL_TIMEOUT, ensure_registered())
             .await
             .is_err()
         {
             tracing::warn!("registering with the portal timed out");
         }
-        type_through_portal(tokens, keysyms, keyboard, cancel).await
+        type_through_portal(tokens, keysyms, keyboard, desktop, cancel).await
     })
+}
+
+/// KWin leaves the layout of a keysym it typed active; see [`super::kde_layout`].
+fn restore_layout(desktop: Desktop) -> Option<Restore<Kwin>> {
+    if desktop != Desktop::Kde {
+        return None;
+    }
+    match Kwin::connect() {
+        Ok(kwin) => Some(Restore::capture(kwin)),
+        Err(error) => {
+            tracing::debug!(%error, "no KDE keyboard layout service");
+            None
+        }
+    }
 }
 
 async fn type_through_portal(
     tokens: &TokenStore,
     keysyms: &[u32],
     keyboard: Result<&Seen, &str>,
+    desktop: Desktop,
     cancel: &AtomicBool,
 ) -> Result<(), Failure> {
     if dismissed_recently() {
@@ -114,7 +134,7 @@ async fn type_through_portal(
     }
     // Before the permission dialog and the first key: a refused text types nothing at all, so
     // the next link of the chain may still type it.
-    let keysyms = match typeable::examine(keyboard, keysyms) {
+    let keysyms = match typeable::examine(desktop, keyboard, keysyms) {
         Verdict::TypeUnlessLayoutPerWindow(_) if layout_per_window().await => {
             return Err(refused(&Refusal::LayoutPerWindow));
         }

@@ -205,6 +205,31 @@ impl Keymap {
     }
 }
 
+/// The display name the keymap gives `layout` (`name[2]="English (US)";` in `xkb_symbols`).
+/// Read off the keymap text because the dynamically loaded libxkbcommon bindings do not expose
+/// `xkb_keymap_layout_get_name`; `None` for an unnamed layout or a name with control characters.
+pub(super) fn layout_name(keymap: &[u8], layout: u32) -> Option<String> {
+    let text = std::str::from_utf8(keymap).ok()?;
+    let symbols = &text[text.find("xkb_symbols")?..];
+    let group = layout + 1;
+    let keys = [format!("name[{group}]"), format!("name[Group{group}]")];
+    symbols
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let rest = keys
+                .iter()
+                .find_map(|key| line.strip_prefix(key.as_str()))?;
+            let quoted = rest
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .strip_prefix('"')?;
+            Some(quoted.split('"').next()?.to_owned())
+        })
+        .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+}
+
 /// Mutter drops a virtual key whose evdev code is outside the kernel's keyboard ranges
 /// (`get_button_type`); the bounds are `KEY_ESC..=KEY_MICMUTE`, `KEY_OK..=KEY_LIGHTS_TOGGLE` and
 /// `KEY_ALS_TOGGLE..=KEY_KBDINPUTASSIST_CANCEL` from `linux/input-event-codes.h`.
@@ -348,6 +373,17 @@ pub(super) mod tests {
         assert!(us.types(0, CAPS_LOCK, 0x40, Some('@')));
         assert!(us.types(0, NUM_LOCK, 0x61, Some('a')));
         assert!(us.types(0, NUM_LOCK, 0x41, Some('A')));
+    }
+
+    #[test]
+    fn layouts_are_named_as_the_keymap_names_them() {
+        assert_eq!(layout_name(US, 0).as_deref(), Some("English (US)"));
+        assert_eq!(layout_name(RU_US, 0).as_deref(), Some("Russian"));
+        assert_eq!(layout_name(RU_US, 1).as_deref(), Some("English (US)"));
+        assert_eq!(layout_name(RU_US, 2), None);
+        assert_eq!(layout_name(b"nothing", 0), None);
+        let named = b"xkb_symbols \"x\" {\n name[Group2] = \"Deutsch\";\n};";
+        assert_eq!(layout_name(named, 1).as_deref(), Some("Deutsch"));
     }
 
     #[test]

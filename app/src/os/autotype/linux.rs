@@ -2,8 +2,9 @@
 //! hand the focus back to it, so the chain is:
 //!
 //! 1. the RemoteDesktop portal's `NotifyKeyboardKeysym` on a persisted grant (GNOME, KDE), after
-//!    a check that the active keyboard layout can type the text (`typeable`): the desktop drops
-//!    characters the layout lacks, and the portal cannot choose the layout,
+//!    a check that the active keyboard layout can type the text (`typeable`): GNOME drops
+//!    characters the layout lacks, and the portal cannot choose the layout. KWin types any
+//!    character, so there the layout is put back after the run (`kde_layout`) instead,
 //! 2. `zwp_virtual_keyboard_v1` with a keymap generated for the text (wlroots: Sway, Hyprland),
 //! 3. unavailable, with the reason shown in the window.
 //!
@@ -14,6 +15,7 @@
 //! Typed text is never logged.
 
 mod focused_keyboard;
+mod kde_layout;
 mod remote_desktop;
 mod typeable;
 mod virtual_keyboard;
@@ -117,6 +119,7 @@ pub(super) fn read_keyboard(focused: &slint::Window, strokes: &[Stroke]) -> Opti
     }
     let refusal = keysym::keysyms_of(strokes).ok().and_then(|keysyms| {
         early_refusal(
+            typeable::Desktop::current(),
             reading.portal_only,
             reading.keyboard.as_ref().map_err(String::as_str),
             &keysyms,
@@ -130,6 +133,7 @@ pub(super) fn read_keyboard(focused: &slint::Window, strokes: &[Stroke]) -> Opti
 /// Only the portal route depends on the layout; where the compositor also offers a virtual
 /// keyboard, which of the two types is known only once the portal was tried.
 fn early_refusal(
+    desktop: typeable::Desktop,
     portal_only: bool,
     keyboard: Result<&typeable::Seen, &str>,
     keysyms: &[u32],
@@ -137,7 +141,7 @@ fn early_refusal(
     if !portal_only {
         return None;
     }
-    match typeable::examine(keyboard, keysyms) {
+    match typeable::examine(desktop, keyboard, keysyms) {
         typeable::Verdict::Refuse(refusal) => {
             Some(refusal_failure(&refusal).into_hook().to_string())
         }
@@ -260,6 +264,7 @@ fn run(
                 &TokenStore::new(data_dir.join(layout::AUTOTYPE_PORTAL_TOKEN_FILE)),
                 keysyms,
                 keyboard.as_ref().map_err(String::as_str),
+                typeable::Desktop::current(),
                 cancel,
             )
         },
@@ -310,6 +315,7 @@ mod tests {
     use std::ffi::OsStr;
 
     use super::*;
+    use typeable::Desktop;
 
     #[test]
     fn no_wayland_display_means_no_auto_type() {
@@ -410,18 +416,47 @@ mod tests {
         };
         let cyrillic = [keysym::keysym_of('Ж').expect("typeable")];
         assert_eq!(
-            early_refusal(true, Ok(&seen), &cyrillic).as_deref(),
+            early_refusal(Desktop::Other, true, Ok(&seen), &cyrillic).as_deref(),
             Some(
                 "Auto-type stopped: the active keyboard layout lacks some characters; switch it or copy"
             )
         );
         // A virtual keyboard brings its own keymap, so the layout may not matter at all.
-        assert_eq!(early_refusal(false, Ok(&seen), &cyrillic), None);
-        assert_eq!(early_refusal(false, Err("no keyboard"), &cyrillic), None);
-        assert_eq!(early_refusal(true, Ok(&seen), &[0x61, keysym::TAB]), None);
+        assert_eq!(
+            early_refusal(Desktop::Other, false, Ok(&seen), &cyrillic),
+            None
+        );
+        assert_eq!(
+            early_refusal(Desktop::Other, false, Err("no keyboard"), &cyrillic),
+            None
+        );
+        assert_eq!(
+            early_refusal(Desktop::Other, true, Ok(&seen), &[0x61, keysym::TAB]),
+            None
+        );
         assert!(
-            early_refusal(true, Err("no keyboard"), &cyrillic)
+            early_refusal(Desktop::Other, true, Err("no keyboard"), &cyrillic)
                 .is_some_and(|text| text.ends_with("copy instead (no keyboard)"))
+        );
+    }
+
+    #[test]
+    fn on_kde_the_panel_refuses_only_a_locked_modifier() {
+        let cyrillic = [keysym::keysym_of('Ж').expect("typeable")];
+        let seen = |locked_modifiers| typeable::Seen {
+            keymap: xkb::tests::US.to_vec(),
+            layout: Some(0),
+            locked_modifiers,
+        };
+        assert_eq!(
+            early_refusal(Desktop::Kde, true, Ok(&seen(0)), &cyrillic),
+            None
+        );
+        assert_eq!(
+            early_refusal(Desktop::Kde, true, Ok(&seen(1 << 1)), &cyrillic).as_deref(),
+            Some(
+                "Auto-type stopped: a locked modifier such as Caps Lock would change the text; turn it off"
+            )
         );
     }
 

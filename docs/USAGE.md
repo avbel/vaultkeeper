@@ -182,21 +182,31 @@ routes and the first that works types:
    compositors only), with a keymap generated for the text, so the keyboard layout does not matter
    there and non-ASCII characters work. There is nothing to allow.
 
-On GNOME and KDE the desktop looks each character up in the keyboard layout that is active and
-drops one the layout lacks, and the portal offers no way to choose the layout. So Vaultkeeper reads
-the session's keymap while the Quick Panel still has the focus and types only when every character
-of the login comes out right in the active layout; otherwise it types nothing and says why (for
-example `Ж` or `ö` on a US layout, Latin letters while a Russian layout is active, or Caps Lock
-being on). Switch to a layout that has all the characters, or copy the password instead. A login
-whose characters are spread over two layouts cannot be auto-typed there. With GNOME's "switch input
-sources individually for each window", the target window's layout is unknown, so the text must be
-typeable in every configured layout. Where the compositor also has a virtual keyboard, a login the
-portal route refuses because of the layout is typed through that instead; with Caps Lock or another
-locked modifier on, nothing is typed by either route.
+**KDE (KWin)** resolves a character in any layout of the session, and even one that no layout has
+(`€` or `ö` while Russian is active), so the keyboard layout does not matter there and nothing is
+refused because of it. Typing a character of another layout leaves that layout active, so
+Vaultkeeper reads the layout through `org.kde.keyboard` before typing and switches back afterwards,
+also when typing fails or is cancelled; if that service is missing, it types anyway and leaves the
+layout as it ends up.
 
-The check has limits. The layout can still change between the check and the last key, for example
-when you switch it while the text is being typed or while the first-use permission dialog is open
-(it waits up to 180 seconds). XKB options that switch the layout with a key (such as
+**GNOME** looks each character up in the keyboard layout that is active and drops one the layout
+lacks, and the portal offers no way to choose the layout. So Vaultkeeper reads the session's keymap
+while the Quick Panel still has the focus and types only when every character of the login comes
+out right in the active layout; otherwise it types nothing and says why (for example `Ж` or `ö` on
+a US layout, or Latin letters while a Russian layout is active). When another layout of the session
+has every character, the message names it ("switch the keyboard layout to English (US)"); otherwise
+switch to a layout that has them all, or copy the password instead. A login whose characters are
+spread over two layouts cannot be auto-typed there. With GNOME's "switch input sources
+individually for each window", the target window's layout is unknown, so the text must be typeable
+in every configured layout. Where the compositor also has a virtual keyboard, a login the portal
+route refuses because of the layout is typed through that instead.
+
+On both desktops, with Caps Lock or another locked modifier on, nothing is typed by either route
+(on KDE only when the login has letters that Caps Lock would change).
+
+The GNOME check has limits. The layout can still change between the check and the last key, for
+example when you switch it while the text is being typed or while the first-use permission dialog
+is open (it waits up to 180 seconds). XKB options that switch the layout with a key (such as
 `grp:lshift_toggle`) and sticky keys are not modelled. On GNOME with more than four input sources,
 or with per-window sources, the target window can get a keymap that was not the one checked.
 
