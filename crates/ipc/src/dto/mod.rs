@@ -15,6 +15,6 @@ pub use secret::{
 };
 pub use send::{SendDraftDto, SendKindDto, SendSummaryDto};
 pub use view::{
-    AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemKindDto,
-    ItemSummaryDto, LoginStepDto, OrganizationDto, SessionStateDto,
+    AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemCountsDto,
+    ItemKindDto, ItemSummaryDto, LoginStepDto, OrganizationDto, SessionStateDto,
 };

@@ -2,14 +2,15 @@
 //! implementation for storing SSH keys securely. All stored data is ephemeral and
 //! lost when the store is dropped.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, MutexGuard},
 };
 
 use anyhow::Result;
 use secure_memory::{EncryptedMemoryStore, SecureMemoryStore};
 
+use super::serialization::to_zeroizing_bytes;
 use crate::crypto::{PrivateKey, PublicKey, QueryableKeyData, SSHKeyData};
 #[cfg(test)]
 use crate::storage::keydata::MockQueryableKeyData;
@@ -67,8 +68,42 @@ pub trait KeyStore: Send + Sync {
 /// Keys are encrypted when inserted and decrypted when retrieved.
 /// All data is lost when the instance is dropped.
 pub struct InMemoryEncryptedKeyStore {
-    secure_memory: Arc<Mutex<EncryptedMemoryStore<PublicKey>>>,
-    initialized: AtomicBool,
+    inner: Mutex<Inner>,
+}
+
+/// vk patch: the key names are kept in plaintext next to the ciphertexts so a list request needs
+/// no decryption, and `initialized` lives under the same mutex so a `clear` racing a `replace`
+/// cannot leave the store empty but initialized.
+struct Inner {
+    secure_memory: EncryptedMemoryStore<PublicKey>,
+    names: BTreeMap<PublicKey, String>,
+    initialized: bool,
+}
+
+impl Inner {
+    fn put(&mut self, public_key: PublicKey, name: String, bytes: &[u8]) {
+        self.secure_memory.put(public_key.clone(), bytes);
+        self.names.insert(public_key, name);
+    }
+
+    fn clear(&mut self) {
+        self.secure_memory.clear();
+        self.names.clear();
+        self.initialized = false;
+    }
+
+    fn decrypt(&mut self, public_key: &PublicKey) -> Result<Option<SSHKeyData>> {
+        let bytes = match self.secure_memory.get(public_key) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                // The store re-keyed and dropped every ciphertext; forget the keys entirely so a
+                // list request asks for an unlock instead of answering with an empty list.
+                self.clear();
+                return Err(error.into());
+            }
+        };
+        bytes.map(SSHKeyData::try_from).transpose()
+    }
 }
 
 impl InMemoryEncryptedKeyStore {
@@ -76,9 +111,16 @@ impl InMemoryEncryptedKeyStore {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            secure_memory: Arc::new(Mutex::new(EncryptedMemoryStore::new())),
-            initialized: AtomicBool::new(false),
+            inner: Mutex::new(Inner {
+                secure_memory: EncryptedMemoryStore::new(),
+                names: BTreeMap::new(),
+                initialized: false,
+            }),
         }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().expect("Mutex is not poisoned")
     }
 }
 
@@ -93,36 +135,25 @@ impl KeyStore for InMemoryEncryptedKeyStore {
 
     fn insert(&self, key_data: Self::KeyData) -> Result<()> {
         let pub_key = key_data.public_key().clone();
-        let bytes: Vec<u8> = key_data.try_into()?;
+        let name = key_data.name().clone();
+        let bytes = to_zeroizing_bytes(key_data)?;
 
-        self.secure_memory
-            .lock()
-            .expect("Mutex is not poisoned")
-            .put(pub_key, bytes.as_slice());
+        self.lock().put(pub_key, name, &bytes);
 
         Ok(())
     }
 
     fn get(&self, public_key: &PublicKey) -> Result<Option<Self::KeyData>> {
-        self.secure_memory
-            .lock()
-            .expect("Mutex is not poisoned.")
-            .get(public_key)?
-            .map(SSHKeyData::try_from)
-            .transpose()
+        self.lock().decrypt(public_key)
     }
 
     fn get_all_public_keys_and_names(&self) -> Result<Vec<(PublicKey, String)>> {
-        self.secure_memory
+        Ok(self
             .lock()
-            .expect("Mutex is not poisoned")
-            .to_vec()?
-            .into_iter()
-            .map(|bytes| {
-                SSHKeyData::try_from(bytes)
-                    .map(|key_data| (key_data.public_key().clone(), key_data.name().clone()))
-            })
-            .collect::<Result<Vec<_>, _>>()
+            .names
+            .iter()
+            .map(|(public_key, name)| (public_key.clone(), name.clone()))
+            .collect())
     }
 
     fn get_private_key(&self, public_key: &PublicKey) -> Result<Option<PrivateKey>> {
@@ -134,33 +165,26 @@ impl KeyStore for InMemoryEncryptedKeyStore {
             .into_iter()
             .map(|k| {
                 let pub_key = k.public_key().clone();
-                let bytes: Vec<u8> = k.try_into()?;
-                Ok((pub_key, bytes))
+                let name = k.name().clone();
+                Ok((pub_key, name, to_zeroizing_bytes(k)?))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        {
-            let mut store = self.secure_memory.lock().expect("Mutex is not poisoned");
-
-            store.clear();
-            for (pub_key, bytes) in entries {
-                store.put(pub_key, bytes.as_slice());
-            }
+        let mut inner = self.lock();
+        inner.clear();
+        for (pub_key, name, bytes) in entries {
+            inner.put(pub_key, name, &bytes);
         }
-        self.initialized.store(true, Ordering::Relaxed);
+        inner.initialized = true;
         Ok(())
     }
 
     fn clear(&self) {
-        self.secure_memory
-            .lock()
-            .expect("Mutex is not poisoned")
-            .clear();
-        self.initialized.store(false, Ordering::Relaxed);
+        self.lock().clear();
     }
 
     fn is_initialized(&self) -> bool {
-        self.initialized.load(Ordering::Relaxed)
+        self.lock().initialized
     }
 }
 

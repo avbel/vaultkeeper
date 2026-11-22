@@ -4,7 +4,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -207,6 +207,8 @@ struct InFlight {
     id: u64,
     /// The canonical origin of a passkey request, which a `passkey_cancel` from it may end.
     passkey_origin: Option<String>,
+    /// Set for passkeys, whose cancel must not cut a vault write short.
+    commit: Option<Arc<Commit>>,
     /// Held for its Drop: dropping it cancels the fill, dropping the prompt, which the UI
     /// counts as dismissed.
     _cancel: oneshot::Sender<()>,
@@ -214,6 +216,31 @@ struct InFlight {
 }
 
 struct Closed;
+
+/// A cancel wins only until the passkey's vault write begins; from then on the write runs to the
+/// end and the page gets its real outcome, so it is never told "cancelled" about a stored passkey.
+#[derive(Default)]
+struct Commit(AtomicU8);
+
+impl Commit {
+    const RUNNING: u8 = 0;
+    const WRITING: u8 = 1;
+    const CANCELLED: u8 = 2;
+
+    fn begin_write(&self) -> bool {
+        self.move_from_running(Self::WRITING)
+    }
+
+    fn cancel(&self) -> bool {
+        self.move_from_running(Self::CANCELLED)
+    }
+
+    fn move_from_running(&self, to: u8) -> bool {
+        self.0
+            .compare_exchange(Self::RUNNING, to, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+}
 
 struct Dispatcher<H, F> {
     outgoing: mpsc::Sender<Zeroizing<Vec<u8>>>,
@@ -534,9 +561,17 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             .inflight
             .take_if(|inflight| inflight.passkey_origin.as_deref() == Some(origin.as_str()))
         {
-            inflight.task.abort();
-            self.respond::<()>(inflight.id, Err(ErrorCode::Cancelled))
-                .await?;
+            if inflight
+                .commit
+                .as_ref()
+                .is_none_or(|commit| commit.cancel())
+            {
+                inflight.task.abort();
+                self.respond::<()>(inflight.id, Err(ErrorCode::Cancelled))
+                    .await?;
+            } else {
+                self.inflight = Some(inflight);
+            }
         }
         self.respond(id, Ok(serde_json::json!({}))).await
     }
@@ -629,9 +664,11 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
 
     /// Delivers a finished fill: cancellation counting, memory, activity, then the response.
     async fn complete(&mut self, done: Completion) -> Result<(), Closed> {
-        if let Some(inflight) = self.inflight.take_if(|inflight| inflight.id == done.id) {
-            inflight.task.abort();
-        }
+        // A cancel may have answered this request already while its completion sat queued.
+        let Some(inflight) = self.inflight.take_if(|inflight| inflight.id == done.id) else {
+            return Ok(());
+        };
+        inflight.task.abort();
         let Completion {
             id,
             origin,
@@ -714,34 +751,55 @@ impl<H: BrowserHost + 'static, F: FillFlow + 'static> Dispatcher<H, F> {
             .await
     }
 
-    /// Serialises straight into a wiped buffer sized for the largest frame, so a password never
-    /// sits in an intermediate tree or a reallocated, unwiped prefix.
     async fn respond<T: Serialize>(
         &self,
         id: u64,
         result: Result<T, ErrorCode>,
     ) -> Result<(), Closed> {
-        let mut bytes = Zeroizing::new(Vec::with_capacity(RESPONSE_CAPACITY));
-        match result {
-            Ok(result) => serde_json::to_writer(
-                &mut *bytes,
-                &Success {
-                    id,
-                    ok: true,
-                    result,
-                },
-            ),
-            Err(error) => serde_json::to_writer(
-                &mut *bytes,
-                &Failure {
-                    id,
-                    ok: false,
-                    error,
-                },
-            ),
+        let bytes = match result {
+            Ok(result) => wiped_json(&Success {
+                id,
+                ok: true,
+                result,
+            }),
+            Err(error) => wiped_json(&Failure {
+                id,
+                ok: false,
+                error,
+            }),
         }
-        .map_err(|_| Closed)?;
+        .ok_or(Closed)?;
         self.outgoing.send(bytes).await.map_err(|_| Closed)
+    }
+}
+
+/// Measures first, then serialises straight into a wiped buffer of exactly that size, so a
+/// password never sits in an intermediate tree or a reallocated, unwiped prefix.
+fn wiped_json<V: Serialize>(value: &V) -> Option<Zeroizing<Vec<u8>>> {
+    let mut length = ByteCount(0);
+    serde_json::to_writer(&mut length, value).ok()?;
+    if length.0 > RESPONSE_CAPACITY {
+        tracing::warn!(
+            length = length.0,
+            "browser response exceeds the frame limit"
+        );
+        return None;
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(length.0));
+    serde_json::to_writer(&mut *bytes, value).ok()?;
+    Some(bytes)
+}
+
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -840,6 +898,7 @@ fn spawn_fill<H: BrowserHost + 'static, F: FillFlow + 'static>(
     InFlight {
         id,
         passkey_origin: None,
+        commit: None,
         _cancel: cancel,
         task,
     }
@@ -867,12 +926,23 @@ fn spawn_passkey<H: BrowserHost + 'static, F: FillFlow + 'static>(
     let (cancel, cancelled) = oneshot::channel::<()>();
     let fills = Arc::clone(fills);
     let host = Arc::clone(host);
+    let commit = Arc::new(Commit::default());
+    let gate = Arc::clone(&commit);
     let handle = tokio::spawn(async move {
         let abandoned = Arc::new(AtomicBool::new(false));
         let declined = Arc::new(AtomicBool::new(false));
-        let answer = tokio::select! {
-            answer = run_passkey(&*fills, &host, &task, &abandoned, &declined) => answer,
-            _ = cancelled => return,
+        let answer = {
+            let run = run_passkey(&*fills, &host, &task, &gate, &abandoned, &declined);
+            tokio::pin!(run);
+            tokio::select! {
+                answer = &mut run => answer,
+                _ = cancelled => {
+                    if gate.cancel() {
+                        return;
+                    }
+                    run.await
+                }
+            }
         };
         let _ = task
             .completions
@@ -889,6 +959,7 @@ fn spawn_passkey<H: BrowserHost + 'static, F: FillFlow + 'static>(
     InFlight {
         id,
         passkey_origin,
+        commit: Some(commit),
         _cancel: cancel,
         task: handle,
     }
@@ -898,6 +969,7 @@ async fn run_passkey<H: BrowserHost, F: FillFlow>(
     fills: &F,
     host: &Arc<H>,
     task: &PasskeyTask,
+    commit: &Commit,
     abandoned: &Arc<AtomicBool>,
     declined: &Arc<AtomicBool>,
 ) -> Result<serde_json::Value, ErrorCode> {
@@ -934,7 +1006,8 @@ async fn run_passkey<H: BrowserHost, F: FillFlow>(
                 }
             },
             || host.presence(&reason),
-            || async move { host.enabled(kind) },
+            // The last check before the vault is touched; past it a cancel no longer applies.
+            || async move { host.enabled(kind) && commit.begin_write() },
         )
         .await
 }

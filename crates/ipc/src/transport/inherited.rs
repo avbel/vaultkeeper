@@ -5,7 +5,9 @@
 use std::{
     io,
     mem::size_of,
-    os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle},
+    os::windows::io::{
+        AsRawHandle as _, FromRawHandle as _, IntoRawHandle as _, OwnedHandle, RawHandle,
+    },
     pin::pin,
     ptr,
     task::{Context, Poll, Waker},
@@ -208,10 +210,12 @@ fn random_bytes() -> io::Result<[u8; 16]> {
 /// `handle` must be a handle this process owns and nothing else uses, such as one inherited
 /// through the process handle list; it is closed when the returned stream drops.
 pub unsafe fn adopt_ui_pipe(handle: usize) -> io::Result<(Stream, u32)> {
-    let raw = handle as RawHandle;
+    // SAFETY: the caller guarantees sole ownership of `handle`. Owned from here on, so every
+    // refusal below closes it.
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
     let parent = parent_process_id()?;
     tracing::info!(handle, parent, "adopting the UI pipe");
-    let server_pid = u32::try_from(credentials(raw, true)?.pid)
+    let server_pid = u32::try_from(credentials(owned.as_raw_handle(), true)?.pid)
         .map_err(|_| io::Error::other("the pipe server's pid is negative"))?;
     tracing::info!(server_pid, "the UI pipe's server found");
     if server_pid != parent {
@@ -224,9 +228,9 @@ pub unsafe fn adopt_ui_pipe(handle: usize) -> io::Result<(Stream, u32)> {
             "the process that started this UI is not this Vaultkeeper executable",
         ));
     }
-    // SAFETY: the caller guarantees sole ownership of `handle`; the checks above proved it is a
-    // pipe whose server is the daemon.
-    let client = unsafe { NamedPipeClient::from_raw_handle(raw) }?;
+    // SAFETY: `owned` is ours alone; the checks above proved it is a pipe whose server is the
+    // daemon. Tokio closes it from now on, also when registering fails.
+    let client = unsafe { NamedPipeClient::from_raw_handle(owned.into_raw_handle()) }?;
     tracing::info!("the UI pipe is registered with the runtime");
     Ok((Stream::client(client), server_pid))
 }

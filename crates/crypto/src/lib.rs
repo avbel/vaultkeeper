@@ -4,6 +4,7 @@
 //!
 //! Every type holding key material zeroizes it on drop.
 
+pub mod details;
 pub mod enc_buffer;
 mod enc_string;
 mod error;

@@ -15,12 +15,23 @@
 //!
 //! Deserialization reverses this process and validates the key format.
 
+use std::mem::take;
+
 use anyhow::{anyhow, Error};
-use rkyv::{deserialize, rancor::Error as RancorError, Archive, Deserialize, Serialize};
+use rkyv::{
+    api::high::to_bytes_in, deserialize, rancor::Error as RancorError, util::AlignedVec, Archive,
+    Deserialize, Serialize,
+};
 use ssh_key::{private::KeypairData, LineEnding};
+use zeroize::{Zeroize, Zeroizing};
 
 use super::keydata::SSHKeyData;
 use crate::crypto::{PrivateKey, PublicKey};
+
+/// vk patch: an upper bound on rkyv's per-entry layout overhead (relative pointers, lengths,
+/// alignment padding). The buffer is sized up front because every reallocation of a growing
+/// buffer frees a copy of the private key PEM without wiping it.
+const SERIALIZATION_HEADROOM: usize = 512;
 
 #[derive(Archive, Serialize, Deserialize, PartialEq)]
 struct SSHKeyDataSerializable {
@@ -30,18 +41,27 @@ struct SSHKeyDataSerializable {
     cipher_id: String,
 }
 
+impl Drop for SSHKeyDataSerializable {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+    }
+}
+
 impl TryFrom<SSHKeyDataSerializable> for SSHKeyData {
     type Error = anyhow::Error;
 
-    fn try_from(key_data: SSHKeyDataSerializable) -> Result<Self, Self::Error> {
+    fn try_from(mut key_data: SSHKeyDataSerializable) -> Result<Self, Self::Error> {
         let private_key = parse_key(&key_data.private_key)?;
         let private_key = PrivateKey::try_from(private_key)?;
 
         Ok(Self {
             private_key,
-            public_key: key_data.public_key,
-            name: key_data.name,
-            cipher_id: key_data.cipher_id,
+            public_key: PublicKey {
+                alg: take(&mut key_data.public_key.alg),
+                blob: take(&mut key_data.public_key.blob),
+            },
+            name: take(&mut key_data.name),
+            cipher_id: take(&mut key_data.cipher_id),
         })
     }
 }
@@ -60,6 +80,7 @@ impl TryFrom<Vec<u8>> for SSHKeyData {
     type Error = anyhow::Error;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        let bytes = Zeroizing::new(bytes);
         let archived = rkyv::access::<ArchivedSSHKeyDataSerializable, RancorError>(&bytes[..])?;
         let serializable = deserialize::<SSHKeyDataSerializable, RancorError>(archived)?;
         SSHKeyData::try_from(serializable)
@@ -70,32 +91,53 @@ impl TryFrom<SSHKeyData> for Vec<u8> {
     type Error = anyhow::Error;
 
     fn try_from(key_data: SSHKeyData) -> Result<Self, Self::Error> {
-        let private_key = String::try_from(key_data.private_key)?;
-
-        let serializable = SSHKeyDataSerializable {
-            private_key,
-            public_key: key_data.public_key,
-            name: key_data.name,
-            cipher_id: key_data.cipher_id,
-        };
-
-        Ok(rkyv::to_bytes::<RancorError>(&serializable)?.to_vec())
+        Ok(take(&mut *to_zeroizing_bytes(key_data)?))
     }
+}
+
+/// vk patch: serializes an entry so that every plaintext copy is wiped when it is dropped.
+pub(super) fn to_zeroizing_bytes(key_data: SSHKeyData) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let serializable = SSHKeyDataSerializable {
+        private_key: take(&mut *to_openssh_pem(key_data.private_key)?),
+        public_key: key_data.public_key,
+        name: key_data.name,
+        cipher_id: key_data.cipher_id,
+    };
+    let mut aligned = to_aligned_bytes(&serializable)?;
+    let bytes = Zeroizing::new(aligned.as_slice().to_vec());
+    aligned.as_mut_slice().zeroize();
+    Ok(bytes)
+}
+
+fn serialized_capacity(serializable: &SSHKeyDataSerializable) -> usize {
+    serializable.private_key.len()
+        + serializable.public_key.alg.len()
+        + serializable.public_key.blob.len()
+        + serializable.name.len()
+        + serializable.cipher_id.len()
+        + SERIALIZATION_HEADROOM
+}
+
+fn to_aligned_bytes(serializable: &SSHKeyDataSerializable) -> Result<AlignedVec, Error> {
+    let buffer = AlignedVec::with_capacity(serialized_capacity(serializable));
+    Ok(to_bytes_in::<_, RancorError>(serializable, buffer)?)
+}
+
+fn to_openssh_pem(key: PrivateKey) -> Result<Zeroizing<String>, Error> {
+    let keypair_data = match key {
+        PrivateKey::Ed25519(kp) => KeypairData::Ed25519(kp),
+        PrivateKey::Ecdsa(kp) => KeypairData::Ecdsa(kp),
+        PrivateKey::Rsa(kp) => KeypairData::Rsa(kp),
+    };
+    let private_key = ssh_key::PrivateKey::new(keypair_data, "")?;
+    Ok(private_key.to_openssh(LineEnding::LF)?)
 }
 
 impl TryFrom<PrivateKey> for String {
     type Error = anyhow::Error;
 
     fn try_from(key: PrivateKey) -> Result<Self, Self::Error> {
-        let keypair_data = match key {
-            PrivateKey::Ed25519(kp) => KeypairData::Ed25519(kp),
-            PrivateKey::Ecdsa(kp) => KeypairData::Ecdsa(kp),
-            PrivateKey::Rsa(kp) => KeypairData::Rsa(kp),
-        };
-        let private_key = ssh_key::PrivateKey::new(keypair_data, "")?;
-        Ok(private_key
-            .to_openssh(LineEnding::LF)
-            .map(|s| s.to_string())?)
+        Ok(take(&mut *to_openssh_pem(key)?))
     }
 }
 
@@ -335,5 +377,28 @@ invalid_base64_data!!!
         assert_eq!(restored.cipher_id(), original.cipher_id());
         assert_eq!(restored.public_key(), original.public_key());
         assert_eq!(restored.private_key(), original.private_key());
+    }
+
+    #[test]
+    fn serializing_an_rsa_key_never_reallocates_the_buffer() {
+        let rsa_keypair = RsaKeypair::random(&mut OsRng, 2048).unwrap();
+        let ssh_key =
+            ssh_key::PrivateKey::new(ssh_key::private::KeypairData::Rsa(rsa_keypair.clone()), "")
+                .unwrap();
+        let serializable = SSHKeyDataSerializable {
+            private_key: String::try_from(PrivateKey::Rsa(rsa_keypair)).unwrap(),
+            public_key: PublicKey {
+                alg: "ssh-rsa".to_string(),
+                blob: ssh_key.public_key().to_bytes().unwrap(),
+            },
+            name: "a key name that is longer than the inline string limit".to_string(),
+            cipher_id: "00000000-0000-0000-0000-000000000000".to_string(),
+        };
+        let initial =
+            AlignedVec::<16>::with_capacity(serialized_capacity(&serializable)).capacity();
+
+        let bytes = to_aligned_bytes(&serializable).unwrap();
+
+        assert_eq!(bytes.capacity(), initial);
     }
 }

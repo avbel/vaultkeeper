@@ -151,10 +151,18 @@ async fn type_through_portal(
         tokio::time::sleep(FOCUS_SETTLE).await;
     }
     let typed = press_all(&remote, &session, &keysyms, cancel).await;
-    if let Err(error) = session.close().await {
-        tracing::debug!(%error, "closing the auto-type portal session failed");
-    }
+    close_session(&session).await;
     typed
+}
+
+/// Bounded like every other call: a portal that stops answering would otherwise hold the auto-type
+/// thread, and with it every later job, forever.
+async fn close_session(session: &Session<RemoteDesktop>) {
+    match tokio::time::timeout(CALL_TIMEOUT, session.close()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::debug!(%error, "closing the auto-type portal session failed"),
+        Err(_) => tracing::warn!("closing the auto-type portal session timed out"),
+    }
 }
 
 fn refused(refusal: &Refusal) -> Failure {
@@ -239,9 +247,7 @@ async fn establish(
     match start(remote, &session, restore_token).await {
         Ok(token) => Ok((session, token)),
         Err(failure) => {
-            if let Err(error) = session.close().await {
-                tracing::debug!(%error, "closing the failed auto-type session failed");
-            }
+            close_session(&session).await;
             Err(failure)
         }
     }

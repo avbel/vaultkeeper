@@ -31,6 +31,11 @@ type Digest = [u8; 32];
 
 /// How often the clearer looks again while a copy holds the backend.
 const COPY_IN_FLIGHT_RECHECK: Duration = Duration::from_millis(100);
+/// A read or clear that failed (the data-control read timeout, a compositor or X11 error) is
+/// tried again this soon, because a failed clear leaves the secret on the clipboard.
+const CLEAR_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// Bounds the retries, so a clipboard that is broken for good does not keep the clearer busy.
+const MAX_CLEAR_RETRIES: u32 = 5;
 
 /// What [`SecretClipboard`] needs from a clipboard; [`SystemClipboard`] in production.
 pub trait ClipboardBackend: Send + 'static {
@@ -211,6 +216,7 @@ impl Deadline {
 struct Schedule {
     last_copied: Option<Digest>,
     deadline: Option<Deadline>,
+    failed_clears: u32,
 }
 
 impl Schedule {
@@ -218,6 +224,19 @@ impl Schedule {
     fn copied(&mut self, text: &str, clear_after: Option<Duration>, now: Now) {
         self.last_copied = Some(digest(text));
         self.deadline = clear_after.and_then(|after| Deadline::after(now, after));
+        self.failed_clears = 0;
+    }
+
+    /// Puts back a clear that failed so it is tried again shortly; `false` once the retries are
+    /// used up, leaving nothing pending.
+    fn retry_after_failure(&mut self, ours: Digest, now: Now) -> bool {
+        if self.failed_clears >= MAX_CLEAR_RETRIES {
+            return false;
+        }
+        self.failed_clears += 1;
+        self.last_copied = Some(ours);
+        self.deadline = Deadline::after(now, CLEAR_RETRY_DELAY);
+        self.deadline.is_some()
     }
 
     const fn next_deadline(&self) -> Option<Deadline> {
@@ -340,7 +359,8 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
             state.schedule.copied(text, clear_after, self.shared.now());
         }
         if clear_requested && let Some(ours) = state.schedule.take_now() {
-            clear_logged(held.get(), &ours);
+            let now = self.shared.now();
+            log_clear(&clear_or_retry(held.get(), &mut state.schedule, ours, now));
         }
         held.restore(&mut state);
         drop(state);
@@ -379,7 +399,7 @@ impl<B: ClipboardBackend> SecretClipboard<B> {
         let Some(ours) = state.schedule.take_now() else {
             return Ok(false);
         };
-        let outcome = clear_if_holds(backend, &ours)?;
+        let outcome = clear_or_retry(backend, &mut state.schedule, ours, self.shared.now())?;
         Ok(outcome == ClearOutcome::Cleared)
     }
 
@@ -453,10 +473,11 @@ fn run_clearer<B: ClipboardBackend>(shared: &Shared<B>) {
                 state
             }
             Some(_) => {
-                if let Some(ours) = state.schedule.take_due(now)
-                    && let Some(backend) = state.backend.as_mut()
+                let pending = &mut *state;
+                if let Some(ours) = pending.schedule.take_due(now)
+                    && let Some(backend) = pending.backend.as_mut()
                 {
-                    clear_logged(backend, &ours);
+                    log_clear(&clear_or_retry(backend, &mut pending.schedule, ours, now));
                 }
                 state
             }
@@ -472,7 +493,26 @@ fn run_clearer<B: ClipboardBackend>(shared: &Shared<B>) {
 }
 
 fn clear_logged(backend: &mut impl ClipboardBackend, ours: &Digest) {
-    match clear_if_holds(backend, ours) {
+    log_clear(&clear_if_holds(backend, ours));
+}
+
+/// The lock must be held across the take that produced `ours` and this call, so a copy landing
+/// in between cannot have its fresh schedule overwritten by the retry.
+fn clear_or_retry(
+    backend: &mut impl ClipboardBackend,
+    schedule: &mut Schedule,
+    ours: Digest,
+    now: Now,
+) -> Result<ClearOutcome> {
+    let result = clear_if_holds(backend, &ours);
+    if result.is_err() && !schedule.retry_after_failure(ours, now) {
+        tracing::error!("gave up clearing the clipboard after repeated failures");
+    }
+    result
+}
+
+fn log_clear(result: &Result<ClearOutcome>) {
+    match result {
         Ok(ClearOutcome::Cleared) => tracing::debug!("cleared copied secret from clipboard"),
         Ok(ClearOutcome::NotOurs) => tracing::debug!("clipboard changed since copy; left as is"),
         Err(err) => tracing::warn!(error = %err, "could not clear clipboard"),
@@ -488,6 +528,8 @@ mod tests {
     struct FakeClipboard {
         content: Arc<Mutex<Option<String>>>,
         fail_set: bool,
+        /// How many reads fail before reads work again.
+        failing_reads: Arc<Mutex<usize>>,
     }
 
     impl FakeClipboard {
@@ -510,6 +552,14 @@ mod tests {
         }
 
         fn text(&mut self) -> Result<Option<Zeroizing<String>>> {
+            let mut failing = self.failing_reads.lock().expect("fake lock");
+            if *failing > 0 {
+                *failing -= 1;
+                return Err(Error::Clipboard(
+                    "the clipboard owner did not answer".into(),
+                ));
+            }
+            drop(failing);
             Ok(self.content().map(Zeroizing::new))
         }
 
@@ -667,6 +717,63 @@ mod tests {
         assert_eq!(schedule.next_deadline(), None);
         assert_eq!(schedule.take_due(later(t0, 3600)), None);
         assert_eq!(schedule.take_now(), Some(digest("second")));
+    }
+
+    #[test]
+    fn a_failed_clear_is_retried_soon_and_given_up_after_the_bound() {
+        let t0 = start();
+        let mut schedule = Schedule::default();
+        schedule.copied("hunter2", Some(THIRTY_SECONDS), t0);
+        let ours = schedule.take_due(later(t0, 30)).expect("due");
+        for attempt in 0..MAX_CLEAR_RETRIES {
+            let now = later(t0, 31 + u64::from(attempt));
+            assert!(schedule.retry_after_failure(ours, now), "retry {attempt}");
+            assert_eq!(
+                schedule
+                    .next_deadline()
+                    .map(|deadline| deadline.remaining(now)),
+                Some(CLEAR_RETRY_DELAY)
+            );
+            assert_eq!(schedule.take_due(later(now, 1)), Some(ours));
+        }
+        assert!(!schedule.retry_after_failure(ours, later(t0, 60)));
+        assert_eq!(schedule.next_deadline(), None);
+    }
+
+    #[test]
+    fn a_new_copy_resets_the_retry_bound() {
+        let t0 = start();
+        let mut schedule = Schedule::default();
+        for _ in 0..MAX_CLEAR_RETRIES {
+            assert!(schedule.retry_after_failure(digest("first"), t0));
+        }
+        schedule.copied("second", Some(THIRTY_SECONDS), t0);
+        assert!(schedule.retry_after_failure(digest("second"), t0));
+    }
+
+    #[test]
+    fn a_clear_whose_read_failed_is_retried_by_the_clearer() {
+        let fake = FakeClipboard::default();
+        *fake.failing_reads.lock().expect("fake lock") = 1;
+        let clipboard = SecretClipboard::with_backend(fake.clone()).expect("clipboard");
+        clipboard.copy("hunter2", Some(SHORT)).expect("copy");
+        assert!(
+            wait_until(|| fake.content().is_none()),
+            "the secret stayed on the clipboard after one failed read"
+        );
+    }
+
+    #[test]
+    fn a_failed_clear_if_ours_reports_the_error_and_still_clears_later() {
+        let fake = FakeClipboard::default();
+        let clipboard = SecretClipboard::with_backend(fake.clone()).expect("clipboard");
+        clipboard.copy("hunter2", None).expect("copy");
+        *fake.failing_reads.lock().expect("fake lock") = 1;
+        assert!(clipboard.clear_if_ours().is_err());
+        assert!(
+            wait_until(|| fake.content().is_none()),
+            "the lock-time clear was dropped after one failed read"
+        );
     }
 
     #[test]

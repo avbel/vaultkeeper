@@ -1,5 +1,7 @@
 //! Native messaging host. This process never initializes the vault or UI.
 
+#[cfg(unix)]
+mod launch;
 mod native;
 mod parent;
 
@@ -8,12 +10,9 @@ use std::io;
 use std::os::fd::AsFd as _;
 #[cfg(windows)]
 use std::os::windows::io::AsHandle as _;
-use std::time::Duration;
 #[cfg(unix)]
-use std::{
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-};
+use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Context;
 use tokio::io::AsyncWriteExt;
@@ -147,11 +146,13 @@ async fn connect_endpoint(endpoint: &Endpoint) -> io::Result<UnixStream> {
 #[cfg(windows)]
 type Socket = vk_ipc::transport::Stream;
 
+#[cfg(windows)]
+const ERROR_PIPE_BUSY: i32 = 231;
+
 // Both a missing pipe (no daemon yet) and a busy one (daemon between two clients) are worth
 // another try.
 #[cfg(windows)]
 fn daemon_not_ready(error: &io::Error) -> bool {
-    const ERROR_PIPE_BUSY: i32 = 231;
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ERROR_PIPE_BUSY)
 }
 
@@ -160,10 +161,11 @@ fn daemon_not_ready(error: &io::Error) -> bool {
 async fn connect_endpoint(endpoint: &Endpoint) -> io::Result<Socket> {
     match vk_ipc::transport::connect(endpoint).await {
         Ok(stream) => return Ok(stream),
-        Err(error) if daemon_not_ready(&error) => {}
+        // A busy pipe is a running daemon: a second launch would only show its Manager window.
+        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {}
+        Err(error) if daemon_not_ready(&error) => crate::os::detached::start_daemon()?,
         Err(error) => return Err(error),
     }
-    crate::os::detached::start_daemon()?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -187,7 +189,11 @@ async fn connect(path: &Path) -> io::Result<UnixStream> {
             ) => {}
         Err(error) => return Err(error),
     }
-    start_daemon()?;
+    // A running daemon whose browser listener is not up must not be launched again: the second
+    // launch would only show its Manager window. It may still be binding, so it gets the wait.
+    if !instance_running() {
+        launch::start_daemon().await?;
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -204,36 +210,12 @@ async fn connect(path: &Path) -> io::Result<UnixStream> {
 }
 
 #[cfg(unix)]
-fn bundle_path(exe: &Path) -> Option<PathBuf> {
-    let macos = exe.parent()?;
-    let contents = macos.parent()?;
-    let bundle = contents.parent()?;
-    (macos.file_name()? == "MacOS"
-        && contents.file_name()? == "Contents"
-        && bundle.extension().is_some_and(|ext| ext == "app"))
-    .then(|| bundle.to_path_buf())
-}
-
-#[cfg(unix)]
-fn start_daemon() -> io::Result<()> {
-    let exe = std::env::current_exe()?;
-    let mut command = if let Some(bundle) = bundle_path(&exe) {
-        let mut command = Command::new("/usr/bin/open");
-        command
-            .arg("-g")
-            .arg("-a")
-            .arg(bundle)
-            .args(["--args", "--tray"]);
-        command
-    } else {
-        let mut command = Command::new(exe);
-        command.arg("--tray");
-        command
-    };
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
+fn instance_running() -> bool {
+    match layout::data_dir() {
+        Ok(data_dir) => vk_platform::single_instance::running_in(&layout::socket_dir(&data_dir)),
+        Err(error) => {
+            tracing::warn!(%error, "cannot locate the single-instance socket");
+            false
+        }
+    }
 }

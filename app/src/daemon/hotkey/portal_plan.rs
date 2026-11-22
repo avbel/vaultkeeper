@@ -75,6 +75,32 @@ pub fn plan(
     }
 }
 
+/// The shortcut set the desktop last declined: its dialog was cancelled or refused, or the session
+/// ended while the dialog was open. Settings re-reads wake the backend even when nothing changed,
+/// and asking again would put GNOME's dialog back on screen each time, so the same set is asked
+/// for again only after a user action ("Change in system settings…") or a changed shortcut.
+#[derive(Debug, Default)]
+pub struct Declined(Option<Vec<(HotkeySlot, String)>>);
+
+impl Declined {
+    pub fn record(&mut self, desired: Vec<(HotkeySlot, String)>) {
+        self.0 = Some(desired);
+    }
+
+    pub fn forget(&mut self) {
+        self.0 = None;
+    }
+
+    pub fn blocks(&self, desired: &[(HotkeySlot, String)]) -> bool {
+        self.0.as_deref() == Some(desired)
+    }
+}
+
+/// The next wait before reaching a portal that failed again: doubled, never above `cap`.
+pub fn backoff(current: std::time::Duration, cap: std::time::Duration) -> std::time::Duration {
+    current.saturating_mul(2).min(cap)
+}
+
 /// Whether a press of `slot` should open anything: the slot has a trigger the portal was given,
 /// and no recorder is waiting for a key.
 pub fn is_active(accelerators: &[(HotkeySlot, String)], slot: HotkeySlot, paused: bool) -> bool {
@@ -111,6 +137,35 @@ mod tests {
             (HotkeySlot::QuickPanel, quick.to_owned()),
             (HotkeySlot::Generator, generator.to_owned()),
         ]
+    }
+
+    #[test]
+    fn a_declined_set_is_not_asked_for_again_until_it_changes_or_is_forgotten() {
+        let both = desired(&wanted("Ctrl+Shift+Space", "Ctrl+Alt+G"));
+        let changed = desired(&wanted("Ctrl+Shift+K", "Ctrl+Alt+G"));
+        let mut declined = Declined::default();
+        assert!(!declined.blocks(&both));
+        declined.record(both.clone());
+        assert_eq!(plan(&[], &both, false), Plan::Bind);
+        assert!(
+            declined.blocks(&both),
+            "an unrelated settings save asks nothing"
+        );
+        assert!(
+            !declined.blocks(&changed),
+            "a changed shortcut is asked for"
+        );
+        declined.forget();
+        assert!(!declined.blocks(&both), "Configure asks again");
+    }
+
+    #[test]
+    fn reconnect_waits_double_up_to_the_cap() {
+        let base = std::time::Duration::from_secs(15);
+        let cap = std::time::Duration::from_mins(10);
+        assert_eq!(backoff(base, cap), std::time::Duration::from_secs(30));
+        assert_eq!(backoff(std::time::Duration::from_mins(8), cap), cap);
+        assert_eq!(backoff(cap, cap), cap);
     }
 
     #[test]

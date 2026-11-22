@@ -17,7 +17,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -144,6 +144,7 @@ pub struct MockVault {
     calls: Mutex<Vec<MockCall>>,
     last_saved: Mutex<Option<ItemDraft>>,
     last_sync: Mutex<Option<std::time::SystemTime>>,
+    searches: AtomicUsize,
 }
 
 fn account(id: &str, server: &str, email: &str, logged_in: bool, data: AccountData) -> Account {
@@ -204,6 +205,7 @@ impl MockVault {
             calls: Mutex::new(Vec::new()),
             last_saved: Mutex::new(None),
             last_sync: Mutex::new(None),
+            searches: AtomicUsize::new(0),
         }
     }
 
@@ -218,6 +220,12 @@ impl MockVault {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// How many `search` calls were made, to check what a refresh costs.
+    #[must_use]
+    pub fn searches(&self) -> usize {
+        self.searches.load(Ordering::SeqCst)
     }
 
     /// The draft passed to the most recent `save`.

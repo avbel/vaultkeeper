@@ -35,15 +35,6 @@ const GEN_MESSAGES: &[&str] = &[
     "passphrase must have 3..=20 words",
 ];
 
-const CRYPTO_MESSAGES: &[&str] = &[
-    "wrong number of parts",
-    "invalid type header",
-    "invalid base64",
-    "RSA ciphertext is empty",
-    "encrypted buffer is empty",
-    "encrypted buffer is shorter than its header",
-];
-
 const URL_ERRORS: &[url::ParseError] = &[
     url::ParseError::EmptyHost,
     url::ParseError::IdnaError,
@@ -301,15 +292,19 @@ impl From<&vk_crypto::Error> for CryptoErrorDto {
 impl From<CryptoErrorDto> for vk_crypto::Error {
     fn from(error: CryptoErrorDto) -> Self {
         match error {
-            CryptoErrorDto::KdfTooWeak(_) => Self::KdfTooWeak(UNKNOWN_DETAIL),
-            CryptoErrorDto::KdfOutOfRange(_) => Self::KdfOutOfRange(UNKNOWN_DETAIL),
+            CryptoErrorDto::KdfTooWeak(detail) => {
+                Self::KdfTooWeak(lookup(vk_crypto::details::KDF_DETAILS, &detail))
+            }
+            CryptoErrorDto::KdfOutOfRange(detail) => {
+                Self::KdfOutOfRange(lookup(vk_crypto::details::KDF_DETAILS, &detail))
+            }
             CryptoErrorDto::Kdf => Self::Kdf,
             CryptoErrorDto::UnsupportedKdf(kind) => Self::UnsupportedKdf(kind),
             CryptoErrorDto::InvalidKeyLength(len) => {
                 Self::InvalidKeyLength(usize::try_from(len).unwrap_or(usize::MAX))
             }
             CryptoErrorDto::MalformedEncString(detail) => {
-                Self::MalformedEncString(lookup(CRYPTO_MESSAGES, &detail))
+                Self::MalformedEncString(lookup(vk_crypto::details::MALFORMED_DETAILS, &detail))
             }
             CryptoErrorDto::UnsupportedEncType(kind) => Self::UnsupportedEncType(kind),
             CryptoErrorDto::MacMismatch => Self::MacMismatch,
@@ -636,6 +631,40 @@ mod tests {
                 "passphrase must have 3..=20 words"
             ))
         ));
+    }
+
+    #[test]
+    fn crypto_details_from_the_crypto_crate_survive_the_trip() {
+        use vk_crypto::{EncString, Kdf};
+        let kdf_errors = [
+            Kdf::from_wire(1, 1, Some(64), Some(4)).and_then(|kdf| kdf.validate()),
+            Kdf::from_wire(1, 3, Some(4096), Some(4)).and_then(|kdf| kdf.validate()),
+            Kdf::from_wire(1, 3, None, Some(4)).map(|_| ()),
+        ];
+        let enc_string_errors = [
+            "2.AAAA|AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "2.AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==|AAAA",
+            "2.AAAAAAAAAAAAAAAAAAAAAA==|AAAA|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        ]
+        .map(|text| text.parse::<EncString>().map(|_| ()));
+        let expected = [
+            "KDF parameters are below the safe minimum: Argon2id needs at least 2 iterations",
+            "KDF parameters are above the supported maximum: Argon2id allows at most 1024 MiB \
+             of memory",
+            "KDF parameters are below the safe minimum: Argon2id memory is missing or zero",
+            "malformed EncString: IV must be 16 bytes",
+            "malformed EncString: MAC must be 32 bytes",
+            "malformed EncString: ciphertext must be a non-empty multiple of 16 bytes",
+        ];
+        for (result, expected) in kdf_errors
+            .into_iter()
+            .chain(enc_string_errors)
+            .zip(expected)
+        {
+            let error = result.expect_err("invalid input");
+            let back = proxied(&Error::Crypto(error));
+            assert_eq!(back.to_string(), expected);
+        }
     }
 
     #[test]

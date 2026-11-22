@@ -138,7 +138,7 @@ impl Inner {
         result
     }
 
-    async fn call_once_refreshed<T, F, Fut>(&self, ctx: &Ctx, op: F) -> Result<T>
+    async fn call_once_refreshed<T, F, Fut>(self: &Arc<Self>, ctx: &Ctx, op: F) -> Result<T>
     where
         F: Fn(Arc<Client>, Zeroizing<String>) -> Fut,
         Fut: Future<Output = vk_api::Result<T>>,
@@ -163,7 +163,7 @@ impl Inner {
 
     /// A cached token unless it is about to expire or the server just `rejected` it.
     pub(crate) async fn access_token(
-        &self,
+        self: &Arc<Self>,
         ctx: &Ctx,
         rejected: Option<&Zeroizing<String>>,
     ) -> Result<Zeroizing<String>> {
@@ -208,15 +208,21 @@ impl Inner {
     }
 
     /// A refresh token the server rejects is deleted: the user has to log in again.
-    async fn refresh(&self, ctx: &Ctx) -> Result<Zeroizing<String>> {
-        let key = refresh_token_key(&ctx.account_id);
-        let stored = self.stored_refresh_token(&key)?;
+    async fn refresh(self: &Arc<Self>, ctx: &Ctx) -> Result<Zeroizing<String>> {
+        let key: Arc<str> = Arc::from(refresh_token_key(&ctx.account_id));
+        let stored = {
+            let key = Arc::clone(&key);
+            self.blocking(move |inner| inner.stored_refresh_token(&key))
+                .await??
+        };
         let refresh = std::str::from_utf8(&stored)
             .map_err(|_| Error::protocol("the stored refresh token is not text"))?;
         let response = match ctx.client.refresh(refresh).await {
             Ok(response) => response,
             Err(vk_api::Error::Unauthorized) => {
-                self.secrets.delete(&key).map_err(secret_error)?;
+                self.blocking(move |inner| inner.secrets.delete(&key))
+                    .await?
+                    .map_err(secret_error)?;
                 return Err(Error::Api(vk_api::Error::Unauthorized));
             }
             Err(error) => return Err(error.into()),
@@ -225,16 +231,31 @@ impl Inner {
         if let Some(rotated) = response.refresh_token.map(Zeroizing::new)
             && rotated.as_bytes() != stored.as_slice()
         {
-            self.store_rotated(ctx, &key, &stored, &rotated)?;
+            let account_id = Arc::clone(&ctx.account_id);
+            self.blocking(move |inner| inner.store_rotated(&account_id, &key, &stored, &rotated))
+                .await??;
         }
+        self.install_token(ctx, &access, response.expires_in);
+        Ok(access)
+    }
+
+    /// Lock clears the token, so a refresh that was in flight when the vault locked (or the
+    /// session changed) must not put a live bearer token back.
+    fn install_token(&self, ctx: &Ctx, access: &Zeroizing<String>, expires_in: u64) {
         let mut state = self.write_state();
-        if let Some(active) = state.active.as_mut().filter(|a| a.id == ctx.account_id) {
+        if state.epoch != ctx.epoch {
+            return;
+        }
+        if let Some(active) = state
+            .active
+            .as_mut()
+            .filter(|a| a.id == ctx.account_id && a.unlocked.is_some())
+        {
             active.token = Some(AccessToken {
                 value: access.clone(),
-                expires_at: token_expiry(response.expires_in),
+                expires_at: token_expiry(expires_in),
             });
         }
-        Ok(access)
     }
 
     /// Log out drops the account from the index before it takes `refresh_secret` to wipe the
@@ -243,13 +264,13 @@ impl Inner {
     /// check, never across keychain calls.
     fn store_rotated(
         &self,
-        ctx: &Ctx,
+        account_id: &str,
         key: &str,
         used: &[u8],
         rotated: &Zeroizing<String>,
     ) -> Result<()> {
         let _secrets = lock(&self.refresh_secret);
-        if self.read_state().index.find(&ctx.account_id).is_none() {
+        if self.read_state().index.find(account_id).is_none() {
             return Ok(());
         }
         let current = self.secrets.get(key).map_err(secret_error)?;

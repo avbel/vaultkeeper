@@ -533,6 +533,51 @@ async fn a_sync_that_finishes_after_lock_is_discarded() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_token_refresh_that_finishes_after_lock_is_not_kept() {
+    let fake = Fake::start().await;
+    let harness = logged_in(&fake, vec![]).await;
+    let vault = &harness.vault;
+    fake.server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/api/sync"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&fake.server)
+        .await;
+    fake.mount_sync(vec![]).await;
+    Mock::given(method("POST"))
+        .and(path("/identity/connect/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "access_token": ACCESS_2, "expires_in": 3600, "refresh_token": "refresh-1"
+                }))
+                .set_delay(Duration::from_millis(400)),
+        )
+        .mount(&fake.server)
+        .await;
+
+    let (result, ()) = tokio::join!(vault.sync(), async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        vault.lock();
+    });
+    result.unwrap();
+    assert_eq!(fake.requests_to("/identity/connect/token").await.len(), 1);
+
+    vault
+        .unlock_with_password(Zeroizing::new(PASSWORD.into()))
+        .await
+        .unwrap();
+    vault.sync().await.unwrap();
+    assert_eq!(
+        fake.requests_to("/identity/connect/token").await.len(),
+        2,
+        "the token that arrived after the lock was dropped, so the unlocked session refreshes"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn offline_unlock_and_user_key_unlock_use_only_the_cache() {
     let fake = Fake::start().await;
     let harness = logged_in(&fake, vec![fake.login("c1", "Cached", "pw")]).await;
@@ -751,6 +796,7 @@ async fn locked_and_logged_out_calls_report_their_state() {
         vault.search("", &Filter::default()),
         Err(Error::LoggedOut)
     ));
+    assert!(matches!(vault.counts(), Err(Error::LoggedOut)));
     assert!(matches!(vault.sync().await, Err(Error::LoggedOut)));
     assert!(matches!(
         vault.save(None, note_draft("n")).await,
@@ -787,6 +833,7 @@ async fn locked_and_logged_out_calls_report_their_state() {
     assert!(matches!(vault.create_folder("f").await, Err(Error::Locked)));
     assert!(matches!(vault.user_key(), Err(Error::Locked)));
     assert!(matches!(vault.folders(), Err(Error::Locked)));
+    assert!(matches!(vault.counts(), Err(Error::Locked)));
     assert!(vault.ssh_keys().unwrap().is_empty());
 }
 

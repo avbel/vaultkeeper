@@ -25,7 +25,7 @@ use futures_util::{Stream, StreamExt as _};
 use tokio::{sync::mpsc, task::JoinHandle};
 use vk_ipc::HotkeyMode;
 
-use super::portal_plan::{self, Plan, desired, plan, shortcut_id};
+use super::portal_plan::{self, Declined, Plan, backoff, desired, plan, shortcut_id};
 use crate::{
     daemon::{
         Daemon,
@@ -40,6 +40,8 @@ use crate::{
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Before another attempt after the portal was unreachable or its session ended.
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
+/// The longest wait between attempts while the portal keeps failing.
+const RECONNECT_DELAY_MAX: Duration = Duration::from_mins(10);
 /// After a portal restart a hardened process is refused until it restarts too; asking again
 /// cannot change that, so the retries stop after this many refusals in a row.
 const REFUSALS_BEFORE_GIVING_UP: u8 = 3;
@@ -48,6 +50,9 @@ const COALESCE: Duration = Duration::from_millis(50);
 const ACTIVATION_TOKEN_KEY: &str = "activation_token";
 const WAITING_FOR_DIALOG: &str = "waiting for you to confirm the shortcuts in the desktop's dialog";
 const PORTAL_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
+/// No portal service file exists to activate. `NameHasNoOwner` is left out on purpose: dbus-broker
+/// answers a failed (possibly transient) activation with it, which the backoff retries.
+const NO_PORTAL_SERVICE: &str = "org.freedesktop.DBus.Error.ServiceUnknown";
 
 type Wanted = Vec<(HotkeySlot, String)>;
 
@@ -199,6 +204,9 @@ struct Task {
     refusals: u8,
     /// Wanted shortcuts changed while a bind waited on the desktop's dialog.
     resync: bool,
+    declined: Declined,
+    /// Grows while connecting keeps failing; back to [`RECONNECT_DELAY`] once a session exists.
+    reconnect_delay: Duration,
 }
 
 async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>) {
@@ -211,6 +219,8 @@ async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>
         configure_pending: false,
         refusals: 0,
         resync: false,
+        declined: Declined::default(),
+        reconnect_delay: RECONNECT_DELAY,
     };
     loop {
         let event = async {
@@ -221,7 +231,7 @@ async fn run(daemon: Arc<Daemon>, mut requests: mpsc::UnboundedReceiver<Control>
         };
         let reconnect = async {
             if task.retry {
-                tokio::time::sleep(RECONNECT_DELAY).await;
+                tokio::time::sleep(task.reconnect_delay).await;
             } else {
                 std::future::pending::<()>().await;
             }
@@ -258,6 +268,9 @@ impl Task {
     }
 
     fn take(&mut self, request: Control) {
+        if matches!(request, Control::Configure) {
+            self.declined.forget();
+        }
         absorb(
             request,
             &mut self.wanted,
@@ -329,13 +342,21 @@ impl Task {
             return false;
         }
         let desired = desired(&self.wanted);
+        if !self.paused && self.declined.blocks(&desired) {
+            tracing::debug!(
+                "the desktop declined these shortcuts; waiting for the user to ask again"
+            );
+            return false;
+        }
         if let Backend::Live(live) = &self.backend {
             match plan(&live.bound, &desired, self.paused) {
                 Plan::Nothing => return false,
                 Plan::Bind => {}
                 Plan::Rebuild => {
-                    // A session that may still be alive must not get a twin: try again later.
-                    if !close(&mut self.backend).await {
+                    // A session that may still be alive must not get a twin: it is kept, and
+                    // the next attempt closes it again before connecting.
+                    if let Closed::TimedOut(live) = close(&mut self.backend).await {
+                        self.backend = Backend::Live(live);
                         return true;
                     }
                 }
@@ -349,6 +370,7 @@ impl Task {
         }
         match self.bind_waiting(&desired, requests).await {
             Bound::Done(Ok(listed)) => {
+                self.declined.forget();
                 if let Backend::Live(live) = &mut self.backend {
                     live.bound = desired;
                 }
@@ -357,10 +379,12 @@ impl Task {
             }
             Bound::Done(Err(error)) => {
                 tracing::warn!(%error, "the GlobalShortcuts portal refused the shortcuts");
+                self.declined.record(desired);
                 hotkey_status::set(Err(error.to_string()));
                 report(&self.daemon, &Listed::new());
             }
             Bound::SessionEnded => {
+                self.declined.record(desired);
                 self.on_event(Some(Event::Closed), requests).await;
                 report(&self.daemon, &Listed::new());
                 // GNOME keeps the dialog of a closed session on screen, so a timed retry would
@@ -442,6 +466,7 @@ impl Task {
             Ok(live) => {
                 self.backend = Backend::Live(Box::new(live));
                 self.refusals = 0;
+                self.reconnect_delay = RECONNECT_DELAY;
                 true
             }
             Err(error) if lacks_global_shortcuts(&error) => {
@@ -481,8 +506,9 @@ impl Task {
                 ) {
                     self.refusals = 0;
                 }
-                tracing::warn!(%error, "cannot reach the GlobalShortcuts portal");
+                tracing::warn!(%error, retry_in = ?self.reconnect_delay, "cannot reach the GlobalShortcuts portal");
                 hotkey_status::set(Err(error.to_string()));
+                self.reconnect_delay = backoff(self.reconnect_delay, RECONNECT_DELAY_MAX);
                 false
             }
         }
@@ -492,12 +518,15 @@ impl Task {
 /// The portal answers, but its backends serve no GlobalShortcuts. ashpd reports that as
 /// `PortalNotFound` when its version probe notices; xdg-desktop-portal-wlr and -gtk instead pass
 /// the first real call through as `InvalidArgs: No such interface "...GlobalShortcuts"`.
+/// With no portal service on the bus at all, ashpd's version probe swallows the bus error and
+/// the first call fails with `ServiceUnknown`: nothing can be activated.
 fn lacks_global_shortcuts(error: &PortalError) -> bool {
     if matches!(error, PortalError::PortalNotFound(_)) {
         return true;
     }
     let text = error.to_string();
-    text.contains("No such interface") && text.contains("GlobalShortcuts")
+    (text.contains("No such interface") && text.contains("GlobalShortcuts"))
+        || text.contains(NO_PORTAL_SERVICE)
 }
 
 #[allow(
@@ -692,14 +721,26 @@ async fn configure(link: &Link) {
     }
 }
 
-/// `false` when the portal did not answer `Close` in time, so the session may still be alive; any
-/// other answer (including "no such session") means it is gone.
-async fn close(backend: &mut Backend) -> bool {
+enum Closed {
+    /// Any answer to `Close`, including "no such session": the session is gone.
+    Gone,
+    /// The portal did not answer in time, so the session may still be alive.
+    TimedOut(Box<Live>),
+}
+
+/// Leaves the backend `Idle`; a caller that must not connect a twin puts a timed-out session
+/// back.
+async fn close(backend: &mut Backend) -> Closed {
     let Backend::Live(live) = std::mem::replace(backend, Backend::Idle) else {
-        return true;
+        return Closed::Gone;
     };
     let closed = within(CALL_TIMEOUT, live.link.session.close()).await;
-    !matches!(closed, Err(PortalError::IO(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+    if matches!(closed, Err(PortalError::IO(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+    {
+        Closed::TimedOut(live)
+    } else {
+        Closed::Gone
+    }
 }
 
 /// Maps a timeout to the portal error type the callers already handle.
@@ -732,6 +773,17 @@ mod tests {
                 .expect("name"),
         );
         assert!(lacks_global_shortcuts(&not_found));
+    }
+
+    #[test]
+    fn no_portal_service_on_the_bus_means_manual_mode() {
+        let unknown = PortalError::Zbus(zbus::Error::FDO(Box::new(
+            zbus::fdo::Error::ServiceUnknown(
+                "The name org.freedesktop.portal.Desktop was not provided by any .service files"
+                    .to_owned(),
+            ),
+        )));
+        assert!(lacks_global_shortcuts(&unknown));
     }
 
     #[test]

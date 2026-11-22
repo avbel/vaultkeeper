@@ -4,9 +4,9 @@ use tokio::sync::watch;
 use vk_vault::{
     Error, Result, TotpCode, VaultService,
     model::{
-        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft, SendSummary,
-        ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemCounts,
+        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft,
+        SendSummary, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -172,6 +172,10 @@ impl VaultService for RemoteVault {
 
     fn folders(&self) -> Result<Vec<FolderView>> {
         self.cache().folders.clone().map_err(Into::into)
+    }
+
+    fn counts(&self) -> Result<ItemCounts> {
+        self.cache().counts.clone().map_err(Into::into)
     }
 
     fn organizations(&self) -> Result<Vec<OrganizationView>> {

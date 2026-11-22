@@ -8,9 +8,9 @@ use crate::{
     Error, Result, TotpCode, VaultService,
     index::record_recent,
     model::{
-        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft, SendSummary,
-        ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemCounts,
+        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft,
+        SendSummary, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
     reveal,
     util::unix_now,
@@ -100,6 +100,11 @@ impl VaultService for Vault {
     fn folders(&self) -> Result<Vec<FolderView>> {
         self.inner
             .read_unlocked(|_, unlocked| Ok(unlocked.data.folder_views()))
+    }
+
+    fn counts(&self) -> Result<ItemCounts> {
+        self.inner
+            .read_unlocked(|_, unlocked| Ok(unlocked.data.counts()))
     }
 
     fn organizations(&self) -> Result<Vec<OrganizationView>> {

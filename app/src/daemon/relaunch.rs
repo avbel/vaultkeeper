@@ -11,7 +11,7 @@ use zbus::Variant;
 
 use crate::os::self_protection::{self, Sandbox};
 
-const START_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The variables the new daemon gets. Any process of this user can read a unit's environment
 /// (`systemctl --user show -p Environment`), which it cannot do with the daemon's own
@@ -86,10 +86,10 @@ pub async fn manager_reachable() -> bool {
     }
 }
 
-const MANAGER: &str = "org.freedesktop.systemd1";
-const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
+pub(crate) const MANAGER: &str = "org.freedesktop.systemd1";
+pub(crate) const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
 
-async fn session() -> Result<zbus::Connection, String> {
+pub(crate) async fn session() -> Result<zbus::Connection, String> {
     zbus::connection::Builder::session()
         .method_timeout(START_TIMEOUT)
         .build()

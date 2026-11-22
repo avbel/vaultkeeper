@@ -55,8 +55,18 @@ fn runtime() -> Option<&'static Runtime> {
 }
 
 /// Runs `work` on the portal runtime and waits for it at most [`HAND_OVER_WAIT`].
+/// Unlike [`run_waiting`], a call that timed out is aborted: one runs per link click, and each left
+/// parked on a stuck portal would stay on the runtime's single worker.
 fn run_bounded<T: Send + 'static>(work: impl Future<Output = T> + Send + 'static) -> Option<T> {
-    run_waiting(work, HAND_OVER_WAIT)
+    let (tx, rx) = mpsc::channel();
+    let task = runtime()?.spawn(async move {
+        let _ = tx.send(work.await);
+    });
+    let outcome = rx.recv_timeout(HAND_OVER_WAIT).ok();
+    if outcome.is_none() {
+        task.abort();
+    }
+    outcome
 }
 
 fn run_waiting<T: Send + 'static>(

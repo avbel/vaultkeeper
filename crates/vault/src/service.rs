@@ -6,9 +6,9 @@ use zeroize::Zeroizing;
 use crate::{
     Result, TotpCode,
     model::{
-        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemDraft,
-        ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft, SendSummary,
-        ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemCounts,
+        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft,
+        SendSummary, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
     },
 };
 
@@ -87,6 +87,8 @@ pub trait VaultService: Send + Sync + 'static {
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>>;
 
     fn folders(&self) -> Result<Vec<FolderView>>;
+    /// Sidebar counts, so the UI need not fetch every item just to count them.
+    fn counts(&self) -> Result<ItemCounts>;
     fn organizations(&self) -> Result<Vec<OrganizationView>>;
     fn collections(&self) -> Result<Vec<CollectionView>>;
 

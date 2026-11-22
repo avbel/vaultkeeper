@@ -5,7 +5,7 @@ use std::{rc::Rc, sync::Arc};
 use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use vk_vault::{
     VaultService,
-    model::{Filter, FolderView, ItemId, ItemKind},
+    model::{Filter, FolderView, ItemCounts, ItemId, ItemKind},
 };
 
 use super::{
@@ -16,7 +16,7 @@ use crate::{
     keymap::{self, Command, Mods},
     rows::RowsModel,
     settings::WindowGeometry,
-    sidebar::{Counts, SidebarData, SidebarKey},
+    sidebar::{SidebarData, SidebarKey},
     ui::{ManagerWindow, SidebarEntry},
     viewmodel::{self, SHORTCUT_KINDS},
 };
@@ -27,7 +27,7 @@ pub(super) struct Manager {
     pub(super) sidebar: SidebarData,
     pub(super) sidebar_model: Rc<VecModel<SidebarEntry>>,
     pub(super) sidebar_key: SidebarKey,
-    pub(super) counts: Counts,
+    pub(super) counts: ItemCounts,
     pub(super) filter: Filter,
     pub(super) folders: Vec<FolderView>,
     /// Folder for each entry of the folder pickers: `None` = "No folder".
@@ -108,7 +108,7 @@ impl<S: VaultService> App<S> {
             sidebar: SidebarData::default(),
             sidebar_model,
             sidebar_key: SidebarKey::All,
-            counts: Counts::default(),
+            counts: ItemCounts::default(),
             filter: Filter::default(),
             folders: Vec::new(),
             folder_choices: Vec::new(),

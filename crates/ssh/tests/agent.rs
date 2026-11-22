@@ -518,6 +518,35 @@ async fn clear_keys_drops_the_keys_and_asks_the_ui_on_the_next_list() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refresh_that_started_before_a_clear_does_not_reserve_its_keys() {
+    let harness = Harness::start(Verdict::Approve);
+    let before_lock = harness.agent.key_epoch();
+
+    harness.agent.clear_keys();
+    let replaced = harness
+        .agent
+        .replace_keys_if(before_lock, vec![ED25519.agent_key()])
+        .expect("running");
+    let listed = harness.list().await;
+
+    assert!(!replaced);
+    assert!(text(&listed).contains("no identities"), "{}", text(&listed));
+    assert_eq!(
+        harness.ui().list_count(),
+        1,
+        "still locked, so the list asks"
+    );
+    let current = harness.agent.key_epoch();
+    assert!(
+        harness
+            .agent
+            .replace_keys_if(current, vec![ED25519.agent_key()])
+            .expect("running")
+    );
+    assert!(text(&harness.list().await).contains(ED25519.fingerprint));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socket_is_private_to_the_user() {
     let harness = Harness::start(Verdict::Approve);
 

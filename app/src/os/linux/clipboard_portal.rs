@@ -309,7 +309,7 @@ impl Worker {
             };
             match event {
                 Event::Transfer(mime, serial) => self.answer_transfer(&open, &mime, serial).await,
-                Event::Owner(Some(owned)) => self.owned = self.text.is_some() && owned,
+                Event::Owner(Some(owned)) => self.ownership_changed(owned),
                 // Unknown ownership stays as it was, so a clear still removes our secret.
                 Event::Owner(None) => tracing::debug!("portal owner change without ownership"),
             }
@@ -440,6 +440,15 @@ impl Worker {
         Ok(())
     }
 
+    /// Once another app owns the clipboard nothing reads or clears our copy again, so the text
+    /// would otherwise stay in memory until the next copy.
+    fn ownership_changed(&mut self, owned: bool) {
+        self.owned = self.text.is_some() && owned;
+        if !owned {
+            self.text = None;
+        }
+    }
+
     async fn answer_transfer(&self, open: &Open, mime: &str, serial: u32) {
         let served = match (self.text.as_ref(), mime) {
             (Some(text), TEXT_MIME) => write_transfer(open, serial, text.as_bytes()).await,
@@ -450,10 +459,13 @@ impl Worker {
         if let Err(error) = &served {
             tracing::debug!(%error, "clipboard transfer refused");
         }
-        if let Err(error) = open
-            .clipboard
-            .selection_write_done(&open.session, serial, ok)
-            .await
+        if let Err(error) = bounded(
+            CALL_TIMEOUT,
+            open.clipboard
+                .selection_write_done(&open.session, serial, ok),
+            "SelectionWriteDone",
+        )
+        .await
         {
             tracing::warn!(%error, "could not finish a clipboard transfer");
         }
@@ -519,14 +531,18 @@ async fn bounded<T>(
 async fn subscribe(
     clipboard: &Clipboard,
 ) -> std::result::Result<(Transfers<'_>, Owners<'_>), String> {
-    let transfers = clipboard
-        .receive_selection_transfer::<RemoteDesktop>()
-        .await
-        .map_err(|error| error.to_string())?;
-    let owners = clipboard
-        .receive_selection_owner_changed::<RemoteDesktop>()
-        .await
-        .map_err(|error| error.to_string())?;
+    let transfers = bounded(
+        CALL_TIMEOUT,
+        clipboard.receive_selection_transfer::<RemoteDesktop>(),
+        "SelectionTransfer subscription",
+    )
+    .await?;
+    let owners = bounded(
+        CALL_TIMEOUT,
+        clipboard.receive_selection_owner_changed::<RemoteDesktop>(),
+        "SelectionOwnerChanged subscription",
+    )
+    .await?;
     let owners = owners.map(|(_, change)| OwnerChange::from(change));
     Ok((Box::pin(transfers), Box::pin(owners)))
 }
@@ -732,11 +748,12 @@ async fn start(
 }
 
 async fn write_transfer(open: &Open, serial: u32, bytes: &[u8]) -> std::result::Result<(), String> {
-    let fd = open
-        .clipboard
-        .selection_write(&open.session, serial)
-        .await
-        .map_err(|error| error.to_string())?;
+    let fd = bounded(
+        CALL_TIMEOUT,
+        open.clipboard.selection_write(&open.session, serial),
+        "SelectionWrite",
+    )
+    .await?;
     let pipe = pipe::Sender::from_owned_fd(std::os::fd::OwnedFd::from(fd))
         .map_err(|error| format!("the transfer fd is not a pipe: {error}"))?;
     // A reader that never drains the pipe must not stall the session; the bytes go straight from
@@ -848,6 +865,21 @@ mod tests {
         assert!(judge_read_back(b"hello", "hunter2").is_ok());
         assert!(judge_read_back(b"hunter2\n", "hunter2").is_ok());
         assert!(judge_read_back(b"", "hunter2").is_ok());
+    }
+
+    #[test]
+    fn a_copy_taken_over_by_another_app_is_dropped() {
+        let mut worker = Worker::new(TokenStore::new(std::path::PathBuf::new()));
+        worker.text = Some(Zeroizing::new("hunter2".to_owned()));
+        worker.owned = true;
+        worker.ownership_changed(true);
+        assert!(
+            worker.owned && worker.text.is_some(),
+            "our own change keeps the copy"
+        );
+        worker.ownership_changed(false);
+        assert!(!worker.owned);
+        assert!(worker.text.is_none(), "the secret outlived the ownership");
     }
 
     /// One worker thread: the answering task shares it with the caller, as in the daemon.

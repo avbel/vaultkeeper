@@ -40,7 +40,7 @@ pub(crate) type Handle = TrayIcon;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{Handle, install};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 const ATTACH_RETRY: Duration = Duration::from_millis(250);
 
 #[cfg(not(target_os = "linux"))]
@@ -69,6 +69,7 @@ pub fn install(daemon: &Arc<Daemon>) -> anyhow::Result<TrayIcon> {
     });
     refresh(&tray, daemon);
     tray.show()?;
+    #[cfg(target_os = "macos")]
     follow_menu_bar(&tray, daemon);
     follow_taskbar(&tray);
     let weak = tray.as_weak();
@@ -267,7 +268,7 @@ pub(crate) fn follow_taskbar(tray: &TrayIcon) {
 
 /// Slint creates the status item on its first event-loop turn, so the window to observe does not
 /// exist yet right after `show()`; a short retry timer bridges that gap and stops once attached.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn follow_menu_bar(tray: &TrayIcon, daemon: &Arc<Daemon>) {
     let weak = tray.as_weak();
     let daemon = Arc::clone(daemon);
@@ -299,9 +300,9 @@ thread_local! {
     static CHOICE: Cell<TrayIconChoice> = const { Cell::new(TrayIconChoice::Auto) };
     static RENDERED: Cell<Option<(Glyph, u32)>> = const { Cell::new(None) };
     static TASKBAR_WATCH: RefCell<Option<taskbar::ThemeWatch>> = const { RefCell::new(None) };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     static SCHEME_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     static MENU_BAR_WATCH: RefCell<Option<crate::os::appkit::MenuBarWatch>> =
         const { RefCell::new(None) };
 }

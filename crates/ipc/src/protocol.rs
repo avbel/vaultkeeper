@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::dto::{
-    AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemDraftDto,
-    ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SendDraftDto, SendSummaryDto,
-    SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
+    AccountDto, AttachmentDto, CollectionDto, CopyFieldDto, FilterDto, FolderDto, ItemCountsDto,
+    ItemDraftDto, ItemSummaryDto, LoginRequestDto, LoginStepDto, OrganizationDto, SendDraftDto,
+    SendSummaryDto, SessionStateDto, TotpCodeDto, TwoFactorAnswerDto, WireError,
 };
 
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Login waits on the KDF and the server, sync and attachments on transfers, a Touch ID unlock
@@ -122,6 +122,7 @@ pub struct Snapshot {
     pub folders: Result<Vec<FolderDto>, WireError>,
     pub organizations: Result<Vec<OrganizationDto>, WireError>,
     pub collections: Result<Vec<CollectionDto>, WireError>,
+    pub counts: Result<ItemCountsDto, WireError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -523,6 +524,9 @@ impl Call {
     pub const fn timeout(&self) -> Duration {
         match self {
             Self::Login { .. }
+            | Self::UnlockWithPassword(_)
+            | Self::VerifyMasterPassword(_)
+            | Self::EnrollTouchId { .. }
             | Self::UnlockWithTouchId { .. }
             | Self::Sync
             | Self::DownloadAttachment { .. }
@@ -614,6 +618,25 @@ mod tests {
         assert_eq!(&refused[HEADER_LEN..], &[0, 0, 7]);
         let busy = encode(&DaemonMessage::Refused(Refusal::Busy)).expect("encode");
         assert_eq!(&busy[HEADER_LEN..], &[0, 1]);
+    }
+
+    #[test]
+    fn key_derivation_and_hello_enrolment_get_the_long_timeout() {
+        let password = || Zeroizing::new("p".to_owned());
+        assert_eq!(Call::UnlockWithPassword(password()).timeout(), LONG_TIMEOUT);
+        assert_eq!(
+            Call::VerifyMasterPassword(password()).timeout(),
+            LONG_TIMEOUT
+        );
+        assert_eq!(
+            Call::EnrollTouchId {
+                account_id: "a".to_owned(),
+                parent_window: None
+            }
+            .timeout(),
+            LONG_TIMEOUT,
+            "the first Windows Hello key creation can prompt"
+        );
     }
 
     #[test]

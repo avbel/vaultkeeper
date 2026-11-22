@@ -1,6 +1,6 @@
 //! Decrypted view types shared with the UI.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -56,6 +56,54 @@ pub struct ItemSummary {
     pub reprompt: bool,
     pub deleted: bool,
     pub editable: bool,
+}
+
+/// Sidebar numbers: live items per dimension, items in the trash and Sends.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ItemCounts {
+    pub all: usize,
+    pub favorites: usize,
+    pub kinds: HashMap<ItemKind, usize>,
+    pub no_folder: usize,
+    pub folders: HashMap<Arc<str>, usize>,
+    pub organizations: HashMap<Arc<str>, usize>,
+    pub trash: usize,
+    pub sends: usize,
+}
+
+impl ItemCounts {
+    /// Deleted items count toward `trash` only, so a trashed favourite is not a favourite.
+    #[must_use]
+    pub fn tally<'a>(items: impl IntoIterator<Item = &'a ItemSummary>, sends: usize) -> Self {
+        let mut counts = Self {
+            sends,
+            ..Self::default()
+        };
+        for item in items {
+            if item.deleted {
+                counts.trash += 1;
+            } else {
+                counts.add_live(item);
+            }
+        }
+        counts
+    }
+
+    fn add_live(&mut self, item: &ItemSummary) {
+        self.all += 1;
+        self.favorites += usize::from(item.favorite);
+        *self.kinds.entry(item.kind).or_default() += 1;
+        match &item.folder_id {
+            Some(folder) => *self.folders.entry(Arc::clone(folder)).or_default() += 1,
+            None => self.no_folder += 1,
+        }
+        if let Some(organization) = &item.organization_id {
+            *self
+                .organizations
+                .entry(Arc::clone(organization))
+                .or_default() += 1;
+        }
+    }
 }
 
 /// What a one-click copy button (or a keyboard shortcut) asks for.
@@ -350,4 +398,55 @@ pub struct SendDraft {
     pub password: Option<Zeroizing<String>>,
     /// The stored Send has a password (read-only; ignored on save).
     pub has_password: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(
+        kind: ItemKind,
+        folder: Option<&str>,
+        org: Option<&str>,
+        favorite: bool,
+        deleted: bool,
+    ) -> ItemSummary {
+        ItemSummary {
+            id: ItemId(Arc::from("x")),
+            kind,
+            name: Arc::from("n"),
+            subtitle: Arc::from(""),
+            favorite,
+            folder_id: folder.map(Arc::from),
+            organization_id: org.map(Arc::from),
+            primary_uri: None,
+            has_password: false,
+            has_totp: false,
+            reprompt: false,
+            deleted,
+            editable: true,
+        }
+    }
+
+    #[test]
+    fn tally_counts_every_dimension_of_live_items() {
+        let items = [
+            item(ItemKind::Login, Some("f1"), None, true, false),
+            item(ItemKind::Login, None, Some("o1"), false, false),
+            item(ItemKind::Card, Some("f1"), None, false, false),
+            item(ItemKind::Card, Some("f2"), Some("o2"), true, true),
+        ];
+        let counts = ItemCounts::tally(&items, 4);
+        assert_eq!(counts.all, 3);
+        assert_eq!(counts.favorites, 1);
+        assert_eq!(counts.kinds.get(&ItemKind::Login), Some(&2));
+        assert_eq!(counts.kinds.get(&ItemKind::Card), Some(&1));
+        assert_eq!(counts.no_folder, 1);
+        assert_eq!(counts.folders.get("f1"), Some(&2));
+        assert_eq!(counts.folders.get("f2"), None);
+        assert_eq!(counts.organizations.get("o1"), Some(&1));
+        assert_eq!(counts.organizations.get("o2"), None);
+        assert_eq!(counts.trash, 1);
+        assert_eq!(counts.sends, 4);
+    }
 }

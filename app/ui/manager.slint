@@ -200,6 +200,7 @@ export component ManagerWindow inherits Window {
     in property <bool> online: true;
     in-out property <bool> reprompt-visible;
     in property <string> reprompt-error;
+    in-out property <string> reprompt-password;
 
     in property <string> edit-title;
     in property <[EditField]> edit-fields;
@@ -540,6 +541,7 @@ export component ManagerWindow inherits Window {
                         assign-busy: root.assign-busy;
                         reprompt-visible: root.reprompt-visible;
                         reprompt-error: root.reprompt-error;
+                        reprompt-password <=> root.reprompt-password;
                         reprompt-submit(password) => { root.reprompt-submit(password); }
                         reprompt-cancel => { root.reprompt-cancel(); }
                         copy-field(i) => { return root.copy-field(i); }

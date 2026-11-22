@@ -29,14 +29,14 @@ pub struct UiOptions {
     pub first_unlock: bool,
 }
 
-/// How the process presents itself on macOS.
+/// How the process presents itself (the Dock icon and activation apply to macOS only).
 pub enum Backend {
     /// `--mock`: an ordinary app with a Dock icon.
     Standalone,
     /// No Dock icon and never takes focus at launch.
     Daemon,
-    /// No Dock icon until the Manager opens; activates when launched; `on_input` runs on every
-    /// key press, click and scroll in its windows.
+    /// No Dock icon until the Manager opens; activates when launched. On every OS `on_input` runs
+    /// on every key press, click and scroll in its windows.
     Ui {
         on_input: Box<dyn FnMut()>,
         activate_at_launch: bool,
@@ -54,7 +54,7 @@ pub fn select_backend(backend: Backend) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     let selector = linux_backend(selector, !matches!(backend, Backend::Daemon));
     #[cfg(not(target_os = "macos"))]
-    drop(backend);
+    let selector = observe_input(selector, backend);
     selector
         .select()
         .context("select the winit software backend")
@@ -76,6 +76,18 @@ fn linux_backend(selector: slint::BackendSelector, takes_token: bool) -> slint::
             attributes
         }
     })
+}
+
+/// The daemon's lock timer is reset only by the UI's activity notices, so input must be reported
+/// on every OS, not just where the macOS event loop builder is customised.
+#[cfg(not(target_os = "macos"))]
+fn observe_input(selector: slint::BackendSelector, backend: Backend) -> slint::BackendSelector {
+    match backend {
+        Backend::Ui { on_input, .. } => {
+            selector.with_winit_custom_application_handler(InputObserver(on_input))
+        }
+        Backend::Standalone | Backend::Daemon => selector,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -116,10 +128,22 @@ fn macos_backend(selector: slint::BackendSelector, backend: Backend) -> slint::B
     }
 }
 
-#[cfg(target_os = "macos")]
 struct InputObserver(Box<dyn FnMut()>);
 
-#[cfg(target_os = "macos")]
+/// Key presses, button presses and scrolls; pointer motion alone is not activity.
+fn is_user_input(event: &slint::winit_030::winit::event::WindowEvent) -> bool {
+    use slint::winit_030::winit::event::{ElementState, WindowEvent};
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+    )
+}
+
 impl slint::winit_030::CustomApplicationHandler for InputObserver {
     fn window_event(
         &mut self,
@@ -129,16 +153,7 @@ impl slint::winit_030::CustomApplicationHandler for InputObserver {
         _slint_window: Option<&slint::Window>,
         event: &slint::winit_030::winit::event::WindowEvent,
     ) -> slint::winit_030::EventResult {
-        use slint::winit_030::winit::event::{ElementState, WindowEvent};
-        if matches!(
-            event,
-            WindowEvent::KeyboardInput { .. }
-                | WindowEvent::MouseWheel { .. }
-                | WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-        ) {
+        if is_user_input(event) {
             (self.0)();
         }
         slint::winit_030::EventResult::Propagate
@@ -183,8 +198,9 @@ pub fn run_ui<S: VaultService>(
         app.handle(command);
     }
     app.show_pending_notices();
-    slint::run_event_loop_until_quit().context("run the event loop")?;
-    Ok(())
+    let ran = slint::run_event_loop_until_quit().context("run the event loop");
+    app.flush_generator_prefs();
+    ran
 }
 
 /// Linux/Wayland winit reports no theme until the first change, so the portal's scheme is read
@@ -241,4 +257,41 @@ fn forward_commands<S: VaultService>(
     })
     .context("forward daemon commands")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use slint::winit_030::winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
+    };
+
+    use super::is_user_input;
+
+    fn click(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn presses_and_scrolls_count_as_activity_but_motion_does_not() {
+        assert!(is_user_input(&click(ElementState::Pressed)));
+        assert!(
+            !is_user_input(&click(ElementState::Released)),
+            "one click is one report"
+        );
+        assert!(is_user_input(&WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        }));
+        assert!(!is_user_input(&WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(4.0, 2.0),
+        }));
+        assert!(!is_user_input(&WindowEvent::Focused(true)));
+    }
 }

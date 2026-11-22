@@ -18,9 +18,9 @@ unsafe impl Sync for MlockSecureKeyContainer {}
 
 impl SecureKeyContainer for MlockSecureKeyContainer {
     fn as_key(&self) -> MemoryEncryptionKey {
+        // A reference conversion, so no by-value copy of the key lands on the stack.
         MemoryEncryptionKey::from(
-            &unsafe { self.ptr.as_ref() }
-                .try_into()
+            <&[u8; KEY_SIZE]>::try_from(unsafe { self.ptr.as_ref() })
                 .expect("slice should be KEY_SIZE"),
         )
     }

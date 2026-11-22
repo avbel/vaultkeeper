@@ -18,10 +18,11 @@ pub fn start_blocker() -> Option<&'static str> {
         && std::env::var_os("VAULTKEEPER_DEV_BROWSER").as_deref()
             == Some(std::ffi::OsStr::new("1"));
     let allowed = runtime_hardened() || cfg!(feature = "vw-it") || dev_override;
-    let reason = if cfg!(windows) {
-        UNHARDENED_REASON
-    } else {
+    // Only macOS ties the gate to a signed build; Windows and Linux check runtime hardening.
+    let reason = if cfg!(target_os = "macos") {
         SIGNED_BUILD_REASON
+    } else {
+        UNHARDENED_REASON
     };
     (!allowed).then_some(reason)
 }

@@ -40,19 +40,25 @@ impl SettingsFile {
     /// want to repair, and the UI tells the user once ([`SettingsStore::take_reset_notice`]).
     #[must_use]
     pub fn read(path: &Path) -> Settings {
+        Self::try_read(path).unwrap_or_else(|error| {
+            tracing::warn!(%error, path = %path.display(), "cannot read settings; using defaults");
+            Settings::default()
+        })
+    }
+
+    /// Like [`Self::read`], but a file that exists and cannot be read is an error, so a
+    /// read-modify-write never replaces it with defaults.
+    fn try_read(path: &Path) -> io::Result<Settings> {
         match std::fs::read(path) {
-            Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
+            Ok(bytes) => Ok(match serde_json::from_slice::<Settings>(&bytes) {
                 Ok(settings) => settings.sanitized(),
                 Err(error) => {
                     keep_broken(path, &error);
                     Settings::default()
                 }
-            },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Settings::default(),
-            Err(error) => {
-                tracing::warn!(%error, path = %path.display(), "cannot read settings; using defaults");
-                Settings::default()
-            }
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
+            Err(error) => Err(error),
         }
     }
 
@@ -100,6 +106,11 @@ fn keep_broken(path: &Path, error: &serde_json::Error) {
 impl SettingsStore for SettingsFile {
     fn load(&self) -> Settings {
         Self::read(&self.path)
+    }
+
+    fn try_load(&self) -> HookResult<Settings> {
+        Self::try_read(&self.path)
+            .map_err(|error| HookError::Failed(format!("Settings not read: {error}")))
     }
 
     fn take_reset_notice(&self) -> bool {

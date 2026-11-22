@@ -1,4 +1,4 @@
-//! The device id the server sees for this Mac: created once, kept in `device.json`, so a new-device
+//! The device id the server sees for this machine: created once, kept in `device.json`, so a new-device
 //! email arrives only on the first login from this machine.
 
 use std::{io, path::Path};
@@ -9,9 +9,14 @@ use vk_vault::DeviceInfo;
 
 use crate::os::{fs::write_private, layout::DEVICE_FILE};
 
-const DEVICE_NAME: &str = "macos";
-/// Bitwarden's device type for the macOS desktop app.
-const DEVICE_TYPE_MACOS: u8 = 7;
+/// Bitwarden's `DeviceType` values for the desktop apps: MacOsDesktop 7, WindowsDesktop 6,
+/// LinuxDesktop 8.
+#[cfg(target_os = "macos")]
+const DEVICE: (&str, u8) = ("macos", 7);
+#[cfg(target_os = "windows")]
+const DEVICE: (&str, u8) = ("windows", 6);
+#[cfg(target_os = "linux")]
+const DEVICE: (&str, u8) = ("linux", 8);
 
 #[derive(Serialize, Deserialize)]
 struct DeviceFile {
@@ -33,8 +38,8 @@ pub fn load_or_create(data_dir: &Path) -> io::Result<DeviceInfo> {
     };
     Ok(DeviceInfo {
         identifier,
-        name: DEVICE_NAME.to_owned(),
-        device_type: DEVICE_TYPE_MACOS,
+        name: DEVICE.0.to_owned(),
+        device_type: DEVICE.1,
     })
 }
 
@@ -53,8 +58,13 @@ mod tests {
     fn the_id_is_created_once_and_then_reused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let first = load_or_create(dir.path()).expect("create");
-        assert_eq!(first.name, "macos");
-        assert_eq!(first.device_type, 7);
+        #[cfg(target_os = "macos")]
+        let expected = ("macos", 7);
+        #[cfg(target_os = "windows")]
+        let expected = ("windows", 6);
+        #[cfg(target_os = "linux")]
+        let expected = ("linux", 8);
+        assert_eq!((first.name.as_str(), first.device_type), expected);
         let again = load_or_create(dir.path()).expect("load");
         assert_eq!(again.identifier, first.identifier);
     }

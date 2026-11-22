@@ -219,6 +219,24 @@ fn totp_timer_runs_only_while_the_detail_shows_a_code() {
 }
 
 #[test]
+fn the_totp_timer_resumes_after_the_generator_slide_over_closes() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "Tailscale"));
+    pump();
+    assert!(h.app.totp_timer_running());
+    key(&manager, "g", CMD);
+    assert_eq!(manager.get_detail_mode(), 3);
+    elapse(Duration::from_secs(1));
+    assert!(
+        !h.app.totp_timer_running(),
+        "no code shown under the generator"
+    );
+    key(&manager, &special(Key::Escape), common::Mods::default());
+    assert_eq!(manager.get_detail_mode(), 1);
+    assert!(h.app.totp_timer_running(), "the code counts down again");
+}
+
+#[test]
 fn edit_and_save_sends_the_edited_draft() {
     let (h, manager) = open();
     manager.invoke_row_clicked(row_of(&manager, "GitHub"));
@@ -778,10 +796,16 @@ fn reprompt_items_need_the_master_password_before_secrets_are_copied() {
     assert!(manager.get_reprompt_visible());
     assert_eq!(manager.get_detail_header().name, "PayPal");
     type_into(&manager, "Reprompt master password", "wrong");
+    assert_eq!(manager.get_reprompt_password(), "wrong");
     click(&manager, "Confirm master password");
     assert_eq!(
         value_of(&manager, "Reprompt error"),
         "Wrong master password · try again"
+    );
+    assert_eq!(
+        manager.get_reprompt_password(),
+        "",
+        "a wrong password is wiped"
     );
     assert_eq!(
         h.clipboard.last().as_deref(),
@@ -1237,4 +1261,83 @@ fn the_folder_chevron_opens_its_menu_and_deletes_the_folder() {
             .calls()
             .contains(&MockCall::DeleteFolder("f-dev".to_owned()))
     );
+}
+
+#[test]
+fn a_background_change_keeps_reveals_busy_state_and_confirmations_of_the_shown_item() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    let password = field_row(&manager, "Password");
+    let secret = reveal(&h, "GitHub", CopyField::Password);
+    manager.invoke_reveal_field(i32::try_from(password).expect("small"));
+    manager.set_confirm_delete(true);
+    manager.set_attach_busy(true);
+    let id = item_id(&h, "GitHub");
+    h.vault
+        .edit_elsewhere(&id, "GitHub (synced)")
+        .expect("sync");
+    h.app.on_vault_changed();
+    pump();
+    assert_eq!(manager.get_detail_header().name, "GitHub (synced)");
+    let field = |manager: &ManagerWindow| {
+        manager
+            .get_detail_fields()
+            .row_data(field_row(manager, "Password"))
+            .expect("field")
+            .value
+            .to_string()
+    };
+    assert_eq!(field(&manager), secret, "still revealed");
+    assert!(manager.get_confirm_delete(), "the open confirmation stays");
+    assert!(manager.get_attach_busy(), "the upload is still running");
+
+    let draft = h.vault.draft(&id).expect("draft");
+    block_on(h.vault.save(
+        Some(id),
+        vk_vault::model::ItemDraft {
+            reprompt: true,
+            ..draft
+        },
+    ))
+    .expect("save");
+    h.app.on_vault_changed();
+    pump();
+    assert_eq!(
+        field(&manager),
+        "••••••••",
+        "masked again once the item asks for the master password"
+    );
+}
+
+#[test]
+fn a_vault_change_refreshes_the_sidebar_without_fetching_every_item() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    let before = h.vault.searches();
+    h.app.on_vault_changed();
+    pump();
+    assert_eq!(
+        h.vault.searches() - before,
+        1,
+        "only the shown list is searched again"
+    );
+}
+
+#[test]
+fn sidebar_counts_follow_a_change_from_another_device_while_an_edit_form_is_open() {
+    let (h, manager) = open();
+    manager.invoke_row_clicked(row_of(&manager, "GitHub"));
+    pump();
+    click(&manager, "Edit");
+    let all_before: usize = sidebar_count(&manager, "All items").parse().expect("count");
+    assert_eq!(sidebar_count(&manager, "Trash"), "1");
+    block_on(h.vault.trash(&item_id(&h, "Slack"))).expect("trash elsewhere");
+    h.app.on_vault_changed();
+    pump();
+    let all_after: usize = sidebar_count(&manager, "All items").parse().expect("count");
+    assert_eq!(all_after, all_before - 1);
+    assert_eq!(sidebar_count(&manager, "Trash"), "2");
+    assert_eq!(manager.get_detail_mode(), 2, "the edit form stays open");
 }

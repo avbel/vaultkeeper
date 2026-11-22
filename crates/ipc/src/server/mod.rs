@@ -49,6 +49,9 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Connections waiting for the accept loop; one UI runs at a time, so a second means a bug.
 const INHERITED_QUEUE: usize = 2;
+/// Connections served at once, most of them still before `Hello`; one UI runs at a time, so more
+/// than a few means a misbehaving peer. Further ones are closed on arrival.
+const MAX_CONNECTIONS: usize = 16;
 
 /// What the daemon pushes to the UI process. Events wait in the channel while no UI is
 /// connected and are delivered, at most once, to the next one. `seq` is the daemon's number for
@@ -82,7 +85,8 @@ pub struct ServeOptions {
     pub max_concurrent_calls: usize,
     /// How long a new connection may take to send `Hello`.
     pub handshake_timeout: Duration,
-    /// Where [`UiNotice`]s from the UI process go; dropped when `None` or when the channel is full.
+    /// Where [`UiNotice`]s from the UI process go; dropped when `None`, and `Activity` also when
+    /// the channel is full (the other notices wait for room).
     pub notices: Option<mpsc::Sender<UiNotice>>,
     /// Serves `EnrollTouchId` / `UnlockWithTouchId`; without it they answer
     /// [`crate::TouchIdFailure::Unavailable`].
@@ -459,6 +463,10 @@ async fn accept_loop<S: VaultService>(
             () = stopped(&mut stop) => break,
             Some(joined) = connections.join_next() => log_join("IPC connection", joined),
             accepted = incoming.next() => match accepted {
+                Ok((stream, _)) if connections.len() >= MAX_CONNECTIONS => {
+                    tracing::debug!("too many IPC connections; closing a new one");
+                    drop(stream);
+                }
                 Ok((stream, peer)) => {
                     connections.spawn(connection::handle(
                         stream,

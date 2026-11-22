@@ -1190,3 +1190,187 @@ async fn generate_unlocks_first_refuses_plain_http_and_is_rate_limited() {
     drop(incoming_tx);
     task.await.expect("serve ends");
 }
+
+type PasskeyGate = mpsc::Sender<oneshot::Sender<Result<serde_json::Value, ErrorCode>>>;
+
+/// Passkey ceremonies wait for the test's answer; `write_first` passes the last check before the
+/// vault write first, as a ceremony about to store a passkey does.
+struct GatedPasskeys {
+    gate: PasskeyGate,
+    write_first: bool,
+}
+
+impl FillFlow for GatedPasskeys {
+    fn run<P, PFut, T, TFut, A, AFut>(
+        &self,
+        _request: FillRequest,
+        _prompt: P,
+        _presence: T,
+        _authorized: A,
+    ) -> impl Future<Output = Result<Filled, ErrorCode>> + Send
+    where
+        P: FnOnce(BrowserPrompt) -> PFut + Send,
+        PFut: Future<Output = BrowserReply> + Send,
+        T: FnOnce() -> TFut + Send,
+        TFut: Future<Output = bool> + Send,
+        A: FnOnce() -> AFut + Send,
+        AFut: Future<Output = bool> + Send,
+    {
+        std::future::ready(Err(ErrorCode::Internal))
+    }
+
+    async fn passkey<P, PFut, T, TFut, A, AFut>(
+        &self,
+        _request: super::passkey::PasskeyRequest,
+        _prompt: P,
+        _presence: T,
+        authorized: A,
+    ) -> Result<serde_json::Value, ErrorCode>
+    where
+        P: FnOnce(BrowserPrompt) -> PFut + Send,
+        PFut: Future<Output = BrowserReply> + Send,
+        T: FnOnce() -> TFut + Send,
+        TFut: Future<Output = bool> + Send,
+        A: FnOnce() -> AFut + Send,
+        AFut: Future<Output = bool> + Send,
+    {
+        if self.write_first && !authorized().await {
+            return Err(ErrorCode::Fallback);
+        }
+        let (done, answer) = oneshot::channel();
+        self.gate.send(done).await.expect("gate open");
+        answer.await.unwrap_or(Err(ErrorCode::Cancelled))
+    }
+}
+
+fn passkey_frame(kind: &str, id: u64, origin: &str) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(
+        serde_json::to_vec(&serde_json::json!({
+            "type": kind, "id": id, "origin": origin, "options": {}
+        }))
+        .expect("passkey request"),
+    )
+}
+
+fn status_frame(id: u64) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(
+        serde_json::to_vec(&serde_json::json!({"type":"status","id":id})).expect("status"),
+    )
+}
+
+/// The connection's outgoing queue holds four frames, so the fifth answer blocks the loop.
+const BLOCKING_STATUS_REQUESTS: u64 = 5;
+/// Each round meets the race with one chance in three, so this many all but always do.
+const CANCEL_RACE_ROUNDS: u64 = 24;
+
+/// A passkey's answer is already queued when its cancel arrives: the page gets one answer.
+#[tokio::test]
+async fn a_passkey_cancelled_after_it_finished_is_answered_once() {
+    let (connection, incoming_tx, mut outgoing_rx) = connection();
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let (gate, mut gate_rx) = mpsc::channel(1);
+    let fills = GatedPasskeys {
+        gate,
+        write_first: false,
+    };
+    let task = tokio::spawn(serve(
+        connection,
+        pairing.0,
+        Arc::new(fills),
+        Arc::clone(&host),
+    ));
+    authenticate(&incoming_tx, &mut outgoing_rx, &pairing.1).await;
+    for round in 0..CANCEL_RACE_ROUNDS {
+        *host.limits.lock().expect("limits") =
+            super::limits::Limits::new(std::time::Instant::now());
+        let (passkey, cancel) = (100 + round, 200 + round);
+        let origin = format!("https://pk{round}.test");
+        incoming_tx
+            .send(passkey_frame("passkey_create", passkey, &origin))
+            .await
+            .expect("send");
+        let done = tokio::time::timeout(Duration::from_secs(5), gate_rx.recv())
+            .await
+            .expect("passkey started")
+            .expect("gate");
+        for status in 0..BLOCKING_STATUS_REQUESTS {
+            incoming_tx
+                .send(status_frame(1000 + round * 10 + status))
+                .await
+                .expect("send");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        done.send(Ok(serde_json::json!({"id": "credential"})))
+            .expect("answer");
+        incoming_tx
+            .send(passkey_frame("passkey_cancel", cancel, &origin))
+            .await
+            .expect("send");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut answers = 0;
+        loop {
+            let reply = next(&mut outgoing_rx).await;
+            if reply["id"] == passkey {
+                answers += 1;
+            }
+            if reply["id"] == cancel {
+                break;
+            }
+        }
+        while let Ok(Some(body)) =
+            tokio::time::timeout(Duration::from_millis(50), outgoing_rx.recv()).await
+        {
+            let reply: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            if reply["id"] == passkey {
+                answers += 1;
+            }
+        }
+        assert_eq!(answers, 1, "round {round}");
+    }
+    drop(incoming_tx);
+    task.await.expect("serve ends");
+}
+
+/// Past the last check the vault write runs to its end, so the page learns the real outcome
+/// instead of "cancelled" about a passkey that was stored.
+#[tokio::test]
+async fn a_cancel_during_the_passkey_write_gets_the_real_outcome() {
+    let (connection, incoming_tx, mut outgoing_rx) = connection();
+    let (host, _changes) = StubHost::new();
+    let pairing = store();
+    let (gate, mut gate_rx) = mpsc::channel(1);
+    let fills = GatedPasskeys {
+        gate,
+        write_first: true,
+    };
+    let task = tokio::spawn(serve(
+        connection,
+        pairing.0,
+        Arc::new(fills),
+        Arc::clone(&host),
+    ));
+    authenticate(&incoming_tx, &mut outgoing_rx, &pairing.1).await;
+    incoming_tx
+        .send(passkey_frame("passkey_create", 7, "https://pk.test"))
+        .await
+        .expect("send");
+    let done = tokio::time::timeout(Duration::from_secs(5), gate_rx.recv())
+        .await
+        .expect("writing")
+        .expect("gate");
+    incoming_tx
+        .send(passkey_frame("passkey_cancel", 8, "https://pk.test"))
+        .await
+        .expect("send");
+    let reply = next(&mut outgoing_rx).await;
+    assert_eq!(reply["id"], 8, "{reply}");
+    assert_eq!(reply["ok"], true, "{reply}");
+    done.send(Ok(serde_json::json!({"id": "stored"})))
+        .expect("answer");
+    let reply = next(&mut outgoing_rx).await;
+    assert_eq!(reply["id"], 7, "{reply}");
+    assert_eq!(reply["result"]["credential"]["id"], "stored", "{reply}");
+    drop(incoming_tx);
+    task.await.expect("serve ends");
+}

@@ -121,7 +121,21 @@ fn show_refusal(refusal: &Refusal) {
         .show();
 }
 
-#[cfg(not(windows))]
+/// A notification only; the returned error already reaches stderr. [`crate::refusal::present`]
+/// would also open a window whose "Start anyway" skips a different check, and nothing is written
+/// next to a directory that was just judged unsafe.
+#[cfg(target_os = "linux")]
+fn show_refusal(refusal: &Refusal) {
+    let text = format!(
+        "The Vaultkeeper data directory is not safe to use, so Vaultkeeper will not start.\n\n\
+         {refusal}\n\
+         Remove the link or fix the owner of the folder, or restore it from a trusted backup, \
+         then start Vaultkeeper again.\n"
+    );
+    crate::refusal::notify(&text);
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn show_refusal(_refusal: &Refusal) {}
 
 #[cfg(test)]

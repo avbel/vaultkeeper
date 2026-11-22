@@ -148,6 +148,16 @@ impl<S: VaultService> App<S> {
             app.verify_ssh_password(id, Zeroizing::new(password.to_string()), remember);
         }));
         window.on_deny(handler!(self, |app| app.finish_ssh(id, false, false)));
+        // A compositor can close the prompt itself (Sway's `kill`); the client must not wait for
+        // the timeout behind a window that is gone.
+        window.window().on_close_requested(handler!(
+            self,
+            slint::CloseRequestResponse::HideWindow,
+            |app| {
+                app.finish_ssh(id, false, false);
+                slint::CloseRequestResponse::HideWindow
+            }
+        ));
         let timeout = Timer::default();
         timeout.start(
             slint::TimerMode::SingleShot,

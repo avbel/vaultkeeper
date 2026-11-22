@@ -21,7 +21,10 @@ pub(crate) use listener::Listener;
 #[cfg(windows)]
 pub use listener::PipeNameTaken;
 pub use protocol::{SIGNamespace, SignFlags};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, OwnedSemaphorePermit, Semaphore},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -29,6 +32,10 @@ use crate::KeyStore;
 
 /// Buffer accepted connections pending dispatch to handler tasks.
 const CONNECTION_CHANNEL_CAPACITY: usize = 32;
+
+/// vk patch: connections served at once. Each holds a task, a descriptor and up to one request
+/// buffer; further clients wait in the listen backlog until one finishes.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
 /// SSH Agent protocol server.
 ///
@@ -93,6 +100,10 @@ where
         if self.is_running() {
             return Err(anyhow::anyhow!("Server is already running"));
         }
+        if let Some(stale) = self.cancellation_token.take() {
+            debug!("Releasing the tasks of a server whose listeners exited");
+            stale.cancel();
+        }
 
         let cancel_token = CancellationToken::new();
 
@@ -111,8 +122,14 @@ where
         Ok(())
     }
 
+    /// vk patch: also `false` once every listener exited on its own (the accept loop then ends),
+    /// so a dead agent is not reported as serving.
     pub(crate) fn is_running(&self) -> bool {
         self.cancellation_token.is_some()
+            && self
+                .accept_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished())
     }
 
     pub(crate) fn stop(&mut self) {
@@ -154,8 +171,12 @@ where
         // this is necessary for the recv block below to exit when listeners exit.
         drop(tx);
 
+        let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
         debug!("Accepting connections");
         loop {
+            let Some(permit) = next_slot(&slots, &cancel_token).await else {
+                break;
+            };
             tokio::select! {
                 () = cancel_token.cancelled() => {
                     debug!("Accept loop received cancellation signal");
@@ -170,7 +191,10 @@ where
                         connection,
                         cancel_token.clone(),
                     );
-                    tokio::spawn(async move { handler.handle().await });
+                    tokio::spawn(async move {
+                        handler.handle().await;
+                        drop(permit);
+                    });
                 } else {
                     debug!("All listener tasks exited");
                     break;
@@ -179,6 +203,22 @@ where
         }
 
         debug!("Accept loop exited");
+    }
+}
+
+/// vk patch: waits for a free connection slot; `None` once the server is stopping.
+async fn next_slot(
+    slots: &Arc<Semaphore>,
+    cancel_token: &CancellationToken,
+) -> Option<OwnedSemaphorePermit> {
+    tokio::select! {
+        () = cancel_token.cancelled() => {
+            debug!("Accept loop received cancellation signal");
+            None
+        }
+        permit = Arc::clone(slots).acquire_owned() => permit
+            .inspect_err(|error| warn!(%error, "Connection slots closed"))
+            .ok(),
     }
 }
 
@@ -379,6 +419,67 @@ mod tests {
         let (listener2, _tx2) = make_stub_listener();
         server.start(vec![listener2]).unwrap();
 
+        assert!(server.is_running());
+        server.stop();
+    }
+
+    // vk patch: accept failures back off, and an exhausted listener stops the server.
+
+    struct ExhaustedListener;
+
+    #[async_trait::async_trait]
+    impl Listener for ExhaustedListener {
+        type Stream = DuplexStream;
+
+        async fn accept(&mut self) -> anyhow::Result<Connection<Self::Stream>> {
+            Err(super::listener::ListenerExhausted("no instances left").into())
+        }
+    }
+
+    struct FailingListener {
+        attempts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Listener for FailingListener {
+        type Stream = DuplexStream;
+
+        async fn accept(&mut self) -> anyhow::Result<Connection<Self::Stream>> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(anyhow!("too many open files"))
+        }
+    }
+
+    #[tokio::test]
+    async fn exhausted_listener_stops_the_server() {
+        let mut server = make_server();
+        server.start(vec![ExhaustedListener]).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while server.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the server reports not running once its only listener is gone");
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn failing_accept_backs_off_and_keeps_running() {
+        let mut server = make_server();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        server
+            .start(vec![FailingListener {
+                attempts: Arc::clone(&attempts),
+            }])
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let made = attempts.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(made <= 6, "accept retried {made} times in 200 ms");
         assert!(server.is_running());
         server.stop();
     }

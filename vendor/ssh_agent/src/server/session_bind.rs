@@ -42,10 +42,7 @@ impl SessionBindState {
                 key.verify(session_id, &sig).is_ok()
             }
             KeyData::Rsa(key) => verify_rsa(key, alg, session_id, raw_sig),
-            KeyData::Ecdsa(_) => {
-                warn!("session-bind ECDSA host key not yet supported");
-                false
-            }
+            KeyData::Ecdsa(key) => verify_ecdsa(key, alg, session_id, raw_sig),
             _ => {
                 warn!("session-bind received unknown host key type");
                 false
@@ -70,6 +67,28 @@ impl SessionBindState {
         self.host_fingerprint = pub_key.fingerprint(HashAlg::Sha256).to_string();
         Some(())
     }
+}
+
+/// vk patch: `raw_sig` is the SSH `mpint r, mpint s` blob, which is what ssh-key's ECDSA
+/// [`Signature`] holds, so it is verified as is.
+fn verify_ecdsa(
+    key: &ssh_key::public::EcdsaPublicKey,
+    alg: &str,
+    session_id: &[u8],
+    sig: &[u8],
+) -> bool {
+    let algorithm = Algorithm::Ecdsa { curve: key.curve() };
+    if alg != algorithm.as_str() {
+        warn!(
+            alg,
+            "session-bind ECDSA signature algorithm does not match the host key"
+        );
+        return false;
+    }
+    let Ok(sig) = Signature::new(algorithm, sig.to_vec()) else {
+        return false;
+    };
+    key.verify(session_id, &sig).is_ok()
 }
 
 fn verify_rsa(
@@ -112,8 +131,9 @@ fn verify_rsa(
 mod tests {
     use signature::Signer as _;
     use ssh_key::{
-        private::{Ed25519Keypair, KeypairData, RsaKeypair},
+        private::{EcdsaKeypair, Ed25519Keypair, KeypairData, RsaKeypair},
         rand_core::OsRng,
+        EcdsaCurve,
     };
 
     use super::SessionBindState;
@@ -191,6 +211,66 @@ mod tests {
         write_ssh_string(&mut payload, &session_id);
         write_ssh_string(&mut payload, &sig_outer);
         payload.push(0u8);
+
+        assert!(apply(&payload).is_none());
+    }
+
+    fn make_session_bind_payload_ecdsa(
+        keypair: &EcdsaKeypair,
+        session_id: &[u8],
+        signature: &ssh_key::Signature,
+    ) -> Vec<u8> {
+        let private_key =
+            ssh_key::PrivateKey::new(KeypairData::Ecdsa(keypair.clone()), "").unwrap();
+        let hostkey_bytes = private_key.public_key().to_bytes().unwrap();
+
+        let mut sig_outer = Vec::new();
+        write_ssh_string(&mut sig_outer, signature.algorithm().to_string().as_bytes());
+        write_ssh_string(&mut sig_outer, signature.as_bytes());
+
+        let mut payload = Vec::new();
+        write_ssh_string(&mut payload, &hostkey_bytes);
+        write_ssh_string(&mut payload, session_id);
+        write_ssh_string(&mut payload, &sig_outer);
+        payload.push(1u8);
+        payload
+    }
+
+    #[test]
+    fn valid_ecdsa_signature_binds_the_host() {
+        for curve in [
+            EcdsaCurve::NistP256,
+            EcdsaCurve::NistP384,
+            EcdsaCurve::NistP521,
+        ] {
+            let keypair = EcdsaKeypair::random(&mut OsRng, curve).unwrap();
+            let session_id = [0x42u8; 32];
+            let signature: ssh_key::Signature = keypair.sign(&session_id);
+            let payload = make_session_bind_payload_ecdsa(&keypair, &session_id, &signature);
+
+            let state = apply(&payload).expect("a valid ECDSA session-bind verifies");
+
+            assert!(state.is_forwarding, "{curve:?}");
+            assert!(state.host_fingerprint.starts_with("SHA256:"), "{curve:?}");
+        }
+    }
+
+    #[test]
+    fn ecdsa_signature_by_another_key_is_rejected() {
+        let host = EcdsaKeypair::random(&mut OsRng, EcdsaCurve::NistP256).unwrap();
+        let other = EcdsaKeypair::random(&mut OsRng, EcdsaCurve::NistP256).unwrap();
+        let session_id = [0x42u8; 32];
+        let signature: ssh_key::Signature = other.sign(&session_id);
+        let payload = make_session_bind_payload_ecdsa(&host, &session_id, &signature);
+
+        assert!(apply(&payload).is_none());
+    }
+
+    #[test]
+    fn ecdsa_signature_over_another_session_is_rejected() {
+        let host = EcdsaKeypair::random(&mut OsRng, EcdsaCurve::NistP256).unwrap();
+        let signature: ssh_key::Signature = host.sign(&[0x01u8; 32]);
+        let payload = make_session_bind_payload_ecdsa(&host, &[0x42u8; 32], &signature);
 
         assert!(apply(&payload).is_none());
     }

@@ -10,7 +10,7 @@ mod hotkey_pause;
 pub mod launcher;
 pub mod lock;
 #[cfg(target_os = "linux")]
-mod relaunch;
+pub(crate) mod relaunch;
 pub mod routing;
 pub mod secrets;
 pub mod security;
@@ -67,7 +67,6 @@ impl TestOverrides {
 #[cfg(target_os = "macos")]
 const RESTART_EXIT: i32 = 75;
 /// How long an updated app waits for the old daemon to finish shutting down.
-#[cfg(unix)]
 const WAIT_FOR_PREVIOUS: Duration = Duration::from_secs(30);
 
 /// Points the login item (tray launches) and, on Linux, the launcher entry at this install.
@@ -188,6 +187,7 @@ fn sandbox(data_dir: &Path, socket_dir: &Path) -> crate::os::self_protection::Sa
     }
     // Pinned before `restrict`, so a file replaced in between is noticed: the worst case is one
     // extra restart. Each grant holds for the file it named now; a replaced one needs a restart.
+    create_write_dirs(&rules.write);
     update::upgraded::pin(&rules.exec);
     // A socket rule exists only from Landlock ABI 9; before that a recreated socket stays reachable.
     if vk_linux::probes::landlock_abi().is_ok_and(|abi| abi >= 9) {
@@ -208,6 +208,30 @@ fn sandbox(data_dir: &Path, socket_dir: &Path) -> crate::os::self_protection::Sa
         Err(error) => {
             tracing::warn!(%error, "the Landlock sandbox could not be applied");
             Sandbox::Failed(error.to_string())
+        }
+    }
+}
+
+/// Browsers read their native messaging hosts from these directories.
+#[cfg(target_os = "linux")]
+const BROWSER_HOST_DIRS: [&str; 2] = ["NativeMessagingHosts", "native-messaging-hosts"];
+
+/// Landlock drops a rule whose path does not exist yet, which would leave e.g.
+/// `~/.config/autostart` unwritable for good on a fresh account, so each writable directory is
+/// created first. A browser's host directory is created only when that browser's own directory
+/// exists: no profile directories for browsers the user does not have.
+#[cfg(target_os = "linux")]
+fn create_write_dirs(dirs: &[PathBuf]) {
+    for dir in dirs {
+        let browser_hosts = dir
+            .file_name()
+            .is_some_and(|name| BROWSER_HOST_DIRS.iter().any(|hosts| name == *hosts));
+        let skip = dir.exists() || (browser_hosts && !dir.parent().is_some_and(Path::is_dir));
+        if skip {
+            continue;
+        }
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            tracing::warn!(%error, dir = %dir.display(), "cannot create a sandbox-writable directory");
         }
     }
 }
@@ -263,15 +287,11 @@ fn acquire_instance(
 pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
     let launch_token = take_launch_token();
     let overrides = TestOverrides::from_env();
-    // Windows: step 3b - the restart hand-off waits on the old process handle.
-    #[cfg(unix)]
     if let Some(pid) = wait_for
         && !single_instance::wait_for_exit(pid, WAIT_FOR_PREVIOUS)
     {
         tracing::warn!(pid, "the previous vaultkeeper is still running");
     }
-    #[cfg(not(unix))]
-    let _ = wait_for;
     refresh_shell_entries(launch);
     let (data_dir, socket_dir) = prepare_dirs()?;
     let (forward_tx, forward_rx) = std::sync::mpsc::channel();
@@ -349,6 +369,7 @@ pub fn run(launch: Launch, wait_for: Option<i32>) -> anyhow::Result<()> {
                 error = format!("{error:#}"),
                 "the update installer did not start"
             );
+            relaunch_current();
         }
         #[cfg(target_os = "linux")]
         relaunch::start(&runtime, &bundle);
@@ -394,6 +415,23 @@ fn relaunch(bundle: &Path) {
         .spawn()
     {
         tracing::error!(%error, "cannot start the updated app");
+    }
+}
+
+/// Without the installer nothing would start the app again, so this exe restarts itself; the new
+/// process waits for this one to release the single-instance lock.
+#[cfg(windows)]
+fn relaunch_current() {
+    let args = [
+        "--tray".to_owned(),
+        "--wait-for".to_owned(),
+        std::process::id().to_string(),
+    ];
+    let started =
+        std::env::current_exe().and_then(|exe| crate::os::detached::spawn_detached(&exe, &args));
+    match started {
+        Ok(()) => tracing::info!("restarting the current version"),
+        Err(error) => tracing::error!(%error, "cannot restart the current version"),
     }
 }
 
@@ -593,4 +631,35 @@ async fn quit_on_signal() {
 #[cfg(not(any(unix, windows)))]
 async fn quit_on_signal() {
     std::future::pending::<()>().await;
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writable_dirs_exist_before_the_sandbox_but_not_for_absent_browsers() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home.path().join(".config");
+        std::fs::create_dir_all(config.join("chromium")).expect("chromium profile");
+        let autostart = config.join("autostart");
+        let chromium = config.join("chromium/NativeMessagingHosts");
+        let chrome = config.join("google-chrome/NativeMessagingHosts");
+        let firefox = home.path().join(".mozilla/native-messaging-hosts");
+
+        create_write_dirs(&[
+            autostart.clone(),
+            chromium.clone(),
+            chrome.clone(),
+            firefox.clone(),
+        ]);
+
+        assert!(autostart.is_dir());
+        assert!(
+            chromium.is_dir(),
+            "the installed browser gets its host directory"
+        );
+        assert!(!chrome.exists() && !config.join("google-chrome").exists());
+        assert!(!firefox.exists());
+    }
 }

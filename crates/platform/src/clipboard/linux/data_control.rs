@@ -1,16 +1,23 @@
 //! Link 1: `ext-data-control-v1` (or wlr-data-control) through wl-clipboard-rs.
 
-use std::{sync::mpsc, time::Duration};
+use std::time::{Duration, Instant};
 
 use wl_clipboard_rs::{copy, paste};
 use zeroize::Zeroizing;
 
 use super::ClipboardBackend;
-use crate::{Error, Result, security::Probe};
+use crate::{
+    Error, Result,
+    pipe_read::{self, Bounded},
+    security::Probe,
+};
 
 const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// A paste owner that never answers must not hold the clipboard lock for good.
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// Far above anything Vaultkeeper copies (Bitwarden caps a note at 10 000 characters, at most
+/// 40 KB of UTF-8), so a larger clipboard cannot hold our copy and is left alone.
+const READ_LIMIT: usize = 1024 * 1024;
 
 pub struct DataControl;
 
@@ -52,32 +59,20 @@ impl ClipboardBackend for DataControl {
             ) => return Ok(None),
             Err(failure) => return Err(error(&failure)),
         };
-        let bytes = read_with_timeout(reader)?;
-        let text = std::str::from_utf8(&bytes).map_err(|failure| error(&failure))?;
-        Ok(Some(Zeroizing::new(text.to_owned())))
+        match pipe_read::read_bounded(reader, READ_LIMIT, Instant::now() + READ_TIMEOUT)? {
+            Bounded::Complete(bytes) => {
+                let text = std::str::from_utf8(&bytes).map_err(|failure| error(&failure))?;
+                Ok(Some(Zeroizing::new(text.to_owned())))
+            }
+            Bounded::TooLarge => Ok(None),
+            Bounded::TimedOut => Err(Error::Clipboard(
+                "the clipboard owner did not answer".into(),
+            )),
+        }
     }
 
     fn clear(&mut self) -> Result<()> {
         copy::clear(copy::ClipboardType::Regular, copy::Seat::All)
             .map_err(|failure| error(&failure))
-    }
-}
-
-fn read_with_timeout(
-    mut reader: impl std::io::Read + Send + 'static,
-) -> Result<Zeroizing<Vec<u8>>> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("vk-clipboard-read".into())
-        .spawn(move || {
-            let mut bytes = Zeroizing::new(Vec::new());
-            let read = reader.read_to_end(&mut bytes).map(|_| bytes);
-            drop(sender.send(read));
-        })?;
-    match receiver.recv_timeout(READ_TIMEOUT) {
-        Ok(read) => read.map_err(Error::Io),
-        Err(_) => Err(Error::Clipboard(
-            "the clipboard owner did not answer".into(),
-        )),
     }
 }

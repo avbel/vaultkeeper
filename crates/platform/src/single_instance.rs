@@ -166,6 +166,16 @@ pub fn acquire_in(
     }
 }
 
+/// Whether an instance serves commands from `dir` (see [`acquire_in`]). It connects to the
+/// socket and closes without a message, which the listener ignores. The lock is not tried:
+/// holding it even for a moment could turn away an instance starting at that moment. An instance
+/// that holds the lock but has not bound its socket yet reads as not running.
+#[cfg(unix)]
+#[must_use]
+pub fn running_in(dir: &Path) -> bool {
+    unix::running(dir)
+}
+
 #[cfg(unix)]
 mod unix {
     use std::{
@@ -222,6 +232,10 @@ mod unix {
             }
             Err(TryLockError::Error(err)) => Err(err.into()),
         }
+    }
+
+    pub(super) fn running(dir: &Path) -> bool {
+        std::os::unix::net::UnixStream::connect(dir.join(SOCKET_FILE)).is_ok()
     }
 
     pub(super) fn quit_running(dir: &Path, timeout: Duration) -> Result<()> {
@@ -515,6 +529,31 @@ mod tests {
             rx.recv_timeout(DELIVERY_TIMEOUT),
             Ok((Command::ShowQuickPanel, None))
         );
+    }
+
+    #[test]
+    fn running_reports_a_serving_instance_without_disturbing_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!running_in(dir.path()));
+        let socket = dir.path().join("instance.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("stale listener"));
+        assert!(
+            !running_in(dir.path()),
+            "a socket left by a crash is not an instance"
+        );
+
+        let (rx, on_command) = recorder();
+        let guard = acquire_in(dir.path(), Command::ShowManager, None, on_command).expect("first");
+        assert!(running_in(dir.path()));
+        let refused = acquire_in(dir.path(), Command::ShowQuickPanel, None, |_, _| {});
+        assert!(matches!(refused, Err(Error::AlreadyRunning)));
+        assert_eq!(
+            rx.recv_timeout(DELIVERY_TIMEOUT),
+            Ok((Command::ShowQuickPanel, None))
+        );
+        assert!(rx.try_recv().is_err(), "the probe is not a command");
+        drop(guard);
+        assert!(!running_in(dir.path()));
     }
 
     #[test]

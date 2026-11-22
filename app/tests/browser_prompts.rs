@@ -64,6 +64,57 @@ fn pair_escape_and_timeout_dismiss() {
 }
 
 #[test]
+fn prompts_closed_by_the_compositor_are_dismissed_at_once() {
+    let close = |window: &slint::Window| {
+        window.dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        pump();
+    };
+    let h = harness(Setup::default());
+    let (pair, mut paired) = request("pair");
+    let (fill_reply, mut filled) = oneshot::channel();
+    let fill = BrowserPromptRequest {
+        prompt: BrowserPrompt::Fill {
+            browser: "Firefox".into(),
+            host: "github.com".into(),
+            insecure: false,
+            matches: vec![],
+            touch_id: false,
+            return_to: None,
+        },
+        reply: fill_reply,
+    };
+    let (save_reply, mut saved) = oneshot::channel();
+    let save = BrowserPromptRequest {
+        prompt: BrowserPrompt::Save {
+            browser: "Firefox".into(),
+            host: "github.com".into(),
+            username: "octocat".into(),
+            update_of: None,
+            choices: vec![],
+            return_to: None,
+            generated: false,
+            allow_new: false,
+        },
+        reply: save_reply,
+    };
+    h.app.request_browser_prompt(pair);
+    h.app.request_browser_prompt(fill);
+    h.app.request_browser_prompt(save);
+    close(h.app.browser_pair_prompt().expect("pair prompt").window());
+    assert_eq!(paired.try_recv(), Ok(BrowserReply::Dismissed));
+    close(h.app.browser_picker().expect("the queued picker").window());
+    assert_eq!(filled.try_recv(), Ok(BrowserReply::Dismissed));
+    close(
+        h.app
+            .browser_save_prompt()
+            .expect("the queued save prompt")
+            .window(),
+    );
+    assert_eq!(saved.try_recv(), Ok(BrowserReply::Dismissed));
+    assert!(h.app.browser_save_prompt().is_none());
+}
+
+#[test]
 fn picker_releases_only_the_selected_match() {
     let h = harness(Setup::default());
     let items = h

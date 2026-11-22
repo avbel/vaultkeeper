@@ -37,9 +37,29 @@ const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 const SLEEP_GRACE: Duration = Duration::from_millis(300);
+/// How long a shutdown waits for [`session_end_handled`]: under logind's default
+/// `InhibitDelayMaxSec` of 5 s (logind ends the delay itself after that) and under
+/// [`JOIN_TIMEOUT`].
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+/// Taken together so one descriptor delays both; the sleep-only request is the fallback.
+const INHIBIT_BOTH: &str = "sleep:shutdown";
+const INHIBIT_SLEEP: &str = "sleep";
 const LOGIND_NAME: &str = "org.freedesktop.login1";
 const LOGIND_PATH: &str = "/org/freedesktop/login1";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+/// A stored permit, so an acknowledgement that arrives before the watcher waits is not lost.
+static SESSION_END_HANDLED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// See [`super::session_end_handled`]: lets the shutdown delay end once the daemon has locked.
+pub(super) fn session_end_handled() {
+    SESSION_END_HANDLED.notify_one();
+}
+
+/// Drops a permit left over from an acknowledgement that came after an earlier wait gave up.
+async fn forget_stale_session_end() {
+    let _ = tokio::time::timeout(Duration::ZERO, SESSION_END_HANDLED.notified()).await;
+}
 
 #[derive(Default)]
 struct Stop {
@@ -148,6 +168,9 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
                 None
             }
         };
+        if signal == Some(BusSignal::PrepareForShutdown(true)) {
+            forget_stale_session_end().await;
+        }
         if let Some(event) = signal.and_then(|signal| tracker.apply(signal))
             && tx.send(event).is_err()
         {
@@ -160,7 +183,17 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
                 tokio::time::sleep(SLEEP_GRACE).await;
                 inhibitor.release();
             }
-            Some(BusSignal::PrepareForSleep(false)) => {
+            Some(BusSignal::PrepareForShutdown(true)) => {
+                if tokio::time::timeout(SHUTDOWN_GRACE, SESSION_END_HANDLED.notified())
+                    .await
+                    .is_err()
+                {
+                    warn!("the vault did not report locked before shutdown; letting it proceed");
+                }
+                inhibitor.release();
+            }
+            // A cancelled shutdown, or a wake, needs the delay back for the next one.
+            Some(BusSignal::PrepareForSleep(false) | BusSignal::PrepareForShutdown(false)) => {
                 inhibitor.wanted = true;
                 inhibitor.acquire(system.as_ref()).await;
             }
@@ -172,8 +205,9 @@ async fn run(tx: Sender<PowerEvent>, stop: &Stop, ready: &Sender<Result<(), Stri
     }
 }
 
-/// A logind delay inhibitor holds the suspend back (up to `InhibitDelayMaxSec`) until the fd is
-/// closed, so the vault can lock first. Without it the watcher still works, only racing suspend.
+/// A logind delay inhibitor holds suspend and shutdown back (up to `InhibitDelayMaxSec`) until
+/// the fd is closed, so the vault can lock first. Without it the watcher still works, only racing
+/// them.
 struct Inhibitor {
     fd: Option<OwnedFd>,
     wanted: bool,
@@ -222,7 +256,18 @@ impl Inhibitor {
     }
 }
 
+/// A policy that refuses the shutdown delay must not cost the sleep one too.
 async fn request_inhibitor(connection: &Connection) -> zbus::Result<OwnedFd> {
+    match inhibit(connection, INHIBIT_BOTH).await {
+        Ok(fd) => Ok(fd),
+        Err(error) => {
+            tracing::debug!(%error, "no shutdown inhibitor; trying sleep only");
+            inhibit(connection, INHIBIT_SLEEP).await
+        }
+    }
+}
+
+async fn inhibit(connection: &Connection, what: &str) -> zbus::Result<OwnedFd> {
     let reply = connection
         .call_method(
             Some(LOGIND_NAME),
@@ -230,9 +275,9 @@ async fn request_inhibitor(connection: &Connection) -> zbus::Result<OwnedFd> {
             Some(signal::LOGIND_MANAGER),
             "Inhibit",
             &(
-                "sleep",
+                what,
                 "Vaultkeeper",
-                "Lock the vault before sleep",
+                "Lock the vault before sleep or shutdown",
                 "delay",
             ),
         )

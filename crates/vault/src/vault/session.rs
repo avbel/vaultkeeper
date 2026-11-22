@@ -149,11 +149,14 @@ impl Inner {
     /// convenience: drop the file and fall back to a fresh two-factor prompt. One that is only
     /// unreadable for now (its wrapper is missing) is kept and skipped; the next successful
     /// two-factor login overwrites it.
-    fn read_remember_token(&self, user_id: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    async fn read_remember_token(
+        self: &Arc<Self>,
+        user_id: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>> {
         let key = remember_token_key(user_id);
-        match self.secrets.get(&key) {
+        self.blocking(move |inner| match inner.secrets.get(&key) {
             Err(error) if error.is_undecryptable() => {
-                self.secrets.delete(&key).map_err(secret_error)?;
+                inner.secrets.delete(&key).map_err(secret_error)?;
                 Ok(None)
             }
             Err(error) if error.is_unreadable() => {
@@ -161,7 +164,8 @@ impl Inner {
                 Ok(None)
             }
             other => other.map_err(secret_error),
-        }
+        })
+        .await?
     }
 
     async fn login_round(
@@ -180,7 +184,8 @@ impl Inner {
         };
         let remembered = match (&two_factor, &known_id) {
             (None, Some(id)) => self
-                .read_remember_token(id)?
+                .read_remember_token(id)
+                .await?
                 .and_then(|token| String::from_utf8(token.to_vec()).ok())
                 .map(Zeroizing::new),
             _ => None,
@@ -222,8 +227,9 @@ impl Inner {
                     && let Some(id) = &known_id
                 {
                     // The server no longer honours it; asking again would loop.
-                    self.secrets
-                        .delete(&remember_token_key(id))
+                    let key = remember_token_key(id);
+                    self.blocking(move |inner| inner.secrets.delete(&key))
+                        .await?
                         .map_err(secret_error)?;
                 }
                 let offered = providers
@@ -289,8 +295,37 @@ impl Inner {
             client,
             created: Instant::now(),
         });
-        *lock(&self.pending) = Some(Arc::clone(&pending));
+        self.remember_pending(Arc::clone(&pending), PENDING_LOGIN_TTL);
         Ok(pending)
+    }
+
+    /// `live_pending` only notices the TTL when asked, so a login abandoned at the 2FA prompt
+    /// would keep the password and master key in memory until the next login, lock or exit.
+    /// The timer holds only weak references: it must not keep either alive itself.
+    fn remember_pending(self: &Arc<Self>, pending: Arc<PendingLogin>, ttl: Duration) {
+        let deadline = pending.created + ttl;
+        let stored = Arc::downgrade(&pending);
+        *lock(&self.pending) = Some(pending);
+        let inner = Arc::downgrade(self);
+        self.config.runtime.spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            let expired = {
+                let mut current = lock(&inner.pending);
+                // The weak reference keeps the allocation, so a newer login can't share its address.
+                if current
+                    .as_ref()
+                    .is_some_and(|login| std::ptr::eq(Arc::as_ptr(login), stored.as_ptr()))
+                {
+                    current.take()
+                } else {
+                    None
+                }
+            };
+            drop(expired);
+        });
     }
 
     /// A hostile or compromised server could lower the KDF to make the hash it receives cheap to
@@ -357,7 +392,7 @@ impl Inner {
         let (keys, data) = self
             .save_new_account(record.clone(), user_key, sync)
             .await?;
-        self.store_login_secrets(&id, &tokens)?;
+        self.store_login_secrets(&id, &tokens).await?;
         let token = AccessToken {
             value: tokens.access,
             expires_at: token_expiry(tokens.expires_in),
@@ -400,19 +435,27 @@ impl Inner {
             .map_err(Error::task)?
     }
 
-    fn store_login_secrets(&self, id: &str, tokens: &LoginTokens) -> Result<()> {
-        if let Some(refresh) = &tokens.refresh {
-            let _secrets = lock(&self.refresh_secret);
-            self.secrets
-                .set(&refresh_token_key(id), refresh.as_bytes())
-                .map_err(secret_error)?;
-        }
-        if let Some(remember) = &tokens.remember {
-            self.secrets
-                .set(&remember_token_key(id), remember.as_bytes())
-                .map_err(secret_error)?;
-        }
-        Ok(())
+    async fn store_login_secrets(self: &Arc<Self>, id: &str, tokens: &LoginTokens) -> Result<()> {
+        let id = id.to_owned();
+        let refresh = tokens.refresh.clone();
+        let remember = tokens.remember.clone();
+        self.blocking(move |inner| -> Result<()> {
+            if let Some(refresh) = &refresh {
+                let _secrets = lock(&inner.refresh_secret);
+                inner
+                    .secrets
+                    .set(&refresh_token_key(&id), refresh.as_bytes())
+                    .map_err(secret_error)?;
+            }
+            if let Some(remember) = &remember {
+                inner
+                    .secrets
+                    .set(&remember_token_key(&id), remember.as_bytes())
+                    .map_err(secret_error)?;
+            }
+            Ok(())
+        })
+        .await?
     }
 
     /// Makes the freshly logged-in account the active, unlocked one; the previous account (if
@@ -708,36 +751,4 @@ fn login_error(error: vk_api::Error) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hostile_expires_in_is_clamped_instead_of_overflowing() {
-        let now = Instant::now();
-        for expires_in in [u64::MAX, u64::MAX / 2, 1 << 40] {
-            let at = token_expiry(expires_in);
-            assert!(at <= now + MAX_TOKEN_LIFETIME + Duration::from_secs(1));
-            assert!(at > now);
-        }
-        let short = token_expiry(60);
-        assert!(short < now + Duration::from_secs(61));
-    }
-
-    #[test]
-    fn wrong_password_message_maps_to_invalid_password() {
-        let wrong = vk_api::Error::Server {
-            status: 400,
-            message: "Username or password is incorrect. Try again".into(),
-        };
-        assert!(matches!(login_error(wrong), Error::InvalidPassword));
-        let other = vk_api::Error::Server {
-            status: 400,
-            message: "Invalid TOTP code!".into(),
-        };
-        assert!(matches!(login_error(other), Error::Api(_)));
-        assert!(matches!(
-            login_error(vk_api::Error::Unauthorized),
-            Error::Api(vk_api::Error::Unauthorized)
-        ));
-    }
-}
+mod tests;

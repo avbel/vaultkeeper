@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use tracing::error;
+use zeroize::Zeroize;
 
 use crate::{
     secure_key::{DecryptionError, EncryptedMemory, SecureMemoryEncryptionKey},
@@ -51,8 +52,13 @@ where
         let keys: Vec<_> = self.map.keys().cloned().collect();
 
         for key in &keys {
-            let bytes = self.get(key)?.expect("All keys to still be in map.");
-            result.push(bytes);
+            match self.get(key) {
+                Ok(bytes) => result.push(bytes.expect("All keys to still be in map.")),
+                Err(error) => {
+                    result.iter_mut().for_each(Zeroize::zeroize);
+                    return Err(error);
+                }
+            }
         }
         Ok(result)
     }

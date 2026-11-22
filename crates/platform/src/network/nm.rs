@@ -7,11 +7,13 @@ pub(super) const NM_NAME: &str = "org.freedesktop.NetworkManager";
 pub(super) const NM_PATH: &str = "/org/freedesktop/NetworkManager";
 pub(super) const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
-/// The `NMState` values. Connecting and unknown states carry no signal: the final state follows.
+/// The `NMState` values: 10 asleep, 20 disconnected, 30 disconnecting, 50 local only and 60 site
+/// only (no internet, such as a captive portal) are unusable; only 70 (global) is usable.
+/// Connecting (40) and unknown (0) carry no signal: the final state follows.
 pub(super) const fn event_for_state(state: u32) -> Option<NetworkEvent> {
     match state {
-        10..=30 => Some(NetworkEvent::Unusable),
-        70 | 80 | 90 => Some(NetworkEvent::Usable),
+        10 | 20 | 30 | 50 | 60 => Some(NetworkEvent::Unusable),
+        70 => Some(NetworkEvent::Usable),
         _ => None,
     }
 }
@@ -32,21 +34,15 @@ mod tests {
 
     #[test]
     fn nm_states_map_to_events() {
-        for state in [10, 20, 30] {
+        for state in [10, 20, 30, 50, 60] {
             assert_eq!(
                 event_for_state(state),
                 Some(NetworkEvent::Unusable),
                 "{state}"
             );
         }
-        for state in [70, 80, 90] {
-            assert_eq!(
-                event_for_state(state),
-                Some(NetworkEvent::Usable),
-                "{state}"
-            );
-        }
-        for state in [0, 40, 50, 60, 100] {
+        assert_eq!(event_for_state(70), Some(NetworkEvent::Usable));
+        for state in [0, 40, 80, 90, 100] {
             assert_eq!(event_for_state(state), None, "{state}");
         }
     }

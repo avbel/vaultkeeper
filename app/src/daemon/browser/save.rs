@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context as _;
 use subtle::ConstantTimeEq as _;
 use tokio::sync::Mutex;
 use vk_ipc::{BrowserPrompt, BrowserReply, TypingTarget, dto::ItemSummaryDto};
@@ -106,23 +107,18 @@ pub trait NeverSaveStore: Send + Sync {
     fn add(&self, domain: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-impl NeverSaveStore for Mutex<PairingStore> {
+impl NeverSaveStore for Arc<Mutex<PairingStore>> {
     async fn contains(&self, domain: &str) -> anyhow::Result<bool> {
         self.lock().await.is_never_save(domain)
     }
 
+    /// The write locks, rewrites and syncs the file, so it runs off the runtime threads.
     async fn add(&self, domain: &str) -> anyhow::Result<()> {
-        self.lock().await.never_save(domain)
-    }
-}
-
-impl<T: NeverSaveStore> NeverSaveStore for Arc<T> {
-    fn contains(&self, domain: &str) -> impl Future<Output = anyhow::Result<bool>> + Send {
-        (**self).contains(domain)
-    }
-
-    fn add(&self, domain: &str) -> impl Future<Output = anyhow::Result<()>> + Send {
-        (**self).add(domain)
+        let mut store = Arc::clone(self).lock_owned().await;
+        let domain = domain.to_owned();
+        tokio::task::spawn_blocking(move || store.never_save(&domain))
+            .await
+            .context("never-save write task failed")?
     }
 }
 

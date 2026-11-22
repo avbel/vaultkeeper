@@ -20,8 +20,8 @@ use vk_ipc::{
 use vk_vault::{
     Error, TotpCode, TwoFactorProvider, VaultService,
     model::{
-        CopyField, Filter, ItemData, ItemId, LoginRequest, LoginStep, SendKind, SessionState,
-        TwoFactorAnswer,
+        CopyField, Filter, ItemData, ItemId, ItemKind, LoginRequest, LoginStep, SendKind,
+        SessionState, TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -447,6 +447,57 @@ async fn changes_watch_starts_at_the_daemon_revision_and_follows_it() {
     changes.changed().await.expect("changed");
     assert_eq!(*changes.borrow_and_update(), 3);
     assert_eq!(vault.state(), unlocked(), "cache refreshed before the bump");
+}
+
+/// The fake's first three items: item 0 is a favourite card in folder f1, items 1 and 2 are
+/// logins without a folder; the fake always has one Send.
+fn three_items() -> Arc<FakeVault> {
+    FakeVault::new(unlocked(), 3)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counts_come_from_the_snapshot() {
+    let daemon = Daemon::start(three_items()).await;
+    let (vault, _events) = daemon.connect().await;
+    let counts = vault.counts().expect("counts");
+    assert_eq!(counts.all, 3);
+    assert_eq!(counts.favorites, 1);
+    assert_eq!(counts.kinds.get(&ItemKind::Card), Some(&1));
+    assert_eq!(counts.kinds.get(&ItemKind::Login), Some(&2));
+    assert_eq!(counts.no_folder, 2);
+    assert_eq!(counts.folders.get("f1"), Some(&1));
+    assert_eq!(counts.trash, 0);
+    assert_eq!(counts.sends, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counts_are_already_new_when_a_change_is_announced() {
+    let fake = three_items();
+    let daemon = Daemon::start(Arc::clone(&fake)).await;
+    let (vault, _events) = daemon.connect().await;
+    let mut changes = vault.changes();
+    changes.borrow_and_update();
+    fake.trash_elsewhere(&id("item-001"));
+    changes.changed().await.expect("changed");
+    let counts = vault.counts().expect("counts");
+    assert_eq!((counts.all, counts.trash, counts.no_folder), (2, 1, 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counts_are_new_when_a_write_reply_arrives() {
+    let daemon = Daemon::start(three_items()).await;
+    let (vault, _events) = daemon.connect().await;
+    vault.trash(&id("item-000")).await.expect("trash");
+    let counts = vault.counts().expect("counts");
+    assert_eq!((counts.all, counts.trash, counts.favorites), (2, 1, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counts_are_refused_once_locked() {
+    let daemon = Daemon::start(three_items()).await;
+    let (vault, _events) = daemon.connect().await;
+    vault.lock();
+    assert!(matches!(vault.counts(), Err(Error::Locked)));
 }
 
 /// `RemoteVault` answers these from its cache; check the daemon still serves each `Call`.

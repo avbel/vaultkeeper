@@ -6,6 +6,7 @@
 
 mod browser_glue;
 mod cli_access;
+mod ssh_watch;
 
 use std::{
     path::{Path, PathBuf},
@@ -447,6 +448,8 @@ impl Daemon {
             )),
             self.runtime
                 .spawn(approvals_loop(Arc::clone(self), approvals)),
+            self.runtime
+                .spawn(ssh_watch::ssh_watch_loop(Arc::clone(self))),
             self.runtime.spawn(lock_timer(Arc::clone(self))),
         ];
         guard(&self.tasks).extend(tasks);
@@ -543,22 +546,16 @@ impl Daemon {
         self.upgraded.subscribe()
     }
 
+    /// The flags are stored before the watch is woken, since the tray redraws on that change; a
+    /// changed flag wakes it even when the install path is the same.
     #[cfg(any(target_os = "linux", all(test, unix)))]
-    pub(crate) fn mark_upgraded(&self, install: PathBuf) {
-        self.upgraded
-            .send_if_modified(|current| update::upgraded::record(current, install));
-    }
-
-    /// Set before [`Daemon::mark_upgraded`], whose change is what the tray redraws on.
-    #[cfg(any(target_os = "linux", all(test, unix)))]
-    pub(crate) fn set_manual_restart(&self, manual: bool) {
-        self.manual_restart.store(manual, Ordering::SeqCst);
-    }
-
-    /// Set before [`Daemon::mark_upgraded`], like [`Daemon::set_manual_restart`].
-    #[cfg(any(target_os = "linux", all(test, unix)))]
-    pub(crate) fn set_restart_reconnects(&self, reconnects: bool) {
-        self.restart_reconnects.store(reconnects, Ordering::SeqCst);
+    pub(crate) fn mark_upgraded(&self, install: PathBuf, manual: bool, reconnects: bool) {
+        let manual_changed = self.manual_restart.swap(manual, Ordering::SeqCst) != manual;
+        let reconnects_changed =
+            self.restart_reconnects.swap(reconnects, Ordering::SeqCst) != reconnects;
+        self.upgraded.send_if_modified(|current| {
+            update::upgraded::record(current, install) || manual_changed || reconnects_changed
+        });
     }
 
     #[must_use]

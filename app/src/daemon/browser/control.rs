@@ -15,6 +15,8 @@ use vk_ipc::{
 
 use super::pairing::PairingStore;
 
+const MAX_SESSIONS: usize = 4;
+
 pub struct BrowserControl {
     _server: BrowserServerHandle,
     connections: mpsc::Receiver<BrowserConnection>,
@@ -36,7 +38,7 @@ impl BrowserControl {
             BrowserServeOptions {
                 verifier: Arc::new(verifier),
                 require_verified_parent: !dev_browser_enabled(),
-                max_connections: 4,
+                max_connections: MAX_SESSIONS,
             },
             sender,
         )
@@ -63,18 +65,32 @@ impl BrowserControl {
         let mut sessions = JoinSet::new();
         loop {
             tokio::select! {
-                connection = self.connections.recv() => match connection {
-                    Some(connection) if sessions.len() < 4 => { sessions.spawn(handler(connection, Arc::clone(&self.store))); }
-                    Some(_) => tracing::warn!("browser session capacity reached"),
-                    None => break,
-                },
-                Some(result) = sessions.join_next() => {
-                    if let Err(error) = result && error.is_panic() {
-                        tracing::error!(%error, "browser session panicked");
+                connection = self.connections.recv() => {
+                    let Some(connection) = connection else {
+                        break;
+                    };
+                    // The listener frees its slot when the socket closes, which can be before
+                    // this loop has reaped the session; a reconnect must not count it.
+                    while let Some(result) = sessions.try_join_next() {
+                        report_session_end(result);
+                    }
+                    if sessions.len() < MAX_SESSIONS {
+                        sessions.spawn(handler(connection, Arc::clone(&self.store)));
+                    } else {
+                        tracing::warn!("browser session capacity reached");
                     }
                 }
+                Some(result) = sessions.join_next() => report_session_end(result),
             }
         }
+    }
+}
+
+fn report_session_end(result: Result<(), tokio::task::JoinError>) {
+    if let Err(error) = result
+        && error.is_panic()
+    {
+        tracing::error!(%error, "browser session panicked");
     }
 }
 

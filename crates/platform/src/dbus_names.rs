@@ -4,7 +4,7 @@
 //! daemon that starts before the portal (a fresh login) must see it appear on the next Re-check. A
 //! missing bus is `Unavailable` with the reason, never a panic. vk-linux has no D-Bus client, so this lives here.
 
-use std::{sync::mpsc, thread, time::Duration};
+use std::{thread, time::Duration};
 
 use zbus::{Connection, connection::Builder};
 
@@ -18,7 +18,8 @@ pub const SCREENSAVER_KDE: &str = "org.freedesktop.ScreenSaver";
 pub const SCREENSAVER_GNOME: &str = "org.gnome.ScreenSaver";
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-/// The whole run, covering a connection handshake that `method_timeout` does not bound.
+/// The whole run, covering a connection handshake that `method_timeout` does not bound. Enforced
+/// inside the async run, so on expiry the connections are dropped and the thread ends.
 const OVERALL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,18 +34,22 @@ pub struct DesktopNames {
 
 #[must_use]
 pub fn desktop_names() -> DesktopNames {
-    let (tx, rx) = mpsc::channel();
+    // Its own thread: `zbus::block_on` must not run on a thread already inside a tokio runtime.
     let spawned = thread::Builder::new()
         .name("dbus-name-probes".to_owned())
-        .spawn(move || {
-            let _ = tx.send(zbus::block_on(ask()));
-        });
+        .spawn(|| zbus::block_on(ask_within(OVERALL)));
     match spawned {
-        Ok(_) => rx
-            .recv_timeout(OVERALL)
-            .unwrap_or_else(|_| all_unavailable("the D-Bus name probes timed out")),
+        Ok(probes) => probes
+            .join()
+            .unwrap_or_else(|_| all_unavailable("the D-Bus name probes panicked")),
         Err(error) => all_unavailable(&format!("cannot start the D-Bus name probes: {error}")),
     }
+}
+
+async fn ask_within(budget: Duration) -> DesktopNames {
+    tokio::time::timeout(budget, ask())
+        .await
+        .unwrap_or_else(|_| all_unavailable("the D-Bus name probes timed out"))
 }
 
 fn all_unavailable(why: &str) -> DesktopNames {

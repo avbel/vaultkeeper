@@ -1,8 +1,11 @@
 //! SSH agent client connection and connection handler
 
-use std::sync::Arc;
+use std::{future::Future, pin::pin, sync::Arc, time::Duration};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    time::timeout,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -21,6 +24,16 @@ use crate::crypto::{PublicKey, SignablePrivateKey};
 // Guards against oversized allocations from untrusted length prefixes on the socket.
 const MAX_MESSAGE_LEN: usize = 256 * 1024;
 const SESSION_BIND_EXTENSION: &[u8] = b"session-bind@openssh.com";
+
+/// vk patch: how long a connection may sit between requests. Long-lived clients keep an agent
+/// connection open across a whole session, so this only reclaims ones that are truly abandoned.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// vk patch: once the first byte of a request arrived, the rest must follow within this time.
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// vk patch: the public key algorithm whose sign requests need explicit SHA-2 flags.
+const RSA_KEY_ALG: &str = "ssh-rsa";
 
 /// An accepted connection from an SSH agent client, bundling the I/O stream
 /// with information about the connecting peer.
@@ -64,37 +77,23 @@ where
     ///
     /// Reads length-prefixed SSH agent protocol frames in a loop, dispatches each
     /// message to the appropriate handler, and writes the framed response back.
-    /// Exits on cancellation, EOF, or unrecoverable I/O error.
-    pub async fn handle(mut self) {
-        debug!(peer_info = ?self.connection.peer_info, "handler starting");
+    /// Exits on cancellation, EOF, a read deadline, or unrecoverable I/O error.
+    pub async fn handle(self) {
+        let Self {
+            keystore,
+            auth_policy,
+            connection,
+            token,
+        } = self;
+        let peer_info = connection.peer_info;
+        debug!(?peer_info, "handler starting");
 
+        // vk patch: buffered so a pending request can watch for the client closing without
+        // consuming the bytes of a pipelined next request.
+        let mut stream = BufReader::new(connection.stream);
         let mut session_bind_state = SessionBindState::default();
 
-        loop {
-            let mut len_buf = [0u8; 4];
-
-            // Read the 4-byte length prefix, yielding to cancellation.
-            debug!("handler reading length");
-            if read_or_cancel(&mut self.connection.stream, &mut len_buf, &self.token).await {
-                break;
-            }
-
-            let msg_len = u32::from_be_bytes(len_buf) as usize;
-            if msg_len > MAX_MESSAGE_LEN {
-                warn!(
-                    msg_len,
-                    "Message length exceeds maximum, closing connection"
-                );
-                break;
-            }
-            let mut msg = vec![0u8; msg_len];
-
-            // Read the message body, yielding to cancellation.
-            debug!("handler reading message");
-            if read_or_cancel(&mut self.connection.stream, &mut msg, &self.token).await {
-                break;
-            }
-
+        while let Some(msg) = read_frame(&mut stream, &token).await {
             if msg.is_empty() {
                 debug!("handler skipping empty message");
                 continue;
@@ -104,17 +103,20 @@ where
             let response = if msg.first() == Some(&EXTENSION) {
                 handle_extension_message(&msg[1..], &mut session_bind_state)
             } else {
-                handle_message(
+                let pending = handle_message(
                     &msg,
-                    self.connection.peer_info.as_ref(),
+                    peer_info.as_ref(),
                     &session_bind_state,
-                    &self.keystore,
-                    &self.auth_policy,
-                )
-                .await
+                    &keystore,
+                    &auth_policy,
+                );
+                let Some(response) = respond_unless_gone(pending, &mut stream, &token).await else {
+                    break;
+                };
+                response
             };
 
-            if let Err(error) = self.connection.stream.write_all(&frame(response)).await {
+            if let Err(error) = stream.write_all(&frame(response)).await {
                 error!(%error, "Failed to write response, closing connection");
                 break;
             }
@@ -124,29 +126,123 @@ where
     }
 }
 
-// Reads exactly `buf.len()` bytes from `stream`.
-// Returns `true` if the caller should break (cancelled or I/O error).
-async fn read_or_cancel<S: AsyncRead + Unpin>(
-    stream: &mut S,
-    buf: &mut [u8],
+/// vk patch: reads one length-prefixed request. Returns `None` when the caller should close the
+/// connection: cancelled, closed, an I/O error, an oversized length, or a missed deadline.
+async fn read_frame<S: AsyncRead + Unpin>(
+    stream: &mut BufReader<S>,
     token: &CancellationToken,
-) -> bool {
+) -> Option<Vec<u8>> {
+    debug!("handler waiting for a request");
+    let started = tokio::select! {
+        () = token.cancelled() => {
+            debug!("handler received cancellation signal");
+            return None;
+        }
+        result = timeout(IDLE_TIMEOUT, stream.fill_buf()) => match result {
+            Ok(Ok(buffered)) => !buffered.is_empty(),
+            Ok(Err(error)) => {
+                error!(%error, "I/O error on connection");
+                false
+            }
+            Err(_) => {
+                info!("Closing an idle connection");
+                false
+            }
+        },
+    };
+    if !started {
+        trace!("Connection closed");
+        return None;
+    }
+
     tokio::select! {
         () = token.cancelled() => {
             debug!("handler received cancellation signal");
+            None
+        }
+        result = timeout(MESSAGE_TIMEOUT, read_message(stream)) => result.unwrap_or_else(|_| {
+            warn!("Client stalled in the middle of a request, closing connection");
+            None
+        }),
+    }
+}
+
+async fn read_message<S: AsyncRead + Unpin>(stream: &mut BufReader<S>) -> Option<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    debug!("handler reading length");
+    read_exact_or_log(stream, &mut len_buf).await?;
+
+    let msg_len = u32::from_be_bytes(len_buf) as usize;
+    if msg_len > MAX_MESSAGE_LEN {
+        warn!(
+            msg_len,
+            "Message length exceeds maximum, closing connection"
+        );
+        return None;
+    }
+    let mut msg = vec![0u8; msg_len];
+
+    debug!("handler reading message");
+    read_exact_or_log(stream, &mut msg).await?;
+    Some(msg)
+}
+
+async fn read_exact_or_log<S: AsyncRead + Unpin>(
+    stream: &mut BufReader<S>,
+    buf: &mut [u8],
+) -> Option<()> {
+    match stream.read_exact(buf).await {
+        Ok(_) => Some(()),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            trace!("Connection closed");
+            None
+        }
+        Err(error) => {
+            error!(%error, "I/O error on connection");
+            None
+        }
+    }
+}
+
+/// vk patch: waits for a response that may block on the user's approval, giving up when the
+/// server stops or the client goes away so no prompt outlives its client. Data arriving instead
+/// of EOF is a pipelined request; it stays buffered for the next read and the watch ends.
+async fn respond_unless_gone<S, F>(
+    response: F,
+    stream: &mut BufReader<S>,
+    token: &CancellationToken,
+) -> Option<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+    F: Future<Output = Vec<u8>>,
+{
+    let mut response = pin!(response);
+    let mut watching = true;
+    loop {
+        tokio::select! {
+            response = &mut response => return Some(response),
+            () = token.cancelled() => {
+                debug!("handler received cancellation signal while a request was pending");
+                return None;
+            }
+            closed = client_closed(stream), if watching => {
+                if closed {
+                    info!("Client went away while its request was pending, dropping it");
+                    return None;
+                }
+                watching = false;
+            }
+        }
+    }
+}
+
+async fn client_closed<S: AsyncRead + Unpin>(stream: &mut BufReader<S>) -> bool {
+    match stream.fill_buf().await {
+        Ok(buffered) => buffered.is_empty(),
+        Err(error) => {
+            debug!(%error, "I/O error while a request was pending");
             true
         }
-        result = stream.read_exact(buf) => match result {
-            Ok(_) => false,
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                trace!("Connection closed");
-                true
-            }
-            Err(error) => {
-                error!(%error, "I/O error on connection");
-                true
-            }
-        },
     }
 }
 
@@ -250,6 +346,11 @@ async fn handle_sign_request<K: KeyStore, A: AuthPolicy>(
     auth_policy: &Arc<A>,
 ) -> Vec<u8> {
     debug!("handling sign request");
+
+    if public_key.alg() == RSA_KEY_ALG && flags.is_none() {
+        warn!("Refusing an RSA sign request without SHA-2 flags; SHA-1 is not permitted");
+        return failure();
+    }
 
     let sign_request = SignRequest {
         public_key: public_key.clone(),
@@ -578,25 +679,15 @@ mod tests {
 
     #[tokio::test]
     async fn sign_request_rsa_without_flags_returns_failure() {
-        use ssh_key::{private::RsaKeypair, rand_core::OsRng};
-
-        const MIN_RSA_BITS: usize = 2048;
-        let keypair = RsaKeypair::random(&mut OsRng, MIN_RSA_BITS).unwrap();
+        // vk patch: the request is refused before the user is asked, so neither the policy nor
+        // the keystore is reached.
         let blob = make_minimal_rsa_blob();
-        let expected_public_key = PublicKey {
-            alg: "ssh-rsa".to_string(),
-            blob: blob.clone(),
-        };
-
-        let private_key = PrivateKey::Rsa(keypair);
         let mut keystore = MockKeyStore::new();
-        keystore
-            .expect_get_private_key()
-            .with(eq(expected_public_key))
-            .once()
-            .return_once(move |_| Ok(Some(private_key)));
+        keystore.expect_get_private_key().never();
 
-        let auth_policy = Arc::new(AlwaysAllowPolicy);
+        let auth_policy = Arc::new(CapturingAuthPolicy {
+            captured: std::sync::Mutex::new(None),
+        });
         let msg = make_sign_request_msg(&blob, b"test data", 0); // no flags → would imply SHA-1
 
         let response = super::handle_message(
@@ -609,6 +700,10 @@ mod tests {
         .await;
 
         assert_eq!(response, vec![FAILURE]);
+        assert!(
+            auth_policy.captured.lock().unwrap().is_none(),
+            "a SHA-1 RSA request must not reach the approval prompt"
+        );
     }
 
     #[tokio::test]
@@ -887,5 +982,122 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), handler.handle())
             .await
             .expect("handler should exit, denying oversized message length");
+    }
+
+    // vk patch: tests for the read deadlines and the pending-request close watch.
+
+    struct PendingForeverPolicy;
+
+    #[async_trait::async_trait]
+    impl AuthPolicy for PendingForeverPolicy {
+        async fn authorize(&self, _: &AuthRequest) -> Result<bool, AuthError> {
+            std::future::pending().await
+        }
+    }
+
+    struct SlowAllowPolicy;
+
+    #[async_trait::async_trait]
+    impl AuthPolicy for SlowAllowPolicy {
+        async fn authorize(&self, _: &AuthRequest) -> Result<bool, AuthError> {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(true)
+        }
+    }
+
+    fn handler_over<A: AuthPolicy>(
+        keystore: MockKeyStore,
+        auth_policy: A,
+        server: tokio::io::DuplexStream,
+    ) -> super::ConnectionHandler<MockKeyStore, A, tokio::io::DuplexStream> {
+        super::ConnectionHandler::new(
+            Arc::new(keystore),
+            Arc::new(auth_policy),
+            super::Connection {
+                stream: server,
+                peer_info: None,
+            },
+            tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_connection_is_closed_after_the_idle_timeout() {
+        let (_client, server) = tokio::io::duplex(1024);
+        let handler = handler_over(MockKeyStore::new(), AlwaysAllowPolicy, server);
+
+        tokio::time::timeout(
+            super::IDLE_TIMEOUT + std::time::Duration::from_secs(1),
+            handler.handle(),
+        )
+        .await
+        .expect("an idle connection is closed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_request_is_closed_after_the_message_timeout() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut client, server) = tokio::io::duplex(1024);
+        let handler = handler_over(MockKeyStore::new(), AlwaysAllowPolicy, server);
+        client.write_all(&[0, 0]).await.unwrap();
+
+        tokio::time::timeout(
+            super::MESSAGE_TIMEOUT + std::time::Duration::from_secs(1),
+            handler.handle(),
+        )
+        .await
+        .expect("a half-sent request is dropped long before the idle timeout");
+    }
+
+    #[tokio::test]
+    async fn client_closing_while_approval_is_pending_drops_the_request() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut client, server) = tokio::io::duplex(1024);
+        let handler = handler_over(MockKeyStore::new(), PendingForeverPolicy, server);
+        let msg = make_sign_request_msg(&make_minimal_ed25519_blob(), b"data", 0);
+        client.write_all(&framed(&msg)).await.unwrap();
+        drop(client);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), handler.handle())
+            .await
+            .expect("the handler stops waiting for approval once the client is gone");
+    }
+
+    #[tokio::test]
+    async fn pipelined_request_is_not_mistaken_for_a_close() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut keystore = MockKeyStore::new();
+        keystore
+            .expect_get_all_public_keys_and_names()
+            .times(2)
+            .returning(|| Ok(vec![]));
+        let (mut client, server) = tokio::io::duplex(1024);
+        let handler = handler_over(keystore, SlowAllowPolicy, server);
+        let task = tokio::spawn(handler.handle());
+
+        let two_requests = [framed(&[REQUEST_IDENTITIES]), framed(&[REQUEST_IDENTITIES])].concat();
+        client.write_all(&two_requests).await.unwrap();
+        let mut answers = [0u8; 18];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.read_exact(&mut answers),
+        )
+        .await
+        .expect("both requests are answered")
+        .unwrap();
+        drop(client);
+
+        assert_eq!(answers[4], IDENTITIES_ANSWER);
+        assert_eq!(answers[13], IDENTITIES_ANSWER);
+        task.await.unwrap();
     }
 }

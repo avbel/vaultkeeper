@@ -76,6 +76,26 @@ fn deny_and_escape_reply_false() {
 }
 
 #[test]
+fn a_prompt_closed_by_the_compositor_denies_and_shows_the_next_request() {
+    let h = harness(Setup::default());
+    let (first, rx1) = request("SHA256:k1");
+    let (second, rx2) = request("SHA256:k2");
+    h.app.request_ssh_approval(first);
+    h.app.request_ssh_approval(second);
+    h.app
+        .ssh_prompt()
+        .expect("first")
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+    pump();
+    assert_eq!(answer(rx1), Some(false), "denied at once, not after 30 s");
+    let next = h.app.ssh_prompt().expect("the queued request is shown");
+    assert_eq!(next.get_fingerprint(), "SHA256:k2");
+    click(&next, "Deny");
+    assert_eq!(answer(rx2), Some(false));
+}
+
+#[test]
 fn unanswered_requests_are_denied_after_30_seconds() {
     let h = harness(Setup::default());
     let (req, mut rx) = request("SHA256:ddd");

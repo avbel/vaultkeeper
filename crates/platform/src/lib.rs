@@ -19,6 +19,7 @@ pub mod network;
 pub mod paths;
 #[cfg(unix)]
 pub mod pins;
+mod pipe_read;
 pub mod power;
 pub mod sandbox;
 pub mod security;

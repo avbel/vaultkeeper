@@ -192,9 +192,8 @@ fn changed_event(message: &Message) -> Option<NetworkEvent> {
     if interface != NM_NAME {
         return None;
     }
-    if let Some(Variant::U32(state)) = changed.get("State").map(|value| &**value) {
-        return nm::event_for_state(*state);
-    }
+    // `State` is skipped: `StateChanged` already reports every change, and reading it here too
+    // delivered each one twice.
     match &**changed.get("PrimaryConnection")? {
         Variant::ObjectPath(path) => Some(nm::event_for_primary(path.as_str())),
         _ => None,

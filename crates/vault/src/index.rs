@@ -19,7 +19,10 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::{
     Result,
     keys::{KeyRing, decrypt_text},
-    model::{CollectionView, Filter, FolderView, ItemId, ItemKind, ItemSummary, OrganizationView},
+    model::{
+        CollectionView, Filter, FolderView, ItemCounts, ItemId, ItemKind, ItemSummary,
+        OrganizationView,
+    },
     sends::SendList,
     store::CACHE_FORMAT,
 };
@@ -546,6 +549,13 @@ impl VaultData {
         out.into()
     }
 
+    pub(crate) fn counts(&self) -> ItemCounts {
+        ItemCounts::tally(
+            self.entries.iter().map(|entry| &entry.summary),
+            self.sends.len(),
+        )
+    }
+
     /// Changes whenever the set of live SSH keys (or one of them) changes.
     pub(crate) fn ssh_digest(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -1049,6 +1059,50 @@ mod tests {
         let a = data.entry("a").unwrap().summary.folder_id.clone().unwrap();
         let b = data.entry("b").unwrap().summary.folder_id.clone().unwrap();
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn counts_split_live_items_trash_and_sends() {
+        let keys = ring();
+        let mut in_folder = login("l1", "GitHub", "octocat", "pw", &keys);
+        in_folder.folder_id = Some("f1".into());
+        in_folder.favorite = true;
+        let mut trashed_favorite = card("c1", "Old card", &keys);
+        trashed_favorite.favorite = true;
+        trashed_favorite.deleted_date = Some("2026-11-01T00:00:00.000Z".into());
+        let mut trashed = note("n2", "Old note", &keys);
+        trashed.deleted_date = Some("2026-11-01T00:00:00.000Z".into());
+        let mut sync = testutil::sync(
+            vec![
+                in_folder,
+                note("n1", "Loose note", &keys),
+                trashed_favorite,
+                trashed,
+            ],
+            vec![folder("f1", "Personal", &keys)],
+        );
+        sync.sends = vec![
+            vk_api::models::SendItem {
+                id: "send-1".into(),
+                ..vk_api::models::SendItem::default()
+            },
+            vk_api::models::SendItem {
+                id: "send-2".into(),
+                ..vk_api::models::SendItem::default()
+            },
+        ];
+        let counts = VaultData::build(sync, &keys).counts();
+        assert_eq!(counts.all, 2);
+        assert_eq!(counts.favorites, 1);
+        assert_eq!(
+            counts.kinds,
+            HashMap::from([(ItemKind::Login, 1), (ItemKind::SecureNote, 1)])
+        );
+        assert_eq!(counts.no_folder, 1);
+        assert_eq!(counts.folders, HashMap::from([(Arc::from("f1"), 1)]));
+        assert!(counts.organizations.is_empty());
+        assert_eq!(counts.trash, 2);
+        assert_eq!(counts.sends, 2);
     }
 
     #[test]

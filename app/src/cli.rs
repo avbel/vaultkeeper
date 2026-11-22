@@ -101,10 +101,10 @@ Desktop options
   --mock       run on the built-in mock vault (master password: mock)
   --offline    mock: start with the server unreachable
   --unlocked   mock: start with the first account unlocked
-  --theme      override the theme setting for this run
+  --theme      mock: override the theme setting for this run
   --demo-ssh   mock: show an SSH sign request a few seconds after start
-  --size       Manager window size in logical pixels, e.g. 760x480
-  --select     open the Manager on the first item matching QUERY"#;
+  --size       mock: Manager window size in logical pixels, e.g. 760x480
+  --select     mock: open the Manager on the first item matching QUERY"#;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -161,6 +161,8 @@ pub enum CliError {
     UiPipe,
     #[error("--refusal needs a report file")]
     Refusal,
+    #[error("{0} works only with --mock\n\n{USAGE}")]
+    NeedsMock(&'static str),
 }
 
 fn parse_size(text: Option<&str>) -> Result<(u32, u32), CliError> {
@@ -228,7 +230,27 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             _ => return Err(CliError::Unknown(arg)),
         }
     }
-    Ok(parsed)
+    match mock_only_flag(&parsed) {
+        Some(flag) if !parsed.mock => Err(CliError::NeedsMock(flag)),
+        _ => Ok(parsed),
+    }
+}
+
+/// The first flag given that only the mock run reads; the daemon would silently ignore it.
+fn mock_only_flag(parsed: &Args) -> Option<&'static str> {
+    [
+        (parsed.offline, "--offline"),
+        (parsed.unlocked, "--unlocked"),
+        (parsed.theme.is_some(), "--theme"),
+        (parsed.demo_ssh, "--demo-ssh"),
+        (parsed.demo_browser_fill, "--demo-browser-fill"),
+        (parsed.demo_browser_pair, "--demo-browser-pair"),
+        (parsed.demo_browser_save, "--demo-browser-save"),
+        (parsed.size.is_some(), "--size"),
+        (parsed.select.is_some(), "--select"),
+    ]
+    .into_iter()
+    .find_map(|(given, flag)| given.then_some(flag))
 }
 
 #[cfg(test)]
@@ -300,8 +322,15 @@ mod tests {
 
     #[test]
     fn parses_screenshot_flags() {
-        let parsed =
-            args(&["--size", "760x480", "--select", "tailscale", "--search"]).expect("args");
+        let parsed = args(&[
+            "--mock",
+            "--size",
+            "760x480",
+            "--select",
+            "tailscale",
+            "--search",
+        ])
+        .expect("args");
         assert_eq!(parsed.size, Some((760, 480)));
         assert_eq!(parsed.select.as_deref(), Some("tailscale"));
         assert!(parsed.search);
@@ -336,6 +365,31 @@ mod tests {
         for bad in [&["--ui-pipe"][..], &["--ui-pipe", "0"], &["--ui-pipe", "x"]] {
             assert_eq!(args(bad), Err(CliError::UiPipe));
         }
+    }
+
+    #[test]
+    fn mock_only_flags_are_refused_without_mock() {
+        for (flag, value) in [
+            ("--offline", None),
+            ("--unlocked", None),
+            ("--theme", Some("dark")),
+            ("--demo-ssh", None),
+            ("--demo-browser-fill", None),
+            ("--demo-browser-pair", None),
+            ("--demo-browser-save", None),
+            ("--size", Some("760x480")),
+            ("--select", Some("github")),
+        ] {
+            let list: Vec<&str> = std::iter::once(flag).chain(value).collect();
+            assert_eq!(args(&list), Err(CliError::NeedsMock(flag)), "{flag}");
+            let mocked: Vec<&str> = std::iter::once("--mock").chain(list).collect();
+            assert!(args(&mocked).is_ok(), "{flag} with --mock");
+        }
+        assert!(
+            CliError::NeedsMock("--select")
+                .to_string()
+                .starts_with("--select works only with --mock")
+        );
     }
 
     #[test]

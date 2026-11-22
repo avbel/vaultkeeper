@@ -18,7 +18,7 @@ use super::{Backends, DaemonEvent, Shared, TaskGuard, dispatch::dispatch, log_jo
 use crate::{
     IpcError,
     dto::WireError,
-    frame::{decode, encode, read_frame},
+    frame::{decode, encode, read_frame, read_frame_with_limit},
     protocol::{
         BrowserReply, DaemonMessage, Event, PROTOCOL_VERSION, Refusal, Snapshot, SshDecision,
         UiMessage, UiNotice, Welcome,
@@ -30,6 +30,11 @@ use crate::{
 const OUTBOX_CAPACITY: usize = 32;
 /// How long the writer may take to flush the last frames (such as `Shutdown`) when closing.
 const FLUSH_GRACE: Duration = Duration::from_secs(1);
+/// Calls accepted but not finished; past this the reader stops reading, pushing back on a flood.
+/// Far above what a UI sends at once, so control frames are never stuck behind slow calls.
+const MAX_QUEUED_CALLS: usize = 64;
+/// `Hello` is a variant tag and a varint; checked before the body is allocated.
+const MAX_HELLO_LEN: usize = 16;
 
 type Frame = Zeroizing<Vec<u8>>;
 
@@ -88,7 +93,9 @@ async fn accept<S: VaultService>(
 }
 
 async fn read_hello(read: &mut ReadHalf) -> Result<u32, IpcError> {
-    let body = read_frame(read).await?.ok_or(IpcError::Disconnected)?;
+    let body = read_frame_with_limit(read, MAX_HELLO_LEN)
+        .await?
+        .ok_or(IpcError::Disconnected)?;
     match decode(&body)? {
         UiMessage::Hello { protocol_version } => Ok(protocol_version),
         _ => Err(IpcError::Protocol("the first message must be Hello")),
@@ -141,6 +148,7 @@ async fn serve_session<S: VaultService>(
         publisher: Arc::clone(&publisher),
         approvals,
         limit: Arc::new(Semaphore::new(shared.max_concurrent_calls)),
+        queued: Arc::new(Semaphore::new(MAX_QUEUED_CALLS)),
         calls: Arc::clone(&calls),
         notices: shared.notices.clone(),
         backends: shared.backends.clone(),
@@ -165,15 +173,16 @@ async fn serve_session<S: VaultService>(
         Ended::Reader(result) | Ended::Writer(result) => result,
     };
     drop(writer);
-    // The next UI process may connect while the calls of this one finish.
-    drop(slot);
     // Waits for room rather than dropping it like the UI's own notices: nothing else would
-    // undo what the UI turned on.
+    // undo what the UI turned on. Queued before the slot is released, so it cannot land after
+    // the next UI's first notices.
     if let Some(notices) = &shared.notices
         && notices.send(UiNotice::Disconnected).await.is_err()
     {
         tracing::debug!("nobody reads UI notices");
     }
+    // The next UI process may connect while the calls of this one finish.
+    drop(slot);
     finish_calls(&calls).await;
     result
 }
@@ -207,7 +216,9 @@ struct Requests<S> {
     service: Arc<S>,
     publisher: Arc<Publisher<S>>,
     approvals: Arc<Approvals>,
+    /// Calls running at the same time.
     limit: Arc<Semaphore>,
+    queued: Arc<Semaphore>,
     /// Shared with the session so the calls outlive this reader.
     calls: Arc<Mutex<JoinSet<()>>>,
     notices: Option<mpsc::Sender<UiNotice>>,
@@ -220,22 +231,7 @@ async fn read_requests<S: VaultService>(
 ) -> Result<(), IpcError> {
     while let Some(body) = read_frame(&mut read).await? {
         match decode(&body)? {
-            UiMessage::Request { id, call } => {
-                // Waiting here stops reading, which pushes back on a client that floods us.
-                let permit = Arc::clone(&requests.limit)
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| IpcError::Protocol("call limiter closed"))?;
-                let call = answer(
-                    Arc::clone(&requests.service),
-                    requests.backends.clone(),
-                    Arc::clone(&requests.publisher),
-                    id,
-                    call,
-                    permit,
-                );
-                lock_calls(&requests.calls).spawn(call);
-            }
+            UiMessage::Request { id, call } => start_call(&requests, id, call).await?,
             UiMessage::SshApprovalReply {
                 request_id,
                 approved,
@@ -246,14 +242,7 @@ async fn read_requests<S: VaultService>(
             UiMessage::BrowserPromptReply { request_id, reply } => {
                 requests.approvals.resolve_browser(request_id, reply);
             }
-            UiMessage::Notice(notice) => {
-                // Notices are hints (a settings reload, activity); dropping one under load is fine.
-                if let Some(notices) = &requests.notices
-                    && notices.try_send(notice).is_err()
-                {
-                    tracing::debug!(?notice, "UI notice dropped");
-                }
-            }
+            UiMessage::Notice(notice) => forward_notice(requests.notices.as_ref(), notice).await,
             UiMessage::Hello { .. } => return Err(IpcError::Protocol("Hello after the handshake")),
         }
         let mut calls = lock_calls(&requests.calls);
@@ -262,6 +251,54 @@ async fn read_requests<S: VaultService>(
         }
     }
     Ok(())
+}
+
+/// The run permit is taken inside the task, so the reader goes on reading `Alive` and approval
+/// replies while every call slot is busy.
+async fn start_call<S: VaultService>(
+    requests: &Requests<S>,
+    id: u64,
+    call: crate::protocol::Call,
+) -> Result<(), IpcError> {
+    let queued = Arc::clone(&requests.queued)
+        .acquire_owned()
+        .await
+        .map_err(|_| IpcError::Protocol("call queue closed"))?;
+    let limit = Arc::clone(&requests.limit);
+    let answer = answer(
+        Arc::clone(&requests.service),
+        requests.backends.clone(),
+        Arc::clone(&requests.publisher),
+        id,
+        call,
+    );
+    lock_calls(&requests.calls).spawn(async move {
+        let _queued = queued;
+        let Ok(_running) = limit.acquire_owned().await else {
+            tracing::warn!(id, "call limiter closed; call not run");
+            return;
+        };
+        answer.await;
+    });
+    Ok(())
+}
+
+/// Only `Activity` is a pure hint that the next one makes up for. The rest carry state the
+/// daemon acts on (the hang watchdog's acknowledgements, a modal or a paused hotkey), so the
+/// reader waits for room instead of dropping them.
+async fn forward_notice(notices: Option<&mpsc::Sender<UiNotice>>, notice: UiNotice) {
+    let Some(notices) = notices else {
+        return;
+    };
+    if notice == UiNotice::Activity {
+        if notices.try_send(notice).is_err() {
+            tracing::debug!(?notice, "UI notice dropped");
+        }
+        return;
+    }
+    if notices.send(notice).await.is_err() {
+        tracing::debug!(?notice, "nobody reads UI notices");
+    }
 }
 
 fn lock_calls(calls: &Mutex<JoinSet<()>>) -> std::sync::MutexGuard<'_, JoinSet<()>> {
@@ -274,7 +311,6 @@ async fn answer<S: VaultService>(
     publisher: Arc<Publisher<S>>,
     id: u64,
     call: crate::protocol::Call,
-    _permit: OwnedSemaphorePermit,
 ) {
     let refresh = call.changes_state();
     let result = dispatch(&service, backends, call).await;
@@ -489,6 +525,10 @@ fn snapshot<S: VaultService>(service: &S) -> Snapshot {
         folders: wire_list(service.folders()),
         organizations: wire_list(service.organizations()),
         collections: wire_list(service.collections()),
+        counts: service
+            .counts()
+            .map(Into::into)
+            .map_err(|error| WireError::from(&error)),
     }
 }
 

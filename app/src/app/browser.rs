@@ -123,6 +123,7 @@ impl<S: VaultService> App<S> {
         window.on_approve(handler!(self, |app| app
             .finish_browser(id, BrowserReply::PairApproved)));
         window.on_deny(handler!(self, |app| app.finish_browser(id, BrowserReply::Dismissed)));
+        self.dismiss_on_close(&window, id);
         let timer = Timer::default();
         timer.start(
             TimerMode::SingleShot,
@@ -177,6 +178,7 @@ impl<S: VaultService> App<S> {
         window.on_submit_password(handler!(self, |app, password| app
             .verify_browser_password(id, Zeroizing::new(password.to_string()))));
         window.on_dismiss(handler!(self, |app| app.finish_browser(id, BrowserReply::Dismissed)));
+        self.dismiss_on_close(&window, id);
         window.on_visible_range_changed(handler!(self, |app| app.schedule_site_icons()));
         self.dismiss_on_focus_loss(&window, id);
         let timer = Timer::default();
@@ -586,6 +588,7 @@ impl<S: VaultService> App<S> {
         let id = queued.id;
         window.on_save(handler!(self, |app, index| app.save_browser(id, index)));
         window.on_dismiss(handler!(self, |app| app.finish_browser(id, BrowserReply::Dismissed)));
+        self.dismiss_on_close(&window, id);
         window.on_never(handler!(self, |app| app
             .finish_browser(id, BrowserReply::NeverForSite)));
         let timer = Timer::default();
@@ -663,6 +666,19 @@ impl<S: VaultService> App<S> {
             }
         };
         self.finish_browser(id, BrowserReply::Save { target });
+    }
+
+    /// A compositor can close a prompt itself (Sway's `kill`); the request must not stay current
+    /// behind a window that is gone until its timeout.
+    fn dismiss_on_close(&self, window: &impl ComponentHandle, id: u64) {
+        window.window().on_close_requested(handler!(
+            self,
+            slint::CloseRequestResponse::HideWindow,
+            |app| {
+                app.finish_browser(id, BrowserReply::Dismissed);
+                slint::CloseRequestResponse::HideWindow
+            }
+        ));
     }
 
     fn finish_browser(&self, id: u64, reply: BrowserReply) {

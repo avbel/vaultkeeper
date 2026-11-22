@@ -40,7 +40,7 @@ ssh_agent = { path = "vendor/ssh_agent" }
 aes = "0.9.4"
 aes-gcm = "0.11.1"
 anyhow = "1.0.104"
-argon2 = "0.6.0"
+argon2 = { version = "0.6.0", features = ["parallel", "zeroize"] }
 arboard = "3.7.0"
 auto-launch = "0.6.0"
 base64 = "0.23.1"

@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use rustls::ClientConfig;
@@ -139,10 +142,17 @@ async fn connect(request: Request<()>) -> Result<(Socket, Vec<u8>), ListenError>
 
 /// Certificates are checked by the same platform verifier reqwest uses for HTTPS, so a private
 /// CA trusted in the OS store works for live sync exactly when it works for the REST calls.
+/// Built once: on Linux building it reloads the whole system store, and every reconnect would.
+/// A failed build is not cached, so the next attempt tries again.
 fn tls_connector() -> Result<Connector, ListenError> {
-    let config = ClientConfig::with_platform_verifier()
+    static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    if let Some(config) = CONFIG.get() {
+        return Ok(Connector::Rustls(Arc::clone(config)));
+    }
+    let built = ClientConfig::with_platform_verifier()
         .map_err(|error| ListenError::Tls(error.to_string()))?;
-    Ok(Connector::Rustls(Arc::new(config)))
+    let config = CONFIG.get_or_init(|| Arc::new(built));
+    Ok(Connector::Rustls(Arc::clone(config)))
 }
 
 enum Flow {

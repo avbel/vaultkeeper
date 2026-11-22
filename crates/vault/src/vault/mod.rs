@@ -355,6 +355,20 @@ impl Inner {
         }
     }
 
+    /// For secret-store calls: on macOS that is the login keychain, which can block on an
+    /// access prompt and must not hold a runtime worker (or a lock the other calls wait on).
+    async fn blocking<T: Send + 'static>(
+        self: &Arc<Self>,
+        work: impl FnOnce(&Self) -> T + Send + 'static,
+    ) -> Result<T> {
+        let inner = Arc::clone(self);
+        self.config
+            .runtime
+            .spawn_blocking(move || work(&inner))
+            .await
+            .map_err(Error::task)
+    }
+
     fn clear_pending(&self) {
         lock(&self.pending).take();
     }

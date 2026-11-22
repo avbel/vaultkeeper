@@ -22,7 +22,7 @@ use anyhow::{anyhow, Result};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
-    runtime::Handle,
+    runtime::{Handle, RuntimeFlavor},
     sync::mpsc,
     task::JoinSet,
 };
@@ -47,7 +47,7 @@ use windows::{
     },
 };
 
-use super::Listener;
+use super::{Listener, ListenerExhausted};
 use crate::server::{connection::Connection, peer_info::PeerInfo};
 
 /// The fixed named pipe path that OpenSSH clients expect on Windows
@@ -68,6 +68,9 @@ const RESET_ATTEMPTS: u32 = 4;
 /// How long a bind waits for a previous listener's aborted instances to close before it reports
 /// the name as taken.
 const REBIND_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Pause between bind attempts inside `REBIND_WINDOW`.
+const REBIND_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Bounds each step of clearing an instance's stale I/O state; they normally finish in microseconds
 /// because every operation on a disconnected pipe fails at once.
@@ -145,10 +148,23 @@ fn create_instances_when_free(name: &str, sddl: &str) -> Result<Vec<NamedPipeSer
                 if std::time::Instant::now() < deadline
                     && error.downcast_ref::<PipeNameTaken>().is_some() =>
             {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                pause_before_rebind();
             }
             result => return result,
         }
+    }
+}
+
+/// vk patch: the bind is synchronous and runs on a runtime thread; on a multi-thread runtime the
+/// worker hands its other tasks off while it waits. A current-thread runtime cannot do that
+/// (`block_in_place` panics there), so it sleeps as before.
+fn pause_before_rebind() {
+    let pause = || std::thread::sleep(REBIND_POLL);
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(pause);
+        }
+        _ => pause(),
     }
 }
 
@@ -316,7 +332,8 @@ fn current_user_sid() -> Result<String> {
 }
 
 fn pool_exhausted() -> anyhow::Error {
-    anyhow!("Every named pipe instance was lost; the agent cannot serve clients any more")
+    ListenerExhausted("Every named pipe instance was lost; the agent cannot serve clients any more")
+        .into()
 }
 
 /// Re-arms instances: each idle one waits for a client in its own task, because Windows hands a

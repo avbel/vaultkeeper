@@ -68,6 +68,9 @@ type Agent = BitwardenSSHAgent<InMemoryEncryptedKeyStore, ChannelApprover>;
 pub struct SshAgent {
     socket_path: PathBuf,
     agent: Agent,
+    /// Not `is_running`: the listener can die on its own, and the keys and socket file must still
+    /// go on stop.
+    stopped: bool,
 }
 
 impl SshAgent {
@@ -108,7 +111,11 @@ impl SshAgent {
         agent
             .start_on(&socket_path.to_string_lossy())
             .map_err(pipe_start_error)?;
-        Ok(Self { socket_path, agent })
+        Ok(Self {
+            socket_path,
+            agent,
+            stopped: false,
+        })
     }
 
     #[must_use]
@@ -130,6 +137,25 @@ impl SshAgent {
         self.agent.replace(served)
     }
 
+    /// The clear generation: every [`SshAgent::clear_keys`] and [`SshAgent::stop`] bumps it.
+    /// Read it before loading keys from the vault and pass it to [`SshAgent::replace_keys_if`].
+    #[must_use]
+    pub fn key_epoch(&self) -> u64 {
+        self.agent.epoch()
+    }
+
+    /// Like [`SshAgent::replace_keys`], but only if the key epoch still equals `epoch`, checked
+    /// atomically with the replace. `Ok(false)` means a clear ran in between (the vault locked
+    /// while the keys were loading) and `keys` were dropped, so a stale refresh cannot re-serve
+    /// keys after a lock.
+    pub fn replace_keys_if(&self, epoch: u64, keys: Vec<AgentKey>) -> Result<bool> {
+        if !self.is_running() {
+            return Err(AgentError::NotRunning.into());
+        }
+        let served = keys.into_iter().filter_map(parse_key).collect();
+        self.agent.replace_if(epoch, served)
+    }
+
     /// Drops every served key and keeps serving. Unlike `replace_keys(vec![])`, the next list
     /// request goes to the approval channel as [`ApprovalKind::List`] again, which is how a
     /// locked vault gets the user to unlock.
@@ -139,11 +165,13 @@ impl SshAgent {
 
     /// Stops serving, clears keys and, on Unix, removes the socket file.
     pub fn stop(&mut self) {
-        if self.is_running() {
-            self.agent.stop();
-            #[cfg(unix)]
-            socket::remove(&self.socket_path);
+        if self.stopped {
+            return;
         }
+        self.stopped = true;
+        self.agent.stop();
+        #[cfg(unix)]
+        socket::remove(&self.socket_path);
     }
 }
 

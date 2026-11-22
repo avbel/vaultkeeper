@@ -3,15 +3,15 @@
 //! List DTOs hold the vault's `Arc<str>` fields, so encoding a search result shares strings
 //! instead of copying them.
 
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 use vk_vault::{
     TwoFactorProvider,
     model::{
-        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemKind,
-        ItemSummary, LoginStep, OrganizationView, SessionState,
+        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemCounts,
+        ItemKind, ItemSummary, LoginStep, OrganizationView, SessionState,
     },
 };
 
@@ -281,6 +281,71 @@ impl From<FilterDto> for Filter {
     }
 }
 
+/// Maps travel as pairs so the wire format does not depend on a key type being hashable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemCountsDto {
+    pub all: u64,
+    pub favorites: u64,
+    pub kinds: Vec<(ItemKindDto, u64)>,
+    pub no_folder: u64,
+    pub folders: Vec<(Arc<str>, u64)>,
+    pub organizations: Vec<(Arc<str>, u64)>,
+    pub trash: u64,
+    pub sends: u64,
+}
+
+fn wire_count(count: usize) -> u64 {
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
+fn local_count(count: u64) -> usize {
+    usize::try_from(count).unwrap_or(usize::MAX)
+}
+
+fn wire_counts<K, D: From<K>>(counts: HashMap<K, usize>) -> Vec<(D, u64)> {
+    counts
+        .into_iter()
+        .map(|(key, count)| (D::from(key), wire_count(count)))
+        .collect()
+}
+
+fn local_counts<D, K: From<D> + Eq + Hash>(counts: Vec<(D, u64)>) -> HashMap<K, usize> {
+    counts
+        .into_iter()
+        .map(|(key, count)| (K::from(key), local_count(count)))
+        .collect()
+}
+
+impl From<ItemCounts> for ItemCountsDto {
+    fn from(counts: ItemCounts) -> Self {
+        Self {
+            all: wire_count(counts.all),
+            favorites: wire_count(counts.favorites),
+            kinds: wire_counts(counts.kinds),
+            no_folder: wire_count(counts.no_folder),
+            folders: wire_counts(counts.folders),
+            organizations: wire_counts(counts.organizations),
+            trash: wire_count(counts.trash),
+            sends: wire_count(counts.sends),
+        }
+    }
+}
+
+impl From<ItemCountsDto> for ItemCounts {
+    fn from(counts: ItemCountsDto) -> Self {
+        Self {
+            all: local_count(counts.all),
+            favorites: local_count(counts.favorites),
+            kinds: local_counts(counts.kinds),
+            no_folder: local_count(counts.no_folder),
+            folders: local_counts(counts.folders),
+            organizations: local_counts(counts.organizations),
+            trash: local_count(counts.trash),
+            sends: local_count(counts.sends),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderDto {
     pub id: Arc<str>,
@@ -470,6 +535,22 @@ mod tests {
             let back = ItemKind::from(over_the_wire(&ItemKindDto::from(kind)));
             assert_eq!(back, kind);
         }
+    }
+
+    #[test]
+    fn item_counts_round_trip() {
+        let counts = ItemCounts {
+            all: 7,
+            favorites: 2,
+            kinds: HashMap::from([(ItemKind::Login, 5), (ItemKind::Unsupported(9), 2)]),
+            no_folder: 3,
+            folders: HashMap::from([(Arc::from("f1"), 4)]),
+            organizations: HashMap::from([(Arc::from("o1"), 1), (Arc::from("o2"), 6)]),
+            trash: 8,
+            sends: 11,
+        };
+        let back = ItemCounts::from(over_the_wire(&ItemCountsDto::from(counts.clone())));
+        assert_eq!(back, counts);
     }
 
     #[test]

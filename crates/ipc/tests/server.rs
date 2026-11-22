@@ -24,7 +24,7 @@ use vk_ipc::{
     dto::{SessionStateDto, WireError},
     frame::{HEADER_LEN, MAX_FRAME_LEN, encode},
     ipc_error,
-    protocol::{DaemonMessage, Event, Refusal, Snapshot, UiMessage, Welcome},
+    protocol::{Call, DaemonMessage, Event, Refusal, Snapshot, UiMessage, Welcome},
     serve,
 };
 use vk_vault::{VaultService, model::CopyField, model::ItemId};
@@ -604,6 +604,7 @@ fn logged_out_snapshot() -> Snapshot {
         folders: Err(WireError::LoggedOut),
         organizations: Err(WireError::LoggedOut),
         collections: Err(WireError::LoggedOut),
+        counts: Err(WireError::LoggedOut),
     }
 }
 
@@ -869,6 +870,84 @@ async fn the_end_of_a_ui_session_is_queued_as_a_notice() {
     drop((vault, events));
     let ended = tokio::time::timeout(EVENT_WAIT, received.recv()).await;
     assert_eq!(ended.expect("in time"), Some(UiNotice::Disconnected));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn alive_and_approval_replies_get_through_while_every_call_slot_is_busy() {
+    const HUNG_CALLS: u64 = 9;
+    let (notices, mut received) = mpsc::channel(4);
+    let options = ServeOptions::new().expect("options").with_notices(notices);
+    let daemon = Daemon::start_with(FakeVault::new(unlocked(), 0), options).await;
+    daemon.fake.hang_sync();
+    let socket = daemon.socket();
+    let mut raw = tokio::task::spawn_blocking(move || {
+        let mut raw = RawClient::connect(&socket);
+        raw.hello();
+        raw
+    })
+    .await
+    .expect("connect");
+    let (reply, decision) = oneshot::channel();
+    daemon
+        .events
+        .send(DaemonEvent::SshApproval {
+            seq: 1,
+            prompt: prompt(),
+            reply,
+        })
+        .await
+        .expect("send prompt");
+    // The default limit is 8 running calls; the ninth waits for a slot.
+    let _raw = tokio::task::spawn_blocking(move || {
+        let request_id = next_approval_id(&mut raw);
+        for id in 1..=HUNG_CALLS {
+            raw.send(&UiMessage::Request {
+                id,
+                call: Call::Sync,
+            });
+        }
+        raw.send(&UiMessage::Notice(UiNotice::Alive(1)));
+        reply_to(&mut raw, request_id, true);
+        raw
+    })
+    .await
+    .expect("send");
+    let alive = tokio::time::timeout(EVENT_WAIT, received.recv()).await;
+    assert_eq!(alive.expect("Alive is read"), Some(UiNotice::Alive(1)));
+    let decision = tokio::time::timeout(EVENT_WAIT, decision).await;
+    assert_eq!(
+        decision.expect("the reply is read"),
+        Ok(SshDecision {
+            approved: true,
+            remember: false
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oversized_hello_is_refused_without_waiting_for_its_body() {
+    let options = ServeOptions {
+        handshake_timeout: Duration::from_secs(30),
+        ..ServeOptions::new().expect("options")
+    };
+    let daemon = Daemon::start_with(FakeVault::new(locked(), 0), options).await;
+    let socket = daemon.socket();
+    let read = tokio::task::spawn_blocking(move || {
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+        stream
+            .set_read_timeout(Some(EVENT_WAIT))
+            .expect("read timeout");
+        let claimed = u32::try_from(1024 * 1024).expect("fits");
+        stream.write_all(&claimed.to_le_bytes()).expect("header");
+        let mut byte = [0; 1];
+        stream.read(&mut byte).map_err(|error| error.kind())
+    });
+    let read = tokio::time::timeout(EVENT_WAIT * 2, read).await;
+    assert_eq!(
+        read.expect("in time").expect("task"),
+        Ok(0),
+        "the daemon hangs up instead of waiting for the body"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

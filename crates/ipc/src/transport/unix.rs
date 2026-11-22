@@ -33,10 +33,16 @@ impl Listener {
     }
 
     /// Accepts a connection together with the credentials of the process on its other end.
+    /// A peer whose credentials cannot be read (it already left) is dropped and the next one
+    /// awaited, so only a failure of the listener itself reaches the caller.
     pub async fn accept(&self) -> io::Result<(Stream, PeerCredentials)> {
-        let (stream, _) = self.inner.accept().await?;
-        let credentials = credentials(&stream)?;
-        Ok((Stream { inner: stream }, credentials))
+        loop {
+            let (stream, _) = self.inner.accept().await?;
+            match credentials(&stream) {
+                Ok(credentials) => return Ok((Stream { inner: stream }, credentials)),
+                Err(error) => tracing::debug!(%error, "dropped a peer without credentials"),
+            }
+        }
     }
 }
 

@@ -20,9 +20,10 @@ signature = "2.2.0"
 ssh-key = { version = "=0.6.7", features = ["encryption", "ed25519", "p256", "p384", "p521", "rsa", "rand_core"] }
 sysinfo = "0.38.2"
 thiserror = "2.0.17"
-tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync"] }
+tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-util = "0.7.17"
 tracing = "0.1.44"
+zeroize = "1.9.1"
 
 [target.'cfg(unix)'.dependencies]
 homedir = "0.3.6"
@@ -34,5 +35,5 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security"
 [dev-dependencies]
 rand = "0.9.3"
 serial_test = "4.0.1"
-tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "test-util"] }
 tracing-subscriber = "0.3.22"

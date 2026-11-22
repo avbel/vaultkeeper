@@ -315,13 +315,23 @@ impl<S: VaultService> App<S> {
         }
     }
 
+    /// Applies `change` to what is stored now, not to this process's copy: the daemon and
+    /// `vaultkeeper security accept` write the same file, and their fields must survive.
     pub(super) fn update_settings(&self, change: impl FnOnce(&mut Settings)) {
-        let updated = {
-            let mut settings = self.settings.borrow_mut();
-            change(&mut settings);
-            settings.clone()
-        };
-        self.report(self.hooks.settings.save(&updated));
+        match self.hooks.settings.try_load() {
+            Ok(mut stored) => {
+                change(&mut stored);
+                let saved = self.hooks.settings.save(&stored);
+                *self.settings.borrow_mut() = stored;
+                self.report(saved);
+            }
+            Err(error) => {
+                // Writing our copy would drop whatever the unreadable file holds.
+                tracing::warn!(%error, "settings not saved: the stored file cannot be read");
+                change(&mut self.settings.borrow_mut());
+                self.report(Err(error));
+            }
+        }
     }
 
     pub(super) fn report(&self, result: crate::hooks::HookResult<()>) {

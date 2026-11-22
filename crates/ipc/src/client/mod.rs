@@ -2,8 +2,8 @@
 //!
 //! The socket belongs to a dedicated `vk-ipc` thread running its own current-thread runtime,
 //! so callers need no particular runtime and a blocked caller never stalls the I/O.
-//! - State, accounts, offline flag, folders, organizations and collections are served from a
-//!   cache that the daemon refreshes before every `Changed` and before answering any
+//! - State, accounts, offline flag, folders, organizations, collections and the sidebar counts
+//!   are served from a cache that the daemon refreshes before every `Changed` and before answering any
 //!   state-changing call, so they never block.
 //! - The other sync methods (search, reveal, totp, draft, unlock with the Touch ID key, lock,
 //!   ...) are blocking round-trips: the calling thread waits on a channel while the I/O thread
@@ -25,7 +25,9 @@ use std::{
 };
 
 use tokio::sync::{mpsc, oneshot, watch};
-use vk_vault::model::{AccountView, CollectionView, FolderView, OrganizationView, SessionState};
+use vk_vault::model::{
+    AccountView, CollectionView, FolderView, ItemCounts, OrganizationView, SessionState,
+};
 use zeroize::Zeroizing;
 
 pub use events::{BrowserPromptEvent, EventStream, SshApproval, UiEvent};
@@ -250,6 +252,7 @@ struct Cache {
     folders: Result<Vec<FolderView>, WireError>,
     organizations: Result<Vec<OrganizationView>, WireError>,
     collections: Result<Vec<CollectionView>, WireError>,
+    counts: Result<ItemCounts, WireError>,
 }
 
 impl TryFrom<Snapshot> for Cache {
@@ -270,6 +273,7 @@ impl TryFrom<Snapshot> for Cache {
             folders: model_list(snapshot.folders),
             organizations: model_list(snapshot.organizations),
             collections: model_list(snapshot.collections),
+            counts: snapshot.counts.map(ItemCounts::from),
         })
     }
 }

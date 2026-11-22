@@ -85,6 +85,10 @@ impl SendList {
             .collect()
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     pub(crate) fn items(&self) -> impl Iterator<Item = &SendItem> {
         self.entries.iter().map(|entry| &entry.send)
     }

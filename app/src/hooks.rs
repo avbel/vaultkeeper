@@ -114,6 +114,10 @@ pub trait PasswordGenerator: Send + Sync {
 
 pub trait SettingsStore: Send + Sync {
     fn load(&self) -> Settings;
+    /// The stored settings for a read-modify-write; an error when they exist but cannot be read.
+    fn try_load(&self) -> HookResult<Settings> {
+        Ok(self.load())
+    }
     fn save(&self, settings: &Settings) -> HookResult<()>;
     /// True once after an unreadable settings file was reset to defaults (and kept aside), so the
     /// user is told about it a single time.

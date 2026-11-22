@@ -245,4 +245,27 @@ mod tests {
         assert_eq!(answer(&UiEvent::OfflineChanged(true)), None);
         assert_eq!(answer(&UiEvent::Shutdown), None);
     }
+
+    #[test]
+    fn input_reports_activity_at_most_once_per_interval() {
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&sent);
+        let mut on_input = activity_reporter(Arc::new(move |notice| {
+            record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(notice);
+        }));
+        for _ in 0..5 {
+            on_input();
+        }
+        let sent = sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            *sent,
+            [UiNotice::Activity],
+            "the first input reports at once"
+        );
+    }
 }

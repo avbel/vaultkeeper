@@ -2,7 +2,9 @@
 
 mod common;
 
-use common::{CMD, Harness, Mods, Setup, click, harness, key, pump, special, type_into};
+use std::time::Duration;
+
+use common::{CMD, Harness, Mods, Setup, click, elapse, harness, key, pump, special, type_into};
 use slint::{ComponentHandle, platform::Key};
 use vaultkeeper::hooks::SettingsStore;
 use vaultkeeper::{
@@ -241,6 +243,35 @@ fn manager_geometry_is_saved_on_close_and_restored() {
 }
 
 #[test]
+fn a_ui_write_keeps_what_another_writer_stored_meanwhile() {
+    let h = harness(Setup::default());
+    h.app.start(false);
+    let accepted = vaultkeeper::os::security_gate::Accepted {
+        fingerprint: "0011223344556677".to_owned(),
+        issues: vec!["wayland".to_owned()],
+    };
+    // `vaultkeeper security accept` writes the file while the Manager is open.
+    h.settings
+        .save(&Settings {
+            security_accepted: Some(accepted.clone()),
+            ..h.settings.load()
+        })
+        .expect("save");
+    h.app
+        .manager_window()
+        .expect("manager")
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+    pump();
+    let saved = h.settings.load();
+    assert!(
+        saved.manager_geometry.is_some(),
+        "the UI's own write landed"
+    );
+    assert_eq!(saved.security_accepted, Some(accepted));
+}
+
+#[test]
 fn a_reset_of_unreadable_settings_is_shown_once_when_a_window_opens() {
     let h = harness(Setup::default());
     h.settings
@@ -326,6 +357,7 @@ fn generator_options_are_saved_and_the_next_generator_opens_with_them() {
     find_slider(&window).set_accessible_value("32");
     pump();
     click(&window, "0-9");
+    elapse(Duration::from_millis(600));
     let saved = h.settings.load().generator;
     assert_eq!(saved.length, 32);
     assert!(!saved.numbers);
@@ -343,6 +375,38 @@ fn generator_options_are_saved_and_the_next_generator_opens_with_them() {
     let value = state.get_result().to_string();
     assert_eq!(value.chars().count(), 32);
     assert!(!value.chars().any(|c| c.is_ascii_digit()), "{value}");
+}
+
+#[test]
+fn a_slider_drag_saves_the_options_once_it_settles_or_the_generator_closes() {
+    let (h, window) = open_generator();
+    let slider = find_slider(&window);
+    for length in 15..=40 {
+        slider.set_accessible_value(length.to_string());
+        pump();
+    }
+    assert_eq!(
+        window
+            .global::<GeneratorState>()
+            .get_result()
+            .chars()
+            .count(),
+        40,
+        "every step regenerates"
+    );
+    assert_eq!(h.settings.load().generator.length, 14, "not saved mid-drag");
+    elapse(Duration::from_millis(600));
+    assert_eq!(h.settings.load().generator.length, 40);
+
+    slider.set_accessible_value("60");
+    pump();
+    window.invoke_close_generator();
+    pump();
+    assert_eq!(
+        h.settings.load().generator.length,
+        60,
+        "closing saves the pending change"
+    );
 }
 
 #[test]

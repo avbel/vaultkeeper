@@ -1,7 +1,10 @@
 //! Provides an orchestration between the underlying ssh agent server, the keystore
 //! and the upstream approver of server requests.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex, MutexGuard, PoisonError,
+};
 
 use anyhow::Result;
 use tracing::{debug, info};
@@ -10,6 +13,14 @@ use crate::{
     approval::ApprovalRequester, authorization::BitwardenAuthPolicy, server::SSHAgentServer,
     storage::keystore::KeyStore,
 };
+
+/// vk patch: epochs are drawn process-wide, so an epoch read from one agent never matches a
+/// later agent that replaced it (disable and re-enable, account switch).
+static NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn fresh_epoch() -> u64 {
+    NEXT_EPOCH.fetch_add(1, Ordering::Relaxed)
+}
 
 /// - contains the [`KeyStore`] of ssh keys
 /// - manages the [`SSHAgentServer`]
@@ -23,6 +34,9 @@ where
     keystore: Arc<K>,
     // the agent's server
     server: SSHAgentServer<K, BitwardenAuthPolicy<K, H>>,
+    /// vk patch: bumped by every clear. Holding the lock across the compare and the replace (and
+    /// across the clear and the bump) is what keeps a stale refresh from landing after a clear.
+    epoch: Mutex<u64>,
 }
 
 impl<K, H> BitwardenSSHAgent<K, H>
@@ -36,7 +50,11 @@ where
         let auth_policy = Arc::new(BitwardenAuthPolicy::new(keystore.clone(), approval_handler));
         let server = SSHAgentServer::new(keystore.clone(), auth_policy);
 
-        Self { keystore, server }
+        Self {
+            keystore,
+            server,
+            epoch: Mutex::new(fresh_epoch()),
+        }
     }
 
     /// Starts the ssh agent server
@@ -65,7 +83,7 @@ where
     pub fn stop(&mut self) {
         debug!("Stopping server and clearing keys.");
         self.server.stop();
-        self.keystore.clear();
+        self.clear_and_bump();
     }
 
     /// # Returns
@@ -79,16 +97,51 @@ where
     /// Atomically replaces the keystore contents with the provided keys.
     pub fn replace(&self, keys: Vec<K::KeyData>) -> Result<()> {
         debug!("Replacing key data.");
+        let _epoch = self.lock_epoch();
         self.keystore.replace(keys)?;
         info!("Key data replaced.");
         Ok(())
+    }
+
+    /// vk patch: the current clear generation. Read it before loading keys and hand it to
+    /// [`BitwardenSSHAgent::replace_if`].
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        *self.lock_epoch()
+    }
+
+    /// vk patch: replaces the keys only if no [`clear`](Self::clear) or [`stop`](Self::stop) ran
+    /// since `epoch` was read. Returns `Ok(false)` and drops `keys` when one did.
+    pub fn replace_if(&self, epoch: u64, keys: Vec<K::KeyData>) -> Result<bool> {
+        let current = self.lock_epoch();
+        if *current != epoch {
+            info!(
+                epoch,
+                current = *current,
+                "Discarding keys loaded before a clear."
+            );
+            return Ok(false);
+        }
+        self.keystore.replace(keys)?;
+        info!("Key data replaced.");
+        Ok(true)
+    }
+
+    fn lock_epoch(&self) -> MutexGuard<'_, u64> {
+        self.epoch.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn clear_and_bump(&self) {
+        let mut epoch = self.lock_epoch();
+        self.keystore.clear();
+        *epoch = fresh_epoch();
     }
 
     /// Drops every key and marks the keystore uninitialized, so the next list request asks for
     /// approval again (the "unlock first" path) instead of answering with an empty list.
     pub fn clear(&self) {
         debug!("Clearing key data.");
-        self.keystore.clear();
+        self.clear_and_bump();
     }
 }
 
@@ -116,5 +169,53 @@ mod tests {
 
         agent.clear();
         assert!(!agent.is_running());
+    }
+
+    #[test]
+    fn replace_if_with_the_current_epoch_replaces() {
+        let mut keystore = MockKeyStore::new();
+        keystore.expect_replace().once().returning(|_| Ok(()));
+        let agent = BitwardenSSHAgent::new(keystore, MockApprovalRequester::new());
+
+        let epoch = agent.epoch();
+
+        assert!(agent.replace_if(epoch, vec![]).unwrap());
+    }
+
+    #[test]
+    fn replace_if_after_a_clear_discards_the_keys() {
+        let mut keystore = MockKeyStore::new();
+        keystore.expect_clear().once().return_const(());
+        keystore.expect_replace().never();
+        let agent = BitwardenSSHAgent::new(keystore, MockApprovalRequester::new());
+
+        let epoch = agent.epoch();
+        agent.clear();
+
+        assert!(!agent.replace_if(epoch, vec![]).unwrap());
+        assert_ne!(agent.epoch(), epoch);
+    }
+
+    #[test]
+    fn replace_if_after_a_stop_discards_the_keys() {
+        let mut keystore = MockKeyStore::new();
+        keystore.expect_clear().once().return_const(());
+        keystore.expect_replace().never();
+        let mut agent = BitwardenSSHAgent::new(keystore, MockApprovalRequester::new());
+
+        let epoch = agent.epoch();
+        agent.stop();
+
+        assert!(!agent.replace_if(epoch, vec![]).unwrap());
+    }
+
+    #[test]
+    fn an_epoch_from_another_agent_never_matches() {
+        let first = BitwardenSSHAgent::new(MockKeyStore::new(), MockApprovalRequester::new());
+        let mut keystore = MockKeyStore::new();
+        keystore.expect_replace().never();
+        let second = BitwardenSSHAgent::new(keystore, MockApprovalRequester::new());
+
+        assert!(!second.replace_if(first.epoch(), vec![]).unwrap());
     }
 }

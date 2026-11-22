@@ -325,8 +325,14 @@ mod tests {
     struct TestDir(PathBuf);
 
     impl TestDir {
+        /// One directory per test: the tests run in parallel and each drop removes its own.
         fn new() -> Self {
-            Self(PathBuf::from(format!("/tmp/vk-cli-{}", std::process::id())))
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let index = NEXT.fetch_add(1, Ordering::Relaxed);
+            Self(PathBuf::from(format!(
+                "/tmp/vk-cli-{}-{index}",
+                std::process::id()
+            )))
         }
     }
 

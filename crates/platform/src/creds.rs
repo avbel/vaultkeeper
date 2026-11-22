@@ -16,13 +16,10 @@
 
 use std::{
     ffi::OsString,
-    io::{self, Read as _, Write as _},
+    io::{self, Write as _},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -30,7 +27,10 @@ use std::{
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::security::{Link, Probe};
+use crate::{
+    pipe_read::{self, Bounded},
+    security::{Link, Probe},
+};
 
 pub mod header;
 
@@ -150,30 +150,35 @@ impl Creds {
             let _ = child.wait();
             return Err(CredsError::Io(io::Error::other("missing child pipe")));
         };
-        let overflow = AtomicBool::new(false);
+        let deadline = Instant::now() + self.timeout;
         thread::scope(|scope| {
             let writer = scope.spawn(move || write_input(stdin, input));
-            let reader = scope.spawn(|| read_bounded(stdout, &overflow));
-            let waited = wait(&mut child, &overflow, self.timeout);
-            let written = writer.join();
-            let read = reader.join();
-            let status = waited?;
+            // Read on this thread against the deadline: a helper that left the process group can
+            // hold stdout open after the kill, and a reader waiting for end of file would never
+            // return. Dropping stdout at the end of this call closes our end either way.
+            let output = match pipe_read::read_bounded(stdout, MAX_OUTPUT, deadline) {
+                Ok(Bounded::Complete(output)) => output,
+                Ok(Bounded::TooLarge) => {
+                    reap(&mut child);
+                    return Err(CredsError::TooLarge(MAX_OUTPUT));
+                }
+                Ok(Bounded::TimedOut) => {
+                    reap(&mut child);
+                    return Err(CredsError::Timeout);
+                }
+                Err(error) => {
+                    reap(&mut child);
+                    return Err(CredsError::Io(error));
+                }
+            };
+            let status = wait(&mut child, deadline)?;
             if !status.success() {
                 return Err(CredsError::Failed(status.code()));
             }
-            match written {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => return Err(CredsError::Io(error)),
-                Err(_) => return Err(CredsError::Io(io::Error::other("writer panicked"))),
-            }
-            match read {
-                // The reader can finish after `wait` looked at the flag, so the size is rechecked.
-                Ok(Ok(output)) if output.len() > MAX_OUTPUT => {
-                    Err(CredsError::TooLarge(MAX_OUTPUT))
-                }
-                Ok(Ok(output)) => Ok(output),
+            match writer.join() {
+                Ok(Ok(())) => Ok(output),
                 Ok(Err(error)) => Err(CredsError::Io(error)),
-                Err(_) => Err(CredsError::Io(io::Error::other("reader panicked"))),
+                Err(_) => Err(CredsError::Io(io::Error::other("writer panicked"))),
             }
         })
     }
@@ -210,39 +215,10 @@ fn write_input(mut stdin: std::process::ChildStdin, input: &[u8]) -> io::Result<
     }
 }
 
-fn read_bounded(
-    stdout: std::process::ChildStdout,
-    overflow: &AtomicBool,
-) -> io::Result<Zeroizing<Vec<u8>>> {
-    // Preallocated so the buffer never reallocates and leaves unzeroed copies of a plaintext.
-    let mut buffer = Zeroizing::new(Vec::with_capacity(MAX_OUTPUT + 1));
-    stdout
-        .take(MAX_OUTPUT as u64 + 1)
-        .read_to_end(&mut buffer)?;
-    if buffer.len() > MAX_OUTPUT {
-        overflow.store(true, Ordering::Release);
-    }
-    Ok(buffer)
-}
-
-fn wait(
-    child: &mut Child,
-    overflow: &AtomicBool,
-    timeout: Duration,
-) -> Result<ExitStatus, CredsError> {
-    let deadline = Instant::now() + timeout;
+fn wait(child: &mut Child, deadline: Instant) -> Result<ExitStatus, CredsError> {
     loop {
-        if overflow.load(Ordering::Acquire) {
-            reap(child);
-            return Err(CredsError::TooLarge(MAX_OUTPUT));
-        }
         match child.try_wait() {
-            Ok(Some(status)) => {
-                if overflow.load(Ordering::Acquire) {
-                    return Err(CredsError::TooLarge(MAX_OUTPUT));
-                }
-                return Ok(status);
-            }
+            Ok(Some(status)) => return Ok(status),
             Ok(None) => {}
             Err(error) => {
                 reap(child);
@@ -258,8 +234,8 @@ fn wait(
 }
 
 fn reap(child: &mut Child) {
-    // The tool runs in its own process group, so helpers it forked die with it and cannot keep
-    // the output pipe open.
+    // The tool runs in its own process group, so helpers it forked die with it. One that left
+    // the group can keep the output pipe open, which the deadline-bound read does not wait for.
     #[cfg(unix)]
     if let Ok(pid) = i32::try_from(child.id()) {
         // SAFETY: `kill` takes plain integers; the negative pid names the group created at spawn.

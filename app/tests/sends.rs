@@ -47,6 +47,16 @@ fn select_sidebar(manager: &ManagerWindow, label: &str) {
     pump();
 }
 
+fn send_count(manager: &ManagerWindow) -> String {
+    let entries = manager.get_sidebar_entries();
+    (0..entries.row_count())
+        .filter_map(|row| entries.row_data(row))
+        .find(|entry| entry.label == "Send")
+        .expect("Send entry")
+        .count
+        .to_string()
+}
+
 fn rows(manager: &ManagerWindow) -> Vec<(String, String)> {
     let rows = manager.get_rows();
     (0..rows.row_count())
@@ -142,6 +152,7 @@ fn hidden_text_stays_masked_until_revealed() {
 #[test]
 fn a_new_send_is_saved_selected_and_its_link_copied() {
     let (h, manager) = open_with(Setup::default());
+    assert_eq!(send_count(&manager), "4");
     manager.invoke_new_item(NEW_SEND_INDEX);
     pump();
     assert!(manager.get_send_mode(), "New ▸ Send opens the Send list");
@@ -161,6 +172,7 @@ fn a_new_send_is_saved_selected_and_its_link_copied() {
     pump();
 
     assert_eq!(sends_saved(&h), [(None, "Alarm code".to_owned())]);
+    assert_eq!(send_count(&manager), "5");
     assert_eq!(manager.get_detail_mode(), SEND_VIEW);
     assert_eq!(manager.get_send_detail().name, "Alarm code");
     assert!(manager.get_send_detail().has_password);
@@ -313,6 +325,7 @@ fn remove_password_and_delete_go_to_the_vault() {
     let calls = h.vault.calls();
     assert!(calls.contains(&MockCall::RemoveSendPassword("send-door".to_owned())));
     assert!(calls.contains(&MockCall::DeleteSend("send-door".to_owned())));
+    assert_eq!(send_count(&manager), "3");
     assert!(!names(&manager).contains(&"Door code".to_owned()));
     assert_eq!(manager.get_detail_mode(), 0);
 }

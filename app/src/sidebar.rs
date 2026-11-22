@@ -1,10 +1,8 @@
 //! Manager sidebar: entries, per-entry counts and the `Filter` each entry selects.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-use vk_vault::model::{
-    CollectionView, Filter, FolderView, ItemKind, ItemSummary, OrganizationView,
-};
+use vk_vault::model::{CollectionView, Filter, FolderView, ItemCounts, ItemKind, OrganizationView};
 
 use crate::{ui::SidebarEntry, viewmodel::SHORTCUT_KINDS};
 
@@ -24,45 +22,6 @@ pub enum SidebarKey {
     Trash,
     /// Lists Sends instead of items.
     Send,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Counts {
-    pub all: usize,
-    pub favorites: usize,
-    pub kinds: HashMap<ItemKind, usize>,
-    pub no_folder: usize,
-    pub folders: HashMap<Arc<str>, usize>,
-    pub organizations: HashMap<Arc<str>, usize>,
-    pub trash: usize,
-    pub sends: usize,
-}
-
-impl Counts {
-    /// One pass over the non-deleted items; `trash` is counted separately by the caller.
-    #[must_use]
-    pub fn tally(items: &[ItemSummary], trash: usize) -> Self {
-        let mut counts = Self {
-            all: items.len(),
-            trash,
-            ..Self::default()
-        };
-        for item in items {
-            counts.favorites += usize::from(item.favorite);
-            *counts.kinds.entry(item.kind).or_default() += 1;
-            match &item.folder_id {
-                Some(folder) => *counts.folders.entry(Arc::clone(folder)).or_default() += 1,
-                None => counts.no_folder += 1,
-            }
-            if let Some(organization) = &item.organization_id {
-                *counts
-                    .organizations
-                    .entry(Arc::clone(organization))
-                    .or_default() += 1;
-            }
-        }
-        counts
-    }
 }
 
 const ICON_ALL: i32 = 0;
@@ -137,7 +96,7 @@ pub fn build(
     folders: &[FolderView],
     organizations: &[OrganizationView],
     collections: &[CollectionView],
-    counts: &Counts,
+    counts: &ItemCounts,
 ) -> SidebarData {
     let mut data = SidebarData::default();
     data.push(SidebarKey::All, 1, "All items", Some(counts.all), ICON_ALL);
@@ -254,7 +213,7 @@ pub fn filter_for(key: &SidebarKey) -> Option<Filter> {
 
 #[cfg(test)]
 mod tests {
-    use vk_vault::model::ItemId;
+    use vk_vault::model::{ItemId, ItemSummary};
 
     use super::*;
 
@@ -289,30 +248,9 @@ mod tests {
     }
 
     #[test]
-    fn tally_counts_every_dimension() {
-        let items = [
-            item(ItemKind::Login, Some("f1"), None, true),
-            item(ItemKind::Login, None, Some("o1"), false),
-            item(ItemKind::Card, Some("f1"), None, false),
-        ];
-        let counts = Counts::tally(&items, 4);
-        assert_eq!(counts.all, 3);
-        assert_eq!(counts.favorites, 1);
-        assert_eq!(counts.kinds.get(&ItemKind::Login), Some(&2));
-        assert_eq!(counts.kinds.get(&ItemKind::Card), Some(&1));
-        assert_eq!(counts.no_folder, 1);
-        assert_eq!(counts.folders.get("f1"), Some(&2));
-        assert_eq!(counts.organizations.get("o1"), Some(&1));
-        assert_eq!(counts.trash, 4);
-    }
-
-    #[test]
     fn build_orders_sections_and_sorts_folders() {
         let items = [item(ItemKind::Login, Some("b"), Some("o"), false)];
-        let counts = Counts {
-            sends: 3,
-            ..Counts::tally(&items, 0)
-        };
+        let counts = ItemCounts::tally(&items, 3);
         let data = build(
             &[folder("b", "work"), folder("a", "Finance")],
             &[OrganizationView {
@@ -375,7 +313,7 @@ mod tests {
 
     #[test]
     fn no_collections_section_without_organizations() {
-        let data = build(&[], &[], &[], &Counts::default());
+        let data = build(&[], &[], &[], &ItemCounts::default());
         assert!(
             data.entries
                 .iter()

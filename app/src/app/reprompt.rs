@@ -79,12 +79,14 @@ impl<S: VaultService> App<S> {
         self.reprompt_pending
             .replace(Some((item.id.clone(), pending)));
         window.set_reprompt_error(SharedString::new());
+        window.set_reprompt_password(SharedString::new());
         window.set_reprompt_visible(true);
     }
 
     fn cancel_reprompt(&self) {
         self.reprompt_pending.replace(None);
         if let Some(manager) = self.manager.borrow().as_ref() {
+            manager.window.set_reprompt_password(SharedString::new());
             manager.window.set_reprompt_visible(false);
         }
     }
@@ -106,6 +108,10 @@ impl<S: VaultService> App<S> {
             .borrow()
             .as_ref()
             .map(|manager| manager.window.clone_strong());
+        // The typed password outlives the hidden row in the window property; never keep it.
+        if let Some(window) = &window {
+            window.set_reprompt_password(SharedString::new());
+        }
         match result {
             Ok(true) => {
                 if let Some(window) = &window {

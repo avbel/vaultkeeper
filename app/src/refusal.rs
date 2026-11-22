@@ -80,7 +80,7 @@ const SUMMARY: &str = "Vaultkeeper did not start";
 
 /// Straight to `org.freedesktop.Notifications`, then `notify-send` if that call fails; a session
 /// with neither still has the window and the file.
-fn notify(text: &str) {
+pub(crate) fn notify(text: &str) {
     let body = refused_items(text);
     #[cfg(target_os = "linux")]
     match dbus_notify(&body) {

@@ -28,6 +28,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, TryRecvError},
     },
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -106,6 +107,10 @@ thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
     /// The keyboard as the Quick Panel last saw it, for the typing job that follows.
     static KEYBOARD: RefCell<Option<Result<typeable::Seen, String>>> = const { RefCell::new(None) };
+    /// The last typing thread. A cancel ends the session at once, but the thread may still sit in
+    /// the permission dialog holding the text and the layout to restore; a second job alongside it
+    /// would type while that restore switches the layout.
+    static WORKER: RefCell<Option<JoinHandle<()>>> = const { RefCell::new(None) };
 }
 
 const KEYBOARD_NOT_READ: &str = "it was not read before the Quick Panel closed";
@@ -168,7 +173,7 @@ fn problem_for(wayland_display: Option<&std::ffi::OsStr>) -> Option<&'static str
 }
 
 pub(super) fn start(target: &TypingTarget, strokes: Vec<Stroke>, done: AutoTypeDone) {
-    if SESSION.with_borrow(Option::is_some) {
+    if SESSION.with_borrow(Option::is_some) || WORKER.with_borrow(|worker| busy(worker.as_ref())) {
         done(Err(HookError::Failed(
             "Auto-type is already running".to_owned(),
         )));
@@ -193,12 +198,15 @@ pub(super) fn start(target: &TypingTarget, strokes: Vec<Stroke>, done: AutoTypeD
         .spawn(move || {
             drop(sender.send(run(&keysyms, &keyboard, &worker_cancel)));
         });
-    if let Err(error) = spawned {
-        tracing::warn!(%error, target = target.name, "cannot start the typing thread");
-        done(Err(HookError::Failed(
-            "Auto-type stopped: cannot start typing".to_owned(),
-        )));
-        return;
+    match spawned {
+        Ok(worker) => WORKER.set(Some(worker)),
+        Err(error) => {
+            tracing::warn!(%error, target = target.name, "cannot start the typing thread");
+            done(Err(HookError::Failed(
+                "Auto-type stopped: cannot start typing".to_owned(),
+            )));
+            return;
+        }
     }
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, POLL, poll);
@@ -210,6 +218,10 @@ pub(super) fn start(target: &TypingTarget, strokes: Vec<Stroke>, done: AutoTypeD
             done,
         });
     });
+}
+
+fn busy(worker: Option<&JoinHandle<()>>) -> bool {
+    worker.is_some_and(|worker| !worker.is_finished())
 }
 
 pub(super) fn cancel() {
@@ -316,6 +328,21 @@ mod tests {
 
     use super::*;
     use typeable::Desktop;
+
+    #[test]
+    fn a_typing_thread_still_running_after_a_cancel_blocks_the_next_job() {
+        let (release, wait) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _released = wait.recv();
+        });
+        assert!(busy(Some(&worker)));
+        drop(release);
+        while !worker.is_finished() {
+            std::thread::yield_now();
+        }
+        assert!(!busy(Some(&worker)));
+        assert!(!busy(None));
+    }
 
     #[test]
     fn no_wayland_display_means_no_auto_type() {

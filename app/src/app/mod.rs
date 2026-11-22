@@ -164,6 +164,8 @@ pub struct App<S: VaultService> {
     settings_window: RefCell<Option<SettingsWindow>>,
     generator_window: RefCell<Option<GeneratorWindow>>,
     generator: RefCell<GeneratorCore>,
+    /// Debounces saving the generator options while the length slider is dragged.
+    generator_save: slint::Timer,
     ssh: RefCell<SshQueue>,
     ssh_prompt: RefCell<Option<SshPrompt>>,
     browser: RefCell<BrowserQueue>,
@@ -232,6 +234,7 @@ impl<S: VaultService> App<S> {
             settings_window: RefCell::new(None),
             generator_window: RefCell::new(None),
             generator: RefCell::new(GeneratorCore::from_prefs(&settings_generator)),
+            generator_save: slint::Timer::default(),
             ssh: RefCell::new(SshQueue::default()),
             ssh_prompt: RefCell::new(None),
             browser: RefCell::new(BrowserQueue::default()),
@@ -443,6 +446,12 @@ impl<S: VaultService> App<S> {
                 tracing::warn!(%error, "sync failed");
                 if self.vault.is_offline() {
                     self.toast(OFFLINE_TOAST, false);
+                } else if !matches!(error, vk_vault::Error::Locked | vk_vault::Error::LoggedOut) {
+                    // A lock or logout that raced the sync is not a failure worth showing.
+                    self.toast(
+                        &format!("Sync failed: {}", crate::viewmodel::error_text(&error)),
+                        true,
+                    );
                 }
             }
         }

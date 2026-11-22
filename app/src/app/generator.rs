@@ -1,5 +1,7 @@
 //! Password generator shared by the Manager slide-over and the standalone window.
 
+use std::time::Duration;
+
 use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 use vk_gen::generator::{PassphraseOptions, PasswordOptions};
 use vk_vault::VaultService;
@@ -10,6 +12,8 @@ use crate::{
     settings::GeneratorPrefs,
     ui::{GeneratorState, GeneratorWindow},
 };
+
+const PREFS_SAVE_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 pub(super) struct GeneratorCore {
@@ -161,19 +165,37 @@ impl<S: VaultService> App<S> {
                     .map(|window| read_options(&window.global::<GeneratorState>()))
             });
         if let Some((passphrase_mode, password, passphrase)) = options {
-            let prefs = {
+            {
                 let mut core = self.generator.borrow_mut();
                 core.passphrase_mode = passphrase_mode;
                 core.password = password;
                 core.passphrase = passphrase;
-                core.prefs()
-            };
-            // Kept for the next generator, also after this UI process has exited.
-            if self.settings.borrow().generator != prefs {
-                self.update_settings(|settings| settings.generator = prefs);
             }
+            // Each save rewrites settings.json and makes the daemon re-read it; a slider drag
+            // sends one change per step.
+            self.generator_save.start(
+                slint::TimerMode::SingleShot,
+                PREFS_SAVE_DELAY,
+                handler!(self, |app| app.save_generator_prefs()),
+            );
         }
         self.regenerate();
+    }
+
+    /// Kept for the next generator, also after this UI process has exited.
+    fn save_generator_prefs(&self) {
+        let prefs = self.generator.borrow().prefs();
+        if self.settings.borrow().generator != prefs {
+            self.update_settings(|settings| settings.generator = prefs);
+        }
+    }
+
+    /// Saves options still waiting on the debounce, when a generator closes or the UI quits.
+    pub fn flush_generator_prefs(&self) {
+        if self.generator_save.running() {
+            self.generator_save.stop();
+            self.save_generator_prefs();
+        }
     }
 
     pub(super) fn regenerate(&self) {
@@ -265,6 +287,7 @@ impl<S: VaultService> App<S> {
         }
     }
     fn close_generator_window(&self) {
+        self.flush_generator_prefs();
         if let Some(window) = self.generator_window.borrow_mut().take() {
             hide(&window);
             retire(window);

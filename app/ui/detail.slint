@@ -145,6 +145,8 @@ component DetailFieldRow inherits Rectangle {
 // Inline master password confirmation for items marked "Ask for master password".
 component RepromptRow inherits Rectangle {
     in property <string> error;
+    // Bound out so the app can wipe a wrong password, as every other password field does.
+    in-out property <string> typed;
     callback submit(string);
     callback cancel();
 
@@ -165,6 +167,7 @@ component RepromptRow inherits Rectangle {
                 placeholder: "Master password";
                 label: "Reprompt master password";
                 password: true;
+                text <=> root.typed;
                 invalid: root.error != "";
                 accepted(text) => { root.submit(text); }
                 init => { self.focus-input(); }
@@ -392,6 +395,7 @@ export component DetailView inherits Rectangle {
     in property <bool> assign-busy;
     in property <bool> reprompt-visible;
     in property <string> reprompt-error;
+    in-out property <string> reprompt-password;
     callback reprompt-submit(string);
     callback reprompt-cancel();
     callback copy-field(int) -> bool;
@@ -522,6 +526,7 @@ export component DetailView inherits Rectangle {
             Divider { }
             if root.reprompt-visible: RepromptRow {
                 error: root.reprompt-error;
+                typed <=> root.reprompt-password;
                 submit(password) => { root.reprompt-submit(password); }
                 cancel => { root.reprompt-cancel(); }
             }

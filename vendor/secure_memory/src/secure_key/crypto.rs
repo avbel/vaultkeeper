@@ -2,6 +2,7 @@ use std::ptr::NonNull;
 
 use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use rand::{rng, Rng};
+use zeroize::Zeroizing;
 
 pub(super) const KEY_SIZE: usize = 32;
 pub(super) const NONCE_SIZE: usize = 12;
@@ -23,9 +24,9 @@ pub struct EncryptedMemory {
 
 impl MemoryEncryptionKey {
     pub fn new() -> Self {
-        let mut key = [0u8; KEY_SIZE];
-        rng().fill(&mut key);
-        MemoryEncryptionKey::from(&key)
+        let mut key = Zeroizing::new([0u8; KEY_SIZE]);
+        rng().fill(&mut *key);
+        MemoryEncryptionKey::from(&*key)
     }
 
     /// Encrypts the given plaintext using the key.

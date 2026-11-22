@@ -50,6 +50,83 @@ impl Detail {
     }
 }
 
+/// What a reload of the shown item keeps from the pane as it was.
+struct Kept {
+    revealed: Vec<bool>,
+    confirm_delete: bool,
+    attachment_confirm: bool,
+}
+
+impl Kept {
+    /// `cleared`: the item needs no master password now, or it was confirmed. A field stays
+    /// revealed only where the same field is still at the same place.
+    fn of(
+        previous: &Detail,
+        summary: &ItemSummary,
+        specs: &[FieldSpec],
+        attachments: &[AttachmentView],
+        cleared: bool,
+    ) -> Self {
+        let may_reveal = cleared && previous.summary.reprompt == summary.reprompt;
+        let revealed = specs
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| {
+                may_reveal
+                    && previous.revealed.get(index).copied().unwrap_or(false)
+                    && previous
+                        .specs
+                        .get(index)
+                        .is_some_and(|old| old.label == spec.label && old.secret == spec.secret)
+            })
+            .collect();
+        let same_attachments = previous
+            .attachments
+            .iter()
+            .map(|attachment| &attachment.id)
+            .eq(attachments.iter().map(|attachment| &attachment.id));
+        Self {
+            revealed,
+            confirm_delete: previous.summary.deleted == summary.deleted,
+            attachment_confirm: same_attachments,
+        }
+    }
+}
+
+fn fields_model(
+    draft: &ItemDraft,
+    specs: &[FieldSpec],
+    revealed: &[bool],
+) -> Rc<VecModel<crate::ui::DetailField>> {
+    Rc::new(VecModel::from(
+        specs
+            .iter()
+            .zip(revealed)
+            .map(|(spec, shown)| spec.to_ui(revealed_value(draft, spec, *shown)))
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Clears the confirmations and busy state of a newly shown item; a reload keeps those still
+/// about the same thing, and never ends the busy state of a transfer still running.
+fn reset_pane_state(window: &ManagerWindow, kept: Option<&Kept>) {
+    if !kept.is_some_and(|kept| kept.confirm_delete) {
+        window.set_confirm_delete(false);
+    }
+    if !kept.is_some_and(|kept| kept.attachment_confirm) {
+        window.set_attachment_confirm(-1);
+    }
+    if kept.is_none() {
+        window.set_attach_busy(false);
+    }
+}
+
+fn revealed_value<'a>(draft: &'a ItemDraft, spec: &FieldSpec, shown: bool) -> Option<&'a str> {
+    spec.secret
+        .filter(|_| shown)
+        .and_then(|secret| detail::secret_value(draft, secret))
+}
+
 /// Where a detail field's copy comes from.
 enum Source {
     Vault(ItemSummary, vk_vault::model::CopyField),
@@ -64,6 +141,32 @@ fn attachment_rows(attachments: &[AttachmentView]) -> Vec<AttachmentRow> {
             size: human_size(attachment.size_bytes).into(),
         })
         .collect()
+}
+
+/// Seconds before a failed TOTP computation is tried again.
+const TOTP_RETRY_SECS: i32 = 3;
+
+/// The item has no usable TOTP (none any more, an unusable seed), as opposed to a failure worth
+/// retrying.
+fn totp_gone(error: &vk_vault::Error) -> bool {
+    matches!(
+        error,
+        vk_vault::Error::NoSuchField
+            | vk_vault::Error::NotFound
+            | vk_vault::Error::Gen(_)
+            | vk_vault::Error::Crypto(_)
+    )
+}
+
+fn organization_name(
+    organizations: &[OrganizationView],
+    summary: &ItemSummary,
+) -> Option<Arc<str>> {
+    let organization = summary.organization_id.as_ref()?;
+    organizations
+        .iter()
+        .find(|candidate| &candidate.id == organization)
+        .map(|org| Arc::clone(&org.name))
 }
 
 fn to_i32(value: usize) -> i32 {
@@ -91,6 +194,12 @@ impl<S: VaultService> App<S> {
 
     /// Decrypts the item (the draft is kept only while the pane shows it) and fills the pane.
     pub(super) fn show_detail(&self, id: &ItemId) {
+        self.fill_detail(id, false);
+    }
+
+    /// `reload`: the same item re-read after a vault change, which keeps what the user has open
+    /// on it (revealed fields, a running upload, a delete confirmation).
+    fn fill_detail(&self, id: &ItemId, reload: bool) {
         let draft = match self.vault.draft(id) {
             Ok(draft) => draft,
             Err(error) => {
@@ -119,19 +228,25 @@ impl<S: VaultService> App<S> {
                 .find(|candidate| &candidate.id == folder)
                 .map(|folder| Arc::clone(&folder.name))
         });
-        let organization_name = summary.organization_id.as_ref().and_then(|organization| {
-            organizations
-                .iter()
-                .find(|candidate| &candidate.id == organization)
-                .map(|org| Arc::clone(&org.name))
-        });
+        let organization_name = organization_name(&organizations, &summary);
         let specs = detail::fields(&draft);
-        let fields_model = Rc::new(VecModel::from(
-            specs
-                .iter()
-                .map(|spec| spec.to_ui(None))
-                .collect::<Vec<_>>(),
-        ));
+        let previous = manager
+            .detail
+            .take()
+            .filter(|previous| &previous.summary.id == id);
+        let kept = previous.as_ref().filter(|_| reload).map(|previous| {
+            Kept::of(
+                previous,
+                &summary,
+                &specs,
+                &attachments,
+                self.reprompt_cleared(&summary),
+            )
+        });
+        let revealed = kept
+            .as_ref()
+            .map_or_else(|| vec![false; specs.len()], |kept| kept.revealed.clone());
+        let fields_model = fields_model(&draft, &specs, &revealed);
         let window = &manager.window;
         window.set_detail_header(DetailHeader {
             name: summary.name.as_ref().into(),
@@ -152,21 +267,17 @@ impl<S: VaultService> App<S> {
             .position(|choice| choice == &summary.folder_id)
             .map_or(0, to_i32);
         window.set_detail_folder_index(folder_index);
-        window.set_confirm_delete(false);
-        window.set_attachment_confirm(-1);
+        reset_pane_state(window, kept.as_ref());
         let pending_here = self
             .reprompt_pending
             .borrow()
             .as_ref()
             .is_some_and(|(pending, _)| pending == id);
         window.set_reprompt_visible(pending_here);
-        window.set_attach_busy(false);
         window.set_detail_mode(1);
         let has_totp = specs.iter().any(|spec| spec.kind == FieldKind::Totp);
-        let assign = manager
-            .detail
-            .take()
-            .filter(|previous| &previous.summary.id == id && !summary.deleted)
+        let assign = previous
+            .filter(|_| !summary.deleted)
             .and_then(|previous| previous.assign)
             .filter(|_| summary.editable);
         render_assign(window, assign.as_ref());
@@ -176,7 +287,7 @@ impl<S: VaultService> App<S> {
         manager.window.set_confirm_leave(false);
         manager.window.set_edit_fields(ModelRc::default());
         manager.detail = Some(Detail {
-            revealed: vec![false; specs.len()],
+            revealed,
             summary,
             draft,
             specs,
@@ -212,7 +323,7 @@ impl<S: VaultService> App<S> {
             .as_ref()
             .is_some_and(|manager| manager.rows.position(&id).is_some());
         if listed && viewing {
-            self.show_detail(&id);
+            self.fill_detail(&id, true);
         } else if !listed {
             self.clear_detail();
         }
@@ -270,9 +381,18 @@ impl<S: VaultService> App<S> {
                         .window
                         .set_detail_totp_period(i32::try_from(code.period).unwrap_or(30));
                 }
-                Err(error) => {
+                Err(error) if totp_gone(&error) => {
                     detail.has_totp = false;
                     tracing::warn!(%error, "TOTP unavailable");
+                }
+                Err(error) => {
+                    // A transient failure (an IPC timeout) must not hide the code for good, nor
+                    // leave an expired one on screen.
+                    detail.totp_expires = now + TOTP_RETRY_SECS;
+                    manager
+                        .window
+                        .set_detail_totp_code(detail::TOTP_MASK.into());
+                    tracing::warn!(%error, "TOTP not computed; retrying");
                 }
             }
         }
@@ -639,5 +759,24 @@ impl<S: VaultService> App<S> {
             state.set_can_use(false);
             state.set_use_target(-1);
         }
+        self.flush_generator_prefs();
+        // The ticker stopped while the generator covered the code.
+        self.refresh_totp();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::totp_gone;
+
+    #[test]
+    fn only_a_missing_code_hides_the_totp_for_good() {
+        assert!(totp_gone(&vk_vault::Error::NoSuchField));
+        assert!(totp_gone(&vk_vault::Error::NotFound));
+        assert!(!totp_gone(&vk_vault::Error::Offline));
+        assert!(!totp_gone(&vk_vault::Error::Locked));
+        assert!(!totp_gone(&vk_vault::Error::Io(std::io::Error::other(
+            "the daemon did not answer in time"
+        ))));
     }
 }

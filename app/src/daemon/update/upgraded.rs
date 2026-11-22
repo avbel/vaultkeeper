@@ -26,6 +26,9 @@ use crate::daemon::Daemon;
 /// How often the install path is compared with the running binary; an upgrade is rare and a
 /// restart waits for quiet anyway.
 const CHECK_EVERY: Duration = Duration::from_secs(60);
+/// How long a "restart by hand" answer is trusted for the same cause: asking costs a fresh
+/// session-bus connection, and the systemd user manager rarely comes or goes.
+const REPROBE_MANUAL_EVERY: Duration = Duration::from_mins(30);
 
 pub use vk_platform::pins::{FileIdentity, identity, replaced};
 
@@ -106,6 +109,37 @@ async fn restart_is_manual() -> bool {
     std::future::ready(false).await
 }
 
+/// The last [`restart_is_manual`] answer, for the cause it was asked for.
+struct ManualProbe {
+    cause: Cause,
+    manual: bool,
+    at: tokio::time::Instant,
+}
+
+/// Whether the cached answer still holds: same cause and not older than
+/// [`REPROBE_MANUAL_EVERY`].
+fn probe_is_fresh(probe: Option<&ManualProbe>, cause: Cause, now: tokio::time::Instant) -> bool {
+    probe.is_some_and(|probe| {
+        probe.cause == cause && now.duration_since(probe.at) < REPROBE_MANUAL_EVERY
+    })
+}
+
+async fn manual_restart(probe: &mut Option<ManualProbe>, cause: Cause) -> bool {
+    let now = tokio::time::Instant::now();
+    if probe_is_fresh(probe.as_ref(), cause, now)
+        && let Some(cached) = probe.as_ref()
+    {
+        return cached.manual;
+    }
+    let manual = restart_is_manual().await;
+    *probe = Some(ManualProbe {
+        cause,
+        manual,
+        at: now,
+    });
+    manual
+}
+
 pub async fn watch(daemon: Arc<Daemon>) {
     // `/proc/self/exe` names the image the kernel loaded, even once its file is deleted.
     let Some(running) = identity(Path::new("/proc/self/exe")) else {
@@ -115,12 +149,13 @@ pub async fn watch(daemon: Arc<Daemon>) {
     let Some(install) = vk_platform::install_kind::current_install_path() else {
         return;
     };
+    let mut probe = None;
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
         let Some((updated, cause)) = stale(running, &install) else {
             continue;
         };
-        let manual = restart_is_manual().await;
+        let manual = manual_restart(&mut probe, cause).await;
         BY_HAND.store(manual, std::sync::atomic::Ordering::SeqCst);
         if daemon.upgraded().is_none() {
             if manual {
@@ -129,9 +164,7 @@ pub async fn watch(daemon: Arc<Daemon>) {
                 tracing::info!(path = %install.display(), "Vaultkeeper, a program it runs or a service it talks to was updated or restarted; restarting once the vault is locked");
             }
         }
-        daemon.set_manual_restart(manual);
-        daemon.set_restart_reconnects(cause == Cause::Reconnect);
-        daemon.mark_upgraded(updated.clone());
+        daemon.mark_upgraded(updated.clone(), manual, cause == Cause::Reconnect);
         if manual {
             continue;
         }
@@ -166,6 +199,28 @@ mod tests {
         );
         assert_eq!(updated_install((1, 10), Some((1, 10)), install), None);
         assert_eq!(updated_install((1, 10), None, install), None);
+    }
+
+    #[test]
+    fn the_manual_restart_answer_is_reused_until_the_cause_changes_or_it_ages() {
+        let at = tokio::time::Instant::now();
+        let probe = ManualProbe {
+            cause: Cause::Updated,
+            manual: true,
+            at,
+        };
+        assert!(!probe_is_fresh(None, Cause::Updated, at));
+        assert!(probe_is_fresh(
+            Some(&probe),
+            Cause::Updated,
+            at + Duration::from_secs(60)
+        ));
+        assert!(!probe_is_fresh(Some(&probe), Cause::Reconnect, at));
+        assert!(!probe_is_fresh(
+            Some(&probe),
+            Cause::Updated,
+            at + Duration::from_mins(31)
+        ));
     }
 
     #[test]

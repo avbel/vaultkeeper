@@ -4,8 +4,17 @@
 
 use std::{
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::OnceLock,
+    time::{Duration, Instant},
 };
+
+/// Absolute, so a directory early on `$PATH` cannot answer for rpm; without either, the install
+/// counts as not rpm-owned.
+const RPM_PROGRAMS: [&str; 2] = ["/usr/bin/rpm", "/bin/rpm"];
+/// Runs on the daemon's startup path; a normal query takes about 50 ms.
+const RPM_TIMEOUT: Duration = Duration::from_secs(2);
+const RPM_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallKind {
@@ -178,13 +187,51 @@ fn probe_files() -> Probe {
     }
 }
 
-/// `rpm -qf`, spawned only when no marker said otherwise (about 50 ms).
+/// `rpm -qf`, spawned only when no marker said otherwise.
 fn rpm_owns(exe: &Path) -> bool {
-    std::process::Command::new("rpm")
+    RPM_PROGRAMS
+        .iter()
+        .map(Path::new)
+        .find(|program| program.is_file())
+        .is_some_and(|program| owns_with(program, exe, RPM_TIMEOUT))
+}
+
+/// Whether `program -qf exe` succeeds within `timeout`; a slow one is killed and reaped.
+fn owns_with(program: &Path, exe: &Path, timeout: Duration) -> bool {
+    let spawned = Command::new(program)
         .arg("-qf")
         .arg(exe)
-        .output()
-        .is_ok_and(|output| output.status.success())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!(%error, "cannot run rpm; treating the install as not rpm-owned");
+            return false;
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(RPM_POLL),
+            Ok(None) => {
+                tracing::warn!(
+                    "rpm -qf did not answer in time; treating the install as not rpm-owned"
+                );
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot wait for rpm; treating the install as not rpm-owned");
+                break;
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
 }
 
 #[cfg(test)]
@@ -262,6 +309,44 @@ mod tests {
         assert_eq!(InstallKind::Homebrew.manager(), Some("Homebrew"));
         assert_eq!(InstallKind::Direct.upgrade_command(), None);
         assert_eq!(InstallKind::Rpm.label(), "rpm");
+    }
+
+    #[cfg(unix)]
+    fn script(dir: &tempfile::TempDir, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = dir.path().join("rpm");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_rpm_is_killed_on_the_deadline_and_means_not_owned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rpm = script(&dir, "exec sleep 30");
+        let started = Instant::now();
+        assert!(!owns_with(
+            &rpm,
+            Path::new("/usr/bin/vk"),
+            Duration::from_millis(200)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// `true` and `false` ignore their arguments, and unlike a freshly written script they are
+    /// never "text file busy".
+    #[cfg(unix)]
+    #[test]
+    fn rpm_exit_status_decides_ownership() {
+        let exe = Path::new("/usr/bin/vk");
+        assert!(owns_with(Path::new("/usr/bin/true"), exe, RPM_TIMEOUT));
+        assert!(!owns_with(Path::new("/usr/bin/false"), exe, RPM_TIMEOUT));
     }
 
     #[cfg(not(target_os = "linux"))]

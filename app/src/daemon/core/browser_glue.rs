@@ -125,10 +125,20 @@ impl Daemon {
     /// settings change: it does nothing when nothing relevant moved.
     pub(super) fn reconcile_browser(self: &Arc<Self>) {
         let wanted = self.settings().browser_integration;
-        let running = guard(&self.browser.run).is_some();
+        let (present, running) = {
+            let run = guard(&self.browser.run);
+            (
+                run.is_some(),
+                run.as_ref().is_some_and(|task| !task.is_finished()),
+            )
+        };
+        // A listener that failed to start, or ended, is started again here.
         if wanted && !running {
+            // Its task installs the manifests once the listener is up, never before.
             self.start_browser();
-        } else if !wanted && running {
+            return;
+        }
+        if !wanted && present {
             self.stop_browser();
         }
         self.sync_manifests();
@@ -165,13 +175,14 @@ impl Daemon {
                 {
                     Ok(control) => control,
                     Err(error) => {
-                        tracing::warn!(%error, "browser integration not started");
+                        daemon.browser_start_failed(&error);
                         return;
                     }
                 };
             let store = control.store();
             daemon.retain_paired_choices(&store).await;
             *guard(&daemon.browser.store) = Some(store);
+            daemon.sync_manifests();
             let fills = Arc::new(RealFills {
                 vault: Arc::clone(&daemon.vault),
             });
@@ -187,6 +198,18 @@ impl Daemon {
             }
         });
         *guard(&self.browser.run) = Some(task);
+    }
+
+    /// A refusal for this build is already shown in Settings; anything else gets a toast.
+    fn browser_start_failed(self: &Arc<Self>, error: &anyhow::Error) {
+        tracing::warn!(error = ?error, "browser integration not started");
+        if crate::browser_status::start_blocker().is_some() {
+            return;
+        }
+        self.send_command(UiCommand::Toast {
+            text: format!("Browser integration could not start: {error:#}"),
+            error: true,
+        });
     }
 
     /// Installs the manifests of the enabled browsers, restores tampered ones and removes the
@@ -293,41 +316,51 @@ impl Daemon {
         let Some(store) = store else {
             return;
         };
-        let reloaded = store.lock().await.reload();
+        let mut locked = Arc::clone(&store).lock_owned().await;
+        let reloaded = tokio::task::spawn_blocking(move || locked.reload()).await;
         match reloaded {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 self.retain_paired_choices(&store).await;
                 self.browser.log.record("pairings reloaded");
                 self.browser.pairings_changed.notify_one();
             }
-            Err(error) => tracing::warn!(%error, "cannot reload browser pairings"),
+            Ok(Err(error)) => tracing::warn!(%error, "cannot reload browser pairings"),
+            Err(error) => tracing::error!(%error, "browser pairing reload task failed"),
         }
     }
 
     /// Evaluates the candidates held while the vault was locked.
     pub(super) fn browser_unlocked(self: &Arc<Self>) {
         let daemon = Arc::clone(self);
+        let mut stopped = daemon.browser.stopped.subscribe();
         drop(self.runtime.spawn(async move {
             let Some(store) = guard(&daemon.browser.store).clone() else {
                 return;
             };
             let settings = daemon.save_settings().await;
             let host = DaemonBrowser(Arc::clone(&daemon));
-            let results = daemon
-                .browser
-                .saves
-                .lock()
-                .await
-                .on_unlocked(
-                    &daemon.vault,
-                    &settings,
-                    &*store,
-                    &daemon.browser.generated,
-                    |prompt| host.prompt(prompt),
-                )
-                .await;
-            for result in results {
-                daemon.report_save(result);
+            let saves = Arc::clone(&daemon.browser.saves);
+            let evaluate = async {
+                saves
+                    .lock()
+                    .await
+                    .on_unlocked(
+                        &daemon.vault,
+                        &settings,
+                        &store,
+                        &daemon.browser.generated,
+                        |prompt| host.prompt(prompt),
+                    )
+                    .await
+            };
+            tokio::select! {
+                results = evaluate => {
+                    for result in results {
+                        daemon.report_save(result);
+                    }
+                }
+                // Dropping the prompts dismisses them; nothing is written for a stopped listener.
+                _ = stopped.changed() => {}
             }
         }));
     }
@@ -474,7 +507,7 @@ impl Daemon {
     }
 
     fn browser_filled(self: &Arc<Self>, record: &FillRecord) {
-        self.browser.log.record(&format!(
+        let line = format!(
             "fill browser={} host={} item={} via={}",
             record.browser,
             record.host,
@@ -485,7 +518,12 @@ impl Daemon {
                 Via::Single => "single",
                 Via::Auto => "auto",
             },
-        ));
+        );
+        let daemon = Arc::clone(self);
+        drop(
+            self.runtime
+                .spawn_blocking(move || daemon.browser.log.record(&line)),
+        );
         if record.via == Via::Auto {
             return;
         }
@@ -641,7 +679,7 @@ impl BrowserHost for DaemonBrowser {
                         &daemon.vault,
                         candidate,
                         &settings,
-                        &*store,
+                        &store,
                         &daemon.browser.generated,
                         |prompt| host.prompt(prompt),
                     )

@@ -3,6 +3,8 @@ use windows::Win32::Security::Cryptography::{
     CRYPTPROTECTMEMORY_SAME_PROCESS,
 };
 
+use zeroize::Zeroizing;
+
 use super::{
     crypto::{MemoryEncryptionKey, KEY_SIZE},
     SecureKeyContainer,
@@ -26,7 +28,7 @@ unsafe impl Sync for DpapiSecureKeyContainer {}
 
 impl SecureKeyContainer for DpapiSecureKeyContainer {
     fn as_key(&self) -> MemoryEncryptionKey {
-        let mut decrypted_key = self.dpapi_encrypted_key;
+        let mut decrypted_key = Zeroizing::new(self.dpapi_encrypted_key);
         unsafe {
             CryptUnprotectMemory(
                 decrypted_key.as_mut_ptr() as *mut core::ffi::c_void,
@@ -35,13 +37,15 @@ impl SecureKeyContainer for DpapiSecureKeyContainer {
             )
         }
         .expect("crypt_unprotect_memory should work");
-        let mut key = [0u8; KEY_SIZE];
-        key.copy_from_slice(&decrypted_key[..KEY_SIZE]);
-        MemoryEncryptionKey::from(&key)
+        MemoryEncryptionKey::from(
+            <&[u8; KEY_SIZE]>::try_from(&decrypted_key[..KEY_SIZE])
+                .expect("slice should be KEY_SIZE"),
+        )
     }
 
     fn from_key(key: MemoryEncryptionKey) -> Self {
-        let mut padded_key = [0u8; KEY_SIZE + CRYPTPROTECTMEMORY_BLOCK_SIZE as usize];
+        let mut padded_key =
+            Zeroizing::new([0u8; KEY_SIZE + CRYPTPROTECTMEMORY_BLOCK_SIZE as usize]);
         padded_key[..KEY_SIZE].copy_from_slice(key.as_ref());
         unsafe {
             CryptProtectMemory(
@@ -52,7 +56,7 @@ impl SecureKeyContainer for DpapiSecureKeyContainer {
         }
         .expect("crypt_protect_memory should work");
         DpapiSecureKeyContainer {
-            dpapi_encrypted_key: padded_key,
+            dpapi_encrypted_key: *padded_key,
         }
     }
 

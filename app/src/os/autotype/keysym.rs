@@ -133,14 +133,18 @@ fn chunk(keysyms: &[u32]) -> Chunk {
     let mut distinct = Zeroizing::new(keysyms.to_vec());
     distinct.sort_unstable();
     distinct.dedup();
-    let keys = keysyms
-        .iter()
-        .filter_map(|keysym| distinct.binary_search(keysym).ok())
-        .map(|slot| FIRST_EVDEV_KEY + u32::try_from(slot).unwrap_or_default())
-        .collect();
+    // Sized up front: filter_map gives `collect` no size, and every regrowth would leave an
+    // unzeroized copy of the key sequence behind.
+    let mut keys = Zeroizing::new(Vec::with_capacity(keysyms.len()));
+    keys.extend(
+        keysyms
+            .iter()
+            .filter_map(|keysym| distinct.binary_search(keysym).ok())
+            .map(|slot| FIRST_EVDEV_KEY + u32::try_from(slot).unwrap_or_default()),
+    );
     Chunk {
         keymap: keymap(&distinct),
-        keys: Zeroizing::new(keys),
+        keys,
     }
 }
 

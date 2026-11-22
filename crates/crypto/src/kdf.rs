@@ -1,9 +1,10 @@
 use std::num::NonZeroU32;
 
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
-use crate::{Error, Result};
+use crate::{Error, Result, details};
 
 const KDF_TYPE_PBKDF2: u8 = 0;
 const KDF_TYPE_ARGON2ID: u8 = 1;
@@ -13,26 +14,26 @@ const KDF_TYPE_ARGON2ID: u8 = 1;
 const PBKDF2_ITERATIONS: Limits = Limits {
     min: 5_000,
     max: 2_000_000,
-    below: "PBKDF2 needs at least 5000 iterations",
-    above: "PBKDF2 allows at most 2000000 iterations",
+    below: details::PBKDF2_ITERATIONS_BELOW,
+    above: details::PBKDF2_ITERATIONS_ABOVE,
 };
 const ARGON2_ITERATIONS: Limits = Limits {
     min: 2,
     max: 10,
-    below: "Argon2id needs at least 2 iterations",
-    above: "Argon2id allows at most 10 iterations",
+    below: details::ARGON2_ITERATIONS_BELOW,
+    above: details::ARGON2_ITERATIONS_ABOVE,
 };
 const ARGON2_MEMORY_MIB: Limits = Limits {
     min: 16,
     max: 1024,
-    below: "Argon2id needs at least 16 MiB of memory",
-    above: "Argon2id allows at most 1024 MiB of memory",
+    below: details::ARGON2_MEMORY_BELOW,
+    above: details::ARGON2_MEMORY_ABOVE,
 };
 const ARGON2_PARALLELISM: Limits = Limits {
     min: 1,
     max: 16,
-    below: "Argon2id needs a parallelism of at least 1",
-    above: "Argon2id allows a parallelism of at most 16",
+    below: details::ARGON2_PARALLELISM_BELOW,
+    above: details::ARGON2_PARALLELISM_ABOVE,
 };
 const KIB_PER_MIB: u32 = 1024;
 
@@ -81,12 +82,12 @@ impl Kdf {
     ) -> Result<Self> {
         match kdf_type {
             KDF_TYPE_PBKDF2 => Ok(Self::Pbkdf2 {
-                iterations: non_zero(Some(iterations), "PBKDF2 iterations are zero")?,
+                iterations: non_zero(Some(iterations), details::PBKDF2_ITERATIONS_ZERO)?,
             }),
             KDF_TYPE_ARGON2ID => Ok(Self::Argon2id {
-                iterations: non_zero(Some(iterations), "Argon2id iterations are zero")?,
-                memory_mib: non_zero(memory_mib, "Argon2id memory is missing or zero")?,
-                parallelism: non_zero(parallelism, "Argon2id parallelism is missing or zero")?,
+                iterations: non_zero(Some(iterations), details::ARGON2_ITERATIONS_ZERO)?,
+                memory_mib: non_zero(memory_mib, details::ARGON2_MEMORY_ZERO)?,
+                parallelism: non_zero(parallelism, details::ARGON2_PARALLELISM_ZERO)?,
             }),
             other => Err(Error::UnsupportedKdf(other)),
         }
@@ -142,12 +143,24 @@ impl Kdf {
                 .map_err(|_| Error::Kdf)?;
                 // Bitwarden hashes the salt so that short emails still meet Argon2's 8-byte minimum.
                 let salt = Sha256::digest(salt);
+                let mut blocks = argon2_memory(params.block_count())?;
                 Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-                    .hash_password_into(password, &salt, out)
+                    .hash_password_into_with_memory(password, &salt, out, blocks.as_mut_slice())
                     .map_err(|_| Error::Kdf)
             }
         }
     }
+}
+
+/// Owned here rather than by `argon2` so the filled blocks, from which the key can be
+/// recomputed, are wiped before the memory is released. Reserved fallibly: up to 1 GiB.
+fn argon2_memory(block_count: usize) -> Result<Zeroizing<Vec<Block>>> {
+    let mut blocks = Zeroizing::new(Vec::new());
+    blocks
+        .try_reserve_exact(block_count)
+        .map_err(|_| Error::Kdf)?;
+    blocks.resize(block_count, Block::new());
+    Ok(blocks)
 }
 
 fn non_zero(value: Option<u32>, reason: &'static str) -> Result<NonZeroU32> {

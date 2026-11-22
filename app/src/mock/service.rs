@@ -8,9 +8,10 @@ use tokio::sync::watch;
 use vk_vault::{
     Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
-        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemData,
-        ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView, SendDraft,
-        SendKind, SendSummary, ServerProbe, SessionState, SshKeyMaterial, TwoFactorAnswer,
+        AccountView, AttachmentView, CollectionView, CopyField, Filter, FolderView, ItemCounts,
+        ItemData, ItemDraft, ItemId, ItemSummary, LoginRequest, LoginStep, OrganizationView,
+        SendDraft, SendKind, SendSummary, ServerProbe, SessionState, SshKeyMaterial,
+        TwoFactorAnswer,
     },
 };
 use zeroize::Zeroizing;
@@ -360,6 +361,7 @@ impl VaultService for MockVault {
     }
 
     fn search(&self, query: &str, filter: &Filter) -> Result<Arc<[ItemSummary]>> {
+        self.searches.fetch_add(1, Ordering::SeqCst);
         let inner = self.guard();
         let data = inner.data()?;
         let query = query.trim().to_lowercase();
@@ -392,6 +394,15 @@ impl VaultService for MockVault {
 
     fn folders(&self) -> Result<Vec<FolderView>> {
         Ok(self.guard().data()?.folders.clone())
+    }
+
+    fn counts(&self) -> Result<ItemCounts> {
+        let inner = self.guard();
+        let data = inner.data()?;
+        Ok(ItemCounts::tally(
+            data.items.iter().map(|item| &item.summary),
+            data.sends.len(),
+        ))
     }
 
     fn organizations(&self) -> Result<Vec<OrganizationView>> {

@@ -568,6 +568,7 @@ fn reconnect_options(initial_ms: u64, max_ms: u64, healthy_ms: u64) -> Reconnect
         listen: quick(),
         backoff_initial: Duration::from_millis(initial_ms),
         backoff_max: Duration::from_millis(max_ms),
+        permanent_backoff_max: Duration::from_millis(max_ms),
         healthy_after: Duration::from_millis(healthy_ms),
     }
 }

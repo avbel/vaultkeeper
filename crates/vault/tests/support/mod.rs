@@ -174,6 +174,7 @@ pub fn fast_timings() -> Timings {
     };
     timings.notifications.backoff_initial = Duration::from_millis(200);
     timings.notifications.backoff_max = Duration::from_secs(2);
+    timings.notifications.permanent_backoff_max = Duration::from_secs(2);
     timings
 }
 

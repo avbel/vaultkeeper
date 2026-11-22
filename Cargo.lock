@@ -328,6 +328,8 @@ dependencies = [
  "blake2",
  "cpufeatures 0.3.1",
  "password-hash",
+ "rayon",
+ "zeroize",
 ]
 
 [[package]]
@@ -6105,6 +6107,7 @@ dependencies = [
  "rand 0.9.5",
  "tracing",
  "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -6749,6 +6752,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]

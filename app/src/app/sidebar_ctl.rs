@@ -7,7 +7,7 @@ use vk_vault::{VaultService, model::Filter};
 
 use super::{App, handler};
 use crate::{
-    sidebar::{self, Counts, SidebarKey},
+    sidebar::{self, SidebarKey},
     ui::ManagerWindow,
     viewmodel,
 };
@@ -22,24 +22,12 @@ impl<S: VaultService> App<S> {
 
     /// Counts, folders and collections; keeps the selected entry when it still exists.
     pub(super) fn refresh_sidebar(&self) {
-        let all = self.vault.search("", &Filter::default());
-        let trash = self.vault.search(
-            "",
-            &Filter {
-                trash: true,
-                ..Filter::default()
-            },
-        );
+        let counts = self.vault.counts();
         let folders = self.vault.folders();
         let organizations = self.vault.organizations().unwrap_or_default();
         let collections = self.vault.collections().unwrap_or_default();
-        let sends = self.vault.sends().map_or(0, |sends| sends.len());
-        let (Ok(all), Ok(trash), Ok(folders)) = (all, trash, folders) else {
+        let (Ok(counts), Ok(folders)) = (counts, folders) else {
             return;
-        };
-        let counts = Counts {
-            sends,
-            ..Counts::tally(&all, trash.len())
         };
         let data = sidebar::build(&folders, &organizations, &collections, &counts);
         let (labels, choices) = super::manager::folder_options(&folders);

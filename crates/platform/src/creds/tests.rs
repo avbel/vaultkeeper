@@ -108,6 +108,30 @@ fn a_hung_tool_times_out_and_is_killed() {
     assert!(started.elapsed() < Duration::from_secs(10));
 }
 
+/// The helper leaves the process group, so the kill does not reach it, and keeps stdout open
+/// for longer than the whole call may take.
+#[test]
+fn a_helper_that_escaped_the_kill_and_holds_stdout_does_not_outlast_the_timeout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let creds = fake(
+        &dir,
+        "escapes",
+        "#!/bin/sh
+perl -MPOSIX -e 'POSIX::setsid(); sleep 4' &
+exit 0
+",
+    )
+    .with_timeout(Duration::from_millis(200));
+    let started = Instant::now();
+    let error = creds.encrypt(SECRET).expect_err("times out");
+    assert!(matches!(error, CredsError::Timeout), "{error:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn a_tool_that_ignores_stdin_still_reports_its_status() {
     let dir = tempfile::tempdir().expect("tempdir");

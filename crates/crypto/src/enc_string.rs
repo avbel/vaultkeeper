@@ -10,7 +10,7 @@ use sha1::Sha1;
 use zeroize::Zeroizing;
 
 use crate::{
-    Error, PrivateKey, Result, SymmetricKey,
+    Error, PrivateKey, Result, SymmetricKey, details,
     primitives::{BLOCK_LEN, cbc_decrypt, cbc_encrypt, fill_random, hmac_tag, verify_hmac},
 };
 
@@ -121,23 +121,23 @@ impl FromStr for EncString {
             TYPE_AES_CBC => {
                 let [iv, data] = split_parts(body)?;
                 Ok(Self::AesCbc256 {
-                    iv: decode_array(iv, "IV must be 16 bytes")?,
+                    iv: decode_array(iv, details::IV_LEN)?,
                     data: decode_cbc_data(data)?,
                 })
             }
             TYPE_AES_CBC_HMAC => {
                 let [iv, data, mac] = split_parts(body)?;
                 Ok(Self::AesCbc256HmacSha256 {
-                    iv: decode_array(iv, "IV must be 16 bytes")?,
+                    iv: decode_array(iv, details::IV_LEN)?,
                     data: decode_cbc_data(data)?,
-                    mac: decode_array::<MAC_LEN>(mac, "MAC must be 32 bytes")?,
+                    mac: decode_array::<MAC_LEN>(mac, details::MAC_LEN)?,
                 })
             }
             TYPE_RSA_OAEP_SHA1 => {
                 let [data] = split_parts(body)?;
                 let data = decode(data)?;
                 if data.is_empty() {
-                    return Err(Error::MalformedEncString("RSA ciphertext is empty"));
+                    return Err(Error::MalformedEncString(details::EMPTY_RSA_CIPHERTEXT));
                 }
                 Ok(Self::Rsa2048OaepSha1 { data })
             }
@@ -175,11 +175,11 @@ fn split_header(s: &str) -> Result<(u8, &str)> {
     };
     // `u8::from_str` also takes a leading '+', which is not a valid header.
     if header.is_empty() || !header.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Error::MalformedEncString("invalid type header"));
+        return Err(Error::MalformedEncString(details::INVALID_TYPE_HEADER));
     }
     let enc_type = header
         .parse()
-        .map_err(|_| Error::MalformedEncString("invalid type header"))?;
+        .map_err(|_| Error::MalformedEncString(details::INVALID_TYPE_HEADER))?;
     Ok((enc_type, body))
 }
 
@@ -189,10 +189,10 @@ fn split_parts<const N: usize>(body: &str) -> Result<[&str; N]> {
     for slot in &mut out {
         *slot = parts
             .next()
-            .ok_or(Error::MalformedEncString("wrong number of parts"))?;
+            .ok_or(Error::MalformedEncString(details::WRONG_PARTS))?;
     }
     if parts.next().is_some() {
-        return Err(Error::MalformedEncString("wrong number of parts"));
+        return Err(Error::MalformedEncString(details::WRONG_PARTS));
     }
     Ok(out)
 }
@@ -200,7 +200,7 @@ fn split_parts<const N: usize>(body: &str) -> Result<[&str; N]> {
 fn decode(part: &str) -> Result<Vec<u8>> {
     STANDARD
         .decode(part)
-        .map_err(|_| Error::MalformedEncString("invalid base64"))
+        .map_err(|_| Error::MalformedEncString(details::INVALID_BASE64))
 }
 
 fn decode_array<const N: usize>(part: &str, wrong_len: &'static str) -> Result<[u8; N]> {
@@ -213,9 +213,7 @@ fn decode_array<const N: usize>(part: &str, wrong_len: &'static str) -> Result<[
 fn decode_cbc_data(part: &str) -> Result<Vec<u8>> {
     let data = decode(part)?;
     if data.is_empty() || !data.len().is_multiple_of(BLOCK_LEN) {
-        return Err(Error::MalformedEncString(
-            "ciphertext must be a non-empty multiple of 16 bytes",
-        ));
+        return Err(Error::MalformedEncString(details::CIPHERTEXT_LEN));
     }
     Ok(data)
 }

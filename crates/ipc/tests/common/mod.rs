@@ -7,6 +7,7 @@
 )]
 
 use std::{
+    collections::HashSet,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
@@ -28,7 +29,7 @@ use vk_vault::{
     Error, Result, TotpCode, TwoFactorProvider, VaultService,
     model::{
         AccountView, AttachmentView, CollectionView, CopyField, CustomField, Filter, FolderView,
-        ItemData, ItemDraft, ItemId, ItemKind, ItemSummary, LoginRequest, LoginStep,
+        ItemCounts, ItemData, ItemDraft, ItemId, ItemKind, ItemSummary, LoginRequest, LoginStep,
         OrganizationView, SendDraft, SendKind, SendSummary, ServerProbe, SessionState,
         SshKeyMaterial, TwoFactorAnswer,
     },
@@ -242,6 +243,7 @@ pub struct FakeVault {
     hang_sync: AtomicBool,
     items: Arc<[ItemSummary]>,
     lowercase_names: Vec<String>,
+    trashed: Mutex<HashSet<ItemId>>,
     log: Mutex<Vec<String>>,
     in_flight: AtomicUsize,
     max_in_flight: AtomicUsize,
@@ -259,6 +261,7 @@ impl FakeVault {
             hang_sync: AtomicBool::new(false),
             items,
             lowercase_names,
+            trashed: Mutex::new(HashSet::new()),
             log: Mutex::new(Vec::new()),
             in_flight: AtomicUsize::new(0),
             max_in_flight: AtomicUsize::new(0),
@@ -295,6 +298,19 @@ impl FakeVault {
     /// Makes `sync` never finish, to have a call in flight when the daemon goes away.
     pub fn hang_sync(&self) {
         self.hang_sync.store(true, Ordering::SeqCst);
+    }
+
+    /// Another device trashed the item: only the counts change, and the daemon is told.
+    pub fn trash_elsewhere(&self, id: &ItemId) {
+        self.mark_trashed(id);
+        self.bump();
+    }
+
+    fn mark_trashed(&self, id: &ItemId) {
+        self.trashed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.clone());
     }
 
     pub fn revision(&self) -> u64 {
@@ -499,6 +515,20 @@ impl VaultService for FakeVault {
         Ok(folders())
     }
 
+    fn counts(&self) -> Result<ItemCounts> {
+        self.require_unlocked()?;
+        let trashed = self.trashed.lock().unwrap_or_else(PoisonError::into_inner);
+        let items: Vec<ItemSummary> = self
+            .items
+            .iter()
+            .map(|item| ItemSummary {
+                deleted: trashed.contains(&item.id),
+                ..item.clone()
+            })
+            .collect();
+        Ok(ItemCounts::tally(&items, 1))
+    }
+
     fn organizations(&self) -> Result<Vec<OrganizationView>> {
         self.require_unlocked()?;
         Ok(organizations())
@@ -609,6 +639,7 @@ impl VaultService for FakeVault {
 
     async fn trash(&self, id: &ItemId) -> Result<()> {
         self.record(format!("trash {}", id.0));
+        self.mark_trashed(id);
         Ok(())
     }
 

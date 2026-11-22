@@ -21,7 +21,7 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use crate::{
-    Error, Result, SymmetricKey,
+    Error, Result, SymmetricKey, details,
     primitives::{BLOCK_LEN, cbc_decrypt, cbc_encrypt, fill_random, hmac_tag, verify_hmac},
 };
 
@@ -205,12 +205,12 @@ fn read_header(reader: &mut impl Read) -> Result<Header> {
 /// `bytes` is the start of the buffer, at most [`HEADER_LEN`] long.
 fn parse_header(bytes: &[u8]) -> Result<Header> {
     match bytes.first() {
-        None => Err(Error::MalformedEncString("encrypted buffer is empty")),
+        None => Err(Error::MalformedEncString(details::EMPTY_BUFFER)),
         Some(&enc_type) if enc_type != BUFFER_TYPE => Err(Error::UnsupportedEncType(enc_type)),
         Some(_) => bytes
             .try_into()
             .map(Header)
-            .map_err(|_| Error::MalformedEncString("encrypted buffer is shorter than its header")),
+            .map_err(|_| Error::MalformedEncString(details::SHORT_BUFFER)),
     }
 }
 
@@ -225,9 +225,7 @@ fn check_mac(mac: HmacSha256, expected: &[u8; MAC_LEN]) -> Result<()> {
 
 fn check_ciphertext_len(len: u64) -> Result<()> {
     if len == 0 || !len.is_multiple_of(len_u64(BLOCK_LEN)) {
-        return Err(Error::MalformedEncString(
-            "ciphertext must be a non-empty multiple of 16 bytes",
-        ));
+        return Err(Error::MalformedEncString(details::CIPHERTEXT_LEN));
     }
     Ok(())
 }

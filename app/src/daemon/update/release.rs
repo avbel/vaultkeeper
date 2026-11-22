@@ -94,9 +94,23 @@ pub fn asset_name(version: Version) -> String {
             "x64"
         };
         windows_setup_name(version, arch)
+    } else if cfg!(target_os = "linux") {
+        // The updater only links the release page on Linux; the tarball says the release has a
+        // build for this machine.
+        let triple = if cfg!(target_arch = "aarch64") {
+            "aarch64-unknown-linux-gnu"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        };
+        linux_tarball_name(version, triple)
     } else {
         format!("Vaultkeeper-v{version}-arm64.app.zip")
     }
+}
+
+/// The name `scripts/bundle-linux.sh` gives the release tarball.
+fn linux_tarball_name(version: Version, triple: &str) -> String {
+    format!("vaultkeeper-v{version}-{triple}.tar.gz")
 }
 
 /// One native installer per architecture; the x64 one refuses to install on ARM64.
@@ -174,6 +188,10 @@ mod tests {
         "Vaultkeeper-v0.2.0-arm64-setup.exe"
     } else if cfg!(windows) {
         "Vaultkeeper-v0.2.0-x64-setup.exe"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "vaultkeeper-v0.2.0-aarch64-unknown-linux-gnu.tar.gz"
+    } else if cfg!(target_os = "linux") {
+        "vaultkeeper-v0.2.0-x86_64-unknown-linux-gnu.tar.gz"
     } else {
         "Vaultkeeper-v0.2.0-arm64.app.zip"
     };
@@ -192,6 +210,15 @@ mod tests {
         assert_eq!(
             windows_setup_name(version, "arm64"),
             "Vaultkeeper-v0.2.0-arm64-setup.exe"
+        );
+    }
+
+    #[test]
+    fn linux_tarball_names_match_the_bundle_script() {
+        let version: Version = "0.2.0".parse().expect("version");
+        assert_eq!(
+            linux_tarball_name(version, "x86_64-unknown-linux-gnu"),
+            "vaultkeeper-v0.2.0-x86_64-unknown-linux-gnu.tar.gz"
         );
     }
 

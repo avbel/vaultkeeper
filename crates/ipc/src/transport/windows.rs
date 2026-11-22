@@ -8,7 +8,7 @@
 
 use std::{
     io,
-    os::windows::io::{AsRawHandle as _, IntoRawHandle as _, RawHandle},
+    os::windows::io::{AsRawHandle as _, IntoRawHandle as _, OwnedHandle, RawHandle},
     path::PathBuf,
     pin::{Pin, pin},
     sync::{
@@ -25,7 +25,7 @@ use tokio::{
         WriteHalf as TokioWriteHalf,
     },
     net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions},
-    runtime::Handle,
+    runtime::{Handle, RuntimeFlavor},
     sync::{Mutex as AsyncMutex, mpsc},
     task::JoinSet,
     time::Sleep,
@@ -60,6 +60,7 @@ const RESET_ATTEMPTS: u32 = 4;
 /// How long `bind` waits for a previous listener's aborted instances to close before it reports the
 /// name as taken.
 const REBIND_WINDOW: Duration = Duration::from_millis(500);
+const REBIND_PAUSE: Duration = Duration::from_millis(20);
 
 /// A named-pipe listener backed by a fixed pool of instances.
 pub struct Listener {
@@ -145,10 +146,20 @@ fn create_instances_when_free(name: &str, sid: &str) -> io::Result<Vec<NamedPipe
             Err(error)
                 if error.kind() == io::ErrorKind::PermissionDenied && Instant::now() < deadline =>
             {
-                std::thread::sleep(Duration::from_millis(20));
+                pause_before_rebind();
             }
             result => return result,
         }
+    }
+}
+
+/// `bind` is synchronous but runs inside the runtime; on a multi-thread runtime the worker's
+/// other tasks move elsewhere while it sleeps.
+fn pause_before_rebind() {
+    let pause = || std::thread::sleep(REBIND_PAUSE);
+    match Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(RuntimeFlavor::MultiThread) => tokio::task::block_in_place(pause),
+        _ => pause(),
     }
 }
 
@@ -587,7 +598,15 @@ pub async fn connect(endpoint: &Endpoint) -> io::Result<Stream> {
             "a named pipe client cannot connect to a socket path",
         ));
     };
-    let client = open(name)?;
+    let name = name.to_owned();
+    // `WaitNamedPipeW` blocks for up to CONNECT_TIMEOUT; off the runtime, so an enclosing
+    // tokio timeout can still fire.
+    let handle = tokio::task::spawn_blocking(move || open(&name))
+        .await
+        .map_err(io::Error::other)??;
+    // SAFETY: the handle is a fresh overlapped pipe client handle that we own; tokio takes over
+    // closing it.
+    let client = unsafe { NamedPipeClient::from_raw_handle(handle.into_raw_handle()) }?;
     verify_server(&client)?;
     Ok(Stream::client(client))
 }
@@ -595,16 +614,12 @@ pub async fn connect(endpoint: &Endpoint) -> io::Result<Stream> {
 /// Opens a client handle, waiting through the brief window where every pooled instance is taken.
 /// Not tokio's `ClientOptions`: its GENERIC_WRITE includes FILE_CREATE_PIPE_INSTANCE, which the
 /// final DACL withholds.
-fn open(name: &str) -> io::Result<NamedPipeClient> {
+fn open(name: &str) -> io::Result<OwnedHandle> {
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     loop {
         match vk_win::open_pipe_client(name, true) {
-            Ok(handle) => {
-                // SAFETY: the handle is a fresh overlapped pipe client handle that we own; tokio
-                // takes over closing it.
-                return unsafe { NamedPipeClient::from_raw_handle(handle.into_raw_handle()) };
-            }
+            Ok(handle) => return Ok(handle),
             Err(error) if is_pipe_busy(&error) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {

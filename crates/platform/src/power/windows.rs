@@ -120,19 +120,12 @@ fn run(tx: Sender<PowerEvent>, ready: &Sender<io::Result<isize>>) {
         return;
     };
 
-    let session = register_session(hwnd);
+    register_session(hwnd);
     let power = register_power(hwnd);
     let _ = ready.send(Ok(hwnd as isize));
 
     message_loop();
 
-    if session {
-        // SAFETY: `hwnd` was registered with WTSRegisterSessionNotification; this call may come
-        // from any thread and cannot run concurrently with a second drop because `self` owns it.
-        unsafe {
-            WTSUnRegisterSessionNotification(hwnd);
-        }
-    }
     if let Some(handle) = power {
         // SAFETY: `handle` came from RegisterSuspendResumeNotification and is released once.
         unsafe {
@@ -211,17 +204,16 @@ fn get_module() -> *mut c_void {
     unsafe { GetModuleHandleW(ptr::null()) }
 }
 
-fn register_session(hwnd: HWND) -> bool {
+fn register_session(hwnd: HWND) {
     // SAFETY: `hwnd` is a live window created by this thread; the registration lasts until the
-    // matching unregister in `run`.
+    // matching unregister in WM_DESTROY.
     if unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) } != 0 {
-        return true;
+        return;
     }
     warn!(
         error = %io::Error::last_os_error(),
         "no screen lock events; lock on screen lock is off"
     );
-    false
 }
 
 fn register_power(hwnd: HWND) -> Option<HPOWERNOTIFY> {
@@ -314,6 +306,12 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_DESTROY => {
+            // Microsoft requires the unregister before the window is gone; for a window that was
+            // never registered it fails harmlessly.
+            // SAFETY: `hwnd` is still a valid window while WM_DESTROY runs.
+            unsafe {
+                WTSUnRegisterSessionNotification(hwnd);
+            }
             // SAFETY: reading back the value installed in WM_NCCREATE.
             let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut Sender<PowerEvent>;
             if !raw.is_null() {
