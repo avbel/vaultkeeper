@@ -9,7 +9,7 @@ Vaultkeeper is a lightweight native desktop client for self-hosted
 [Slint](https://slint.dev) UI, runs in the system tray, and opens a window only when you need one.
 
 **Supported platforms:** macOS 13+ on Apple silicon, Windows 11 24H2+ on x64 and ARM64, and Linux on Wayland
-(GNOME, KDE Plasma, Sway and Hyprland on the latest Ubuntu and Fedora, and Omarchy) on x86_64 and ARM64. See
+(GNOME, KDE Plasma, Sway and Hyprland on the latest Ubuntu and Fedora, and Arch Linux) on x86_64 and ARM64. See
 [Linux](#linux) for what differs there.
 
 Vaultkeeper is an independent project. It is **not affiliated with, endorsed by or supported by Bitwarden Inc. or the
@@ -24,13 +24,6 @@ Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/c
   stays at the tray-only level.
 - **Fast, native Rust.** Crypto, networking and the vault logic are plain Rust, and the Quick Panel stays warm for 120 s
   after use so repeated opens are instant.
-
-Measured on the Slint spike (Slint 1.18.1, release build, software renderer, physical footprint), not on the finished app:
-
-| State | Memory |
-|---|---|
-| Tray only (daemon) | ~14 MB |
-| Window shown | ~47 MB |
 
 The two-process design exists because the window's memory is not fully returned after it closes (about 42 MB 10 s after the
 spike's window was dropped). See the "Step 0 result" section of
@@ -58,7 +51,7 @@ spike's window was dropped). See the "Step 0 result" section of
 ## Requirements
 
 - macOS 13 or newer on Apple silicon, Windows 11 version 24H2 or newer on x64 or ARM64, or a Wayland session of
-  GNOME, KDE Plasma, Sway or Hyprland on the latest Ubuntu or Fedora, or on Omarchy (no X11)
+  GNOME, KDE Plasma, Sway or Hyprland on the latest Ubuntu or Fedora, or on Arch Linux (no X11)
 - A Vaultwarden server, or use `--mock` to try the demo vault
 
 ## Install
@@ -265,8 +258,8 @@ Vaultkeeper has not had an independent security audit.
 
 ## Linux
 
-Wayland only, on GNOME, KDE Plasma, Sway and Hyprland as the latest Ubuntu and Fedora ship them, and on Omarchy (Arch
-with Hyprland). Other Arch setups run only when the startup checks pass. Details are in [docs/USAGE.md](docs/USAGE.md)
+Wayland only, on GNOME, KDE Plasma, Sway and Hyprland as the latest Ubuntu and Fedora ship them, and on Arch
+Linux. Details are in [docs/USAGE.md](docs/USAGE.md)
 and the [Linux design](docs/solutions/linux-support.md).
 
 - **Tray:** a StatusNotifierItem icon that follows the panel's colours. GNOME shows it only with the AppIndicator
