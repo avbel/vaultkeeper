@@ -2,6 +2,8 @@
 # EGL are loaded at run time and appear in the formula's caveats instead. A new entry here means
 # the caveats' package lists need it too (linux-ideas.md §7.6).
 libc.so.6
+ld-linux-x86-64.so.2
+ld-linux-aarch64.so.1
 libm.so.6
 libgcc_s.so.1
 libudev.so.1
