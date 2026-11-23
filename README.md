@@ -103,7 +103,8 @@ packages are planned.
 
 Install the Vaultkeeper extension from the Chrome Web Store (Chrome and Edge) or
 [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/vaultkeeper-app/) and turn on browser integration in the
-app's settings.
+app's settings. Each GitHub release also carries a Mozilla-signed `vaultkeeper-firefox-v<version>.xpi`: open it in
+Firefox to install the add-on without the store (its version ends in `.1`; install a newer release's `.xpi` to update it).
 
 Each release lists SHA-256 checksums in `SHA256SUMS`.
 

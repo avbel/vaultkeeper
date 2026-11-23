@@ -1,0 +1,80 @@
+name: Sign Firefox .xpi
+
+# Adds a signed self-distributed .xpi to a published release that has none (one released before
+# release.yml signed it, or whose signing failed). It signs that tag's `store` artifact on the AMO
+# unlisted channel as X.Y.Z.1, like release.yml's firefox-xpi job, and refreshes SHA256SUMS.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Released tag to add the .xpi to (e.g. v0.1.16)
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  sign:
+    name: Firefox signed .xpi
+    runs-on: ubuntu-latest
+    environment: amo
+    steps:
+      - id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "$TAG" \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::no successful Release run for $TAG"
+            exit 1
+          fi
+          echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: store
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Sign on the unlisted channel
+        env:
+          TAG: ${{ inputs.tag }}
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "::error::AMO_JWT_ISSUER / AMO_JWT_SECRET are not set in the amo environment"
+            exit 1
+          fi
+          VERSION=$(jq -r .version browsers/dist/firefox/manifest.json)
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::the artifact holds version $VERSION, not $TAG"
+            exit 1
+          fi
+          STAGE=$(mktemp -d)
+          cp -R browsers/dist/firefox/. "$STAGE"
+          jq '.version += ".1"' browsers/dist/firefox/manifest.json > "$STAGE/manifest.json"
+          npx -y web-ext@10.8.0 sign --channel unlisted --timeout 1200000 \
+            --source-dir "$STAGE" --artifacts-dir signed \
+            --upload-source-code store/firefox-source.zip
+          mkdir -p out
+          mv signed/*.xpi "out/vaultkeeper-firefox-$TAG.xpi"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd out
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
+          grep -v ' vaultkeeper-firefox-.*\.xpi$' SHA256SUMS > SHA256SUMS.new || true
+          sha256sum "vaultkeeper-firefox-$TAG.xpi" >> SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          gh release upload "$TAG" "vaultkeeper-firefox-$TAG.xpi" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber

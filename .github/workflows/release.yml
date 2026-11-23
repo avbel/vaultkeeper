@@ -219,6 +219,49 @@ jobs:
             browsers/store/amo-metadata.json
           if-no-files-found: error
 
+  # A signed .xpi for the GitHub release, so Firefox users can install before AMO review finishes.
+  # AMO version numbers are unique across the listed and unlisted channels, so this self-distributed
+  # build is X.Y.Z.1 and X.Y.Z stays free for the store. Unlisted uploads are signed automatically
+  # within minutes. A failure here leaves the release without the .xpi instead of blocking it.
+  firefox-xpi:
+    name: Firefox signed .xpi
+    needs: extensions
+    runs-on: ubuntu-latest
+    environment: release
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: store
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Sign on the unlisted channel
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "::warning::AMO_JWT_ISSUER / AMO_JWT_SECRET are not set: the release has no signed .xpi"
+            exit 0
+          fi
+          STAGE=$(mktemp -d)
+          cp -R browsers/dist/firefox/. "$STAGE"
+          jq '.version += ".1"' browsers/dist/firefox/manifest.json > "$STAGE/manifest.json"
+          npx -y web-ext@10.8.0 sign --channel unlisted --timeout 1200000 \
+            --source-dir "$STAGE" --artifacts-dir signed \
+            --upload-source-code store/firefox-source.zip
+          mkdir -p out
+          mv signed/*.xpi "out/vaultkeeper-firefox-$TAG.xpi"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firefox-xpi
+          path: out/*.xpi
+          if-no-files-found: ignore
+
   # The Windows build is split in two so that no signing material exists where cargo runs: build
   # scripts of dependencies execute in windows-build, which has no environment and no secrets, and
   # windows-package, which holds them, only runs signtool, iscc and openssl on the artifact it gets.
@@ -565,7 +608,7 @@ jobs:
 
   release:
     name: GitHub release
-    needs: [macos, extensions, windows-package, linux-build]
+    needs: [macos, extensions, firefox-xpi, windows-package, linux-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -574,6 +617,13 @@ jobs:
         with:
           name: macos
           path: out
+
+      # A pattern, not a name: a release whose .xpi signing failed has no such artifact.
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: firefox-xpi
+          path: out
+          merge-multiple: true
 
       - uses: actions/download-artifact@v5
         with:
