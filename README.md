@@ -24,12 +24,14 @@ Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/c
 
 <table>
   <tr>
-    <td width="57%"><img src="docs/screenshots/quick.png" alt="The Quick Panel with fuzzy search, per-item copy actions and keyboard shortcuts"></td>
-    <td width="43%"><img src="docs/screenshots/generator.png" alt="The password generator with length, character sets and minimum counts"></td>
+    <td width="45%"><img src="docs/screenshots/quick.png" alt="The Quick Panel with fuzzy search, per-item copy actions and keyboard shortcuts"></td>
+    <td width="27%"><img src="docs/screenshots/generator.png" alt="The password generator with length, character sets and minimum counts"></td>
+    <td width="28%"><img src="docs/screenshots/settings-light.png" alt="The Settings window in the light theme, with theme, menu bar icon and text size choices and the security options"></td>
   </tr>
   <tr>
     <td align="center">Quick Panel</td>
     <td align="center">Password generator</td>
+    <td align="center">Settings, light theme</td>
   </tr>
 </table>
 
@@ -67,6 +69,7 @@ spike's window was dropped). See the "Step 0 result" section of
 - Live sync over the server websocket
 - Clipboard auto-clear, and copied secrets are hidden from clipboard history
 - Start at login (tray only)
+- Light and dark themes, or follow the system appearance
 
 ## Requirements
 
