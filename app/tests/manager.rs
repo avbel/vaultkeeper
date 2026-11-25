@@ -533,7 +533,7 @@ fn attachments_list_save_attach_and_delete_with_confirm() {
     );
     let source = PathBuf::from("/nonexistent/notes.txt");
     *h.files.open.lock().unwrap_or_else(PoisonError::into_inner) = Some(source.clone());
-    click(&manager, "+ Attach file");
+    click(&manager, "Attach file");
     assert!(
         h.vault
             .calls()
@@ -599,7 +599,7 @@ fn offline_shows_the_toast_and_disables_writes() {
     assert!(value_of(&manager, "Status").starts_with("Offline"));
     manager.invoke_row_clicked(row_of(&manager, "Server runbook"));
     pump();
-    assert!(!enabled(&manager, "+ Attach file"));
+    assert!(!enabled(&manager, "Attach file"));
     assert!(!enabled(&manager, "Save runbook.pdf"));
     assert!(!enabled(&manager, "Edit"));
     assert!(!enabled(&manager, "New folder"));

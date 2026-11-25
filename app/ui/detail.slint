@@ -307,9 +307,10 @@ component AttachmentsSection inherits VerticalLayout {
             font-size: Theme.font-hint;
             vertical-alignment: center;
         }
-        Btn {
-            text: "+ Attach file";
-            kind: BtnKind.ghost;
+        IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("icons/plus.svg");
+            label: "Attach file";
             enabled: root.online && !root.busy;
             clicked => { root.attach(); }
         }
