@@ -125,8 +125,13 @@ export component MultiField inherits Rectangle {
 
     forward-focus: input;
     min-height: 72px * Theme.scale;
-    // Grows with wrapped content, so a long key is never cut off or pushes the pane wider.
-    preferred-height: max(72px * Theme.scale, input.preferred-height + 2 * Theme.s2);
+    // Grows with wrapped content up to a cap, then scrolls: a long key or JSON blob is never cut
+    // off, pushes the pane wider, or turns the form into one giant field.
+    property <length> max-grow: 240px * Theme.scale;
+    property <length> text-height: input.preferred-height + 2 * Theme.s2;
+    preferred-height: clamp(root.text-height, 72px * Theme.scale, root.max-grow);
+    // A tall pane would otherwise stretch the field past its cap.
+    max-height: self.preferred-height;
     border-radius: Theme.radius-control;
     background: Theme.surface;
     border-width: 1px;
@@ -136,29 +141,53 @@ export component MultiField inherits Rectangle {
     // The eye sits on the left: a long key line can make the field wider than the pane.
     property <length> inset: root.password ? Theme.control-height + 8px : 10px;
 
-    input := TextInput {
+    scroll := Flickable {
         x: root.inset;
-        y: Theme.s2;
         width: parent.width - root.inset - 10px;
-        height: parent.height - 2 * Theme.s2;
+        height: parent.height;
+        content-width: self.width;
+        content-height: max(self.height, root.text-height);
         visible: !root.masked;
-        text <=> root.text;
-        enabled: root.enabled && !root.masked;
-        single-line: false;
-        // Keys and codes have no spaces to break at.
-        wrap: root.mono ? char-wrap : word-wrap;
-        color: Theme.text;
-        font-size: Theme.font-body;
-        font-family: root.mono ? Theme.mono : "";
-        selection-background-color: Theme.selection-hover;
-        accessible-role: text-input;
-        accessible-label: root.label;
-        accessible-value: root.masked ? "" : self.text;
-        accessible-action-set-value(value) => {
-            self.text = value;
-            root.edited(value);
+
+        input := TextInput {
+            y: Theme.s2;
+            width: parent.width;
+            height: max(self.preferred-height, scroll.height - 2 * Theme.s2);
+            text <=> root.text;
+            enabled: root.enabled && !root.masked;
+            single-line: false;
+            // Keys and codes have no spaces to break at.
+            wrap: root.mono ? char-wrap : word-wrap;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            font-family: root.mono ? Theme.mono : "";
+            selection-background-color: Theme.selection-hover;
+            accessible-role: text-input;
+            accessible-label: root.label;
+            accessible-value: root.masked ? "" : self.text;
+            accessible-action-set-value(value) => {
+                self.text = value;
+                root.edited(value);
+            }
+            edited => { root.edited(self.text); }
+            // A Flickable does not follow the caret, so typing past the visible lines would go blind.
+            cursor-position-changed(pos) => {
+                if pos.y + self.y + scroll.content-y < 0 {
+                    scroll.content-y = -(pos.y + self.y);
+                } else if pos.y + self.y + self.font-size * 1.5 + scroll.content-y > scroll.height {
+                    scroll.content-y = scroll.height - pos.y - self.y - self.font-size * 1.5 - Theme.s2;
+                }
+            }
         }
-        edited => { root.edited(self.text); }
+    }
+    if root.text-height > root.height && !root.masked: Rectangle {
+        x: root.width - 6px;
+        y: 2px + scroll.content-y * -1 * (root.height - 4px) / scroll.content-height;
+        width: 3px;
+        height: (root.height - 4px) * root.height / scroll.content-height;
+        border-radius: 1.5px;
+        background: Theme.text-muted;
+        opacity: 0.5;
     }
     if root.masked: Text {
         x: root.inset;

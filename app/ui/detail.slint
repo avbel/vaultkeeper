@@ -343,11 +343,10 @@ component AttachmentsSection inherits VerticalLayout {
                 font-size: Theme.font-hint;
                 vertical-alignment: center;
             }
-            Btn {
+            IconBtn {
                 y: (parent.height - self.height) / 2;
-                text: "Save…";
+                icon: @image-url("icons/download.svg");
                 label: "Save " + attachment.name;
-                kind: BtnKind.ghost;
                 enabled: root.online && !root.busy;
                 clicked => { root.save(i); }
             }

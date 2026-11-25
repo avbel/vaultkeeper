@@ -1221,6 +1221,53 @@ fn a_hidden_custom_field_without_a_visible_value_has_no_reveal_or_copy() {
 }
 
 #[test]
+fn a_long_hidden_custom_field_scrolls_inside_a_capped_editor() {
+    let (h, manager) = open();
+    let field = |name: &str, value: String| vk_vault::model::CustomField {
+        name: name.to_owned(),
+        value: zeroize::Zeroizing::new(value),
+        hidden: true,
+        field_type: 1,
+        source_index: None,
+        withheld: false,
+    };
+    let draft = vk_vault::model::ItemDraft {
+        name: "Key blob".to_owned(),
+        notes: zeroize::Zeroizing::new(String::new()),
+        folder_id: None,
+        organization_id: None,
+        collection_ids: Vec::new(),
+        favorite: false,
+        reprompt: false,
+        fields: vec![
+            field("Blob", "{ \"secret\": \"0123456789abcdef\" }\n".repeat(60)),
+            field("After", "x".to_owned()),
+        ],
+        data: ItemData::SecureNote,
+        revision_date: None,
+    };
+    block_on(h.vault.save(None, draft)).expect("save");
+    h.app.on_vault_changed();
+    pump();
+    manager.invoke_row_clicked(row_of(&manager, "Key blob"));
+    pump();
+    click(&manager, "Edit");
+    click(&manager, "Show Blob");
+    let input = ElementHandle::find_by_accessible_label(&manager, "Blob")
+        .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+        .expect("Blob editor");
+    let after = ElementHandle::find_by_accessible_label(&manager, "Show After")
+        .next()
+        .expect("next field");
+    let gap = after.absolute_position().y - input.absolute_position().y;
+    assert!(input.size().height > 600.0, "the whole value is laid out");
+    assert!(
+        gap < 320.0,
+        "the editor stops growing and scrolls, gap {gap}"
+    );
+}
+
+#[test]
 fn the_folder_chevron_opens_its_menu_and_deletes_the_folder() {
     use slint::{
         LogicalPosition,
