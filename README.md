@@ -15,6 +15,26 @@ Vaultkeeper is a lightweight native desktop client for self-hosted
 Vaultkeeper is an independent project. It is **not affiliated with, endorsed by or supported by Bitwarden Inc. or the
 Vaultwarden project**. It is tested against Vaultwarden 1.37.5 (see `tests/e2e/compose.yaml`).
 
+## Screenshots
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/manager-dark.png">
+  <img src="docs/screenshots/manager-light.png" alt="The Vaultkeeper Manager window with the sidebar of types, folders and collections, the item list and a selected card's details">
+</picture>
+
+<table>
+  <tr>
+    <td width="57%"><img src="docs/screenshots/quick.png" alt="The Quick Panel with fuzzy search, per-item copy actions and keyboard shortcuts"></td>
+    <td width="43%"><img src="docs/screenshots/generator.png" alt="The password generator with length, character sets and minimum counts"></td>
+  </tr>
+  <tr>
+    <td align="center">Quick Panel</td>
+    <td align="center">Password generator</td>
+  </tr>
+</table>
+
+Screenshots show the demo vault (`vaultkeeper --mock`).
+
 ## Why not Bitwarden Desktop?
 
 - **No Electron.** Electron apps ship a full Chromium and Node.js runtime. Vaultkeeper is a single Rust binary.
