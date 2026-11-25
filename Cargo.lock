@@ -7617,7 +7617,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vaultkeeper"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -7684,7 +7684,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vk-api"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -7707,7 +7707,7 @@ dependencies = [
 
 [[package]]
 name = "vk-crypto"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "aes 0.9.4",
  "argon2",
@@ -7727,7 +7727,7 @@ dependencies = [
 
 [[package]]
 name = "vk-gen"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "data-encoding",
  "hmac 0.13.0",
@@ -7741,7 +7741,7 @@ dependencies = [
 
 [[package]]
 name = "vk-ipc"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
@@ -7770,7 +7770,7 @@ dependencies = [
 
 [[package]]
 name = "vk-linux"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "libc",
  "tempfile",
@@ -7779,7 +7779,7 @@ dependencies = [
 
 [[package]]
 name = "vk-platform"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "aes-gcm 0.11.1",
  "arboard",
@@ -7813,7 +7813,7 @@ dependencies = [
 
 [[package]]
 name = "vk-ssh"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7834,7 +7834,7 @@ dependencies = [
 
 [[package]]
 name = "vk-vault"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
@@ -7864,7 +7864,7 @@ dependencies = [
 
 [[package]]
 name = "vk-webauthn"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "base64 0.23.1",
  "p256 0.14.0",
@@ -7879,7 +7879,7 @@ dependencies = [
 
 [[package]]
 name = "vk-win"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "windows-sys 0.61.2",
 ]
