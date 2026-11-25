@@ -104,7 +104,7 @@ Desktop options
   --theme      mock: override the theme setting for this run
   --demo-ssh   mock: show an SSH sign request a few seconds after start
   --size       mock: Manager window size in logical pixels, e.g. 760x480
-  --select     mock: open the Manager on the first item matching QUERY"#;
+  --select     mock: open the Manager on the first item matching QUERY (not with --search)"#;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -163,6 +163,8 @@ pub enum CliError {
     Refusal,
     #[error("{0} works only with --mock\n\n{USAGE}")]
     NeedsMock(&'static str),
+    #[error("--select opens the Manager and cannot be combined with --search\n\n{USAGE}")]
+    SelectWithSearch,
 }
 
 fn parse_size(text: Option<&str>) -> Result<(u32, u32), CliError> {
@@ -229,6 +231,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, CliError> {
             }
             _ => return Err(CliError::Unknown(arg)),
         }
+    }
+    if parsed.search && parsed.select.is_some() {
+        return Err(CliError::SelectWithSearch);
     }
     match mock_only_flag(&parsed) {
         Some(flag) if !parsed.mock => Err(CliError::NeedsMock(flag)),
@@ -322,18 +327,9 @@ mod tests {
 
     #[test]
     fn parses_screenshot_flags() {
-        let parsed = args(&[
-            "--mock",
-            "--size",
-            "760x480",
-            "--select",
-            "tailscale",
-            "--search",
-        ])
-        .expect("args");
+        let parsed = args(&["--mock", "--size", "760x480", "--select", "tailscale"]).expect("args");
         assert_eq!(parsed.size, Some((760, 480)));
         assert_eq!(parsed.select.as_deref(), Some("tailscale"));
-        assert!(parsed.search);
         assert_eq!(args(&["--size", "760"]), Err(CliError::Size));
         assert_eq!(args(&["--size", "ax480"]), Err(CliError::Size));
         assert_eq!(args(&["--select"]), Err(CliError::Select));
@@ -345,6 +341,25 @@ mod tests {
         );
         assert_eq!(args(&["--wait-for", "x"]), Err(CliError::WaitFor));
         assert_eq!(args(&["--wait-for", "0"]), Err(CliError::WaitFor));
+    }
+
+    #[test]
+    fn select_is_refused_with_the_quick_panel() {
+        for search in ["--search", "--quick"] {
+            assert_eq!(
+                args(&["--mock", search, "--select", "github"]),
+                Err(CliError::SelectWithSearch)
+            );
+            assert_eq!(
+                args(&["--mock", "--select", "github", search]),
+                Err(CliError::SelectWithSearch)
+            );
+        }
+        assert!(
+            CliError::SelectWithSearch
+                .to_string()
+                .starts_with("--select opens the Manager and cannot be combined with --search")
+        );
     }
 
     #[test]
